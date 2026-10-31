@@ -24,13 +24,18 @@ Motor hattı (`engine/src/subtitle_engine/`):
 `subtitle-engine transcribe <video> --out-dir D [--language tr] [--model small] [--format srt vtt json] --json`
 stdout'a satır başına bir JSON olay yazar:
 
-- `{"event": "stage", "stage": "extracting_audio|loading_model|transcribing|segmenting", "fraction": 0.42 | null}`
+- `{"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|segmenting", "fraction": 0.42 | null}`
+- `{"event": "models", "models": [{"id", "size_mb", "speed", "accuracy", "downloaded"}]}`
 - `{"event": "result", "language", "duration", "audio", "outputs": [...], "sentences": [{"id", "start", "end", "text", "words": [{"start", "end", "text"}]}]}`
 - `{"event": "error", "message": "..."}` (çıkış kodu 1)
 
+`downloading_model` yalnız katalogdaki (`models.py`) bir model önbellekte yoksa, `loading_model`'den önce yayınlanır; `fraction` indirilen baytın toplam bayta oranıdır (0..1, en fazla ~10 Hz). Katalog dışı adlar (`turbo`, `tiny` vb.) faster-whisper'ın kendi indirmesine bırakılır, bu aşama yayınlanmaz.
+
 `subtitle-engine render --format srt [--out F]`: stdin'den cümle JSON dizisi alır (uygulamada düzenlenmiş hali), altyazı metni yazar. Altyazı biçimleri yalnız motorda üretilir.
 
-stderr serbest log'dur (model indirme ilerlemesi vb.); uygulamalar onu dosyaya yönlendirir, protokol değildir. Protokol değişirse `cli.py`'deki `PROTOCOL_VERSION`, `EngineEvent.swift` ve bu bölüm birlikte güncellenir.
+`subtitle-engine models [--json]`: model kataloğunu (`base`, `small`, `medium`, `large-v3-turbo`, `large-v3`) yaklaşık boyut, göreli hız/doğruluk ve yerel önbellek durumuyla listeler; ağa çıkmaz. `--json` tek satır `models` olayı yazar, aksi halde okunur tablo.
+
+stderr serbest log'dur (model yükleme uyarıları vb.); uygulamalar onu dosyaya yönlendirir, protokol değildir. Protokol değişirse `cli.py`'deki `PROTOCOL_VERSION`, `EngineEvent.swift` ve bu bölüm birlikte güncellenir. Sürüm 1'de kalır: `downloading_model` aşaması ve `models` komutu geriye uyumlu eklemelerdir.
 
 Uygulama motoru şu sırayla bulur: `SUBTITLE_ENGINE` ortam değişkeni → bundle içindeki `subtitle-engine` → geliştirmede `uv run --project engine subtitle-engine`.
 

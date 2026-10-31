@@ -3,7 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import subtitles
+from . import models, subtitles
 from .audio import extract_audio
 from .models import Sentence
 from .sentences import SegmenterConfig, segment
@@ -27,12 +27,19 @@ def run(
     transcriber_factory: Callable[[], Transcriber],
     out_dir: Path,
     language: str | None = None,
+    model: str | None = None,
     formats: tuple[str, ...] = ("srt",),
     config: SegmenterConfig = SegmenterConfig(),
     on_stage: StageFn = lambda stage, fraction: None,
 ) -> PipelineResult:
     on_stage("extracting_audio", None)
     audio = extract_audio(video, out_dir / f"{video.stem}.wav")
+
+    # Katalogdaki model önbellekte değilse indirmeyi burada yaparız; böylece transkript
+    # başlamadan önce ilerleme raporlanır. Katalog dışı adları faster-whisper indirir.
+    if model and models.needs_download(model):
+        on_stage("downloading_model", 0.0)
+        models.ensure_model(model, on_progress=lambda fraction: on_stage("downloading_model", fraction))
 
     on_stage("loading_model", None)
     transcriber = transcriber_factory()

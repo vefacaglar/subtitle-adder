@@ -18,6 +18,7 @@ class FakeTranscriber:
 
 def run_cli(argv, capsys, monkeypatch):
     monkeypatch.setattr("subtitle_engine.transcribe.FasterWhisperTranscriber", lambda model: FakeTranscriber())
+    monkeypatch.setattr("subtitle_engine.models.needs_download", lambda model_id: False)  # ağa çıkma
     code = cli.main(argv)
     return code, [json.loads(line) for line in capsys.readouterr().out.splitlines()]
 
@@ -45,6 +46,71 @@ def test_render_from_stdin(capsys, monkeypatch):
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
     assert cli.main(["render", "-f", "srt"]) == 0
     assert capsys.readouterr().out == "1\n00:00:00,000 --> 00:00:01,000\nDüzenlendi.\n"
+
+
+def test_models_json_lists_catalog_and_cache_state(capsys, monkeypatch):
+    monkeypatch.setattr(cli, "is_downloaded", lambda model_id: model_id in {"base", "small"})
+
+    assert cli.main(["models", "--json"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    event = json.loads(lines[0])
+    assert event["event"] == "models"
+    assert [m["id"] for m in event["models"]] == ["base", "small", "medium", "large-v3-turbo", "large-v3"]
+    assert set(event["models"][0]) == {"id", "size_mb", "speed", "accuracy", "downloaded"}
+    assert [m["downloaded"] for m in event["models"]] == [True, True, False, False, False]
+
+
+def test_models_table_without_json(capsys, monkeypatch):
+    monkeypatch.setattr(cli, "is_downloaded", lambda model_id: model_id == "base")
+
+    assert cli.main(["models"]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[0].startswith("model")
+    assert "base" in out and "var" in out and "yok" in out
+
+
+def test_downloading_model_stage_precedes_loading(tone_video, tmp_path, capsys, monkeypatch):
+    from subtitle_engine import models
+
+    reported: list[float] = []
+
+    def fake_ensure(model_id, on_progress=None):
+        assert model_id == "medium"
+        for fraction in (0.25, 0.5, 0.99, 1.0):
+            reported.append(fraction)
+            on_progress(fraction)
+        return "/cache/medium"
+
+    monkeypatch.setattr("subtitle_engine.transcribe.FasterWhisperTranscriber", lambda model: FakeTranscriber())
+    monkeypatch.setattr(models, "needs_download", lambda model_id: model_id == "medium")
+    monkeypatch.setattr(models, "ensure_model", fake_ensure)
+
+    code = cli.main(["transcribe", str(tone_video), "-o", str(tmp_path), "-m", "medium", "--json"])
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert code == 0
+    stages = [(e["stage"], e["fraction"]) for e in events if e["event"] == "stage"]
+    download = [fraction for stage, fraction in stages if stage == "downloading_model"]
+    assert download[0] == 0.0 and download[-1] == 1.0
+    assert download == sorted(download) and all(0.0 <= f <= 1.0 for f in download)
+    assert reported == [0.25, 0.5, 0.99, 1.0]  # ilerleme aynen protokole yansır
+    assert stages.index(("downloading_model", 0.0)) < stages.index(("loading_model", None))
+    assert events[-1]["event"] == "result"
+
+
+def test_cached_model_skips_downloading_stage(tone_video, tmp_path, capsys, monkeypatch):
+    from subtitle_engine import models
+
+    monkeypatch.setattr("subtitle_engine.transcribe.FasterWhisperTranscriber", lambda model: FakeTranscriber())
+    monkeypatch.setattr(models, "needs_download", lambda model_id: False)
+    monkeypatch.setattr(models, "ensure_model", lambda *a, **kw: pytest.fail("indirilmemeli"))
+
+    code = cli.main(["transcribe", str(tone_video), "-o", str(tmp_path), "--json"])
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert code == 0
+    assert "downloading_model" not in [e["stage"] for e in events if e["event"] == "stage"]
 
 
 @pytest.mark.slow
