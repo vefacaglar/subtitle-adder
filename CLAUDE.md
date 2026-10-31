@@ -1,6 +1,6 @@
 # Subtitle Adder
 
-Videoya otomatik altyazı üreten masaüstü uygulaması. Arayüz her platformda native (önce macOS/SwiftUI, sonra Windows/WinUI); iş ortak bir Python motorunda yapılır.
+Videoya otomatik altyazı üreten, tamamen yerel çalışan masaüstü uygulaması. Arayüz her platformda native (önce macOS/SwiftUI, sonra Windows/WinUI); iş ortak bir Python motorunda yapılır.
 
 ## Mimari
 
@@ -89,5 +89,5 @@ Ana oturum koordinatördür: işi ajana verir, testlerden ve review'dan geçirip
 - Motor platforma özel varsayım yapmaz (sistem ffmpeg'i yok, sabit yol yok); macOS ve Windows'ta aynı çalışır.
 - Python ≥3.11 (uv), Swift 6 strict concurrency, macOS 15+.
 - UI metinleri ve kullanıcıya giden hata mesajları Türkçe.
-- Varsayılan on-device; bulut servisi opsiyonel olur, anahtar koda girmez.
+- Yalnız yerel: bulut STT ya da sesi dışarı gönderen hiçbir servis yok. Ağ yalnız model indirmek için kullanılır.
 - Durum ve devam noktası: `.claude/progress/STATE.md`.
