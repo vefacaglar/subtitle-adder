@@ -2,17 +2,22 @@
 
 ## RESUME POINT
 
-2026-10-31: Mimari kararı verildi: native arayüz (macOS SwiftUI, sonra Windows WinUI) + ortak Python motoru (alt süreç, JSON satır olayları; protokol CLAUDE.md'de). İlk Swift-only deneme (WhisperKit) bu yüzden kaldırıldı.
+2026-11-01: macOS paketleme hazır. `scripts/package-macos.sh` → `build/Subtitle Adder.app` (~194 MB, motor PyInstaller onedir `Contents/Resources/subtitle-engine/`), `MAKE_DMG=1` ile ~87 MB dmg. Uygulama uv/repo olmadan motoru bundle'dan buluyor; Finder'dan "Birlikte Aç"/Dock'a bırakma açık pencereye gidiyor.
 
 Hazır olanlar:
-- `engine/`: PyAV ile ses ayırma, faster-whisper ile STT, cümle bölme, SRT/VTT/JSON, `transcribe --json` ve `render` komutları. 14 test yeşil (+1 slow).
-- `apps/macos/`: EngineKit (süreç yönetimi, olay çözme, iptal, render) + SwiftUI uygulaması (sürükle-bırak, model/dil seçimi, ilerleme, cümle tablosu, dışa aktarma). 6 test yeşil; `ENGINE_E2E=1` ile gerçek motor demo videoda 3 cümle, dil `tr`.
-- Uygulama açılıyor; arayüz henüz gözle kontrol edilmedi.
-- Opus review bulguları düzeltildi (iptalde motor ölmüyordu, Windows UTF-8, geç başlayan ses kayması, geçici dosya sızıntısı vb.). Motor 19 test + slow, Swift 9 test + e2e yeşil.
-- Ajanlar: explorer Haiku, coder'lar Sonnet, reviewer Opus; `scripts/pi-agent.sh` ile aynı roller DeepSeek (pi, opencode-go) ile çalışır, explorer ile denendi.
+- Motor: ses ayırma (PyAV), STT (faster-whisper; onnx-asr ile Parakeet v3, Canary 1B v2, GigaAM v3), cümle bölme, SRT/VTT/JSON, model kataloğu/indirme ilerlemesi/silme, yerel çeviri (MADLAD-400 varsayılan, NLLB isteğe bağlı).
+- macOS: sürükle-bırak, dil ve açıklamalı model seçici, ilerleme, video önizleme + altyazı overlay, düzenleme (metin, zaman, birleştir, böl, sil, geri al), çeviri, dışa aktarma, Ayarlar (modeller, disk, lisans).
+- Paketleme: ad-hoc imza varsayılan; `SIGN_IDENTITY` (Developer ID + hardened runtime) ve `NOTARY_PROFILE` (notarization) betikte var ama gerçek kimlikle hiç çalıştırılmadı. Hardened runtime ad-hoc ile simüle edildi ve çalıştı.
+
+Bilinen sorunlar:
+- Bu makinede HOME `/Users/vefaus`, uv ve HF önbelleği `/Users/vefa` altında: `locatesDevEngine` testi ve iki `pytest` testi (`disk_mb`) bu yüzden kırmızı. `pytest`'teki asıl hata: test `cli.is_downloaded`'ı yamalıyor ama `models.disk_mb` `models.is_downloaded`'ı çağırıyor.
+- Paket yalnız arm64; uygulama simgesi yok.
+- Dosya açmak çalışan işi iptal edip düzenlemeleri sormadan siliyor (`SubtitleViewModel.openVideo`).
+- `disable-library-validation` Developer ID ile muhtemelen gereksiz; gerçek kimlikle yetkisiz denenmeli.
 
 Sıradaki adaylar:
-- Arayüzü gözle kontrol ve cilalama; altyazı düzenleme; video önizleme (AVPlayer + altyazı overlay)
-- Gerçek bir videoyla (uzun, müzikli) kalite/süre ölçümü; varsayılan model kararı; Mac'te mlx-whisper backend'i (hız)
-- Paketleme: motoru PyInstaller ile tek ikiliye çevirip .app içine gömme, imzalama
+- Developer ID ile imza + notarization (Apple Developer hesabı gerekir), uygulama simgesi
+- Altyazıyı videoya gömme (burn-in / mux), var olan SRT'yi açma
+- Uzun/müzikli gerçek videoda kalite/süre ölçümü; Mac'te mlx-whisper backend'i
+- README
 - Windows uygulaması (WinUI 3 / C#) aynı motor protokolüyle
