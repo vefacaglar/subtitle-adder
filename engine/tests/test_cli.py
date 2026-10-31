@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from conftest import make_words
 
-from subtitle_engine import cli
+from subtitle_engine import cli, models
 from subtitle_engine.models import Transcript
 
 
@@ -50,6 +50,7 @@ def test_render_from_stdin(capsys, monkeypatch):
 
 def test_models_json_lists_catalog_and_cache_state(capsys, monkeypatch):
     monkeypatch.setattr(cli, "is_downloaded", lambda model_id: model_id in {"base", "small"})
+    monkeypatch.setattr(models, "is_downloaded", lambda model_id: model_id in {"base", "small"})
     monkeypatch.setattr(
         cli,
         "cached_disk_mb",
@@ -80,6 +81,7 @@ def test_models_json_lists_catalog_and_cache_state(capsys, monkeypatch):
 
 def test_models_table_without_json(capsys, monkeypatch):
     monkeypatch.setattr(cli, "is_downloaded", lambda model_id: model_id == "base")
+    monkeypatch.setattr(models, "is_downloaded", lambda model_id: model_id == "base")
     monkeypatch.setattr(cli, "cached_disk_mb", lambda: {"Systran/faster-whisper-base": 141})
 
     assert cli.main(["models"]) == 0

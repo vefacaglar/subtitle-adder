@@ -10,7 +10,8 @@ Hazır olanlar:
 - Paketleme: ad-hoc imza varsayılan; `SIGN_IDENTITY` (Developer ID + hardened runtime) ve `NOTARY_PROFILE` (notarization) betikte var ama gerçek kimlikle hiç çalıştırılmadı. Hardened runtime ad-hoc ile simüle edildi ve çalıştı.
 
 Bilinen sorunlar:
-- Bu makinede HOME `/Users/vefaus`, uv ve HF önbelleği `/Users/vefa` altında: `locatesDevEngine` testi ve iki `pytest` testi (`disk_mb`) bu yüzden kırmızı. `pytest`'teki asıl hata: test `cli.is_downloaded`'ı yamalıyor ama `models.disk_mb` `models.is_downloaded`'ı çağırıyor.
+- Bu makinede HOME `/Users/vefaus`, uv `/Users/vefa/.local/bin` altında: `locatesDevEngine` testi uv'yi bulamadığı için kırmızı.
+- huggingface_hub ≥2.4 paylaşılan blob deposu (`hub/blobs/`): `delete-model` artık oradaki sahipsiz dosyaları hf'nin kilitli süpürücüsüyle (özel API, yoksa FileLock'lu yedek) temizliyor. Başka repo'nun `blobs/` klasörü okunamazsa `scan_cache_dir` düştüğü için mesaj yanıltıcı ("indirilmemiş") ama hiçbir şey silinmiyor.
 - Paket yalnız arm64; uygulama simgesi yok.
 - Dosya açmak çalışan işi iptal edip düzenlemeleri sormadan siliyor (`SubtitleViewModel.openVideo`).
 - `disable-library-validation` Developer ID ile muhtemelen gereksiz; gerçek kimlikle yetkisiz denenmeli.

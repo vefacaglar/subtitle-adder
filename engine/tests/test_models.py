@@ -1,4 +1,5 @@
 """Model kataloğu, önbellek boyutu, silme ve indirme ilerlemesi testleri: ağa çıkmaz."""
+import contextlib
 import hashlib
 import os
 import shutil
@@ -347,3 +348,187 @@ def test_delete_model_refuses_catalog_entries_sharing_a_repo(tmp_path, monkeypat
     with pytest.raises(models.ModelError, match="paylaşıyor"):
         models.delete_model("base", cache_dir=tmp_path)
     assert (repo / "blobs").is_dir()
+
+
+def make_shared_repo(cache_dir, repo_id, files, revision="1" * 40):
+    """huggingface_hub 2.x xet düzeni: blob'lar `<önbellek>/blobs/<2 hex>/<sha256>` altında, repo blobs/ sembolik bağ.
+
+    `files`: ad -> (içerik anahtarı, bayt); aynı anahtar iki repoda aynı paylaşılan blob'u verir.
+    """
+    store = cache_dir / "blobs"
+    store.mkdir(exist_ok=True)
+    (store / ".huggingface-shared-blobs").write_text("1\n")
+    repo = cache_dir / f"models--{repo_id.replace('/', '--')}"
+    blobs, snapshot = repo / "blobs", repo / "snapshots" / revision
+    blobs.mkdir(parents=True, exist_ok=True)
+    snapshot.mkdir(parents=True, exist_ok=True)
+    for name, (key, size) in files.items():
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        payload = store / digest[:2] / digest
+        payload.parent.mkdir(exist_ok=True)
+        payload.write_bytes(b"x" * size)
+        with (store / digest[:2] / f"{digest}.refs").open("a") as refs:
+            refs.write(f"{repo.name}/blobs/{digest}\n")
+        (store / digest[:2] / f"{digest}.lock").write_bytes(b"")
+        link = blobs / digest
+        if not link.is_symlink():
+            link.symlink_to(os.path.relpath(payload, blobs))
+        (snapshot / name).symlink_to(os.path.relpath(link, snapshot))
+    (repo / "refs").mkdir(exist_ok=True)
+    (repo / "refs" / "main").write_text(revision)
+    return repo, store
+
+
+def test_disk_mb_counts_shared_store_targets_once(tmp_path):
+    # Aynı blob iki dosya adıyla ve iki revizyonda: bir kez sayılır.
+    files = {"model.bin": ("a", 3 * MIB), "alias.bin": ("a", 3 * MIB), "config.json": ("b", 1000)}
+    make_shared_repo(tmp_path, "Systran/faster-whisper-base", files)
+    make_shared_repo(tmp_path, "Systran/faster-whisper-base", files, revision="2" * 40)
+    assert models.cached_disk_mb(tmp_path) == {"Systran/faster-whisper-base": 3}
+
+
+def test_delete_model_sweeps_shared_blobs_but_keeps_ones_other_repos_use(tmp_path):
+    repo, store = make_shared_repo(
+        tmp_path,
+        "Systran/faster-whisper-base",
+        {"model.bin": ("only-base", 3 * MIB), "tokenizer.json": ("common", 2 * MIB)},
+    )
+    other, _ = make_shared_repo(
+        tmp_path,
+        "Systran/faster-whisper-small",
+        {"model.bin": ("only-small", 2 * MIB), "tokenizer.json": ("common", 2 * MIB)},
+    )
+    vad, _ = make_shared_repo(tmp_path, models.VAD_REPO, {models.VAD_FILE: ("vad", 1 * MIB)})
+    digest = lambda key: hashlib.sha256(key.encode()).hexdigest()  # noqa: E731
+    payload = lambda key: store / digest(key)[:2] / digest(key)  # noqa: E731
+
+    assert models.delete_model("base", cache_dir=tmp_path) == 3  # yalnız base'e ait blob boşalır
+
+    assert not repo.exists()
+    assert not payload("only-base").exists()
+    assert not payload("only-base").with_name(digest("only-base") + ".refs").exists()
+    assert payload("only-base").with_name(digest("only-base") + ".lock").exists()  # kilit dosyasına dokunulmaz
+    assert payload("common").is_file() and payload("only-small").is_file() and payload("vad").is_file()
+    assert other.is_dir() and vad.is_dir()
+    assert (other / "snapshots" / ("1" * 40) / "tokenizer.json").read_bytes() == b"x" * (2 * MIB)
+
+
+def test_delete_model_frees_shared_blob_when_last_user_is_deleted(tmp_path):
+    make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("common", 2 * MIB)})
+    make_shared_repo(tmp_path, "Systran/faster-whisper-small", {"model.bin": ("common", 2 * MIB)})
+
+    assert models.delete_model("base", cache_dir=tmp_path) == 0
+    assert models.delete_model("small", cache_dir=tmp_path) == 2
+    assert [p for p in (tmp_path / "blobs").rglob("*") if p.is_file() and p.suffix == "" and p.name[0] != "."] == []
+
+
+def test_delete_model_leaks_shared_blob_without_store_marker(tmp_path):
+    repo, store = make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("a", MIB)})
+    (store / ".huggingface-shared-blobs").unlink()
+
+    assert models.delete_model("base", cache_dir=tmp_path) == 0
+    assert not repo.exists()
+    assert any(p.is_file() and len(p.name) == 64 for p in store.rglob("*"))
+
+
+def test_delete_model_legacy_layout_counts_repo_blobs(tmp_path):
+    repo = make_cached_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": 3 * MIB})
+    assert models.delete_model("base", cache_dir=tmp_path) == 3
+    assert not repo.exists()
+
+
+@pytest.fixture(params=["hf_sweep", "fallback"])
+def sweep_mode(request, monkeypatch):
+    if request.param == "fallback":
+        monkeypatch.setattr(models, "_hf_sweep", lambda: None)
+    return request.param
+
+
+def _payload(store, key):
+    d = hashlib.sha256(key.encode()).hexdigest()
+    return store / d[:2] / d
+
+
+def test_sweep_both_paths_delete_unshared(tmp_path, sweep_mode):
+    _, store = make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("a", 2 * MIB)})
+    assert models.delete_model("base", cache_dir=tmp_path) == 2
+    assert not _payload(store, "a").exists()
+
+
+def test_link_pointing_outside_cache_is_not_deleted(tmp_path, sweep_mode):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    outside = tmp_path / "disari.bin"
+    outside.write_bytes(b"x" * MIB)
+    repo, _ = make_shared_repo(cache, "Systran/faster-whisper-base", {"model.bin": ("a", MIB)})
+    (repo / "blobs" / "abs").symlink_to(outside)
+    (repo / "blobs" / "rel").symlink_to(os.path.relpath(outside, repo / "blobs"))
+
+    models.delete_model("base", cache_dir=cache)
+
+    assert outside.read_bytes() == b"x" * MIB
+
+
+def test_reference_from_dataset_folder_keeps_blob(tmp_path, sweep_mode):
+    _, store = make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("a", MIB)})
+    d = hashlib.sha256(b"a").hexdigest()
+    ds = tmp_path / "datasets--a--b" / "blobs"
+    ds.mkdir(parents=True)
+    (ds / d).symlink_to(os.path.relpath(_payload(store, "a"), ds))
+    with (store / d[:2] / f"{d}.refs").open("a") as refs:
+        refs.write(f"datasets--a--b/blobs/{d}\n")
+
+    assert models.delete_model("base", cache_dir=tmp_path) == 0
+    assert _payload(store, "a").is_file()
+
+
+def test_unreadable_other_repo_blocks_deletion(tmp_path, sweep_mode):
+    _, store = make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("a", MIB)})
+    other, _ = make_shared_repo(tmp_path, "Systran/faster-whisper-small", {"model.bin": ("b", MIB)})
+    blobs = other / "blobs"
+    blobs.chmod(0)
+    try:
+        if os.access(blobs, os.R_OK):
+            pytest.skip("izinler uygulanmıyor (root/Windows)")
+        with contextlib.suppress(models.ModelError):  # tarama okunamayan repo'da hata verebilir
+            models.delete_model("base", cache_dir=tmp_path)
+        # Tarama atlansa bile süpürücü okunamayan repo varken hiçbir şey silmez.
+        assert models._sweep_shared_blobs(tmp_path.resolve(), {_payload(tmp_path.resolve() / "blobs", "a")}) == 0
+    finally:
+        blobs.chmod(0o755)
+    assert _payload(store, "a").is_file()
+
+
+@pytest.mark.parametrize("content", ["2\n", "1", ""])
+def test_marker_content_mismatch_deletes_nothing(tmp_path, sweep_mode, content):
+    _, store = make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("a", MIB)})
+    (store / ".huggingface-shared-blobs").write_text(content)
+    assert models.delete_model("base", cache_dir=tmp_path) == 0
+    assert _payload(store, "a").is_file()
+
+
+def test_marker_symlink_deletes_nothing(tmp_path, sweep_mode):
+    _, store = make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("a", MIB)})
+    real = tmp_path / "gercek"
+    real.write_text("1\n")
+    (store / ".huggingface-shared-blobs").unlink()
+    (store / ".huggingface-shared-blobs").symlink_to(real)
+    assert models.delete_model("base", cache_dir=tmp_path) == 0
+    assert _payload(store, "a").is_file()
+
+
+def test_regular_repo_blob_with_shared_store_present(tmp_path, sweep_mode):
+    repo, store = make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("a", 2 * MIB)})
+    (repo / "blobs" / ("f" * 40)).write_bytes(b"x" * (3 * MIB))  # düzenli dosya (xet dışı)
+
+    assert models.delete_model("base", cache_dir=tmp_path) == 5
+    assert not repo.exists() and not _payload(store, "a").exists()
+
+
+def test_delete_failure_raises_turkish_error(tmp_path, monkeypatch):
+    repo, store = make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("a", MIB)})
+    monkeypatch.setattr(models, "_remove_repo_leftovers", lambda *a: None)
+
+    with pytest.raises(models.ModelError, match="tamamen silinemedi"):
+        models.delete_model("base", cache_dir=tmp_path)
+    assert _payload(store, "a").is_file()

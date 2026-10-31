@@ -5,7 +5,10 @@ diller) ve indirme durumunu besler. İndirme ilerlemesi yalnızca katalogdaki mo
 için yayınlanır; katalog dışı adlar ("turbo", "tiny" gibi) faster-whisper'ın kendi
 indirmesine bırakılır.
 """
+import os
+import re
 import shutil
+import stat
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -17,6 +20,10 @@ from huggingface_hub.constants import HF_HUB_CACHE
 from huggingface_hub.errors import CacheNotFound
 from huggingface_hub.utils import filter_repo_objects
 from tqdm import tqdm
+
+_SHARED_BLOBS_DIR = "blobs"  # huggingface_hub: önbellek çapında paylaşılan (xet) blob deposu
+_SHARED_MARKER = ".huggingface-shared-blobs"
+_SHARED_HASH = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -276,6 +283,10 @@ def disk_mb(model_id: str, sizes: dict[str, int] | None = None) -> int | None:
 def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
     """Modelin önbellekteki deposunu (tüm revizyonlar ve blob'lar) siler, boşalan MB'ı döndürür.
 
+    Paylaşılan blob deposunda (`<önbellek>/blobs/`) başka hiçbir repo'nun kullanmadığı dosyaları da
+    temizler; başka modelle paylaşılanlar kalır. Dönen değer gerçekten boşalan alandır (başka modelle
+    paylaşılan dosyalarda 0 olabilir).
+
     Yalnız hedef repo klasörüne dokunur: ortak silero VAD gibi yardımcı depolar ve diğer
     modeller korunur. Katalog dışı ya da indirilmemiş modelde `ModelError` yükseltir.
     """
@@ -299,9 +310,136 @@ def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
     if repo is None:
         raise ModelError(f"{info.id} modeli indirilmemiş; silinecek dosya yok.")
 
-    freed = _mb(repo.size_on_disk)
+    repo_path = repo.repo_path
+    local_bytes, shared_targets = _inspect_repo_blobs(repo_path, root)
     # delete_revisions commit kimliğini tüm önbellekte arar; yalnız bu repo klasörünü silmek daha güvenli.
-    _remove_repo_leftovers(root, repo.repo_path, info.repo)
+    _remove_repo_leftovers(root, repo_path, info.repo)
+    freed = local_bytes
+    if repo_path.exists():
+        raise ModelError(f"Model dosyaları tamamen silinemedi: {repo_path}")
+    freed += _sweep_shared_blobs(root, shared_targets)
+    return _mb(freed)
+
+
+def _shared_target(link: Path, root: Path) -> Path | None:
+    """`link` paylaşılan depoya (`<önbellek>/blobs/<2 hex>/<sha256>`) giden bir sembolik bağsa hedefini verir."""
+    try:
+        if not link.is_symlink():
+            return None
+        target = Path(os.path.normpath(link.parent / os.readlink(link)))
+    except OSError:
+        return None
+    if (
+        target.parent.parent != root / _SHARED_BLOBS_DIR
+        or _SHARED_HASH.fullmatch(target.name) is None
+        or target.parent.name != target.name[:2]
+    ):
+        return None
+    return target
+
+
+def _inspect_repo_blobs(repo_path: Path, root: Path) -> tuple[int, set[Path]]:
+    """Repo `blobs/` klasörü: (repo'ya ait gerçek dosyaların baytı, paylaşılan depodaki hedefler)."""
+    local = 0
+    targets: set[Path] = set()
+    try:
+        entries = list((repo_path / "blobs").iterdir())
+    except OSError:
+        return 0, targets
+    for entry in entries:
+        target = _shared_target(entry, root)
+        if target is not None:
+            targets.add(target)
+            continue
+        try:
+            if entry.is_file() and not entry.is_symlink():
+                local += entry.stat().st_size
+        except OSError:
+            pass
+    return local, targets
+
+
+def _referenced_shared_blobs(root: Path) -> set[Path] | None:
+    """Önbellekteki tüm repoların paylaşılan depoya bağlı blob hedefleri; okunamazsa None (silme)."""
+    referenced: set[Path] = set()
+    try:
+        repos = [p for p in root.iterdir() if p.name != _SHARED_BLOBS_DIR and p.is_dir() and "--" in p.name]
+        for repo_dir in repos:
+            blobs = repo_dir / "blobs"
+            if not blobs.is_dir():
+                continue
+            for entry in blobs.iterdir():
+                target = _shared_target(entry, root)
+                if target is not None:
+                    referenced.add(target)
+    except OSError:
+        return None
+    return referenced
+
+
+def _marker_ok(root: Path) -> bool:
+    """Paylaşılan depo bizim tanıdığımız düzende mi: işaret dosyası düzenli dosya ve içeriği tam "1\\n"."""
+    marker = root / _SHARED_BLOBS_DIR / _SHARED_MARKER
+    try:
+        return stat.S_ISREG(marker.lstat().st_mode) and marker.read_text() == "1\n"
+    except (OSError, UnicodeError):
+        return False
+
+
+def _hf_sweep():
+    """huggingface_hub'ın kilitli süpürücüsü (özel API); yoksa None."""
+    try:
+        from huggingface_hub.utils import _shared_blobs
+
+        func = _shared_blobs.sweep_shared_blob
+        return func if callable(func) else None
+    except (ImportError, AttributeError):
+        return None
+
+
+def _sweep_locked_fallback(root: Path, store_path: Path) -> int:
+    """`<sha>.lock` kilidi altında: başka repo bağlamıyorsa blob'u ve `.refs`i siler."""
+    from filelock import FileLock
+
+    lock = FileLock(store_path.with_name(store_path.name + ".lock"), mode=0o666)
+    with lock:
+        referenced = _referenced_shared_blobs(root)
+        if referenced is None or store_path in referenced:
+            return 0
+        if store_path.is_symlink() or not store_path.is_file():
+            return 0
+        size = store_path.stat().st_size
+        store_path.unlink()
+        store_path.with_name(store_path.name + ".refs").unlink(missing_ok=True)
+        return size
+
+
+def _sweep_shared_blobs(root: Path, candidates: set[Path]) -> int:
+    """Silinen repoya ait paylaşılan blob'lardan başka hiçbir repo'nun bağlamadığını siler, baytı döndürür.
+
+    Önce kendi dosya sistemi denetimimiz (`.refs` yalnız ipucu); sonra huggingface_hub'ın kilitli
+    `sweep_shared_blob`'u, o yoksa ya da imzası uymuyorsa `.lock` kilidi altında kendi silmemiz.
+    Emin olunamazsa blob'a dokunulmaz. `.lock` dosyalarına hiç dokunulmaz.
+    """
+    if not candidates or not _marker_ok(root):
+        return 0
+    referenced = _referenced_shared_blobs(root)
+    if referenced is None:
+        return 0
+    sweep = _hf_sweep()
+    freed = 0
+    for store_path in candidates - referenced:
+        try:
+            if sweep is not None:
+                try:
+                    result = sweep(store_path, cache_dir=root)
+                except TypeError:  # imza değişmiş: kendi kilitli yolumuza düş
+                    result = _sweep_locked_fallback(root, store_path)
+            else:
+                result = _sweep_locked_fallback(root, store_path)
+            freed += result if isinstance(result, int) else 0
+        except OSError:
+            continue
     return freed
 
 
