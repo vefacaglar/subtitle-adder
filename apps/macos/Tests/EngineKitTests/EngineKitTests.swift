@@ -55,6 +55,57 @@ private func fakeEngine(_ script: String) throws -> EngineClient {
     #expect(text.contains("\"Selam.\""))
 }
 
+private func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
+
+/// PID dosyası yazılana kadar bekler.
+private func readPID(_ file: URL) async throws -> pid_t {
+    for _ in 0..<100 {
+        if let text = try? String(contentsOf: file, encoding: .utf8),
+           let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) { return pid }
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    throw EngineError.failed("PID okunamadı")
+}
+
+private func waitUntilDead(_ pid: pid_t) async throws -> Bool {
+    for _ in 0..<40 {
+        if !isAlive(pid) { return true }
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    return !isAlive(pid)
+}
+
+@Test func cancelKillsEngine() async throws {
+    let pidFile = FileManager.default.temporaryDirectory.appending(path: "pid-\(UUID().uuidString)")
+    let engine = try fakeEngine("""
+    echo $$ > '\(pidFile.path)'
+    echo '{"event": "stage", "stage": "transcribing", "fraction": null}'
+    exec sleep 30
+    """)
+    let consumer = Task {
+        for try await _ in engine.transcribe(video: URL(filePath: "/v.mp4"), outDir: URL(filePath: "/tmp")) {}
+    }
+    let pid = try await readPID(pidFile)
+    try await Task.sleep(for: .milliseconds(300))  // ilk olay tüketildi, motor hâlâ uyuyor
+    #expect(isAlive(pid))
+    consumer.cancel()
+    #expect(try await waitUntilDead(pid))
+}
+
+@Test func garbageStdoutLineKillsEngineAndThrows() async throws {
+    let pidFile = FileManager.default.temporaryDirectory.appending(path: "pid-\(UUID().uuidString)")
+    let engine = try fakeEngine("""
+    echo $$ > '\(pidFile.path)'
+    echo 'bu JSON değil'
+    exec sleep 30
+    """)
+    await #expect(throws: (any Error).self) {
+        for try await _ in engine.transcribe(video: URL(filePath: "/v.mp4"), outDir: URL(filePath: "/tmp")) {}
+    }
+    let pid = try await readPID(pidFile)
+    #expect(try await waitUntilDead(pid))
+}
+
 @Test func locatesDevEngine() {
     let command = EngineCommand.locate(environment: [:])
     #expect(command?.arguments.contains("subtitle-engine") == true)

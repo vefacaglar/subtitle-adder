@@ -77,9 +77,17 @@ public struct EngineClient: Sendable {
         let arguments = args
 
         return AsyncThrowingStream { continuation in
+            let run: RunningEngine
+            do {
+                run = try start(arguments, stdin: nil)
+            } catch {
+                continuation.finish(throwing: error)
+                return
+            }
             let task = Task {
+                // Her çıkış yolunda (hata, geçersiz satır, iptal) süreç sonlandırılır, log silinir.
+                defer { run.cleanup() }
                 do {
-                    let run = try start(arguments, stdin: nil)
                     var engineError: String?
                     for try await line in run.stdout.bytes.lines where !line.isEmpty {
                         let event = try EngineEvent.decode(line)
@@ -101,7 +109,11 @@ public struct EngineClient: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            // stdout okuması iptale duyarlı değil; tüketici bırakırsa süreci doğrudan öldür.
+            continuation.onTermination = { _ in
+                run.terminate()
+                task.cancel()
+            }
         }
     }
 
@@ -109,11 +121,17 @@ public struct EngineClient: Sendable {
     public func render(_ sentences: [Sentence], as format: SubtitleFormat) async throws -> String {
         let input = try JSONEncoder().encode(sentences)
         let run = try start(["render", "--format", format.rawValue], stdin: input)
-        var output = Data()
-        for try await byte in run.stdout.bytes { output.append(byte) }
-        let status = await run.exitStatus()
-        guard status == 0 else { throw run.failure(status) }
-        return String(decoding: output, as: UTF8.self)
+        defer { run.cleanup() }
+        return try await withTaskCancellationHandler {
+            var output = Data()
+            for try await byte in run.stdout.bytes { output.append(byte) }
+            let status = await run.exitStatus()
+            try Task.checkCancellation()
+            guard status == 0 else { throw run.failure(status) }
+            return String(decoding: output, as: UTF8.self)
+        } onCancel: {
+            run.terminate()
+        }
     }
 
     private func start(_ args: [String], stdin input: Data?) throws -> RunningEngine {
@@ -131,10 +149,12 @@ public struct EngineClient: Sendable {
         do {
             try process.run()
         } catch {
+            try? FileManager.default.removeItem(at: log)
             throw EngineError.failed("Motor başlatılamadı: \(error.localizedDescription)")
         }
         if let input {
-            stdinPipe.fileHandleForWriting.write(input)
+            // Motor erken çıkarsa yazma hata verir (SIGPIPE yok sayılır); çıkış kodu zaten raporlanır.
+            try? stdinPipe.fileHandleForWriting.write(contentsOf: input)
             try? stdinPipe.fileHandleForWriting.close()
         }
         return RunningEngine(process: process, stdout: stdout.fileHandleForReading, log: log)
@@ -158,6 +178,17 @@ private struct RunningEngine: @unchecked Sendable {
         } onCancel: {
             process.terminate()
         }
+    }
+
+    /// Süreç hâlâ çalışıyorsa SIGTERM gönderir (`uv run` bunu Python çocuğuna iletir).
+    func terminate() {
+        if process.isRunning { process.terminate() }
+    }
+
+    /// Süreci sonlandırır ve geçici log dosyasını siler.
+    func cleanup() {
+        terminate()
+        try? FileManager.default.removeItem(at: log)
     }
 
     func failure(_ status: Int32) -> EngineError {

@@ -23,6 +23,7 @@ final class SubtitleViewModel {
 
     private let engine = EngineCommand.locate().map(EngineClient.init)
     private var job: Task<Void, Never>?
+    private var jobID = UUID()  // yalnız güncel iş durumu değiştirebilir
 
     var isWorking: Bool {
         if case .working = status { true } else { false }
@@ -36,24 +37,34 @@ final class SubtitleViewModel {
         status = .working("Başlıyor…", fraction: nil)
         let outDir = FileManager.default.temporaryDirectory.appending(path: "SubtitleAdder")
         let options = EngineClient.TranscribeOptions(language: language.isEmpty ? nil : language, model: model)
+        job?.cancel()
+        let id = UUID()
+        jobID = id
         job = Task {
+            var failed = false
             do {
                 for try await event in engine.transcribe(video: video, outDir: outDir, options: options) {
+                    guard jobID == id, !Task.isCancelled else { return }
                     switch event {
                     case .stage(let stage, let fraction):
                         status = .working(Self.label(for: stage), fraction: fraction)
                     case .result(let result):
                         sentences = result.sentences
                         detectedLanguage = result.language
+                        // Uygulama çıkarılan WAV'ı kullanmıyor; geçici dosyayı sil.
+                        try? FileManager.default.removeItem(atPath: result.audio)
                     case .error(let message):
+                        failed = true
                         status = .failed(message)
                     }
                 }
-                status = .finished
+                // İptalde akış hata vermeden biter; o durumda durum değişmez.
+                guard jobID == id, !Task.isCancelled else { return }
+                if !failed { status = .finished }
             } catch is CancellationError {
-                status = .idle
+                if jobID == id { status = .idle }
             } catch {
-                status = .failed(error.localizedDescription)
+                if jobID == id { status = .failed(error.localizedDescription) }
             }
         }
     }
@@ -61,6 +72,7 @@ final class SubtitleViewModel {
     func cancel() {
         job?.cancel()
         job = nil
+        jobID = UUID()
         status = .idle
     }
 
