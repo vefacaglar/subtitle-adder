@@ -16,13 +16,50 @@ import Testing
 
 @Test func listsModelsFromEngine() async throws {
     let engine = try fakeEngine("""
-    echo '{"event": "models", "models": [{"id": "base", "size_mb": 145, "speed": 5, "accuracy": 2, "downloaded": true}, {"id": "large-v3", "size_mb": 3000, "speed": 1, "accuracy": 5, "downloaded": false}]}'
+    echo '{"event": "models", "models": [{"id": "base", "backend": "whisper", "languages": null, "size_mb": 145, "disk_mb": 141, "speed": 5, "accuracy": 2, "downloaded": true}, {"id": "gigaam-v3", "backend": "onnx", "languages": ["ru"], "size_mb": 216, "disk_mb": null, "speed": 5, "accuracy": 4, "downloaded": false}]}'
     """)
     let models = try await engine.models()
     #expect(models == [
-        EngineModel(id: "base", sizeMB: 145, speed: 5, accuracy: 2, downloaded: true),
-        EngineModel(id: "large-v3", sizeMB: 3000, speed: 1, accuracy: 5, downloaded: false),
+        EngineModel(id: "base", backend: "whisper", languages: nil, sizeMB: 145, diskMB: 141, speed: 5, accuracy: 2, downloaded: true),
+        EngineModel(id: "gigaam-v3", backend: "onnx", languages: ["ru"], sizeMB: 216, diskMB: nil, speed: 5, accuracy: 4, downloaded: false),
     ])
+    #expect(models[0].detectsLanguage)
+    #expect(models[0].supports(language: "tr"))
+    #expect(!models[1].detectsLanguage)
+    #expect(models[1].supports(language: "ru"))
+    #expect(!models[1].supports(language: "tr"))
+}
+
+@Test func decodesModelsWithoutNewFields() async throws {
+    let engine = try fakeEngine("""
+    echo '{"event": "models", "models": [{"id": "small", "size_mb": 465, "speed": 4, "accuracy": 3, "downloaded": false}]}'
+    """)
+    let model = try #require(try await engine.models().first)
+    #expect(model.backend == "whisper")
+    #expect(model.languages == nil)
+    #expect(model.diskMB == nil)
+}
+
+@Test func deleteModelReturnsFreedSpace() async throws {
+    let argsFile = FileManager.default.temporaryDirectory.appending(path: "args-\(UUID().uuidString)")
+    let engine = try fakeEngine("""
+    echo "$@" > '\(argsFile.path)'
+    echo '{"event": "deleted", "id": "small", "freed_mb": 464}'
+    """)
+    let freed = try await engine.deleteModel("small")
+    #expect(freed == 464)
+    let arguments = try String(contentsOf: argsFile, encoding: .utf8)
+    #expect(arguments.contains("delete-model small --json"))
+}
+
+@Test func deleteModelSurfacesEngineError() async throws {
+    let engine = try fakeEngine("""
+    echo '{"event": "error", "message": "tiny modeli indirilmemiş; silinecek dosya yok."}'
+    exit 1
+    """)
+    await #expect(throws: EngineError.failed("tiny modeli indirilmemiş; silinecek dosya yok.")) {
+        _ = try await engine.deleteModel("tiny")
+    }
 }
 
 @Test func decodesResultAndError() throws {

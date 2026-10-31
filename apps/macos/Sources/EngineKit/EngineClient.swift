@@ -159,6 +159,31 @@ public struct EngineClient: Sendable {
         }
     }
 
+    /// İndirilmiş bir modeli önbellekten siler, boşalan MB'ı döndürür (`delete-model <id> --json`).
+    public func deleteModel(_ id: String) async throws -> Int {
+        let run = try start(["delete-model", id, "--json"], stdin: nil)
+        defer { run.cleanup() }
+        return try await withTaskCancellationHandler {
+            var line: String?
+            for try await text in run.stdout.bytes.lines where !text.isEmpty {
+                line = text
+            }
+            let status = await run.exitStatus()
+            try Task.checkCancellation()
+            let payload = line.flatMap { try? JSONDecoder().decode(DeletePayload.self, from: Data($0.utf8)) }
+            if payload?.event == "error", let message = payload?.message {
+                throw EngineError.failed(message)
+            }
+            guard status == 0 else { throw run.failure(status) }
+            guard let payload, payload.event == "deleted", payload.id == id, let freed = payload.freedMB else {
+                throw EngineError.failed("Motor silme sonucunu yazmadı.")
+            }
+            return freed
+        } onCancel: {
+            run.terminate()
+        }
+    }
+
     private func start(_ args: [String], stdin input: Data?) throws -> RunningEngine {
         let process = Process()
         process.executableURL = command.executable
@@ -191,6 +216,19 @@ private struct ModelsPayload: Decodable {
     let event: String
     let models: [EngineModel]?
     let message: String?
+}
+
+/// `delete-model --json` çıktısı: başarıda `deleted`, hatada `error` alanı dolu gelir.
+private struct DeletePayload: Decodable {
+    let event: String
+    let id: String?
+    let freedMB: Int?
+    let message: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case event, id, message
+        case freedMB = "freed_mb"
+    }
 }
 
 /// Çalışan motor süreci. Bekleyen görev iptal edilirse süreç sonlandırılır.

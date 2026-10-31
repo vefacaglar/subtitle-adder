@@ -12,9 +12,21 @@ final class SubtitleViewModel {
         case failed(String)
     }
 
-    var language = ""            // boş = otomatik algıla
+    /// Boş kod otomatik algılamadır; seçim UserDefaults'ta kalıcıdır.
+    var language: String {
+        didSet {
+            guard language != oldValue else { return }
+            UserDefaults.standard.set(language, forKey: Self.languageDefaultsKey)
+            modelNotice = nil
+            reconcileModelSelection()
+        }
+    }
     var model: String {
-        didSet { UserDefaults.standard.set(model, forKey: Self.modelDefaultsKey) }
+        didSet {
+            guard model != oldValue else { return }
+            UserDefaults.standard.set(model, forKey: Self.modelDefaultsKey)
+            modelNotice = nil
+        }
     }
     var status: Status = .idle
     var detectedLanguage: String?
@@ -22,11 +34,16 @@ final class SubtitleViewModel {
     var selection: UUID?         // seçili satırın `uid` değeri
     /// Düzenlenen satırın henüz commit edilmemiş metni (odaklıyken kullanılır).
     var draft: TextDraft?
+    /// Seçili model dil filtresine uymadığı için otomatik değiştiyse kısa bilgi.
+    private(set) var modelNotice: String?
     /// Pencerenin geri alma yöneticisi (görünüm tarafından verilir).
     @ObservationIgnored weak var undoManager: UndoManager?
 
-    /// Motordan gelen model kataloğu; yüklenene kadar yedek liste gösterilir.
-    var models: [EngineModel] = SubtitleViewModel.fallbackModels
+    /// Paylaşılan model kataloğu; araç çubuğu ve Ayarlar aynı listeyi kullanır.
+    let catalog: ModelCatalog
+
+    private var job: Task<Void, Never>?
+    private var jobID = UUID()  // yalnız güncel iş durumu değiştirebilir
 
     private(set) var video: URL?
 
@@ -37,27 +54,34 @@ final class SubtitleViewModel {
 
     static let defaultModel = "large-v3"
 
-    /// Motor yoksa ya da katalog alınamazsa kullanılan liste (boyutlar katalogla aynı).
-    static let fallbackModels: [EngineModel] = [
-        EngineModel(id: "base", sizeMB: 145, speed: 5, accuracy: 2, downloaded: false),
-        EngineModel(id: "small", sizeMB: 465, speed: 4, accuracy: 3, downloaded: false),
-        EngineModel(id: "medium", sizeMB: 1500, speed: 3, accuracy: 4, downloaded: false),
-        EngineModel(id: "large-v3-turbo", sizeMB: 1600, speed: 2, accuracy: 4, downloaded: false),
-        EngineModel(id: "large-v3", sizeMB: 3000, speed: 1, accuracy: 5, downloaded: false),
-    ]
-
     private static let modelDefaultsKey = "selectedModel"
+    private static let languageDefaultsKey = "selectedLanguage"
 
-    init() {
+    init(catalog: ModelCatalog) {
+        self.catalog = catalog
+        let savedLanguage = UserDefaults.standard.string(forKey: Self.languageDefaultsKey) ?? ""
+        // Eski sürüm serbest metin kabul ediyordu; listede olmayan kod otomatiğe döner.
+        language = SubtitleLanguage(rawValue: savedLanguage) == nil ? "" : savedLanguage
         model = UserDefaults.standard.string(forKey: Self.modelDefaultsKey) ?? Self.defaultModel
+        reconcileModelSelection()
     }
 
-    private let engine = EngineCommand.locate().map(EngineClient.init)
-    private var job: Task<Void, Never>?
-    private var jobID = UUID()  // yalnız güncel iş durumu değiştirebilir
+    /// Dile göre filtrelenmiş katalog; araç çubuğundaki seçici bunu gösterir.
+    var availableModels: [EngineModel] { catalog.models(for: language) }
 
     var isWorking: Bool {
         if case .working = status { true } else { false }
+    }
+
+    /// Seçili model filtrelenen listede yoksa en doğru (eşitse daha hızlı) modele geçer.
+    func reconcileModelSelection() {
+        let available = availableModels
+        guard !available.isEmpty, !available.contains(where: { $0.id == model }) else { return }
+        guard let best = available.max(by: { ($0.accuracy, $0.speed) < ($1.accuracy, $1.speed) }) else { return }
+        model = best.id
+        if let language = SubtitleLanguage(rawValue: language) {
+            modelNotice = "\(language.shortName) için \(ModelLabel.name(for: best.id)) seçildi."
+        }
     }
 
     /// Yeni video seçildiğinde eski videoya ait işi, altyazıları ve geri alma yığınını temizler.
@@ -66,6 +90,7 @@ final class SubtitleViewModel {
         job?.cancel()
         job = nil
         jobID = UUID()
+        catalog.activeModel = nil
         sentences = []
         selection = nil
         detectedLanguage = nil
@@ -75,27 +100,29 @@ final class SubtitleViewModel {
         video = url
     }
 
-    /// Model kataloğunu motordan yeniler; motor yoksa ya da hata olursa yedek liste kalır.
-    func loadModels() async {
-        guard let engine, let list = try? await engine.models(), !list.isEmpty else { return }
-        models = list
-    }
-
     func generate() {
         guard let video else { return }
-        guard let engine else { status = .failed(EngineError.notFound.localizedDescription); return }
+        guard let engine = catalog.engine else {
+            status = .failed(EngineError.notFound.localizedDescription)
+            return
+        }
         sentences = []
         selection = nil
         draft = nil
         undoManager?.removeAllActions()
         detectedLanguage = nil
+        modelNotice = nil
         status = .working("Başlıyor…", fraction: nil)
         let outDir = FileManager.default.temporaryDirectory.appending(path: "SubtitleAdder")
         let options = EngineClient.TranscribeOptions(language: language.isEmpty ? nil : language, model: model)
+        let runningModel = model
         job?.cancel()
         let id = UUID()
         jobID = id
+        catalog.activeModel = runningModel
         job = Task {
+            // Hangi yolla biterse bitsin (sonuç, hata, iptal) model Ayarlar'da silinebilir olur.
+            defer { if jobID == id { catalog.activeModel = nil } }
             var failed = false
             do {
                 for try await event in engine.transcribe(video: video, outDir: outDir, options: options) {
@@ -117,7 +144,7 @@ final class SubtitleViewModel {
                 guard jobID == id, !Task.isCancelled else { return }
                 if !failed { status = .finished }
                 // İndirilen model menüde "hazır" görünsün.
-                await loadModels()
+                await catalog.load()
             } catch is CancellationError {
                 if jobID == id { status = .idle }
             } catch {
@@ -130,12 +157,13 @@ final class SubtitleViewModel {
         job?.cancel()
         job = nil
         jobID = UUID()
+        catalog.activeModel = nil
         status = .idle
     }
 
     func render(as format: SubtitleFormat) async -> String? {
         do {
-            return try await engine?.render(sentences, as: format)
+            return try await catalog.engine?.render(sentences, as: format)
         } catch {
             status = .failed(error.localizedDescription)
             return nil

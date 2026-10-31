@@ -81,21 +81,61 @@ public enum SubtitleFormat: String, CaseIterable, Sendable, Identifiable {
 /// Motorun `models --json` çıktısındaki katalog satırı.
 public struct EngineModel: Sendable, Equatable, Decodable, Identifiable {
     public var id: String
+    /// "whisper" (tüm dilleri destekler, dil algılar) ya da "onnx" (dil listesi sabit).
+    public var backend: String
+    /// Desteklenen ISO 639-1 kodları; `nil` tüm diller anlamına gelir.
+    public var languages: [String]?
     public var sizeMB: Int
+    /// Önbellekte kapladığı gerçek alan (MB); indirilmemişse `nil`.
+    public var diskMB: Int?
     public var speed: Int
     public var accuracy: Int
     public var downloaded: Bool
 
-    public init(id: String, sizeMB: Int, speed: Int, accuracy: Int, downloaded: Bool) {
+    public init(
+        id: String,
+        backend: String = "whisper",
+        languages: [String]? = nil,
+        sizeMB: Int,
+        diskMB: Int? = nil,
+        speed: Int,
+        accuracy: Int,
+        downloaded: Bool
+    ) {
         self.id = id
+        self.backend = backend
+        self.languages = languages
         self.sizeMB = sizeMB
+        self.diskMB = diskMB
         self.speed = speed
         self.accuracy = accuracy
         self.downloaded = downloaded
     }
 
+    /// Otomatik dil algılamayı yalnız Whisper backend'i yapar.
+    public var detectsLanguage: Bool { backend == "whisper" }
+
+    /// `languages` boşsa model her dili destekliyordur.
+    public func supports(language code: String) -> Bool {
+        languages?.contains(code) ?? true
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case id, speed, accuracy, downloaded
+        case id, backend, languages, speed, accuracy, downloaded
         case sizeMB = "size_mb"
+        case diskMB = "disk_mb"
+    }
+
+    // Eski motor çıktılarında backend/languages/disk_mb yok; Whisper varsayılanı geriye uyum sağlar.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        backend = try container.decodeIfPresent(String.self, forKey: .backend) ?? "whisper"
+        languages = try container.decodeIfPresent([String].self, forKey: .languages)
+        sizeMB = try container.decode(Int.self, forKey: .sizeMB)
+        diskMB = try container.decodeIfPresent(Int.self, forKey: .diskMB)
+        speed = try container.decode(Int.self, forKey: .speed)
+        accuracy = try container.decode(Int.self, forKey: .accuracy)
+        downloaded = try container.decode(Bool.self, forKey: .downloaded)
     }
 }

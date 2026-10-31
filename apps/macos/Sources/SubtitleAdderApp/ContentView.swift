@@ -3,7 +3,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @State private var vm = SubtitleViewModel()
+    @Bindable var vm: SubtitleViewModel
+    let catalog: ModelCatalog
     @State private var player = PlayerModel()
     @State private var pickingVideo = false
     @State private var exportFormat: SubtitleFormat = .srt
@@ -31,7 +32,8 @@ struct ContentView: View {
         }
         .toolbar { toolbar }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
-        .task { await vm.loadModels() }
+        .task { await catalog.load() }
+        .onChange(of: catalog.models, initial: true) { _, _ in vm.reconcileModelSelection() }
         .onChange(of: vm.video, initial: true) { _, url in player.load(url) }
         .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
         .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent]) { result in
@@ -50,10 +52,16 @@ struct ContentView: View {
         ToolbarItemGroup {
             Button("Video seç", systemImage: "film") { pickingVideo = true }
                 .help("Video dosyası seç")
-            TextField("Dil (otomatik)", text: $vm.language)
-                .frame(width: 110)
-                .help("Konuşma dili kodu, ör. tr veya en. Boş bırakırsan otomatik algılanır.")
-            ModelPicker(selection: $vm.model, models: vm.models)
+            Picker("Dil", selection: $vm.language) {
+                ForEach(SubtitleLanguage.allCases) { language in
+                    Text(language.title).tag(language.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(width: 175)
+            .help("Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır.")
+            ModelPicker(selection: $vm.model, models: vm.availableModels)
         }
         ToolbarItem(placement: .primaryAction) {
             if vm.isWorking {
@@ -111,6 +119,13 @@ struct ContentView: View {
                     .lineLimit(2)
             }
             Spacer()
+            if let notice = vm.modelNotice {
+                Label(notice, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help("Seçili model bu dil için listede yoktu; en doğru uygun model seçildi.")
+            }
             Picker("Biçim", selection: $exportFormat) {
                 ForEach(SubtitleFormat.allCases) { Text($0.rawValue.uppercased()).tag($0) }
             }
