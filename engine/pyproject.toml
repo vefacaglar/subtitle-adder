@@ -2,6 +2,7 @@
 name = "subtitle-engine"
 version = "0.1.0"
 description = "Subtitle Adder motoru: videodan ses ayırma, speech-to-text, cümle çıkarma, altyazı üretme"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "av>=12",

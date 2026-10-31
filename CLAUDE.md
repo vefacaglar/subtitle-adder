@@ -91,6 +91,8 @@ Ana oturum koordinatördür: işi ajana verir, testlerden ve review'dan geçirip
 
 ## Kurallar
 
+- Lisans MIT (açık kaynak). Uygulamaya gömülen ya da varsayılan gelen modeller açık lisanslı olmalı; ticari olmayan lisanslı modeller (ör. NLLB) yalnız isteğe bağlı indirilir ve arayüzde işaretlenir.
+
 - Arayüz native ve özenli; iş mantığı arayüze girmez, motordadır.
 - Motor platforma özel varsayım yapmaz (sistem ffmpeg'i yok, sabit yol yok); macOS ve Windows'ta aynı çalışır.
 - Python ≥3.11 (uv), Swift 6 strict concurrency, macOS 15+.
