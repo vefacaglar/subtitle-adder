@@ -8,6 +8,8 @@ Hazır olanlar:
 - `engine/`: PyAV ile ses ayırma, faster-whisper ile STT, cümle bölme, SRT/VTT/JSON, `transcribe --json` ve `render` komutları. 14 test yeşil (+1 slow).
 - `apps/macos/`: EngineKit (süreç yönetimi, olay çözme, iptal, render) + SwiftUI uygulaması (sürükle-bırak, model/dil seçimi, ilerleme, cümle tablosu, dışa aktarma). 6 test yeşil; `ENGINE_E2E=1` ile gerçek motor demo videoda 3 cümle, dil `tr`.
 - Uygulama açılıyor; arayüz henüz gözle kontrol edilmedi.
+- Opus review bulguları düzeltildi (iptalde motor ölmüyordu, Windows UTF-8, geç başlayan ses kayması, geçici dosya sızıntısı vb.). Motor 19 test + slow, Swift 9 test + e2e yeşil.
+- Ajanlar: explorer Haiku, coder'lar Sonnet, reviewer Opus; `scripts/pi-agent.sh` ile aynı roller DeepSeek (pi, opencode-go) ile çalışır, explorer ile denendi.
 
 Sıradaki adaylar:
 - Arayüzü gözle kontrol ve cilalama; altyazı düzenleme; video önizleme (AVPlayer + altyazı overlay)
