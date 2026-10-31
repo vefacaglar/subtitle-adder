@@ -79,6 +79,15 @@ cp -R "$ENGINE_DIST" "$CONTENTS/Resources/subtitle-engine"
 sed -e "s|__BUNDLE_ID__|$BUNDLE_ID|" -e "s|__VERSION__|$VERSION|" -e "s|__BUILD__|$BUILD_NUMBER|" \
     "$ROOT/scripts/macos/Info.plist.in" > "$CONTENTS/Info.plist"
 printf 'APPL????' > "$CONTENTS/PkgInfo"
+# Simge: scripts/macos/make-icon.swift ile 1024 px çizilir, iconutil ile .icns'e çevrilir.
+ICONSET="$BUILD/AppIcon.iconset"
+rm -rf "$ICONSET" && mkdir -p "$ICONSET"
+swift "$ROOT/scripts/macos/make-icon.swift" "$BUILD/AppIcon-1024.png" 1024
+for px in 16 32 128 256 512; do
+    sips -z "$px" "$px" "$BUILD/AppIcon-1024.png" --out "$ICONSET/icon_${px}x${px}.png" >/dev/null
+    sips -z $((px * 2)) $((px * 2)) "$BUILD/AppIcon-1024.png" --out "$ICONSET/icon_${px}x${px}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/AppIcon.icns"
 plutil -lint "$CONTENTS/Info.plist" >/dev/null
 
 if [ "$SIGN_IDENTITY" = "-" ]; then SIGN_LABEL="ad-hoc"; else SIGN_LABEL="$SIGN_IDENTITY"; fi

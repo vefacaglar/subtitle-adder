@@ -12,12 +12,12 @@ Hazır olanlar:
 Bilinen sorunlar:
 - Bu makinede HOME `/Users/vefaus`, uv `/Users/vefa/.local/bin` altında: `locatesDevEngine` testi uv'yi bulamadığı için kırmızı.
 - huggingface_hub ≥2.4 paylaşılan blob deposu (`hub/blobs/`): `delete-model` artık oradaki sahipsiz dosyaları hf'nin kilitli süpürücüsüyle (özel API, yoksa FileLock'lu yedek) temizliyor. Başka repo'nun `blobs/` klasörü okunamazsa `scan_cache_dir` düştüğü için mesaj yanıltıcı ("indirilmemiş") ama hiçbir şey silinmiyor.
-- Paket yalnız arm64; uygulama simgesi yok.
+- Paket yalnız arm64. Simge yalnız paketli .app'te (`swift run` ile görünmez).
 - Dosya açmak çalışan işi iptal edip düzenlemeleri sormadan siliyor (`SubtitleViewModel.openVideo`).
 - `disable-library-validation` Developer ID ile muhtemelen gereksiz; gerçek kimlikle yetkisiz denenmeli.
 
 Sıradaki adaylar:
-- Developer ID ile imza + notarization (Apple Developer hesabı gerekir), uygulama simgesi
+- Developer ID ile imza + notarization (Apple Developer hesabı gerekir)
 - Altyazıyı videoya gömme (burn-in / mux), var olan SRT'yi açma
 - Uzun/müzikli gerçek videoda kalite/süre ölçümü; Mac'te mlx-whisper backend'i
 - README
