@@ -25,7 +25,8 @@ Motor hattı (`engine/src/subtitle_engine/`):
 stdout'a satır başına bir JSON olay yazar:
 
 - `{"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|segmenting", "fraction": 0.42 | null}`
-- `{"event": "models", "models": [{"id", "backend", "languages", "size_mb", "speed", "accuracy", "downloaded"}]}`
+- `{"event": "models", "models": [{"id", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "downloaded"}]}`
+- `{"event": "deleted", "id": "small", "freed_mb": 464}`
 - `{"event": "result", "language", "duration", "audio", "outputs": [...], "sentences": [{"id", "start", "end", "text", "words": [{"start", "end", "text"}]}]}`
 - `{"event": "error", "message": "..."}` (çıkış kodu 1)
 
@@ -35,9 +36,11 @@ stdout'a satır başına bir JSON olay yazar:
 
 `subtitle-engine render --format srt [--out F]`: stdin'den cümle JSON dizisi alır (uygulamada düzenlenmiş hali), altyazı metni yazar. Altyazı biçimleri yalnız motorda üretilir.
 
-`subtitle-engine models [--json]`: model kataloğunu (`base`, `gigaam-v3`, `small`, `parakeet-v3`, `canary-1b-v2`, `medium`, `large-v3-turbo`, `large-v3`) yaklaşık boyut, göreli hız/doğruluk, backend, desteklenen diller ve yerel önbellek durumuyla listeler; ağa çıkmaz. `--json` tek satır `models` olayı yazar, aksi halde okunur tablo.
+`subtitle-engine models [--json]`: model kataloğunu (`base`, `gigaam-v3`, `small`, `parakeet-v3`, `canary-1b-v2`, `medium`, `large-v3-turbo`, `large-v3`) yaklaşık boyut, göreli hız/doğruluk, backend, desteklenen diller ve yerel önbellek durumuyla listeler; ağa çıkmaz. `disk_mb` modelin önbellekteki repo'sunun gerçek disk kullanımıdır (MB, tam sayıya yuvarlanmış; ortak VAD hariç); indirilmemişse `null`. `--json` tek satır `models` olayı yazar, aksi halde okunur tablo.
 
-stderr serbest log'dur (model yükleme uyarıları vb.); uygulamalar onu dosyaya yönlendirir, protokol değildir. Protokol değişirse `cli.py`'deki `PROTOCOL_VERSION`, `EngineEvent.swift` ve bu bölüm birlikte güncellenir. Sürüm 1'de kalır: `downloading_model` aşaması, `models` komutu, `models` olayındaki `backend`/`languages` alanları ve onnx model kimlikleri geriye uyumlu eklemelerdir.
+`subtitle-engine delete-model <id> [--json]`: indirilmiş modelin önbellekteki repo'sunu tüm revizyonları ve blob'larıyla siler; yalnız o repo klasörüne dokunur, ortak silero VAD ve diğer modeller korunur. `--json` tek satır `{"event": "deleted", "id": "...", "freed_mb": 123}` yazar. Katalog dışı ya da indirilmemiş modelde anlaşılır Türkçe `error` olayı ve çıkış kodu 1 döner.
+
+stderr serbest log'dur (model yükleme uyarıları vb.); uygulamalar onu dosyaya yönlendirir, protokol değildir. Protokol değişirse `cli.py`'deki `PROTOCOL_VERSION`, `EngineEvent.swift` ve bu bölüm birlikte güncellenir. Sürüm 1'de kalır: `downloading_model` aşaması, `models` komutu, `models` olayındaki `backend`/`languages`/`disk_mb` alanları, `delete-model` komutu ve `deleted` olayı ile onnx model kimlikleri geriye uyumlu eklemelerdir.
 
 Uygulama motoru şu sırayla bulur: `SUBTITLE_ENGINE` ortam değişkeni → bundle içindeki `subtitle-engine` → geliştirmede `uv run --project engine subtitle-engine`.
 

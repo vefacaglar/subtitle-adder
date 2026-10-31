@@ -50,6 +50,11 @@ def test_render_from_stdin(capsys, monkeypatch):
 
 def test_models_json_lists_catalog_and_cache_state(capsys, monkeypatch):
     monkeypatch.setattr(cli, "is_downloaded", lambda model_id: model_id in {"base", "small"})
+    monkeypatch.setattr(
+        cli,
+        "cached_disk_mb",
+        lambda: {"Systran/faster-whisper-base": 141, "Systran/faster-whisper-small": 464},
+    )
 
     assert cli.main(["models", "--json"]) == 0
     lines = capsys.readouterr().out.splitlines()
@@ -59,19 +64,60 @@ def test_models_json_lists_catalog_and_cache_state(capsys, monkeypatch):
     assert [m["id"] for m in event["models"]] == [
         "base", "gigaam-v3", "small", "parakeet-v3", "canary-1b-v2", "medium", "large-v3-turbo", "large-v3",
     ]
-    assert set(event["models"][0]) == {"id", "backend", "languages", "size_mb", "speed", "accuracy", "downloaded"}
+    assert set(event["models"][0]) == {
+        "id", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "downloaded",
+    }
     assert event["models"][1]["backend"] == "onnx" and event["models"][1]["languages"] == ["ru"]
     assert event["models"][0]["languages"] is None
     assert [m["downloaded"] for m in event["models"]] == [True, False, True, False, False, False, False, False]
+    assert [m["disk_mb"] for m in event["models"]] == [141, None, 464, None, None, None, None, None]
 
 
 def test_models_table_without_json(capsys, monkeypatch):
     monkeypatch.setattr(cli, "is_downloaded", lambda model_id: model_id == "base")
+    monkeypatch.setattr(cli, "cached_disk_mb", lambda: {"Systran/faster-whisper-base": 141})
 
     assert cli.main(["models"]) == 0
     out = capsys.readouterr().out
-    assert out.splitlines()[0].startswith("model")
-    assert "base" in out and "var" in out and "yok" in out
+    assert out.splitlines()[0].startswith("model") and "disk" in out.splitlines()[0]
+    assert "base" in out and "141 MB" in out and "—" in out
+    assert "var" in out and "yok" in out
+
+
+def test_delete_model_json_event(capsys, monkeypatch):
+    calls: list[str] = []
+
+    def fake_delete(model_id):
+        calls.append(model_id)
+        return 123
+
+    monkeypatch.setattr(cli, "delete_model", fake_delete)
+
+    assert cli.main(["delete-model", "base", "--json"]) == 0
+    assert calls == ["base"]
+    assert capsys.readouterr().out == '{"event": "deleted", "id": "base", "freed_mb": 123}\n'
+
+
+def test_delete_model_error_becomes_event(capsys, monkeypatch):
+    from subtitle_engine.models import ModelError
+
+    def fail(model_id):
+        raise ModelError(f"{model_id} modeli indirilmemiş; silinecek dosya yok.")
+
+    monkeypatch.setattr(cli, "delete_model", fail)
+
+    assert cli.main(["delete-model", "base", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "event": "error",
+        "message": "base modeli indirilmemiş; silinecek dosya yok.",
+    }
+
+
+def test_delete_model_human_output(capsys, monkeypatch):
+    monkeypatch.setattr(cli, "delete_model", lambda model_id: 123)
+
+    assert cli.main(["delete-model", "base"]) == 0
+    assert capsys.readouterr().out == "base silindi, 123 MB boşaldı\n"
 
 
 def test_downloading_model_stage_precedes_loading(tone_video, tmp_path, capsys, monkeypatch):

@@ -2,7 +2,8 @@
 
 Olaylar:
   {"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|segmenting", "fraction": 0.42|null}
-  {"event": "models", "models": [{"id", "backend", "languages", "size_mb", "speed", "accuracy", "downloaded"}]}
+  {"event": "models", "models": [{"id", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "downloaded"}]}
+  {"event": "deleted", "id": "small", "freed_mb": 465}
   {"event": "result", "language": "tr", "duration": 12.3, "audio": "...", "outputs": [...], "sentences": [...]}
   {"event": "error", "message": "..."}
 """
@@ -12,7 +13,7 @@ import sys
 from pathlib import Path
 
 from . import pipeline, subtitles
-from .models import KATALOG, Sentence, is_downloaded
+from .models import KATALOG, Sentence, cached_disk_mb, delete_model, disk_mb, is_downloaded
 from .sentences import SegmenterConfig
 
 PROTOCOL_VERSION = 1
@@ -73,12 +74,14 @@ def _render(args: argparse.Namespace) -> int:
 
 def _models(args: argparse.Namespace) -> int:
     """Model kataloğunu ve yerel önbellek durumunu listeler (ağa çıkmaz)."""
+    sizes = cached_disk_mb()
     rows = [
         {
             "id": info.id,
             "backend": info.backend,
             "languages": list(info.languages) if info.languages is not None else None,
             "size_mb": info.size_mb,
+            "disk_mb": disk_mb(info.id, sizes),
             "speed": info.speed,
             "accuracy": info.accuracy,
             "downloaded": is_downloaded(info.id),
@@ -88,10 +91,24 @@ def _models(args: argparse.Namespace) -> int:
     if args.json:
         _emit({"event": "models", "models": rows})
         return 0
-    print(f"{'model':<16}{'boyut':>10}{'hız':>6}{'doğruluk':>10}{'önbellek':>10}")
+    print(f"{'model':<16}{'boyut':>10}{'disk':>10}{'hız':>6}{'doğruluk':>10}{'önbellek':>10}")
     for row in rows:
+        disk = "—" if row["disk_mb"] is None else f"{row['disk_mb']} MB"
         cached = "var" if row["downloaded"] else "yok"
-        print(f"{row['id']:<16}{row['size_mb']:>7} MB{row['speed']:>6}{row['accuracy']:>10}{cached:>10}")
+        print(
+            f"{row['id']:<16}{row['size_mb']:>7} MB{disk:>10}"
+            f"{row['speed']:>6}{row['accuracy']:>10}{cached:>10}"
+        )
+    return 0
+
+
+def _delete_model(args: argparse.Namespace) -> int:
+    """İndirilmiş bir modelin önbellekteki dosyalarını siler."""
+    freed = delete_model(args.id)
+    if args.json:
+        _emit({"event": "deleted", "id": args.id, "freed_mb": freed})
+    else:
+        print(f"{args.id} silindi, {freed} MB boşaldı")
     return 0
 
 
@@ -119,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     ms = sub.add_parser("models", help="model kataloğunu ve indirme durumunu listele")
     ms.add_argument("--json", action="store_true", help="tek satır JSON yaz")
     ms.set_defaults(handler=_models)
+
+    dm = sub.add_parser("delete-model", help="indirilmiş modeli önbellekten sil")
+    dm.add_argument("id", help="model kimliği (models listeler)")
+    dm.add_argument("--json", action="store_true", help="tek satır JSON yaz")
+    dm.set_defaults(handler=_delete_model)
     return p
 
 

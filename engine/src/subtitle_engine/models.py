@@ -5,12 +5,16 @@ diller) ve indirme durumunu besler. İndirme ilerlemesi yalnızca katalogdaki mo
 için yayınlanır; katalog dışı adlar ("turbo", "tiny" gibi) faster-whisper'ın kendi
 indirmesine bırakılır.
 """
+import shutil
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Literal
 
 import huggingface_hub
+from huggingface_hub.constants import HF_HUB_CACHE
+from huggingface_hub.errors import CacheNotFound
 from huggingface_hub.utils import filter_repo_objects
 from tqdm import tqdm
 
@@ -155,6 +159,10 @@ TURKISH_LANGUAGE_NAMES = {
 }
 
 
+class ModelError(Exception):
+    """Kullanıcıya Türkçe gösterilebilir model hatası (CLI bunu `error` olayına çevirir)."""
+
+
 def find(model_id: str) -> ModelInfo | None:
     return KATALOG_BY_ID.get(model_id)
 
@@ -177,6 +185,81 @@ def _cached(repo: str, filename: str) -> bool:
 def needs_download(model_id: str) -> bool:
     """İndirme aşaması yayınlanmalı mı: katalogda olup önbellekte olmayan model."""
     return find(model_id) is not None and not is_downloaded(model_id)
+
+
+def _scan_cache(cache_dir: str | Path | None = None):
+    """Yerel Hugging Face önbelleğini tarar; dizin yoksa None döner. Ağa çıkmaz."""
+    try:
+        return huggingface_hub.scan_cache_dir(cache_dir or HF_HUB_CACHE)
+    except (CacheNotFound, OSError, ValueError):
+        return None
+
+
+def _mb(size: int) -> int:
+    return round(size / _MIB)
+
+
+def cached_disk_mb(cache_dir: str | Path | None = None) -> dict[str, int]:
+    """Önbellekteki model depolarının gerçek disk kullanımı (MB), repo kimliğine göre."""
+    cache = _scan_cache(cache_dir)
+    if cache is None:
+        return {}
+    return {repo.repo_id: _mb(repo.size_on_disk) for repo in cache.repos if repo.repo_type == "model"}
+
+
+def disk_mb(model_id: str, sizes: dict[str, int] | None = None) -> int | None:
+    """İndirilmiş modelin kapladığı gerçek alan (MB); indirilmemişse None.
+
+    `sizes`, `cached_disk_mb()` sonucudur; liste üretirken tek tarama yeter.
+    """
+    info = find(model_id)
+    if info is None or not is_downloaded(model_id):
+        return None
+    return (cached_disk_mb() if sizes is None else sizes).get(info.repo)
+
+
+def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
+    """Modelin önbellekteki deposunu (tüm revizyonlar ve blob'lar) siler, boşalan MB'ı döndürür.
+
+    Yalnız hedef repo klasörüne dokunur: ortak silero VAD gibi yardımcı depolar ve diğer
+    modeller korunur. Katalog dışı ya da indirilmemiş modelde `ModelError` yükseltir.
+    """
+    info = find(model_id)
+    if info is None:
+        raise ModelError(f"Bilinmeyen model: {model_id}. Geçerli kimlikleri 'models' komutu listeler.")
+
+    # Aynı repo'yu paylaşan katalog girdileri varsa silme diğerini de bozar.
+    shared = [other.id for other in KATALOG if other.repo == info.repo and other.id != info.id]
+    if shared:
+        raise ModelError(f"{info.id} modeli {', '.join(shared)} ile aynı dosyaları paylaşıyor; silinmedi.")
+
+    root = Path(cache_dir or HF_HUB_CACHE).expanduser().resolve()
+    cache = _scan_cache(root)
+    repo = None
+    if cache is not None:
+        repo = next(
+            (r for r in cache.repos if r.repo_type == "model" and r.repo_id == info.repo),
+            None,
+        )
+    if repo is None:
+        raise ModelError(f"{info.id} modeli indirilmemiş; silinecek dosya yok.")
+
+    freed = _mb(repo.size_on_disk)
+    # delete_revisions commit kimliğini tüm önbellekte arar; yalnız bu repo klasörünü silmek daha güvenli.
+    _remove_repo_leftovers(root, repo.repo_path, info.repo)
+    return freed
+
+
+def _remove_repo_leftovers(cache_root: Path, repo_path: Path, repo_id: str) -> None:
+    """Hedef repo klasörünü (revizyonlar, blob'lar, `.incomplete` artıkları) yalnız önbellek içindeyse siler."""
+    expected = f"models--{repo_id.replace('/', '--')}"
+    if repo_path.name != expected or not repo_path.exists():
+        return
+    try:
+        repo_path.resolve().relative_to(cache_root)  # önbellek dışına taşan yol: dokunma
+    except (OSError, ValueError):
+        return
+    shutil.rmtree(repo_path, ignore_errors=True)
 
 
 def ensure_model(model_id: str, on_progress: ProgressFn | None = None) -> str | None:

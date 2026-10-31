@@ -1,7 +1,34 @@
-"""Model kataloğu ve indirme ilerlemesi testleri: ağa çıkmaz, HF çağrıları monkeypatch'lenir."""
+"""Model kataloğu, önbellek boyutu, silme ve indirme ilerlemesi testleri: ağa çıkmaz."""
+import hashlib
+import os
+import shutil
+
 import pytest
 
 from subtitle_engine import models
+
+MIB = 1024 * 1024
+
+
+def make_cached_repo(cache_dir, repo_id, files, revision="1" * 40):
+    """Gerçek HF önbellek yapısını taklit eder: blobs + snapshots + refs (ağ yok)."""
+    repo = cache_dir / f"models--{repo_id.replace('/', '--')}"
+    blobs, snapshot = repo / "blobs", repo / "snapshots" / revision
+    blobs.mkdir(parents=True, exist_ok=True)
+    snapshot.mkdir(parents=True, exist_ok=True)
+    for name, size in files.items():
+        blob = blobs / hashlib.sha256(f"{repo_id}/{revision}/{name}".encode()).hexdigest()
+        blob.write_bytes(b"x" * size)
+        target = snapshot / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.symlink_to(os.path.relpath(blob, target.parent))
+        except OSError:  # Windows'ta sembolik bağ izni olmayabilir
+            shutil.copyfile(blob, target)
+    refs = repo / "refs"
+    refs.mkdir(exist_ok=True)
+    (refs / "main").write_text(revision)
+    return repo
 
 
 def test_catalog_order_and_fields():
@@ -149,3 +176,81 @@ def test_ensure_model_onnx_downloads_model_files_and_shared_vad(monkeypatch):
         {"repo_id": models.VAD_REPO, "allow_patterns": [models.VAD_FILE]},
     ]
     assert fractions == sorted(fractions) and fractions[-1] == 1.0
+
+
+def test_cached_disk_mb_reads_real_repo_sizes(tmp_path):
+    make_cached_repo(
+        tmp_path,
+        "Systran/faster-whisper-base",
+        {"model.bin": 2 * MIB + 600_000, "config.json": 1000},
+    )
+    make_cached_repo(tmp_path, models.VAD_REPO, {models.VAD_FILE: 2_327_554})
+
+    sizes = models.cached_disk_mb(tmp_path)
+
+    assert sizes == {
+        "Systran/faster-whisper-base": 3,
+        models.VAD_REPO: 2,
+    }
+
+
+def test_disk_mb_is_null_for_models_not_downloaded(tmp_path, monkeypatch):
+    make_cached_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": 2 * MIB})
+    sizes = models.cached_disk_mb(tmp_path)
+    monkeypatch.setattr(models, "is_downloaded", lambda model_id: model_id == "base")
+
+    assert models.disk_mb("base", sizes) == 2
+    assert models.disk_mb("small", sizes) is None
+    assert models.disk_mb("turbo", sizes) is None
+
+
+def test_cached_disk_mb_is_empty_without_cache_dir(tmp_path):
+    assert models.cached_disk_mb(tmp_path / "yok") == {}
+
+
+def test_delete_model_removes_all_revisions_and_keeps_other_repos(tmp_path):
+    target = make_cached_repo(tmp_path, "istupakov/gigaam-v3-onnx", {"encoder.onnx": 400_000})
+    make_cached_repo(tmp_path, "istupakov/gigaam-v3-onnx", {"encoder.onnx": 600_000}, revision="2" * 40)
+    other = make_cached_repo(tmp_path, "Systran/faster-whisper-small", {"model.bin": 900_000})
+    vad = make_cached_repo(tmp_path, models.VAD_REPO, {models.VAD_FILE: 2_327_554})
+
+    assert models.delete_model("gigaam-v3", cache_dir=tmp_path) == 1
+
+    assert not target.exists()
+    assert other.is_dir() and vad.is_dir()
+    assert models.cached_disk_mb(tmp_path) == {
+        "Systran/faster-whisper-small": 1,
+        models.VAD_REPO: 2,
+    }
+
+
+def test_delete_model_cleans_up_repo_without_revisions(tmp_path):
+    repo = tmp_path / "models--Systran--faster-whisper-base"
+    (repo / "snapshots").mkdir(parents=True)
+    (repo / "blobs").mkdir()
+    (repo / "blobs" / "partial.incomplete").write_bytes(b"x" * 1000)
+
+    assert models.delete_model("base", cache_dir=tmp_path) == 0
+    assert not repo.exists()
+
+
+def test_delete_model_errors_are_turkish(tmp_path):
+    with pytest.raises(models.ModelError, match="Bilinmeyen model: turbo"):
+        models.delete_model("turbo", cache_dir=tmp_path)
+    with pytest.raises(models.ModelError, match="indirilmemiş"):
+        models.delete_model("small", cache_dir=tmp_path)
+    with pytest.raises(models.ModelError, match="indirilmemiş"):
+        models.delete_model("small", cache_dir=tmp_path / "yok")
+
+
+def test_delete_model_refuses_catalog_entries_sharing_a_repo(tmp_path, monkeypatch):
+    repo = make_cached_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": 1000})
+    clone = models.ModelInfo(
+        id="base-kopya", repo="Systran/faster-whisper-base", size_mb=1, speed=1, accuracy=1
+    )
+    monkeypatch.setattr(models, "KATALOG", models.KATALOG + (clone,))
+    monkeypatch.setattr(models, "KATALOG_BY_ID", {m.id: m for m in models.KATALOG})
+
+    with pytest.raises(models.ModelError, match="paylaşıyor"):
+        models.delete_model("base", cache_dir=tmp_path)
+    assert (repo / "blobs").is_dir()
