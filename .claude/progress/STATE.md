@@ -10,7 +10,6 @@ Hazır olanlar:
 - Paketleme: ad-hoc imza varsayılan; `SIGN_IDENTITY` (Developer ID + hardened runtime) ve `NOTARY_PROFILE` (notarization) betikte var ama gerçek kimlikle hiç çalıştırılmadı. Hardened runtime ad-hoc ile simüle edildi ve çalıştı.
 
 Bilinen sorunlar:
-- Bu makinede HOME `/Users/vefaus`, uv `/Users/vefa/.local/bin` altında: `locatesDevEngine` testi uv'yi bulamadığı için kırmızı.
 - huggingface_hub ≥2.4 paylaşılan blob deposu (`hub/blobs/`): `delete-model` artık oradaki sahipsiz dosyaları hf'nin kilitli süpürücüsüyle (özel API, yoksa FileLock'lu yedek) temizliyor. Başka repo'nun `blobs/` klasörü okunamazsa `scan_cache_dir` düştüğü için mesaj yanıltıcı ("indirilmemiş") ama hiçbir şey silinmiyor.
 - Paket yalnız arm64. Simge yalnız paketli .app'te (`swift run` ile görünmez).
 - Dosya açmak çalışan işi iptal edip düzenlemeleri sormadan siliyor (`SubtitleViewModel.openVideo`).
