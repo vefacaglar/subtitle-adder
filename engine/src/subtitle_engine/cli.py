@@ -92,7 +92,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _force_utf8() -> None:
+    """Windows'ta borular ANSI kod sayfası kullanır; protokol UTF-8'dir."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError, OSError):
+            pass  # akış değiştirilmiş (test, StringIO) ya da yeniden yapılandırılamıyor
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8()
     args = build_parser().parse_args(argv)
     try:
         return args.handler(args)

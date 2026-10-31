@@ -38,3 +38,21 @@ def test_times_come_from_words():
 
 def test_empty_input():
     assert segment([]) == []
+
+
+def test_very_long_unpunctuated_sentence_does_not_recurse():
+    words = make_words(" ".join(["kelime"] * 20_000), step=0.1)
+    result = segment(words, SegmenterConfig(max_chars=40, max_duration=100, pause_gap=100))
+    assert len(result) > 1000
+    assert sum(len(s.words) for s in result) == 20_000
+
+
+def test_sentence_end_before_closing_quote_or_bracket():
+    result = segment(make_words('Dedi ki "Evet." Sonra (gitti!) Bitti'))
+    assert [s.text for s in result] == ['Dedi ki "Evet."', "Sonra (gitti!)", "Bitti"]
+
+
+def test_soft_break_before_closing_quote():
+    text = 'Bugün sabah "erkenden kalktım," kahvaltı yaptım ve sonra uzun bir yürüyüşe çıktım.'
+    result = segment(make_words(text), SegmenterConfig(max_chars=50, max_duration=100))
+    assert result[0].text == 'Bugün sabah "erkenden kalktım,"'

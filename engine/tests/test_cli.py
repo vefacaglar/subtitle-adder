@@ -53,3 +53,20 @@ def test_real_stt_on_sample(tmp_path):
     if not sample.exists():
         pytest.skip("samples/demo.mp4 yok (CLAUDE.md'deki komutla üret)")
     assert cli.main(["transcribe", str(sample), "-m", "base", "-l", "tr", "-o", str(tmp_path)]) == 0
+
+
+def test_render_utf8_pipes_regardless_of_locale_encoding():
+    """Windows'taki gibi ANSI kod sayfası (cp1254) ayarlıyken de UTF-8 okunur/yazılır."""
+    import os
+    import subprocess
+
+    payload = [{"id": 1, "start": 0.0, "end": 1.0, "text": "こんにちは dünya İş", "words": []}]
+    env = {**os.environ, "PYTHONIOENCODING": "cp1254", "PYTHONUTF8": "0"}
+    proc = subprocess.run(
+        [sys.executable, "-m", "subtitle_engine.cli", "render"],
+        input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        capture_output=True,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert "こんにちは dünya İş" in proc.stdout.decode("utf-8")
