@@ -16,6 +16,8 @@ Bilinen sorunlar:
 - `disable-library-validation` Developer ID ile muhtemelen gereksiz; gerçek kimlikle yetkisiz denenmeli.
 
 Sıradaki adaylar:
+- (Devam ediyor) Konuşmacı ayırma: motor `--diarize`, cümle `speaker`, altyazıda konuşmacı değişiminde "- "; ardından macOS arayüzü
+- (Karar verildi, konuşmacıdan sonra) Arayüz çoklu dil: Türkçe (varsayılan) + İngilizce, Ayarlar'dan değiştirilir; motorun kullanıcıya giden hata mesajları da çevrilmeli. CLAUDE.md'deki "UI metinleri Türkçe" kuralı buna göre güncellenecek
 - Developer ID ile imza + notarization (Apple Developer hesabı gerekir)
 - Altyazıyı videoya gömme (burn-in / mux), var olan SRT'yi açma
 - Uzun/müzikli gerçek videoda kalite/süre ölçümü; Mac'te mlx-whisper backend'i

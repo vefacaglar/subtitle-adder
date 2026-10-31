@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- `swift run`/VS Code ile bundle'sız çalışırken menü çubuğunda ve Dock'ta görünen ad.
+         Paketli .app'te scripts/macos/Info.plist.in geçerlidir. CFBundleIdentifier bilerek yok:
+         eklenirse geliştirmedeki UserDefaults alanı değişir, kayıtlı seçimler kaybolur. -->
+    <key>CFBundleName</key><string>Subtitle Adder</string>
+    <key>CFBundleDisplayName</key><string>Subtitle Adder</string>
+</dict>
+</plist>
