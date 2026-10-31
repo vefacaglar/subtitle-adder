@@ -12,7 +12,7 @@ struct PlayerView: View {
             let rect = videoSize(in: geometry.size)
             ZStack {
                 Color.black
-                VideoPlayer(player: model.player)
+                NativePlayerView(player: model.player)
                 SubtitleOverlay(text: activeText, videoHeight: rect.height)
                     .frame(width: rect.width, height: rect.height)
                     .allowsHitTesting(false)
@@ -37,6 +37,25 @@ struct PlayerView: View {
             width = height * aspect
         }
         return CGSize(width: width, height: height)
+    }
+}
+
+/// AVKit'in kendi oynatıcısı. SwiftUI `VideoPlayer` AVKit'i bağlatmadığı için SwiftPM ikilisinde
+/// `AVPlayerView` sınıfı bulunamayıp ilk çizimde çöküyordu; sınıfa doğrudan başvurmak bağlanmasını sağlar.
+private struct NativePlayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.player = player
+        view.controlsStyle = .inline
+        view.videoGravity = .resizeAspect
+        view.showsFullScreenToggleButton = true
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        if view.player !== player { view.player = player }
     }
 }
 
