@@ -48,18 +48,28 @@ struct ContentView: View {
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
             Button("Video seç", systemImage: "film") { pickingVideo = true }
+                .help("Video dosyası seç")
             TextField("Dil (otomatik)", text: $vm.language)
                 .frame(width: 110)
+                .help("Konuşma dili kodu, ör. tr veya en. Boş bırakırsan otomatik algılanır.")
             Picker("Model", selection: $vm.model) {
                 ForEach(SubtitleViewModel.models, id: \.self) { Text($0) }
             }
             .frame(width: 120)
+            .help("Büyük model daha doğru ama daha yavaş; ilk kullanımda indirilir.")
+        }
+        ToolbarItem(placement: .primaryAction) {
             if vm.isWorking {
                 Button("Durdur", systemImage: "stop.fill") { vm.cancel() }
+                    .labelStyle(.titleAndIcon)
+                    .help("Altyazı üretimini durdur")
             } else {
                 Button("Altyazı üret", systemImage: "captions.bubble") { vm.generate() }
+                    .labelStyle(.titleAndIcon)
+                    .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(vm.video == nil)
+                    .help("Videonun sesini metne çevirip altyazı çıkar (⌘↩)")
             }
         }
     }
@@ -87,7 +97,7 @@ struct ContentView: View {
         HStack(spacing: 10) {
             switch vm.status {
             case .idle:
-                Text("Hazır").foregroundStyle(.secondary)
+                Text(vm.video == nil || !vm.sentences.isEmpty ? "Hazır" : "Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)").foregroundStyle(.secondary)
             case .working(let label, let fraction):
                 if let fraction {
                     ProgressView(value: fraction).frame(width: 120)
