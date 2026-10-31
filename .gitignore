@@ -1,11 +1,17 @@
-# SwiftPM / Xcode
+# Swift / Xcode
 .build/
 .swiftpm/
 DerivedData/
-*.xcodeproj/xcuserdata/
-*.xcworkspace/xcuserdata/
 xcuserdata/
 *.xcuserstate
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
 
 # macOS
 .DS_Store

@@ -1,0 +1,45 @@
+import Foundation
+
+/// Motorun `--json` modunda stdout'a satır satır yazdığı olaylar (bkz. engine/src/subtitle_engine/cli.py).
+public enum EngineEvent: Sendable, Equatable {
+    case stage(Stage, fraction: Double?)
+    case result(EngineResult)
+    case error(String)
+
+    public enum Stage: String, Sendable {
+        case extractingAudio = "extracting_audio"
+        case loadingModel = "loading_model"
+        case transcribing
+        case segmenting
+        case unknown
+    }
+
+    public static func decode(_ line: String) throws -> EngineEvent {
+        let data = Data(line.utf8)
+        let head = try decoder.decode(Head.self, from: data)
+        switch head.event {
+        case "stage":
+            let stage = try decoder.decode(StagePayload.self, from: data)
+            return .stage(Stage(rawValue: stage.stage) ?? .unknown, fraction: stage.fraction)
+        case "result":
+            return .result(try decoder.decode(EngineResult.self, from: data))
+        case "error":
+            return .error(try decoder.decode(ErrorPayload.self, from: data).message)
+        default:
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "bilinmeyen olay: \(head.event)"))
+        }
+    }
+
+    private struct Head: Decodable { let event: String }
+    private struct StagePayload: Decodable { let stage: String; let fraction: Double? }
+    private struct ErrorPayload: Decodable { let message: String }
+    private static let decoder = JSONDecoder()
+}
+
+public struct EngineResult: Sendable, Equatable, Decodable {
+    public var language: String
+    public var duration: Double
+    public var audio: String
+    public var outputs: [String]
+    public var sentences: [Sentence]
+}

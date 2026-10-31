@@ -1,0 +1,46 @@
+import math
+import wave
+from pathlib import Path
+
+import av
+import numpy as np
+import pytest
+
+from subtitle_engine.models import Word
+
+
+def make_words(text: str, step: float = 0.4) -> list[Word]:
+    return [Word(start=i * step, end=i * step + step * 0.8, text=w) for i, w in enumerate(text.split())]
+
+
+@pytest.fixture
+def tone_video(tmp_path: Path) -> Path:
+    """PyAV ile 2 sn'lik, 44.1 kHz stereo sinüs sesli küçük bir mp4 üretir."""
+    path = tmp_path / "tone.mp4"
+    rate, seconds = 44_100, 2
+    with av.open(str(path), "w") as out:
+        vstream = out.add_stream("libx264", rate=10)
+        vstream.width = vstream.height = 64
+        vstream.pix_fmt = "yuv420p"
+        astream = out.add_stream("aac", rate=rate, layout="stereo")
+        for i in range(seconds * 10):
+            frame = av.VideoFrame.from_ndarray(np.zeros((64, 64, 3), dtype=np.uint8), format="rgb24")
+            frame.pts = i
+            out.mux(vstream.encode(frame))
+        t = np.arange(rate * seconds) / rate
+        samples = (np.sin(2 * math.pi * 440 * t) * 0.3).astype(np.float32)
+        chunk = 1024
+        for i in range(0, len(samples), chunk):
+            block = np.stack([samples[i : i + chunk]] * 2)
+            frame = av.AudioFrame.from_ndarray(block, format="fltp", layout="stereo")
+            frame.sample_rate = rate
+            frame.pts = i
+            out.mux(astream.encode(frame))
+        out.mux(vstream.encode())
+        out.mux(astream.encode())
+    return path
+
+
+def read_wav(path: Path) -> tuple[int, int, float]:
+    with wave.open(str(path)) as w:
+        return w.getframerate(), w.getnchannels(), w.getnframes() / w.getframerate()

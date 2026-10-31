@@ -1,0 +1,168 @@
+import Foundation
+
+/// Motoru başlatma komutu. Geliştirmede `uv run`, paketli uygulamada bundle içindeki ikili.
+public struct EngineCommand: Sendable {
+    public var executable: URL
+    public var arguments: [String]
+
+    public init(executable: URL, arguments: [String] = []) {
+        self.executable = executable
+        self.arguments = arguments
+    }
+
+    /// Sırayla: `SUBTITLE_ENGINE` ortam değişkeni (motor ikilisi), bundle içindeki
+    /// `subtitle-engine`, geliştirme ortamında repo'daki `engine/` projesi (`uv run`).
+    public static func locate(environment: [String: String] = ProcessInfo.processInfo.environment) -> EngineCommand? {
+        if let path = environment["SUBTITLE_ENGINE"] {
+            return EngineCommand(executable: URL(filePath: path))
+        }
+        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "subtitle-engine") {
+            return EngineCommand(executable: bundled)
+        }
+        let repoEngine = URL(filePath: #filePath)
+            .deletingLastPathComponent()  // EngineKit
+            .deletingLastPathComponent()  // Sources
+            .deletingLastPathComponent()  // apps/macos
+            .deletingLastPathComponent()  // apps
+            .deletingLastPathComponent()  // repo
+            .appending(path: "engine")
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let uvCandidates = ["\(home)/.local/bin/uv", "/opt/homebrew/bin/uv", "/usr/local/bin/uv", "\(home)/.cargo/bin/uv"]
+        guard FileManager.default.fileExists(atPath: repoEngine.appending(path: "pyproject.toml").path),
+              let uv = uvCandidates.first(where: FileManager.default.isExecutableFile(atPath:))
+        else { return nil }
+        return EngineCommand(
+            executable: URL(filePath: uv),
+            arguments: ["run", "--quiet", "--project", repoEngine.path, "subtitle-engine"]
+        )
+    }
+}
+
+public enum EngineError: LocalizedError, Equatable {
+    case notFound
+    case failed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notFound: "Altyazı motoru bulunamadı (uv kurulu mu, ya da SUBTITLE_ENGINE ayarlı mı?)."
+        case .failed(let message): message
+        }
+    }
+}
+
+public struct EngineClient: Sendable {
+    public var command: EngineCommand
+
+    public init(command: EngineCommand) {
+        self.command = command
+    }
+
+    public struct TranscribeOptions: Sendable {
+        public var language: String?
+        public var model: String
+        public var formats: [SubtitleFormat]
+
+        public init(language: String? = nil, model: String = "small", formats: [SubtitleFormat] = [.srt]) {
+            self.language = language
+            self.model = model
+            self.formats = formats
+        }
+    }
+
+    /// Videoyu işler; aşama olaylarını ve sonunda `.result` ya da hata verir. Akış iptal edilirse motor durdurulur.
+    public func transcribe(video: URL, outDir: URL, options: TranscribeOptions = .init()) -> AsyncThrowingStream<EngineEvent, Error> {
+        var args = ["transcribe", video.path, "--out-dir", outDir.path, "--model", options.model, "--json", "--format"]
+        args += options.formats.map(\.rawValue)
+        if let language = options.language { args += ["--language", language] }
+        let arguments = args
+
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let run = try start(arguments, stdin: nil)
+                    var engineError: String?
+                    for try await line in run.stdout.bytes.lines where !line.isEmpty {
+                        let event = try EngineEvent.decode(line)
+                        if case .error(let message) = event {
+                            engineError = message
+                        } else {
+                            continuation.yield(event)
+                        }
+                    }
+                    let status = await run.exitStatus()
+                    if let engineError {
+                        continuation.finish(throwing: EngineError.failed(engineError))
+                    } else if status != 0 {
+                        continuation.finish(throwing: run.failure(status))
+                    } else {
+                        continuation.finish()
+                    }
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Cümleleri (uygulamada düzenlenmiş olabilir) motora verip istenen formatta metin alır.
+    public func render(_ sentences: [Sentence], as format: SubtitleFormat) async throws -> String {
+        let input = try JSONEncoder().encode(sentences)
+        let run = try start(["render", "--format", format.rawValue], stdin: input)
+        var output = Data()
+        for try await byte in run.stdout.bytes { output.append(byte) }
+        let status = await run.exitStatus()
+        guard status == 0 else { throw run.failure(status) }
+        return String(decoding: output, as: UTF8.self)
+    }
+
+    private func start(_ args: [String], stdin input: Data?) throws -> RunningEngine {
+        let process = Process()
+        process.executableURL = command.executable
+        process.arguments = command.arguments + args
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        // stderr dosyaya: model indirme ilerlemesi pipe tamponunu doldurup süreci kilitlemesin.
+        let log = FileManager.default.temporaryDirectory.appending(path: "subtitle-engine-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        process.standardError = try FileHandle(forWritingTo: log)
+        let stdinPipe = Pipe()
+        process.standardInput = input == nil ? FileHandle.nullDevice : stdinPipe
+        do {
+            try process.run()
+        } catch {
+            throw EngineError.failed("Motor başlatılamadı: \(error.localizedDescription)")
+        }
+        if let input {
+            stdinPipe.fileHandleForWriting.write(input)
+            try? stdinPipe.fileHandleForWriting.close()
+        }
+        return RunningEngine(process: process, stdout: stdout.fileHandleForReading, log: log)
+    }
+}
+
+/// Çalışan motor süreci. Bekleyen görev iptal edilirse süreç sonlandırılır.
+private struct RunningEngine: @unchecked Sendable {
+    let process: Process
+    let stdout: FileHandle
+    let log: URL
+
+    func exitStatus() async -> Int32 {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().async {
+                    process.waitUntilExit()
+                    continuation.resume(returning: process.terminationStatus)
+                }
+            }
+        } onCancel: {
+            process.terminate()
+        }
+    }
+
+    func failure(_ status: Int32) -> EngineError {
+        let tail = (try? String(contentsOf: log, encoding: .utf8))?
+            .split(separator: "\n").suffix(5).joined(separator: "\n") ?? ""
+        return .failed("Motor hata koduyla çıktı (\(status)). \(tail)")
+    }
+}

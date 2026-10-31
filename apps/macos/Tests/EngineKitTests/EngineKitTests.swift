@@ -1,0 +1,81 @@
+import Foundation
+import Testing
+@testable import EngineKit
+
+@Test func decodesStageEvents() throws {
+    #expect(try EngineEvent.decode(#"{"event": "stage", "stage": "transcribing", "fraction": 0.5}"#)
+        == .stage(.transcribing, fraction: 0.5))
+    #expect(try EngineEvent.decode(#"{"event": "stage", "stage": "yeni_asama", "fraction": null}"#)
+        == .stage(.unknown, fraction: nil))
+}
+
+@Test func decodesResultAndError() throws {
+    let line = #"{"event": "result", "language": "tr", "duration": 2.0, "audio": "/a.wav", "outputs": [], "sentences": [{"id": 1, "start": 0.0, "end": 1.0, "text": "Merhaba.", "words": [{"start": 0.0, "end": 1.0, "text": "Merhaba."}]}]}"#
+    guard case .result(let result) = try EngineEvent.decode(line) else { Issue.record("result bekleniyordu"); return }
+    #expect(result.language == "tr")
+    #expect(result.sentences.map(\.text) == ["Merhaba."])
+    #expect(try EngineEvent.decode(#"{"event": "error", "message": "olmadı"}"#) == .error("olmadı"))
+}
+
+/// Sahte motor betiğiyle süreç yönetimini (olay akışı, hata olayı, render stdin) uçtan uca dener.
+private func fakeEngine(_ script: String) throws -> EngineClient {
+    let url = FileManager.default.temporaryDirectory.appending(path: "fake-engine-\(UUID().uuidString).sh")
+    try ("#!/bin/sh\n" + script).write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    return EngineClient(command: EngineCommand(executable: url))
+}
+
+@Test func streamsEventsUntilResult() async throws {
+    let engine = try fakeEngine("""
+    echo '{"event": "stage", "stage": "extracting_audio", "fraction": null}'
+    echo 'motor gürültüsü' >&2
+    echo '{"event": "result", "language": "tr", "duration": 1, "audio": "a", "outputs": [], "sentences": []}'
+    """)
+    var events: [EngineEvent] = []
+    for try await event in engine.transcribe(video: URL(filePath: "/v.mp4"), outDir: URL(filePath: "/tmp")) {
+        events.append(event)
+    }
+    #expect(events.count == 2)
+    #expect(events.first == .stage(.extractingAudio, fraction: nil))
+}
+
+@Test func engineErrorEventThrows() async throws {
+    let engine = try fakeEngine("""
+    echo '{"event": "error", "message": "Video bulunamadı"}'
+    exit 1
+    """)
+    await #expect(throws: EngineError.failed("Video bulunamadı")) {
+        for try await _ in engine.transcribe(video: URL(filePath: "/v.mp4"), outDir: URL(filePath: "/tmp")) {}
+    }
+}
+
+@Test func renderSendsSentencesOnStdin() async throws {
+    let engine = try fakeEngine("cat")  // stdin'i aynen geri yazar
+    let text = try await engine.render([Sentence(id: 1, start: 0, end: 1, text: "Selam.")], as: .srt)
+    #expect(text.contains("\"Selam.\""))
+}
+
+@Test func locatesDevEngine() {
+    let command = EngineCommand.locate(environment: [:])
+    #expect(command?.arguments.contains("subtitle-engine") == true)
+}
+
+/// Gerçek motorla uçtan uca: `ENGINE_E2E=1 swift test` (samples/demo.mp4 ve base modeli gerekir).
+@Test(.enabled(if: ProcessInfo.processInfo.environment["ENGINE_E2E"] == "1"))
+func realEngineOnDemoVideo() async throws {
+    let repo = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let engine = try #require(EngineCommand.locate(environment: [:]).map(EngineClient.init))
+    let outDir = FileManager.default.temporaryDirectory.appending(path: "engine-e2e")
+    var result: EngineResult?
+    for try await event in engine.transcribe(
+        video: repo.appending(path: "samples/demo.mp4"), outDir: outDir,
+        options: .init(language: "tr", model: "base")
+    ) {
+        if case .result(let r) = event { result = r }
+    }
+    #expect(result?.language == "tr")
+    #expect(result?.sentences.count == 3)
+    let srt = try await engine.render(try #require(result?.sentences), as: .srt)
+    #expect(srt.hasPrefix("1\n00:00:00,000 --> "))
+}
