@@ -84,8 +84,11 @@ extension SubtitleViewModel {
 
     func mergeSelectedWithNext() {
         commitDraft()
-        guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
-        commit("Satırları Birleştir") { $0.mergeWithNext(at: index) }
+        guard let uid = selection, let index = sentences.index(ofUID: uid),
+              index + 1 < sentences.count
+        else { return }
+        let affected: Set<UUID> = [sentences[index].uid, sentences[index + 1].uid]
+        commit("Satırları Birleştir", clearingTranslations: affected) { $0.mergeWithNext(at: index) }
     }
 
     func deleteSelected() {
@@ -103,30 +106,51 @@ extension SubtitleViewModel {
     func splitSelected(at time: Double) {
         commitDraft()
         guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
-        commit("Satırı Böl") { $0.splitSentence(at: index, at: time) }
+        // İlk parça kimliğini korur ama metni değişir; iki parçanın çevirisi de geçersizdir.
+        commit("Satırı Böl", clearingTranslations: [uid]) { $0.splitSentence(at: index, at: time) }
     }
 
     @discardableResult
-    private func commit(_ name: String, _ change: (inout [Sentence]) -> Bool) -> Bool {
+    private func commit(
+        _ name: String,
+        clearingTranslations uids: Set<UUID> = [],
+        _ change: (inout [Sentence]) -> Bool
+    ) -> Bool {
         var updated = sentences
         guard change(&updated) else { return false }
-        replaceSentences(updated, actionName: name)
+        replaceSentences(updated, actionName: name, clearingTranslations: uids)
         return true
     }
 
     /// `sentences`'ı değiştirir ve eski değeri geri alma yığınına kaydeder (geri alma sırasında
-    /// bu çağrı yineleme kaydını da oluşturur).
-    private func replaceSentences(_ updated: [Sentence], actionName: String) {
+    /// bu çağrı yineleme kaydını da oluşturur). Silinen/birleşen satırların çevirileri temizlenir;
+    /// `translations` verilirse (geri alma/yinele) o sözlük olduğu gibi geri yüklenir.
+    private func replaceSentences(
+        _ updated: [Sentence],
+        actionName: String,
+        translations restoredTranslations: [UUID: TranslationEntry]? = nil,
+        clearingTranslations clearedUIDs: Set<UUID> = []
+    ) {
         let previous = sentences
+        let previousTranslations = translations
         // Dışarıdan gelen değişiklik (geri alma/yinele) odaklı taslağı geçersiz kılabilir.
         if let draft, updated.first(where: { $0.uid == draft.uid })?.text != draft.text {
             self.draft = nil
         }
         sentences = updated
-        if let uid = selection, !updated.contains(where: { $0.uid == uid }) { selection = nil }
+        let validUIDs = Set(updated.map(\.uid))
+        translations = restoredTranslations
+            ?? translations.filter { validUIDs.contains($0.key) && !clearedUIDs.contains($0.key) }
+        if let translationDraft, !validUIDs.contains(translationDraft.uid)
+            || clearedUIDs.contains(translationDraft.uid) {
+            self.translationDraft = nil
+        }
+        if let uid = selection, !validUIDs.contains(uid) { selection = nil }
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { model in
-            MainActor.assumeIsolated { model.replaceSentences(previous, actionName: actionName) }
+            MainActor.assumeIsolated {
+                model.replaceSentences(previous, actionName: actionName, translations: previousTranslations)
+            }
         }
         undoManager.setActionName(actionName)
     }

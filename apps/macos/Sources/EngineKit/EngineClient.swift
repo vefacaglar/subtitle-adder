@@ -74,12 +74,34 @@ public struct EngineClient: Sendable {
         var args = ["transcribe", video.path, "--out-dir", outDir.path, "--model", options.model, "--json", "--format"]
         args += options.formats.map(\.rawValue)
         if let language = options.language { args += ["--language", language] }
-        let arguments = args
+        return stream(args, stdin: nil)
+    }
 
-        return AsyncThrowingStream { continuation in
+    /// Cümleleri yerel çeviri modeliyle hedef dile çevirir; aşama olayları ve sonunda
+    /// `.translation` yayınlar. Kaynak dil `nil` ise model kendi algılar (NLLB kabul etmez).
+    public func translate(
+        _ sentences: [Sentence],
+        to language: String,
+        from source: String? = nil,
+        model: String = "madlad-3b"
+    ) -> AsyncThrowingStream<EngineEvent, Error> {
+        var args = ["translate", "--to", language, "--model", model, "--json"]
+        if let source { args += ["--from", source] }
+        let input: Data
+        do {
+            input = try JSONEncoder().encode(sentences)
+        } catch {
+            return AsyncThrowingStream { $0.finish(throwing: error) }
+        }
+        return stream(args, stdin: input)
+    }
+
+    /// Ortak süreç akışı: stdout'taki JSON olaylarını çözer, hatayı akış sonunda fırlatır.
+    private func stream(_ arguments: [String], stdin input: Data?) -> AsyncThrowingStream<EngineEvent, Error> {
+        AsyncThrowingStream { continuation in
             let run: RunningEngine
             do {
-                run = try start(arguments, stdin: nil)
+                run = try start(arguments, stdin: input)
             } catch {
                 continuation.finish(throwing: error)
                 return

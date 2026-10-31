@@ -4,13 +4,28 @@ import SwiftUI
 /// Ayarlar penceresi (⌘,). Model kataloğu paylaşıldığı için burada yapılan silme
 /// araç çubuğundaki seçiciyi de anında günceller.
 struct SettingsView: View {
+    @Bindable var vm: SubtitleViewModel
     let catalog: ModelCatalog
     @State private var pendingDeletion: EngineModel?
 
     var body: some View {
         Form {
             Section {
-                ForEach(catalog.models) { model in
+                Picker("Varsayılan çeviri modeli", selection: $vm.translationModel) {
+                    ForEach(catalog.translationModels) { model in
+                        Text(ModelLabel.name(for: model.id)).tag(model.id)
+                    }
+                }
+                .disabled(catalog.translationModels.isEmpty)
+                Text("“Çevir…” düğmesi bu modeli kullanır; seçim sonraki açılışlarda da korunur.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Çeviri")
+            }
+
+            Section {
+                ForEach(catalog.models.filter { !$0.isTranslation }) { model in
                     ModelSettingsRow(
                         model: model,
                         isDeleting: catalog.deleting.contains(model.id),
@@ -20,13 +35,27 @@ struct SettingsView: View {
                     )
                 }
             } header: {
-                Text("Modeller")
+                Text("Altyazı modelleri")
+            }
+
+            Section {
+                ForEach(catalog.translationModels) { model in
+                    ModelSettingsRow(
+                        model: model,
+                        isDeleting: catalog.deleting.contains(model.id),
+                        isActive: catalog.activeModel == model.id,
+                        error: catalog.deleteErrors[model.id],
+                        onDelete: { pendingDeletion = model }
+                    )
+                }
+            } header: {
+                Text("Çeviri modelleri")
             } footer: {
                 footer
             }
         }
         .formStyle(.grouped)
-        .frame(width: 600, height: 540)
+        .frame(width: 620, height: 660)
         .task { await catalog.load() }
         .confirmationDialog(
             pendingDeletion.map { "\(ModelLabel.name(for: $0.id)) modeli silinsin mi?" } ?? "",
@@ -91,6 +120,16 @@ private struct ModelSettingsRow: View {
                 Text(ModelLabel.storageStatus(for: model))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text(ModelLabel.licenseText(for: model))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if model.hasNonCommercialLicense {
+                        Label("Ticari olmayan lisans", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
                 if let error {
                     Text(error)
                         .font(.caption)
@@ -110,7 +149,7 @@ private struct ModelSettingsRow: View {
                 Button("Sil…", action: onDelete)
                     .disabled(isActive)
                     .help(isActive
-                        ? "Altyazı üretimi bu modeli kullanıyor; iş bitince silebilirsin."
+                        ? "Süren bir iş bu modeli kullanıyor; iş bitince silebilirsin."
                         : "Modeli diskten sil; tekrar kullanırsan yeniden indirilir.")
             }
         }

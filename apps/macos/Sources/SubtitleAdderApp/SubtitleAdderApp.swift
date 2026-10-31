@@ -24,7 +24,7 @@ struct SubtitleAdderApp: App {
                 .frame(minWidth: 760, minHeight: 600)
         }
         Settings {
-            SettingsView(catalog: catalog)
+            SettingsView(vm: vm, catalog: catalog)
         }
     }
 }

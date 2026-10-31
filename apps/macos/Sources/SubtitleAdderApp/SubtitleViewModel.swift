@@ -19,6 +19,7 @@ final class SubtitleViewModel {
             UserDefaults.standard.set(language, forKey: Self.languageDefaultsKey)
             modelNotice = nil
             reconcileModelSelection()
+            reconcileTranslationTarget()
         }
     }
     var model: String {
@@ -28,9 +29,36 @@ final class SubtitleViewModel {
             modelNotice = nil
         }
     }
+    /// Çeviri isteğinde kullanılan hedef dil; seçim kalıcıdır.
+    var translationTarget: String {
+        didSet {
+            guard translationTarget != oldValue else { return }
+            UserDefaults.standard.set(translationTarget, forKey: Self.translationTargetDefaultsKey)
+        }
+    }
+    /// Çeviri modeli (Ayarlar'dan seçilir, kalıcıdır).
+    var translationModel: String {
+        didSet {
+            guard translationModel != oldValue else { return }
+            UserDefaults.standard.set(translationModel, forKey: Self.translationModelDefaultsKey)
+        }
+    }
+    /// Video üstü altyazıda orijinalin mi, çevirinin mi gösterileceği; kalıcıdır.
+    var displayMode: SubtitleDisplay {
+        didSet {
+            guard displayMode != oldValue else { return }
+            UserDefaults.standard.set(displayMode.rawValue, forKey: Self.displayModeDefaultsKey)
+        }
+    }
     var status: Status = .idle
     var detectedLanguage: String?
     var sentences: [Sentence] = []
+    /// Satırın kararlı `uid` değerine bağlı çeviriler; metin düzenlemelerinde "eski" işaretlenir.
+    var translations: [UUID: TranslationEntry] = [:]
+    /// Son başarılı çevirinin hedef dili (dışa aktarma etiketi için).
+    var translationLanguage: String?
+    /// Düzenlenen çevirinin henüz commit edilmemiş metni.
+    var translationDraft: TextDraft?
     var selection: UUID?         // seçili satırın `uid` değeri
     /// Düzenlenen satırın henüz commit edilmemiş metni (odaklıyken kullanılır).
     var draft: TextDraft?
@@ -42,8 +70,8 @@ final class SubtitleViewModel {
     /// Paylaşılan model kataloğu; araç çubuğu ve Ayarlar aynı listeyi kullanır.
     let catalog: ModelCatalog
 
-    private var job: Task<Void, Never>?
-    private var jobID = UUID()  // yalnız güncel iş durumu değiştirebilir
+    var job: Task<Void, Never>?
+    var jobID = UUID()  // yalnız güncel iş durumu değiştirebilir
 
     private(set) var video: URL?
 
@@ -53,9 +81,14 @@ final class SubtitleViewModel {
     }
 
     static let defaultModel = "large-v3"
+    static let defaultTranslationModel = "madlad-3b"
+    static let defaultTranslationTarget = SubtitleLanguage.english.rawValue
 
     private static let modelDefaultsKey = "selectedModel"
     private static let languageDefaultsKey = "selectedLanguage"
+    private static let translationModelDefaultsKey = "translationModel"
+    private static let translationTargetDefaultsKey = "translationTarget"
+    private static let displayModeDefaultsKey = "subtitleDisplayMode"
 
     init(catalog: ModelCatalog) {
         self.catalog = catalog
@@ -63,7 +96,16 @@ final class SubtitleViewModel {
         // Eski sürüm serbest metin kabul ediyordu; listede olmayan kod otomatiğe döner.
         language = SubtitleLanguage(rawValue: savedLanguage) == nil ? "" : savedLanguage
         model = UserDefaults.standard.string(forKey: Self.modelDefaultsKey) ?? Self.defaultModel
+        let savedTarget = UserDefaults.standard.string(forKey: Self.translationTargetDefaultsKey) ?? ""
+        translationTarget = SubtitleLanguage(rawValue: savedTarget).map(\.rawValue)
+            .flatMap { $0 == SubtitleLanguage.automatic.rawValue ? nil : $0 }
+            ?? Self.defaultTranslationTarget
+        translationModel = UserDefaults.standard.string(forKey: Self.translationModelDefaultsKey)
+            ?? Self.defaultTranslationModel
+        let savedDisplay = UserDefaults.standard.string(forKey: Self.displayModeDefaultsKey) ?? ""
+        displayMode = SubtitleDisplay(rawValue: savedDisplay) ?? .original
         reconcileModelSelection()
+        reconcileTranslationTarget()
     }
 
     /// Dile göre filtrelenmiş katalog; araç çubuğundaki seçici bunu gösterir.
@@ -71,6 +113,13 @@ final class SubtitleViewModel {
 
     var isWorking: Bool {
         if case .working = status { true } else { false }
+    }
+
+    /// Dil koduna göre (boşsa otomatik) değişen kaynak dil; çeviri komutuna `--from` olarak gider.
+    /// Otomatik seçimde motorun algıladığı dil kullanılır.
+    var translationSource: String? {
+        if !language.isEmpty { return language }
+        return detectedLanguage
     }
 
     /// Seçili model filtrelenen listede yoksa en doğru (eşitse daha hızlı) modele geçer.
@@ -84,6 +133,20 @@ final class SubtitleViewModel {
         }
     }
 
+    /// Ayarlardaki çeviri modeli katalogda yoksa (eski kayıt) en doğru modele döner.
+    func reconcileTranslationModelSelection() {
+        let available = catalog.translationModels
+        guard !available.isEmpty, !available.contains(where: { $0.id == translationModel }) else { return }
+        translationModel = (available.max(by: { ($0.accuracy, $0.speed) < ($1.accuracy, $1.speed) }) ?? available[0]).id
+    }
+
+    /// Kaynak dille aynı hedef dil seçilemez; seçilmişse başka bir hedefe geçer.
+    func reconcileTranslationTarget() {
+        guard let source = translationSource, source == translationTarget else { return }
+        guard let next = SubtitleLanguage.translationTargets.first(where: { $0.rawValue != source }) else { return }
+        translationTarget = next.rawValue
+    }
+
     /// Yeni video seçildiğinde eski videoya ait işi, altyazıları ve geri alma yığınını temizler.
     func openVideo(_ url: URL?) {
         guard url != video else { return }
@@ -92,6 +155,9 @@ final class SubtitleViewModel {
         jobID = UUID()
         catalog.activeModel = nil
         sentences = []
+        translations = [:]
+        translationDraft = nil
+        translationLanguage = nil
         selection = nil
         detectedLanguage = nil
         draft = nil
@@ -107,6 +173,9 @@ final class SubtitleViewModel {
             return
         }
         sentences = []
+        translations = [:]
+        translationDraft = nil
+        translationLanguage = nil
         selection = nil
         draft = nil
         undoManager?.removeAllActions()
@@ -129,12 +198,15 @@ final class SubtitleViewModel {
                     guard jobID == id, !Task.isCancelled else { return }
                     switch event {
                     case .stage(let stage, let fraction):
-                        status = .working(Self.label(for: stage, fraction: fraction), fraction: fraction)
+                        status = .working(Self.label(for: stage, fraction: fraction, purpose: .transcription), fraction: fraction)
                     case .result(let result):
                         sentences = result.sentences
                         detectedLanguage = result.language
+                        reconcileTranslationTarget()
                         // Uygulama çıkarılan WAV'ı kullanmıyor; geçici dosyayı sil.
                         try? FileManager.default.removeItem(atPath: result.audio)
+                    case .translation:
+                        break
                     case .error(let message):
                         failed = true
                         status = .failed(message)
@@ -161,28 +233,43 @@ final class SubtitleViewModel {
         status = .idle
     }
 
-    func render(as format: SubtitleFormat) async -> String? {
+    func render(as format: SubtitleFormat, translated: Bool = false) async -> String? {
         do {
-            return try await catalog.engine?.render(sentences, as: format)
+            let list = translated ? exportSentences(translated: true) : sentences
+            return try await catalog.engine?.render(list, as: format)
         } catch {
             status = .failed(error.localizedDescription)
             return nil
         }
     }
 
-    private static func label(for stage: EngineEvent.Stage, fraction: Double?) -> String {
+    enum JobPurpose {
+        case transcription, translation
+    }
+
+    static func label(for stage: EngineEvent.Stage, fraction: Double?, purpose: JobPurpose) -> String {
         switch stage {
-        case .extractingAudio: "Ses ayrılıyor…"
+        case .extractingAudio:
+            return "Ses ayrılıyor…"
         case .downloadingModel:
+            let prefix = purpose == .translation ? "Çeviri modeli indiriliyor…" : "Model indiriliyor…"
             if let fraction {
-                "Model indiriliyor… %\(Int((min(max(fraction, 0), 1) * 100).rounded()))"
-            } else {
-                "Model indiriliyor…"
+                return "\(prefix) %\(Int((min(max(fraction, 0), 1) * 100).rounded()))"
             }
-        case .loadingModel: "Model yükleniyor…"
-        case .transcribing: "Konuşma metne çevriliyor…"
-        case .segmenting: "Cümleler çıkarılıyor…"
-        case .unknown: "Çalışıyor…"
+            return prefix
+        case .loadingModel:
+            return purpose == .translation ? "Çeviri modeli yükleniyor…" : "Model yükleniyor…"
+        case .transcribing:
+            return "Konuşma metne çevriliyor…"
+        case .segmenting:
+            return "Cümleler çıkarılıyor…"
+        case .translating:
+            if let fraction {
+                return "Çevriliyor… %\(Int((min(max(fraction, 0), 1) * 100).rounded()))"
+            }
+            return "Çevriliyor…"
+        case .unknown:
+            return "Çalışıyor…"
         }
     }
 }

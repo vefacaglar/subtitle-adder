@@ -12,6 +12,9 @@ import Testing
 @Test func decodesDownloadingModelStage() throws {
     #expect(try EngineEvent.decode(#"{"event": "stage", "stage": "downloading_model", "fraction": 0.37}"#)
         == .stage(.downloadingModel, fraction: 0.37))
+    #expect(try EngineEvent.decode(#"{"event": "stage", "stage": "translating", "fraction": 0.42}"#)
+        == .stage(.translating, fraction: 0.42))
+    #expect(EngineEvent.Stage.translating.rawValue == "translating")
 }
 
 @Test func listsModelsFromEngine() async throws {
@@ -23,6 +26,10 @@ import Testing
         EngineModel(id: "base", backend: "whisper", languages: nil, sizeMB: 145, diskMB: 141, speed: 5, accuracy: 2, downloaded: true),
         EngineModel(id: "gigaam-v3", backend: "onnx", languages: ["ru"], sizeMB: 216, diskMB: nil, speed: 5, accuracy: 4, downloaded: false),
     ])
+    #expect(models[0].kind == "transcription")
+    #expect(models[0].license == nil)
+    #expect(!models[0].isTranslation)
+    #expect(!models[0].hasNonCommercialLicense)
     #expect(models[0].detectsLanguage)
     #expect(models[0].supports(language: "tr"))
     #expect(!models[1].detectsLanguage)
@@ -35,9 +42,23 @@ import Testing
     echo '{"event": "models", "models": [{"id": "small", "size_mb": 465, "speed": 4, "accuracy": 3, "downloaded": false}]}'
     """)
     let model = try #require(try await engine.models().first)
+    #expect(model.kind == "transcription")
     #expect(model.backend == "whisper")
     #expect(model.languages == nil)
     #expect(model.diskMB == nil)
+    #expect(model.license == nil)
+}
+
+@Test func decodesTranslationModelFields() async throws {
+    let engine = try fakeEngine("""
+    echo '{"event": "models", "models": [{"id": "nllb-1.3b", "kind": "translation", "backend": "ctranslate2", "languages": ["tr", "en", "pt", "es", "ru"], "size_mb": 1336, "disk_mb": 1336, "speed": 3, "accuracy": 4, "license": "CC-BY-NC-4.0", "downloaded": true}]}'
+    """)
+    let model = try #require(try await engine.models().first)
+    #expect(model.kind == "translation")
+    #expect(model.isTranslation)
+    #expect(model.license == "CC-BY-NC-4.0")
+    #expect(model.hasNonCommercialLicense)
+    #expect(model.supports(language: "es"))
 }
 
 @Test func deleteModelReturnsFreedSpace() async throws {
@@ -106,6 +127,67 @@ private func fakeEngine(_ script: String) throws -> EngineClient {
     let engine = try fakeEngine("cat")  // stdin'i aynen geri yazar
     let text = try await engine.render([Sentence(id: 1, start: 0, end: 1, text: "Selam.")], as: .srt)
     #expect(text.contains("\"Selam.\""))
+}
+
+@Test func decodesTranslationEvent() throws {
+    let line = #"{"event": "translation", "language": "es", "sentences": [{"id": 1, "start": 0.0, "end": 1.0, "text": "Hola.", "words": []}]}"#
+    let expected = EngineEvent.translation(
+        language: "es",
+        sentences: [Sentence(id: 1, start: 0, end: 1, text: "Hola.")]
+    )
+    #expect(try EngineEvent.decode(line) == expected)
+}
+
+@Test func translateStreamsEventsAndSendsRequest() async throws {
+    let argsFile = FileManager.default.temporaryDirectory.appending(path: "args-\(UUID().uuidString)")
+    let inputFile = FileManager.default.temporaryDirectory.appending(path: "input-\(UUID().uuidString)")
+    let engine = try fakeEngine("""
+    cat > '\(inputFile.path)'
+    echo "$@" > '\(argsFile.path)'
+    echo '{"event": "stage", "stage": "downloading_model", "fraction": 0.12}'
+    echo '{"event": "stage", "stage": "translating", "fraction": 0.4}'
+    echo '{"event": "translation", "language": "es", "sentences": [{"id": 1, "start": 0.0, "end": 1.0, "text": "Hola.", "words": []}]}'
+    """)
+    let source = Sentence(
+        id: 1, start: 0, end: 1, text: "Merhaba.",
+        words: [Word(start: 0, end: 1, text: "Merhaba.")]
+    )
+    var events: [EngineEvent] = []
+    for try await event in engine.translate([source], to: "es", from: "tr", model: "madlad-3b") {
+        events.append(event)
+    }
+    #expect(events == [
+        .stage(.downloadingModel, fraction: 0.12),
+        .stage(.translating, fraction: 0.4),
+        .translation(language: "es", sentences: [Sentence(id: 1, start: 0, end: 1, text: "Hola.")]),
+    ])
+    let arguments = try String(contentsOf: argsFile, encoding: .utf8)
+    #expect(arguments.contains("translate --to es --model madlad-3b --json --from tr"))
+    let input = try String(contentsOf: inputFile, encoding: .utf8)
+    #expect(input.contains("\"Merhaba.\""))
+    #expect(input.contains("\"words\""))
+}
+
+@Test func translateOmitsSourceWhenNil() async throws {
+    let argsFile = FileManager.default.temporaryDirectory.appending(path: "args-\(UUID().uuidString)")
+    let engine = try fakeEngine("""
+    echo "$@" > '\(argsFile.path)'
+    echo '{"event": "translation", "language": "es", "sentences": []}'
+    """)
+    for try await _ in engine.translate([], to: "es", model: "madlad-3b") {}
+    let arguments = try String(contentsOf: argsFile, encoding: .utf8)
+    #expect(arguments.contains("translate --to es --model madlad-3b --json"))
+    #expect(!arguments.contains("--from"))
+}
+
+@Test func translateSurfacesEngineError() async throws {
+    let engine = try fakeEngine("""
+    echo '{"event": "error", "message": "NLLB için kaynak dil gerekli."}'
+    exit 1
+    """)
+    await #expect(throws: EngineError.failed("NLLB için kaynak dil gerekli.")) {
+        for try await _ in engine.translate([], to: "es", from: nil, model: "nllb-1.3b") {}
+    }
 }
 
 private func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
@@ -182,4 +264,42 @@ func realEngineOnDemoVideo() async throws {
     #expect(result?.sentences.count == 3)
     let srt = try await engine.render(try #require(result?.sentences), as: .srt)
     #expect(srt.hasPrefix("1\n00:00:00,000 --> "))
+}
+
+/// Gerçek motorla uçtan uca çeviri: demo videoyu base ile yazıya döküp madlad-3b ile İspanyolcaya çevirir.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["ENGINE_E2E"] == "1"))
+func realEngineTranslatesDemoVideo() async throws {
+    let repo = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let engine = try #require(EngineCommand.locate(environment: [:]).map(EngineClient.init))
+    let outDir = FileManager.default.temporaryDirectory.appending(path: "engine-e2e-translate")
+    var result: EngineResult?
+    for try await event in engine.transcribe(
+        video: repo.appending(path: "samples/demo.mp4"), outDir: outDir,
+        options: .init(language: "tr", model: "base")
+    ) {
+        if case .result(let value) = event { result = value }
+    }
+    let source = try #require(result?.sentences)
+    var language: String?
+    var translated: [Sentence] = []
+    for try await event in engine.translate(source, to: "es", from: "tr", model: "madlad-3b") {
+        if case .translation(let target, let sentences) = event {
+            language = target
+            translated = sentences
+        }
+    }
+    let timesAndIDsEqual = zip(source, translated).allSatisfy {
+        $0.id == $1.id && $0.start == $1.start && $0.end == $1.end
+    }
+    let textsNonEmpty = translated.allSatisfy {
+        !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    let textsDiffer = zip(source, translated).allSatisfy { $0.text != $1.text }
+    #expect(language == "es")
+    #expect(!source.isEmpty)
+    #expect(translated.count == source.count)
+    #expect(timesAndIDsEqual)
+    #expect(textsNonEmpty)
+    #expect(textsDiffer)
 }

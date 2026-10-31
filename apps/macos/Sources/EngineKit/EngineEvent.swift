@@ -4,6 +4,7 @@ import Foundation
 public enum EngineEvent: Sendable, Equatable {
     case stage(Stage, fraction: Double?)
     case result(EngineResult)
+    case translation(language: String, sentences: [Sentence])
     case error(String)
 
     public enum Stage: String, Sendable {
@@ -12,6 +13,7 @@ public enum EngineEvent: Sendable, Equatable {
         case loadingModel = "loading_model"
         case transcribing
         case segmenting
+        case translating
         case unknown
     }
 
@@ -24,6 +26,9 @@ public enum EngineEvent: Sendable, Equatable {
             return .stage(Stage(rawValue: stage.stage) ?? .unknown, fraction: stage.fraction)
         case "result":
             return .result(try decoder.decode(EngineResult.self, from: data))
+        case "translation":
+            let payload = try decoder.decode(TranslationPayload.self, from: data)
+            return .translation(language: payload.language, sentences: payload.sentences)
         case "error":
             return .error(try decoder.decode(ErrorPayload.self, from: data).message)
         default:
@@ -33,6 +38,7 @@ public enum EngineEvent: Sendable, Equatable {
 
     private struct Head: Decodable { let event: String }
     private struct StagePayload: Decodable { let stage: String; let fraction: Double? }
+    private struct TranslationPayload: Decodable { let language: String; let sentences: [Sentence] }
     private struct ErrorPayload: Decodable { let message: String }
     private static let decoder = JSONDecoder()
 }

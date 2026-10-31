@@ -8,6 +8,7 @@ struct SentenceEditorView: View {
     let player: PlayerModel
     @Environment(\.undoManager) private var undoManager
     @FocusState private var focusedUID: UUID?
+    @FocusState private var focusedTranslationUID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +31,13 @@ struct SentenceEditorView: View {
                 vm.beginEditing(sentence)
             } else if old != nil {
                 vm.commitDraft()
+            }
+        }
+        .onChange(of: focusedTranslationUID) { old, new in
+            if let new, let sentence = vm.sentences.first(where: { $0.uid == new }) {
+                vm.beginTranslationEditing(sentence)
+            } else if old != nil {
+                vm.commitTranslationDraft()
             }
         }
         .onChange(of: vm.selection) { _, uid in
@@ -56,13 +64,14 @@ struct SentenceEditorView: View {
                         sentence: sentence,
                         isActive: sentence.uid == player.activeID,
                         focus: $focusedUID,
+                        translationFocus: $focusedTranslationUID,
                         vm: vm
                     )
                 }
             }
             .onChange(of: player.activeID) { _, uid in
                 // Kullanıcı yazarken ya da duraklatmışken listeyi kaydırma.
-                guard let uid, player.isPlaying, focusedUID == nil else { return }
+                guard let uid, player.isPlaying, focusedUID == nil, focusedTranslationUID == nil else { return }
                 withAnimation { proxy.scrollTo(uid, anchor: .center) }
             }
             .onDeleteCommand {
@@ -71,7 +80,7 @@ struct SentenceEditorView: View {
             }
             .onKeyPress(.space) {
                 // Metin alanı odaktayken boşluk yazılsın.
-                guard focusedUID == nil else { return .ignored }
+                guard focusedUID == nil, focusedTranslationUID == nil else { return .ignored }
                 player.togglePlayback()
                 return .handled
             }
@@ -123,10 +132,12 @@ struct SentenceEditorView: View {
         .disabled(vm.selection == nil)
     }
 
-    /// Odaklı metin alanını bırakır ve taslağı satıra yazar.
+    /// Odaklı metin alanlarını bırakır ve taslakları satırlara yazar.
     private func finishEditing() {
         focusedUID = nil
+        focusedTranslationUID = nil
         vm.commitDraft()
+        vm.commitTranslationDraft()
     }
 }
 
@@ -134,6 +145,7 @@ private struct SentenceRow: View {
     let sentence: Sentence
     let isActive: Bool
     var focus: FocusState<UUID?>.Binding
+    var translationFocus: FocusState<UUID?>.Binding
     let vm: SubtitleViewModel
 
     var body: some View {
@@ -147,17 +159,47 @@ private struct SentenceRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(width: 124, alignment: .leading)
-            TextField("Cümle", text: Binding(
-                get: { vm.draftText(for: sentence) },
-                set: { vm.updateDraft($0, for: sentence.uid) }
-            ), axis: .vertical)
-            .textFieldStyle(.plain)
-            .lineLimit(1...4)
-            .focused(focus, equals: sentence.uid)
-            .onSubmit { vm.commitDraft() }
+            VStack(alignment: .leading, spacing: 3) {
+                TextField("Cümle", text: Binding(
+                    get: { vm.draftText(for: sentence) },
+                    set: { vm.updateDraft($0, for: sentence.uid) }
+                ), axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...4)
+                .focused(focus, equals: sentence.uid)
+                .onSubmit { vm.commitDraft() }
+                if vm.translation(for: sentence) != nil {
+                    translationField
+                }
+            }
         }
         .padding(.vertical, 3)
         .padding(.horizontal, 4)
         .background(isActive ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    private var translationField: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Image(systemName: "character.bubble")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Çeviri")
+            TextField("Çeviri", text: Binding(
+                get: { vm.translationDraftText(for: sentence) },
+                set: { vm.updateTranslationDraft($0, for: sentence.uid) }
+            ), axis: .vertical)
+            .textFieldStyle(.plain)
+            .lineLimit(1...3)
+            .foregroundStyle(.secondary)
+            .focused(translationFocus, equals: sentence.uid)
+            .onSubmit { vm.commitTranslationDraft() }
+            if vm.isTranslationStale(for: sentence) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .help("Orijinal metin değişti; çeviri eski olabilir. “Çevir…” ile yenile.")
+                    .accessibilityLabel("Çeviri eski")
+            }
+        }
     }
 }

@@ -6,6 +6,8 @@ import SwiftUI
 struct PlayerView: View {
     let model: PlayerModel
     let sentences: [Sentence]
+    let translations: [UUID: TranslationEntry]
+    @Binding var display: SubtitleDisplay
 
     var body: some View {
         GeometryReader { geometry in
@@ -16,13 +18,59 @@ struct PlayerView: View {
                 SubtitleOverlay(text: activeText, videoHeight: rect.height)
                     .frame(width: rect.width, height: rect.height)
                     .allowsHitTesting(false)
+                VStack {
+                    HStack {
+                        Spacer()
+                        displayPicker
+                    }
+                    Spacer()
+                }
+                .padding(10)
             }
         }
     }
 
+    private var displayPicker: some View {
+        HStack(spacing: 8) {
+            Text("Gösterilen")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.85))
+            Picker("Gösterilen", selection: $display) {
+                ForEach(SubtitleDisplay.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 196)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .help(translations.isEmpty
+            ? "Önce altyazıları çevir; sonra orijinali, çeviriyi ya da ikisini birden gösterebilirsin."
+            : "Video üstünde gösterilecek metin")
+        .disabled(translations.isEmpty)
+    }
+
     private var activeText: String? {
-        guard let id = model.activeID else { return nil }
-        let text = sentences.first { $0.uid == id }?.text ?? ""
+        guard let id = model.activeID,
+              let sentence = sentences.first(where: { $0.uid == id })
+        else { return nil }
+        let original = sentence.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translated = translations[id]?.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text: String
+        switch display {
+        case .original:
+            text = original
+        case .translation:
+            text = translated?.isEmpty == false ? translated ?? "" : original
+        case .both:
+            text = [original, translated]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+        }
         return text.isEmpty ? nil : text
     }
 
