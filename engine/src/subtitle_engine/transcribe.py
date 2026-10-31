@@ -21,9 +21,14 @@ class Transcriber(Protocol):
 class FasterWhisperTranscriber:
     """faster-whisper (CTranslate2). Mac'te CPU int8, Windows'ta CUDA varsa GPU. Model ilk kullanımda indirilir."""
 
-    def __init__(self, model_size: str = "small", device: str = "auto", compute_type: str = "default"):
+    def __init__(self, model_size: str = "small", device: str = "auto", compute_type: str | None = None):
+        import ctranslate2
         from faster_whisper import WhisperModel
 
+        if compute_type is None:
+            # Modeller float16 kayıtlı; CPU'da float32'ye açılıp yavaşlıyor. CPU'da int8, CUDA'da float16.
+            on_cuda = device == "cuda" or (device == "auto" and ctranslate2.get_cuda_device_count() > 0)
+            compute_type = "float16" if on_cuda else "int8"
         self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
 
     def transcribe(
