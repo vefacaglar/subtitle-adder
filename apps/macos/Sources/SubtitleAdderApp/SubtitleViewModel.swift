@@ -18,6 +18,9 @@ final class SubtitleViewModel {
     var status: Status = .idle
     var detectedLanguage: String?
     var sentences: [Sentence] = []
+    var selection: Int?          // seçili satırın kimliği
+    /// Pencerenin geri alma yöneticisi (görünüm tarafından verilir).
+    @ObservationIgnored weak var undoManager: UndoManager?
 
     static let models = ["tiny", "base", "small", "medium", "large-v3", "turbo"]
 
@@ -33,6 +36,8 @@ final class SubtitleViewModel {
         guard let video else { return }
         guard let engine else { status = .failed(EngineError.notFound.localizedDescription); return }
         sentences = []
+        selection = nil
+        undoManager?.removeAllActions()
         detectedLanguage = nil
         status = .working("Başlıyor…", fraction: nil)
         let outDir = FileManager.default.temporaryDirectory.appending(path: "SubtitleAdder")

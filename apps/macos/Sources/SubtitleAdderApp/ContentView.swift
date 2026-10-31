@@ -4,22 +4,35 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @State private var vm = SubtitleViewModel()
+    @State private var player = PlayerModel()
     @State private var pickingVideo = false
     @State private var exportFormat: SubtitleFormat = .srt
     @State private var exportDocument: TextDocument?
 
     var body: some View {
         VStack(spacing: 0) {
-            if vm.sentences.isEmpty {
+            if vm.video == nil {
                 dropZone.padding(20)
             } else {
-                sentenceList
+                VSplitView {
+                    PlayerView(model: player, sentences: vm.sentences)
+                        .frame(minHeight: 200, idealHeight: 360)
+                    SentenceEditorView(vm: vm, player: player)
+                        .frame(minHeight: 180)
+                }
             }
             Divider()
             statusBar.padding(.horizontal, 16).padding(.vertical, 10)
         }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first else { return false }
+            vm.video = url
+            return true
+        }
         .toolbar { toolbar }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
+        .onChange(of: vm.video, initial: true) { _, url in player.load(url) }
+        .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
         .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent]) { result in
             if case .success(let url) = result { vm.video = url }
         }
@@ -53,12 +66,12 @@ struct ContentView: View {
 
     private var dropZone: some View {
         VStack(spacing: 12) {
-            Image(systemName: vm.video == nil ? "film.stack" : "checkmark.circle")
+            Image(systemName: "film.stack")
                 .font(.system(size: 44, weight: .light))
-                .foregroundStyle(vm.video == nil ? Color.secondary : Color.accentColor)
-            Text(vm.video?.lastPathComponent ?? "Videoyu buraya sürükle")
+                .foregroundStyle(.secondary)
+            Text("Videoyu buraya sürükle")
                 .font(.title3)
-            Text(vm.video == nil ? "ya da araç çubuğundan seç" : "Altyazı üretmek için ⌘↩")
+            Text("ya da araç çubuğundan seç")
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -68,23 +81,6 @@ struct ContentView: View {
                 .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [7]))
                 .foregroundStyle(.tertiary)
         )
-        .dropDestination(for: URL.self) { urls, _ in
-            vm.video = urls.first
-            return urls.first != nil
-        }
-    }
-
-    private var sentenceList: some View {
-        Table(vm.sentences) {
-            TableColumn("#") { Text("\($0.id)").monospacedDigit().foregroundStyle(.secondary) }.width(32)
-            TableColumn("Zaman") {
-                Text("\(SubtitleTime.short($0.start)) → \(SubtitleTime.short($0.end))")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            .width(130)
-            TableColumn("Cümle", value: \.text)
-        }
     }
 
     private var statusBar: some View {

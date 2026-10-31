@@ -15,7 +15,7 @@ struct SubtitleAdderApp: App {
     var body: some Scene {
         WindowGroup("Subtitle Adder") {
             ContentView()
-                .frame(minWidth: 720, minHeight: 480)
+                .frame(minWidth: 760, minHeight: 600)
         }
     }
 }
