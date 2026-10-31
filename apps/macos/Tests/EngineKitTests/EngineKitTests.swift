@@ -9,6 +9,22 @@ import Testing
         == .stage(.unknown, fraction: nil))
 }
 
+@Test func decodesDownloadingModelStage() throws {
+    #expect(try EngineEvent.decode(#"{"event": "stage", "stage": "downloading_model", "fraction": 0.37}"#)
+        == .stage(.downloadingModel, fraction: 0.37))
+}
+
+@Test func listsModelsFromEngine() async throws {
+    let engine = try fakeEngine("""
+    echo '{"event": "models", "models": [{"id": "base", "size_mb": 145, "speed": 5, "accuracy": 2, "downloaded": true}, {"id": "large-v3", "size_mb": 3000, "speed": 1, "accuracy": 5, "downloaded": false}]}'
+    """)
+    let models = try await engine.models()
+    #expect(models == [
+        EngineModel(id: "base", sizeMB: 145, speed: 5, accuracy: 2, downloaded: true),
+        EngineModel(id: "large-v3", sizeMB: 3000, speed: 1, accuracy: 5, downloaded: false),
+    ])
+}
+
 @Test func decodesResultAndError() throws {
     let line = #"{"event": "result", "language": "tr", "duration": 2.0, "audio": "/a.wav", "outputs": [], "sentences": [{"id": 1, "start": 0.0, "end": 1.0, "text": "Merhaba.", "words": [{"start": 0.0, "end": 1.0, "text": "Merhaba."}]}]}"#
     guard case .result(let result) = try EngineEvent.decode(line) else { Issue.record("result bekleniyordu"); return }

@@ -31,6 +31,7 @@ struct ContentView: View {
         }
         .toolbar { toolbar }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
+        .task { await vm.loadModels() }
         .onChange(of: vm.video, initial: true) { _, url in player.load(url) }
         .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
         .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent]) { result in
@@ -52,11 +53,7 @@ struct ContentView: View {
             TextField("Dil (otomatik)", text: $vm.language)
                 .frame(width: 110)
                 .help("Konuşma dili kodu, ör. tr veya en. Boş bırakırsan otomatik algılanır.")
-            Picker("Model", selection: $vm.model) {
-                ForEach(SubtitleViewModel.models, id: \.self) { Text($0) }
-            }
-            .frame(width: 120)
-            .help("Büyük model daha doğru ama daha yavaş; ilk kullanımda indirilir.")
+            ModelPicker(selection: $vm.model, models: vm.models)
         }
         ToolbarItem(placement: .primaryAction) {
             if vm.isWorking {

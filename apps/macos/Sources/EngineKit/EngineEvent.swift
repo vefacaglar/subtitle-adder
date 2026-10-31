@@ -8,6 +8,7 @@ public enum EngineEvent: Sendable, Equatable {
 
     public enum Stage: String, Sendable {
         case extractingAudio = "extracting_audio"
+        case downloadingModel = "downloading_model"
         case loadingModel = "loading_model"
         case transcribing
         case segmenting

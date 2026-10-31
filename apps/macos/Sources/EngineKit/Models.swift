@@ -77,3 +77,25 @@ public enum SubtitleFormat: String, CaseIterable, Sendable, Identifiable {
     case srt, vtt, json
     public var id: String { rawValue }
 }
+
+/// Motorun `models --json` çıktısındaki katalog satırı.
+public struct EngineModel: Sendable, Equatable, Decodable, Identifiable {
+    public var id: String
+    public var sizeMB: Int
+    public var speed: Int
+    public var accuracy: Int
+    public var downloaded: Bool
+
+    public init(id: String, sizeMB: Int, speed: Int, accuracy: Int, downloaded: Bool) {
+        self.id = id
+        self.sizeMB = sizeMB
+        self.speed = speed
+        self.accuracy = accuracy
+        self.downloaded = downloaded
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, speed, accuracy, downloaded
+        case sizeMB = "size_mb"
+    }
+}

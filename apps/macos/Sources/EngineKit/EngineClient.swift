@@ -134,6 +134,31 @@ public struct EngineClient: Sendable {
         }
     }
 
+    /// Model kataloğunu ve yerel indirme durumunu alır (`models --json`, tek satır `models` olayı).
+    public func models() async throws -> [EngineModel] {
+        let run = try start(["models", "--json"], stdin: nil)
+        defer { run.cleanup() }
+        return try await withTaskCancellationHandler {
+            var line: String?
+            for try await text in run.stdout.bytes.lines where !text.isEmpty {
+                line = text
+            }
+            let status = await run.exitStatus()
+            try Task.checkCancellation()
+            let payload = line.flatMap { try? JSONDecoder().decode(ModelsPayload.self, from: Data($0.utf8)) }
+            if payload?.event == "error", let message = payload?.message {
+                throw EngineError.failed(message)
+            }
+            guard status == 0 else { throw run.failure(status) }
+            guard let payload, payload.event == "models", let models = payload.models else {
+                throw EngineError.failed("Motor model listesi yazmadı.")
+            }
+            return models
+        } onCancel: {
+            run.terminate()
+        }
+    }
+
     private func start(_ args: [String], stdin input: Data?) throws -> RunningEngine {
         let process = Process()
         process.executableURL = command.executable
@@ -159,6 +184,13 @@ public struct EngineClient: Sendable {
         }
         return RunningEngine(process: process, stdout: stdout.fileHandleForReading, log: log)
     }
+}
+
+/// `models --json` çıktısı: başarıda `models`, hatada `error` alanı dolu gelir.
+private struct ModelsPayload: Decodable {
+    let event: String
+    let models: [EngineModel]?
+    let message: String?
 }
 
 /// Çalışan motor süreci. Bekleyen görev iptal edilirse süreç sonlandırılır.
