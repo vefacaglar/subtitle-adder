@@ -56,11 +56,14 @@ Whisper modelleri ilk kullanımda Hugging Face önbelleğine iner (`~/.cache/hug
 
 ## Ajanlar (`.claude/agents/`)
 
-- `media-engineer` — ses ayırma, medya (motor)
-- `stt-engineer` — STT backend'leri, modeller (motor)
-- `subtitle-engineer` — cümle bölme, altyazı formatları (motor)
-- `macos-ui-engineer` — SwiftUI uygulaması ve EngineKit
-- `module-reviewer` — commit öncesi review (kod yazmaz)
+Model dağılımı: keşif Haiku, kod yazan ajanlar Sonnet, review Opus.
+
+- `explorer` (Haiku) — salt okunur keşif, API doğrulama
+- `media-engineer` (Sonnet) — ses ayırma, medya (motor)
+- `stt-engineer` (Sonnet) — STT backend'leri, modeller (motor)
+- `subtitle-engineer` (Sonnet) — cümle bölme, altyazı formatları (motor)
+- `macos-ui-engineer` (Sonnet) — SwiftUI uygulaması ve EngineKit
+- `module-reviewer` (Opus) — commit öncesi review (kod yazmaz)
 
 Ana oturum koordinatördür: işi ajana verir, testlerden ve review'dan geçirip küçük topikal commit alır, istenmeden push yapmaz.
 
