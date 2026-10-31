@@ -56,9 +56,13 @@ def test_models_json_lists_catalog_and_cache_state(capsys, monkeypatch):
     assert len(lines) == 1
     event = json.loads(lines[0])
     assert event["event"] == "models"
-    assert [m["id"] for m in event["models"]] == ["base", "small", "medium", "large-v3-turbo", "large-v3"]
-    assert set(event["models"][0]) == {"id", "size_mb", "speed", "accuracy", "downloaded"}
-    assert [m["downloaded"] for m in event["models"]] == [True, True, False, False, False]
+    assert [m["id"] for m in event["models"]] == [
+        "base", "gigaam-v3", "small", "parakeet-v3", "canary-1b-v2", "medium", "large-v3-turbo", "large-v3",
+    ]
+    assert set(event["models"][0]) == {"id", "backend", "languages", "size_mb", "speed", "accuracy", "downloaded"}
+    assert event["models"][1]["backend"] == "onnx" and event["models"][1]["languages"] == ["ru"]
+    assert event["models"][0]["languages"] is None
+    assert [m["downloaded"] for m in event["models"]] == [True, False, True, False, False, False, False, False]
 
 
 def test_models_table_without_json(capsys, monkeypatch):
@@ -97,6 +101,33 @@ def test_downloading_model_stage_precedes_loading(tone_video, tmp_path, capsys, 
     assert reported == [0.25, 0.5, 0.99, 1.0]  # ilerleme aynen protokole yansır
     assert stages.index(("downloading_model", 0.0)) < stages.index(("loading_model", None))
     assert events[-1]["event"] == "result"
+
+
+def test_onnx_catalog_model_uses_onnx_transcriber(tone_video, tmp_path, capsys, monkeypatch):
+    from subtitle_engine import models
+
+    calls: list[tuple] = []
+
+    def fake_onnx(name, quantization):
+        calls.append((name, quantization))
+        return FakeTranscriber()
+
+    monkeypatch.setattr("subtitle_engine.transcribe.OnnxAsrTranscriber", fake_onnx)
+    monkeypatch.setattr(models, "needs_download", lambda model_id: False)
+
+    code = cli.main(["transcribe", str(tone_video), "-m", "parakeet-v3", "-l", "pt", "-o", str(tmp_path), "--json"])
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert code == 0 and events[-1]["event"] == "result"
+    assert calls == [("nemo-parakeet-tdt-0.6b-v3", "int8")]
+
+
+def test_language_mismatch_is_turkish_error(tmp_path, capsys):
+    code = cli.main(["transcribe", str(tmp_path / "yok.mp4"), "-m", "gigaam-v3", "-l", "tr", "--json"])
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert code == 1
+    assert events == [{"event": "error", "message": "GigaAM yalnız Rusça destekler."}]
 
 
 def test_cached_model_skips_downloading_stage(tone_video, tmp_path, capsys, monkeypatch):

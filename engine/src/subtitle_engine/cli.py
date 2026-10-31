@@ -2,7 +2,7 @@
 
 Olaylar:
   {"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|segmenting", "fraction": 0.42|null}
-  {"event": "models", "models": [{"id", "size_mb", "speed", "accuracy", "downloaded"}]}
+  {"event": "models", "models": [{"id", "backend", "languages", "size_mb", "speed", "accuracy", "downloaded"}]}
   {"event": "result", "language": "tr", "duration": 12.3, "audio": "...", "outputs": [...], "sentences": [...]}
   {"event": "error", "message": "..."}
 """
@@ -31,9 +31,9 @@ def _transcribe(args: argparse.Namespace) -> int:
             print(f"… {stage}", file=sys.stderr)
 
     def factory():
-        from .transcribe import FasterWhisperTranscriber
+        from .transcribe import create_transcriber
 
-        return FasterWhisperTranscriber(args.model)
+        return create_transcriber(args.model)
 
     result = pipeline.run(
         args.video.resolve(),
@@ -76,6 +76,8 @@ def _models(args: argparse.Namespace) -> int:
     rows = [
         {
             "id": info.id,
+            "backend": info.backend,
+            "languages": list(info.languages) if info.languages is not None else None,
             "size_mb": info.size_mb,
             "speed": info.speed,
             "accuracy": info.accuracy,
@@ -102,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("video", type=Path)
     t.add_argument("-o", "--out-dir", type=Path, default=Path("output"))
     t.add_argument("-l", "--language", default=None, help="ör. tr, en (boşsa otomatik algılanır)")
-    t.add_argument("-m", "--model", default="small", help="katalog modeli (models komutu listeler) ya da tiny/turbo gibi faster-whisper adı")
+    t.add_argument("-m", "--model", default="small", help="model kimliği (models listeler); diğer adlar faster-whisper'a gider")
     t.add_argument("-f", "--format", nargs="+", choices=subtitles.FORMATS, default=["srt"])
     t.add_argument("--max-chars", type=int, default=84)
     t.add_argument("--max-duration", type=float, default=6.0)

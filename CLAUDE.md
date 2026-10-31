@@ -25,17 +25,19 @@ Motor hattı (`engine/src/subtitle_engine/`):
 stdout'a satır başına bir JSON olay yazar:
 
 - `{"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|segmenting", "fraction": 0.42 | null}`
-- `{"event": "models", "models": [{"id", "size_mb", "speed", "accuracy", "downloaded"}]}`
+- `{"event": "models", "models": [{"id", "backend", "languages", "size_mb", "speed", "accuracy", "downloaded"}]}`
 - `{"event": "result", "language", "duration", "audio", "outputs": [...], "sentences": [{"id", "start", "end", "text", "words": [{"start", "end", "text"}]}]}`
 - `{"event": "error", "message": "..."}` (çıkış kodu 1)
 
-`downloading_model` yalnız katalogdaki (`models.py`) bir model önbellekte yoksa, `loading_model`'den önce yayınlanır; `fraction` indirilen baytın toplam bayta oranıdır (0..1, en fazla ~10 Hz). Katalog dışı adlar (`turbo`, `tiny` vb.) faster-whisper'ın kendi indirmesine bırakılır, bu aşama yayınlanmaz.
+`models` olayında `backend` `"whisper"` (faster-whisper) ya da `"onnx"` (onnx-asr); `languages` Whisper'da `null` (tüm diller), diğerlerinde desteklenen ISO 639-1 kodlarının listesidir. Katalog kimlikleri: `base`, `small`, `medium`, `large-v3-turbo`, `large-v3` (Whisper) ve `parakeet-v3` (NVIDIA Parakeet TDT 0.6B v3), `canary-1b-v2` (NVIDIA Canary 1B v2), `gigaam-v3` (GigaAM v3 e2e RNN-T, yalnız `ru`). Parakeet ve Canary 25 Avrupa dilini (`pt`, `es`, `ru` dahil) destekler; `tr` yalnız Whisper'dadır. Seçilen dil modelin `languages` listesinde yoksa motor `error` olayıyla Türkçe açıklama döndürür (ör. "GigaAM yalnız Rusça destekler.").
+
+`downloading_model` yalnız katalogdaki (`models.py`) bir model önbellekte yoksa, `loading_model`'den önce yayınlanır; `fraction` indirilen baytın toplam bayta oranıdır (0..1, en fazla ~10 Hz). onnx modellerinde ortak silero VAD dosyası da bu aşamada indirilir. Katalog dışı adlar (`turbo`, `tiny` vb.) faster-whisper'ın kendi indirmesine bırakılır, bu aşama yayınlanmaz.
 
 `subtitle-engine render --format srt [--out F]`: stdin'den cümle JSON dizisi alır (uygulamada düzenlenmiş hali), altyazı metni yazar. Altyazı biçimleri yalnız motorda üretilir.
 
-`subtitle-engine models [--json]`: model kataloğunu (`base`, `small`, `medium`, `large-v3-turbo`, `large-v3`) yaklaşık boyut, göreli hız/doğruluk ve yerel önbellek durumuyla listeler; ağa çıkmaz. `--json` tek satır `models` olayı yazar, aksi halde okunur tablo.
+`subtitle-engine models [--json]`: model kataloğunu (`base`, `gigaam-v3`, `small`, `parakeet-v3`, `canary-1b-v2`, `medium`, `large-v3-turbo`, `large-v3`) yaklaşık boyut, göreli hız/doğruluk, backend, desteklenen diller ve yerel önbellek durumuyla listeler; ağa çıkmaz. `--json` tek satır `models` olayı yazar, aksi halde okunur tablo.
 
-stderr serbest log'dur (model yükleme uyarıları vb.); uygulamalar onu dosyaya yönlendirir, protokol değildir. Protokol değişirse `cli.py`'deki `PROTOCOL_VERSION`, `EngineEvent.swift` ve bu bölüm birlikte güncellenir. Sürüm 1'de kalır: `downloading_model` aşaması ve `models` komutu geriye uyumlu eklemelerdir.
+stderr serbest log'dur (model yükleme uyarıları vb.); uygulamalar onu dosyaya yönlendirir, protokol değildir. Protokol değişirse `cli.py`'deki `PROTOCOL_VERSION`, `EngineEvent.swift` ve bu bölüm birlikte güncellenir. Sürüm 1'de kalır: `downloading_model` aşaması, `models` komutu, `models` olayındaki `backend`/`languages` alanları ve onnx model kimlikleri geriye uyumlu eklemelerdir.
 
 Uygulama motoru şu sırayla bulur: `SUBTITLE_ENGINE` ortam değişkeni → bundle içindeki `subtitle-engine` → geliştirmede `uv run --project engine subtitle-engine`.
 

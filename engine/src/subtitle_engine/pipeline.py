@@ -32,6 +32,10 @@ def run(
     config: SegmenterConfig = SegmenterConfig(),
     on_stage: StageFn = lambda stage, fraction: None,
 ) -> PipelineResult:
+    info = models.find(model) if model else None
+    if language and info is not None and info.languages is not None and language not in info.languages:
+        raise ValueError(models.support_error(info, language))
+
     on_stage("extracting_audio", None)
     audio = extract_audio(video, out_dir / f"{video.stem}.wav")
 
