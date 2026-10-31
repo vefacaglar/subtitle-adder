@@ -1,3 +1,4 @@
+import Combine
 import EngineKit
 import SwiftUI
 
@@ -6,7 +7,7 @@ struct SentenceEditorView: View {
     @Bindable var vm: SubtitleViewModel
     let player: PlayerModel
     @Environment(\.undoManager) private var undoManager
-    @FocusState private var focusedID: Int?
+    @FocusState private var focusedUID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,31 +25,53 @@ struct SentenceEditorView: View {
         }
         .onAppear { vm.undoManager = undoManager }
         .onChange(of: undoManager) { _, new in vm.undoManager = new }
-        .onChange(of: vm.selection) { _, id in
-            if let id, let sentence = vm.sentences.first(where: { $0.id == id }) {
+        .onChange(of: focusedUID) { old, new in
+            if let new, let sentence = vm.sentences.first(where: { $0.uid == new }) {
+                vm.beginEditing(sentence)
+            } else if old != nil {
+                vm.commitDraft()
+            }
+        }
+        .onChange(of: vm.selection) { _, uid in
+            if let uid, let sentence = vm.sentences.first(where: { $0.uid == uid }) {
                 player.seek(to: sentence.start)
             }
+        }
+        // Geri alma/yineleme başlamadan önce odaklı satırın taslağını yaz ve odağı bırak.
+        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerWillUndoChange)) { note in
+            guard let manager = note.object as? UndoManager, manager === undoManager else { return }
+            finishEditing()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerWillRedoChange)) { note in
+            guard let manager = note.object as? UndoManager, manager === undoManager else { return }
+            finishEditing()
         }
     }
 
     private var list: some View {
         ScrollViewReader { proxy in
             List(selection: $vm.selection) {
-                ForEach(vm.sentences) { sentence in
+                ForEach(vm.sentences, id: \.uid) { sentence in
                     SentenceRow(
                         sentence: sentence,
-                        isActive: sentence.id == player.activeID,
-                        focus: $focusedID
-                    ) { vm.setText($0, for: sentence.id) }
+                        isActive: sentence.uid == player.activeID,
+                        focus: $focusedUID,
+                        vm: vm
+                    )
                 }
             }
-            .onChange(of: player.activeID) { _, id in
+            .onChange(of: player.activeID) { _, uid in
                 // Kullanıcı yazarken ya da duraklatmışken listeyi kaydırma.
-                guard let id, player.isPlaying, focusedID == nil else { return }
-                withAnimation { proxy.scrollTo(id, anchor: .center) }
+                guard let uid, player.isPlaying, focusedUID == nil else { return }
+                withAnimation { proxy.scrollTo(uid, anchor: .center) }
             }
-            .onDeleteCommand { vm.deleteSelected() }
+            .onDeleteCommand {
+                finishEditing()
+                vm.deleteSelected()
+            }
             .onKeyPress(.space) {
+                // Metin alanı odaktayken boşluk yazılsın.
+                guard focusedUID == nil else { return .ignored }
                 player.togglePlayback()
                 return .handled
             }
@@ -60,10 +83,22 @@ struct SentenceEditorView: View {
             timingControls("Başlangıç", edge: .start, value: vm.selectedSentence?.start)
             timingControls("Bitiş", edge: .end, value: vm.selectedSentence?.end)
             Spacer(minLength: 0)
-            Button("Sonrakiyle birleştir", systemImage: "arrow.triangle.merge") { vm.mergeSelectedWithNext() }
-                .disabled(!vm.canMergeSelected)
-            Button("Sil", systemImage: "trash") { vm.deleteSelected() }
-                .disabled(vm.selection == nil)
+            Button("Böl", systemImage: "scissors") {
+                finishEditing()
+                vm.splitSelected(at: player.currentTime)
+            }
+            .disabled(!vm.canSplitSelected(at: player.currentTime))
+            .help("Satırı oynatma konumundan ikiye böl")
+            Button("Sonrakiyle birleştir", systemImage: "arrow.triangle.merge") {
+                finishEditing()
+                vm.mergeSelectedWithNext()
+            }
+            .disabled(!vm.canMergeSelected)
+            Button("Sil", systemImage: "trash") {
+                finishEditing()
+                vm.deleteSelected()
+            }
+            .disabled(vm.selection == nil)
         }
         .controlSize(.small)
         .padding(.horizontal, 12)
@@ -87,22 +122,19 @@ struct SentenceEditorView: View {
         }
         .disabled(vm.selection == nil)
     }
+
+    /// Odaklı metin alanını bırakır ve taslağı satıra yazar.
+    private func finishEditing() {
+        focusedUID = nil
+        vm.commitDraft()
+    }
 }
 
 private struct SentenceRow: View {
     let sentence: Sentence
     let isActive: Bool
-    var focus: FocusState<Int?>.Binding
-    let commitText: (String) -> Void
-    @State private var draft: String
-
-    init(sentence: Sentence, isActive: Bool, focus: FocusState<Int?>.Binding, commitText: @escaping (String) -> Void) {
-        self.sentence = sentence
-        self.isActive = isActive
-        self.focus = focus
-        self.commitText = commitText
-        _draft = State(initialValue: sentence.text)
-    }
+    var focus: FocusState<UUID?>.Binding
+    let vm: SubtitleViewModel
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -115,26 +147,17 @@ private struct SentenceRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(width: 124, alignment: .leading)
-            TextField("Cümle", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...4)
-                .focused(focus, equals: sentence.id)
-                .onSubmit(commit)
+            TextField("Cümle", text: Binding(
+                get: { vm.draftText(for: sentence) },
+                set: { vm.updateDraft($0, for: sentence.uid) }
+            ), axis: .vertical)
+            .textFieldStyle(.plain)
+            .lineLimit(1...4)
+            .focused(focus, equals: sentence.uid)
+            .onSubmit { vm.commitDraft() }
         }
         .padding(.vertical, 3)
         .padding(.horizontal, 4)
         .background(isActive ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
-        .onChange(of: focus.wrappedValue) { old, new in
-            if old == sentence.id, new != sentence.id { commit() }
-        }
-        .onChange(of: sentence.text) { _, new in
-            if focus.wrappedValue != sentence.id { draft = new }
-        }
-    }
-
-    private func commit() {
-        let text = draft.replacingOccurrences(of: "\n", with: " ")
-        draft = text
-        commitText(text)
     }
 }

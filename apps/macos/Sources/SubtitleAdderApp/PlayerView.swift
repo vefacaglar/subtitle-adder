@@ -22,7 +22,7 @@ struct PlayerView: View {
 
     private var activeText: String? {
         guard let id = model.activeID else { return nil }
-        let text = sentences.first { $0.id == id }?.text ?? ""
+        let text = sentences.first { $0.uid == id }?.text ?? ""
         return text.isEmpty ? nil : text
     }
 

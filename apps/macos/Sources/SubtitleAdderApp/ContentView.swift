@@ -26,7 +26,7 @@ struct ContentView: View {
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first else { return false }
-            vm.video = url
+            vm.openVideo(url)
             return true
         }
         .toolbar { toolbar }
@@ -34,7 +34,7 @@ struct ContentView: View {
         .onChange(of: vm.video, initial: true) { _, url in player.load(url) }
         .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
         .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent]) { result in
-            if case .success(let url) = result { vm.video = url }
+            if case .success(let url) = result { vm.openVideo(url) }
         }
         .fileExporter(
             isPresented: Binding(get: { exportDocument != nil }, set: { if !$0 { exportDocument = nil } }),

@@ -14,8 +14,8 @@ final class PlayerModel {
     private(set) var currentTime: Double = 0
     private(set) var isPlaying = false
     private(set) var videoSize = CGSize(width: 16, height: 9)
-    /// O an oynayan satırın kimliği; yalnız değişince güncellenir (gereksiz yeniden çizim olmasın).
-    private(set) var activeID: Int?
+    /// O an oynayan satırın kararlı kimliği; yalnız değişince güncellenir (gereksiz yeniden çizim olmasın).
+    private(set) var activeID: UUID?
     private var sentences: [Sentence] = []
 
     init() {
@@ -32,6 +32,8 @@ final class PlayerModel {
         player.pause()
         isPlaying = false
         currentTime = 0
+        // Yeni video ölçüsü gelene kadar eski videonun oranını kullanma.
+        videoSize = CGSize(width: 16, height: 9)
         updateActive()
         guard let url else {
             player.replaceCurrentItem(with: nil)
@@ -85,7 +87,7 @@ final class PlayerModel {
     }
 
     private func updateActive() {
-        let id = sentences.activeIndex(at: currentTime).map { sentences[$0].id }
+        let id = sentences.activeIndex(at: currentTime).map { sentences[$0].uid }
         if id != activeID { activeID = id }
     }
 }

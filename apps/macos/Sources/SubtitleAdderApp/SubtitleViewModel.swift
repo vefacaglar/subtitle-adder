@@ -12,15 +12,23 @@ final class SubtitleViewModel {
         case failed(String)
     }
 
-    var video: URL?
     var language = ""            // boş = otomatik algıla
     var model = "small"
     var status: Status = .idle
     var detectedLanguage: String?
     var sentences: [Sentence] = []
-    var selection: Int?          // seçili satırın kimliği
+    var selection: UUID?         // seçili satırın `uid` değeri
+    /// Düzenlenen satırın henüz commit edilmemiş metni (odaklıyken kullanılır).
+    var draft: TextDraft?
     /// Pencerenin geri alma yöneticisi (görünüm tarafından verilir).
     @ObservationIgnored weak var undoManager: UndoManager?
+
+    private(set) var video: URL?
+
+    struct TextDraft: Equatable {
+        var uid: UUID
+        var text: String
+    }
 
     static let models = ["tiny", "base", "small", "medium", "large-v3", "turbo"]
 
@@ -32,11 +40,27 @@ final class SubtitleViewModel {
         if case .working = status { true } else { false }
     }
 
+    /// Yeni video seçildiğinde eski videoya ait işi, altyazıları ve geri alma yığınını temizler.
+    func openVideo(_ url: URL?) {
+        guard url != video else { return }
+        job?.cancel()
+        job = nil
+        jobID = UUID()
+        sentences = []
+        selection = nil
+        detectedLanguage = nil
+        draft = nil
+        status = .idle
+        undoManager?.removeAllActions()
+        video = url
+    }
+
     func generate() {
         guard let video else { return }
         guard let engine else { status = .failed(EngineError.notFound.localizedDescription); return }
         sentences = []
         selection = nil
+        draft = nil
         undoManager?.removeAllActions()
         detectedLanguage = nil
         status = .working("Başlıyor…", fraction: nil)

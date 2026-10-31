@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import EngineKit
 
@@ -70,6 +71,7 @@ import Testing
 
     @Test func mergeJoinsTextTimesAndWordsThenRenumbers() {
         var s = sample()
+        let firstUID = s[0].uid
         let r7 = s.mergeWithNext(at: 0)
         #expect(r7)
         #expect(s.count == 2)
@@ -77,6 +79,7 @@ import Testing
         #expect(s[0].start == 0.5)
         #expect(s[0].end == 4.0)
         #expect(s[0].words.count == 1)
+        #expect(s[0].uid == firstUID)
         #expect(s.map(\.id) == [1, 2])
         #expect(s[1].text == "İyiyim.")
     }
@@ -96,5 +99,141 @@ import Testing
         let r10 = s.setText("Selam.", at: 0)
         #expect(r10)
         #expect(s[0].text == "Selam.")
+    }
+
+    @Test func nudgeNeverMovesAgainstRequestedDirection() {
+        var s = [
+            Sentence(id: 1, start: 0.0, end: 5.20, text: "Önceki"),
+            Sentence(id: 2, start: 5.05, end: 6.00, text: "Sonraki"),
+        ]
+        // Başlangıç önceki satırın bitişinin altında; geriye istemek onu ileri itmemeli.
+        let backward = s.nudgeStart(at: 1, by: -SentenceEditing.nudgeStep)
+        #expect(!backward)
+        #expect(s[1].start == 5.05)
+        // Geçerliliğe doğru hareket istenen yönde olduğu için kabul edilir.
+        let forward = s.nudgeStart(at: 1, by: SentenceEditing.nudgeStep)
+        #expect(forward)
+        #expect(s[1].start == 5.20)
+    }
+
+    @Test func setStartNeverJumpsAgainstRequestedDirection() {
+        var s = [
+            Sentence(id: 1, start: 0.0, end: 5.20, text: "Önceki"),
+            Sentence(id: 2, start: 5.05, end: 6.00, text: "Sonraki"),
+        ]
+        let backward = s.setStart(5.0, at: 1)
+        #expect(!backward)
+        #expect(s[1].start == 5.05)
+        let forward = s.setStart(5.15, at: 1)
+        #expect(forward)
+        #expect(s[1].start == 5.20)
+    }
+
+    @Test func nudgeEndDoesNotMoveBackwardsWhenSentenceIsTooShort() {
+        var s = [Sentence(id: 1, start: 2.0, end: 2.05, text: "Kısa")]
+        let backward = s.nudgeEnd(at: 0, by: -SentenceEditing.nudgeStep)
+        #expect(!backward)
+        #expect(s[0].end == 2.05)
+        let forward = s.nudgeEnd(at: 0, by: SentenceEditing.nudgeStep)
+        #expect(forward)
+        #expect(s[0].end == 2.15)
+    }
+
+    @Test func splitUsesWordBoundaryAtPlayhead() {
+        var s = [
+            Sentence(
+                id: 5, start: 0.0, end: 4.0, text: "Merhaba dünya",
+                words: [
+                    Word(start: 0.0, end: 1.0, text: "Merhaba"),
+                    Word(start: 2.0, end: 4.0, text: "dünya"),
+                ]
+            ),
+        ]
+        let firstUID = s[0].uid
+        let split = s.splitSentence(at: 0, at: 1.5)
+        #expect(split)
+        #expect(s.count == 2)
+        #expect(s[0].text == "Merhaba")
+        #expect(s[1].text == "dünya")
+        #expect(s[0].start == 0.0)
+        #expect(s[0].end == 1.5)
+        #expect(s[1].start == 1.5)
+        #expect(s[1].end == 4.0)
+        #expect(s[0].uid == firstUID)
+        #expect(s[1].uid != firstUID)
+        #expect(s.map(\.id) == [1, 2])
+        #expect(s[0].words == [Word(start: 0.0, end: 1.0, text: "Merhaba")])
+        #expect(s[1].words == [Word(start: 2.0, end: 4.0, text: "dünya")])
+    }
+
+    @Test func splitInsideFirstWordStillUsesWordBoundary() {
+        var s = [
+            Sentence(
+                id: 1, start: 0.0, end: 4.0, text: "Merhaba dünya",
+                words: [
+                    Word(start: 0.0, end: 1.0, text: "Merhaba"),
+                    Word(start: 2.0, end: 4.0, text: "dünya"),
+                ]
+            ),
+        ]
+        let split = s.splitSentence(at: 0, at: 0.2)
+        #expect(split)
+        #expect(s[0].text == "Merhaba")
+        #expect(s[0].end == 1.5)
+        #expect(s[1].start == 1.5)
+    }
+
+    @Test func splitWithoutWordsUsesMiddleWhitespaceAndProportionalTime() {
+        var s = [Sentence(id: 1, start: 0.0, end: 4.0, text: "Bir iki üç dört")]
+        let split = s.splitSentence(at: 0, at: 3.5)
+        #expect(split)
+        #expect(s.count == 2)
+        #expect(s[0].text == "Bir iki")
+        #expect(s[1].text == "üç dört")
+        #expect(s[0].end == 2.0)
+        #expect(s[1].start == 2.0)
+        #expect(s[0].words.isEmpty)
+        #expect(s[1].words.isEmpty)
+    }
+
+    @Test func splitRejectsInvalidRequestsWithoutChangingList() {
+        var s = sample()
+        let outside = s.splitSentence(at: 0, at: 10.0)
+        #expect(!outside)
+        let badIndex = s.splitSentence(at: 9, at: 1.0)
+        #expect(!badIndex)
+
+        var singleWord = [Sentence(id: 1, start: 0.0, end: 2.0, text: "Tek")]
+        let noSpace = singleWord.splitSentence(at: 0, at: 1.0)
+        #expect(!noSpace)
+
+        var tooShort = [Sentence(id: 1, start: 0.0, end: 0.15, text: "Bir iki")]
+        let short = tooShort.splitSentence(at: 0, at: 0.075)
+        #expect(!short)
+        #expect(s == sample())
+        #expect(singleWord.count == 1)
+        #expect(tooShort.count == 1)
+    }
+
+    @Test func canSplitMatchesSplitPrerequisites() {
+        let splittable = [Sentence(id: 1, start: 0.0, end: 4.0, text: "Bir iki")]
+        #expect(splittable.canSplit(at: 0, at: 2.0))
+        #expect(!splittable.canSplit(at: 0, at: 5.0))
+        let single = [Sentence(id: 1, start: 0.0, end: 4.0, text: "Tek")]
+        #expect(!single.canSplit(at: 0, at: 2.0))
+    }
+
+    @Test func uidIsStableForSelectionAndStaysOutOfJSON() throws {
+        let sentence = Sentence(
+            id: 1, start: 0.0, end: 1.0, text: "Merhaba.",
+            words: [Word(start: 0.0, end: 1.0, text: "Merhaba.")]
+        )
+        let data = try JSONEncoder().encode(sentence)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(!json.contains("uid"))
+        let decoded = try JSONDecoder().decode(Sentence.self, from: data)
+        #expect(decoded.uid != sentence.uid)
+        #expect(decoded == sentence)
+        #expect(decoded.text == "Merhaba.")
     }
 }
