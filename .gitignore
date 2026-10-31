@@ -1,0 +1,20 @@
+# SwiftPM / Xcode
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# Üretilen medya ve çıktılar
+output/
+samples/
+*.wav
+*.aiff
+
+# Yerel Claude ayarları
+.claude/settings.local.json
