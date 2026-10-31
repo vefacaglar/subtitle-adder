@@ -65,6 +65,15 @@ Model dağılımı: keşif Haiku, kod yazan ajanlar Sonnet, review Opus.
 - `macos-ui-engineer` (Sonnet) — SwiftUI uygulaması ve EngineKit
 - `module-reviewer` (Opus) — commit öncesi review (kod yazmaz)
 
+Aynı ajanlar DeepSeek ile de çalışır (pi, opencode sağlayıcısı, thinking max):
+
+```bash
+scripts/pi-agent.sh subtitle-engineer "<görev>"
+PI_MODEL=opencode-go/deepseek-v4-pro:max scripts/pi-agent.sh stt-engineer "<görev>"
+```
+
+Betik `.claude/agents/<ajan>.md` tanımını sistem promptu olarak verir; explorer ve module-reviewer salt okunurdur. pi oturumları `~/.pi/agent/sessions/` altında kalır.
+
 Ana oturum koordinatördür: işi ajana verir, testlerden ve review'dan geçirip küçük topikal commit alır, istenmeden push yapmaz.
 
 ## Kurallar
