@@ -1,24 +1,38 @@
 {
+    "version": "0.2.0",
     "configurations": [
         {
+            "name": "Subtitle Adder (macOS)",
             "type": "swift",
             "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:subtitle-adder}/apps/macos",
-            "name": "Debug SubtitleAdderApp (apps/macos)",
             "target": "SubtitleAdderApp",
             "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug SubtitleAdderApp (apps/macos)"
+            "cwd": "${workspaceFolder}/apps/macos",
+            "args": [],
+            "preLaunchTask": "Hazırla (motor + uygulama)"
         },
         {
-            "type": "swift",
+            "name": "Motor: demo videoyu işle (Python)",
+            "type": "debugpy",
             "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:subtitle-adder}/apps/macos",
-            "name": "Release SubtitleAdderApp (apps/macos)",
-            "target": "SubtitleAdderApp",
-            "configuration": "release",
-            "preLaunchTask": "swift: Build Release SubtitleAdderApp (apps/macos)"
+            "module": "subtitle_engine.cli",
+            "args": ["transcribe", "${workspaceFolder}/samples/demo.mp4", "-m", "base", "-l", "tr", "-o", "${workspaceFolder}/output", "-f", "srt", "vtt", "json"],
+            "cwd": "${workspaceFolder}/engine",
+            "python": "${workspaceFolder}/engine/.venv/bin/python",
+            "justMyCode": true,
+            "console": "integratedTerminal",
+            "preLaunchTask": "engine: uv sync"
+        },
+        {
+            "name": "Motor: testler (pytest)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-q"],
+            "cwd": "${workspaceFolder}/engine",
+            "python": "${workspaceFolder}/engine/.venv/bin/python",
+            "console": "integratedTerminal",
+            "preLaunchTask": "engine: uv sync"
         }
     ]
 }

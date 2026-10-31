@@ -1,0 +1,53 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "engine: uv sync",
+            "type": "shell",
+            "command": "uv sync",
+            "options": { "cwd": "${workspaceFolder}/engine" },
+            "problemMatcher": [],
+            "presentation": { "reveal": "silent" }
+        },
+        {
+            "label": "app: build",
+            "type": "shell",
+            "command": "swift build --product SubtitleAdderApp",
+            "options": { "cwd": "${workspaceFolder}/apps/macos" },
+            "problemMatcher": ["$swiftc"],
+            "group": "build",
+            "presentation": { "reveal": "silent" }
+        },
+        {
+            "label": "Hazırla (motor + uygulama)",
+            "dependsOn": ["engine: uv sync", "app: build"],
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Uygulamayı çalıştır",
+            "type": "shell",
+            "command": "swift run SubtitleAdderApp",
+            "options": { "cwd": "${workspaceFolder}/apps/macos" },
+            "dependsOn": ["engine: uv sync"],
+            "problemMatcher": ["$swiftc"],
+            "isBackground": false
+        },
+        {
+            "label": "Testler (motor + uygulama)",
+            "type": "shell",
+            "command": "(cd engine && uv run pytest) && (cd apps/macos && swift test)",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": ["$swiftc"]
+        },
+        {
+            "label": "Uçtan uca test (gerçek motor)",
+            "type": "shell",
+            "command": "ENGINE_E2E=1 swift test --filter realEngineOnDemoVideo",
+            "options": { "cwd": "${workspaceFolder}/apps/macos" },
+            "group": "test",
+            "problemMatcher": ["$swiftc"]
+        }
+    ]
+}
