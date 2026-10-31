@@ -58,6 +58,15 @@ ProgressFn = Callable[[float], None]
 # aynı listeyi kullanınca indirme boyutu ve ilerleme oranı örtüşür.
 ALLOW_PATTERNS = ("config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*")
 
+# CTranslate2 çeviri modelleri: ağırlıklar, yapılandırma ve paylaşılan sözlük.
+TRANSLATION_FILES = ("config.json", "model.bin", "shared_vocabulary.json", "tokenizer.json")
+# MADLAD T5 tokenizer'ı sentencepiece modeliyle gelir; NLLB deposunda yalnız tokenizer.json var.
+MADLAD_FILES = (*TRANSLATION_FILES, "spiece.model")
+
+# Katalogda ilan edilen çeviri dilleri (ISO 639-1). Modeller daha fazlasını bilir;
+# arayüz ve doğrulama bu listeyi kullanır.
+TRANSLATION_LANGUAGES = ("tr", "en", "pt", "es", "ru")
+
 # onnx-asr modelleri int8 kullanır: hem hızlı hem de dosyalar daha küçük.
 VAD_REPO = "istupakov/silero-vad-onnx"
 VAD_FILE = "silero_vad.onnx"
@@ -73,7 +82,8 @@ PROGRESS_INTERVAL = 0.1
 
 _MIB = 1024 * 1024
 
-Backend = Literal["whisper", "onnx"]
+Backend = Literal["whisper", "onnx", "ctranslate2"]
+ModelKind = Literal["transcription", "translation"]
 
 
 @dataclass(frozen=True)
@@ -90,11 +100,13 @@ class ModelInfo:
     onnx_model: str | None = None  # onnx-asr model adı (yalnız backend="onnx")
     quantization: str | None = None  # onnx-asr quantization değeri
     files: tuple[str, ...] = ALLOW_PATTERNS  # repo içinde indirilecek dosya desenleri
+    kind: ModelKind = "transcription"  # çeviri modelleri arayüzde ayrı listelenir
+    license: str = "MIT"  # model kartındaki lisans (SPDX kısa adı)
 
 
 # Sıra arayüzdeki liste sırasıdır: küçükten büyüğe.
 KATALOG: tuple[ModelInfo, ...] = (
-    ModelInfo(id="base", repo="Systran/faster-whisper-base", size_mb=145, speed=5, accuracy=2),
+    ModelInfo(id="base", repo="Systran/faster-whisper-base", size_mb=145, speed=5, accuracy=2, license="MIT"),
     ModelInfo(
         id="gigaam-v3",
         repo="istupakov/gigaam-v3-onnx",
@@ -105,6 +117,7 @@ KATALOG: tuple[ModelInfo, ...] = (
         languages=("ru",),
         onnx_model="gigaam-v3-e2e-rnnt",
         quantization="int8",
+        license="MIT",
         files=(
             "config.json",
             "v3_e2e_rnnt_vocab.txt",
@@ -113,7 +126,7 @@ KATALOG: tuple[ModelInfo, ...] = (
             "v3_e2e_rnnt_joint.int8.onnx",
         ),
     ),
-    ModelInfo(id="small", repo="Systran/faster-whisper-small", size_mb=465, speed=4, accuracy=3),
+    ModelInfo(id="small", repo="Systran/faster-whisper-small", size_mb=465, speed=4, accuracy=3, license="MIT"),
     ModelInfo(
         id="parakeet-v3",
         repo="istupakov/parakeet-tdt-0.6b-v3-onnx",
@@ -124,6 +137,7 @@ KATALOG: tuple[ModelInfo, ...] = (
         languages=EUROPEAN_LANGUAGES,
         onnx_model="nemo-parakeet-tdt-0.6b-v3",
         quantization="int8",
+        license="CC-BY-4.0",
         files=(
             "config.json",
             "vocab.txt",
@@ -141,15 +155,53 @@ KATALOG: tuple[ModelInfo, ...] = (
         languages=EUROPEAN_LANGUAGES,
         onnx_model="nemo-canary-1b-v2",
         quantization="int8",
+        license="CC-BY-4.0",
         files=("config.json", "vocab.txt", "encoder-model.int8.onnx", "decoder-model.int8.onnx"),
     ),
-    ModelInfo(id="medium", repo="Systran/faster-whisper-medium", size_mb=1500, speed=3, accuracy=4),
-    ModelInfo(id="large-v3-turbo", repo="mobiuslabsgmbh/faster-whisper-large-v3-turbo", size_mb=1600, speed=2, accuracy=4),
-    ModelInfo(id="large-v3", repo="Systran/faster-whisper-large-v3", size_mb=3000, speed=1, accuracy=5),
+    ModelInfo(id="medium", repo="Systran/faster-whisper-medium", size_mb=1500, speed=3, accuracy=4, license="MIT"),
+    ModelInfo(
+        id="large-v3-turbo",
+        repo="mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+        size_mb=1600,
+        speed=2,
+        accuracy=4,
+        license="MIT",
+    ),
+    ModelInfo(id="large-v3", repo="Systran/faster-whisper-large-v3", size_mb=3000, speed=1, accuracy=5, license="MIT"),
+    ModelInfo(
+        id="nllb-1.3b",
+        repo="OpenNMT/nllb-200-distilled-1.3B-ct2-int8",
+        size_mb=1336,
+        speed=3,
+        accuracy=4,
+        backend="ctranslate2",
+        languages=TRANSLATION_LANGUAGES,
+        files=TRANSLATION_FILES,
+        kind="translation",
+        license="CC-BY-NC-4.0",  # ticari kullanım yok
+    ),
+    ModelInfo(
+        id="madlad-3b",
+        repo="Nextcloud-AI/madlad400-3b-mt-ct2-int8",
+        size_mb=2839,
+        speed=2,
+        accuracy=5,
+        backend="ctranslate2",
+        languages=TRANSLATION_LANGUAGES,
+        files=MADLAD_FILES,
+        kind="translation",
+        license="Apache-2.0",
+    ),
 )
 KATALOG_BY_ID = {m.id: m for m in KATALOG}
 
-DISPLAY_NAMES = {"gigaam-v3": "GigaAM", "parakeet-v3": "Parakeet", "canary-1b-v2": "Canary"}
+DISPLAY_NAMES = {
+    "gigaam-v3": "GigaAM",
+    "parakeet-v3": "Parakeet",
+    "canary-1b-v2": "Canary",
+    "madlad-3b": "MADLAD",
+    "nllb-1.3b": "NLLB",
+}
 TURKISH_LANGUAGE_NAMES = {
     "ru": "Rusça",
     "pt": "Portekizce",
@@ -172,6 +224,9 @@ def is_downloaded(model_id: str) -> bool:
     info = find(model_id)
     if info is None:
         return False
+    if info.kind == "translation":
+        # Ağırlık, yapılandırma, sözlük ve tokenizer birlikte gerekli.
+        return all(_cached(info.repo, name) for name in info.files)
     if info.backend == "onnx":
         # onnx-asr dosyaları tek tek sorgular; VAD ortak ve küçük bir bağımlılık.
         return all(_cached(info.repo, name) for name in info.files) and _cached(VAD_REPO, VAD_FILE)
@@ -277,7 +332,7 @@ def ensure_model(model_id: str, on_progress: ProgressFn | None = None) -> str | 
     report = _reporter(_total_bytes(info), on_progress)
     path = huggingface_hub.snapshot_download(
         info.repo,
-        allow_patterns=list(ALLOW_PATTERNS),
+        allow_patterns=list(info.files),
         tqdm_class=_progress_tqdm(report),
     )
     if on_progress is not None:
@@ -323,7 +378,22 @@ def _repo_bytes(repo: str, patterns: Sequence[str], fallback: int = 0) -> int:
 
 def _total_bytes(info: ModelInfo) -> int:
     """Depodaki indirilecek dosyaların toplam baytı; sorgulanamazsa katalog tahmini."""
-    return _repo_bytes(info.repo, ALLOW_PATTERNS, info.size_mb * _MIB)
+    return _repo_bytes(info.repo, info.files, info.size_mb * _MIB)
+
+
+def model_dir(model_id: str) -> Path:
+    """İndirilmiş modelin yerel anlık görüntü klasörü; ağa çıkmaz.
+
+    CTranslate2 ağırlıkları tek dosya (model.bin) olarak arar; klasör yolu da aynı
+    anlık görüntüdedir. Model yoksa Türkçe `ModelError` yükseltir.
+    """
+    info = find(model_id)
+    if info is None:
+        raise ModelError(f"Bilinmeyen model: {model_id}. Geçerli kimlikleri 'models' komutu listeler.")
+    path = huggingface_hub.try_to_load_from_cache(info.repo, "model.bin")
+    if not isinstance(path, str):
+        raise ModelError(f"{info.id} modeli indirilmemiş; önce indirilmesi gerekiyor.")
+    return Path(path).parent
 
 
 def support_error(info: ModelInfo, language: str) -> str:

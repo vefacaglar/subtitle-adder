@@ -1,10 +1,11 @@
 """Motor CLI. `--json` ile stdout'a satır satır JSON olay yazar (native uygulamalar bunu okur).
 
 Olaylar:
-  {"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|segmenting", "fraction": 0.42|null}
-  {"event": "models", "models": [{"id", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "downloaded"}]}
+  {"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|segmenting|translating", "fraction": 0.42|null}
+  {"event": "models", "models": [{"id", "kind", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "license", "downloaded"}]}
   {"event": "deleted", "id": "small", "freed_mb": 465}
   {"event": "result", "language": "tr", "duration": 12.3, "audio": "...", "outputs": [...], "sentences": [...]}
+  {"event": "translation", "language": "es", "sentences": [...]}
   {"event": "error", "message": "..."}
 """
 import argparse
@@ -12,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import pipeline, subtitles
+from . import models, pipeline, subtitles
 from .models import KATALOG, Sentence, cached_disk_mb, delete_model, disk_mb, is_downloaded
 from .sentences import SegmenterConfig
 
@@ -72,18 +73,58 @@ def _render(args: argparse.Namespace) -> int:
     return 0
 
 
+def _translate(args: argparse.Namespace) -> int:
+    """stdin'deki cümle JSON'unu yerel modelle çevirir; satır başına bir cümle."""
+    from .translate import check_request, create_translator
+
+    def on_stage(stage: str, fraction: float | None) -> None:
+        if args.json:
+            _emit({"event": "stage", "stage": stage, "fraction": fraction})
+        elif fraction is None:
+            print(f"… {stage}", file=sys.stderr)
+
+    # Dil/model hatası indirmeye başlamadan, Türkçe `error` olayı olarak dönsün.
+    check_request(args.model, args.to, args.source)
+    sentences = [Sentence.from_dict(d) for d in json.load(sys.stdin)]
+    if models.needs_download(args.model):
+        on_stage("downloading_model", 0.0)
+        models.ensure_model(args.model, on_progress=lambda f: on_stage("downloading_model", f))
+
+    on_stage("loading_model", None)
+    translator = create_translator(args.model)
+
+    on_stage("translating", 0.0)
+    translated = translator.translate(
+        sentences,
+        target=args.to,
+        source=args.source,
+        on_progress=lambda f: on_stage("translating", f),
+    )
+    if args.json:
+        _emit({
+            "event": "translation",
+            "language": args.to,
+            "sentences": [s.to_dict() for s in translated],
+        })
+    else:
+        sys.stdout.write(subtitles.render(translated, "srt"))
+    return 0
+
+
 def _models(args: argparse.Namespace) -> int:
     """Model kataloğunu ve yerel önbellek durumunu listeler (ağa çıkmaz)."""
     sizes = cached_disk_mb()
     rows = [
         {
             "id": info.id,
+            "kind": info.kind,
             "backend": info.backend,
             "languages": list(info.languages) if info.languages is not None else None,
             "size_mb": info.size_mb,
             "disk_mb": disk_mb(info.id, sizes),
             "speed": info.speed,
             "accuracy": info.accuracy,
+            "license": info.license,
             "downloaded": is_downloaded(info.id),
         }
         for info in KATALOG
@@ -91,13 +132,16 @@ def _models(args: argparse.Namespace) -> int:
     if args.json:
         _emit({"event": "models", "models": rows})
         return 0
-    print(f"{'model':<16}{'boyut':>10}{'disk':>10}{'hız':>6}{'doğruluk':>10}{'önbellek':>10}")
+    print(
+        f"{'model':<16}{'tür':>14}{'boyut':>10}{'disk':>10}"
+        f"{'hız':>6}{'doğruluk':>10}{'lisans':>14}{'önbellek':>10}"
+    )
     for row in rows:
         disk = "—" if row["disk_mb"] is None else f"{row['disk_mb']} MB"
         cached = "var" if row["downloaded"] else "yok"
         print(
-            f"{row['id']:<16}{row['size_mb']:>7} MB{disk:>10}"
-            f"{row['speed']:>6}{row['accuracy']:>10}{cached:>10}"
+            f"{row['id']:<16}{row['kind']:>14}{row['size_mb']:>7} MB{disk:>10}"
+            f"{row['speed']:>6}{row['accuracy']:>10}{row['license']:>14}{cached:>10}"
         )
     return 0
 
@@ -127,6 +171,13 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--max-duration", type=float, default=6.0)
     t.add_argument("--json", action="store_true", help="stdout'a JSON olay akışı yaz")
     t.set_defaults(handler=_transcribe)
+
+    tr = sub.add_parser("translate", help="stdin'deki cümle JSON'unu yerel modelle çevir")
+    tr.add_argument("--to", required=True, help="hedef dil (ör. tr, en, es, pt, ru)")
+    tr.add_argument("--from", dest="source", default=None, help="kaynak dil; NLLB'de zorunlu")
+    tr.add_argument("-m", "--model", default="madlad-3b", help="çeviri modeli (models listeler)")
+    tr.add_argument("--json", action="store_true", help="stdout'a JSON olay akışı yaz")
+    tr.set_defaults(handler=_translate)
 
     r = sub.add_parser("render", help="stdin'deki cümle JSON'unu altyazı formatına çevir")
     r.add_argument("-f", "--format", choices=subtitles.FORMATS, default="srt")

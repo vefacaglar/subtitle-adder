@@ -63,14 +63,19 @@ def test_models_json_lists_catalog_and_cache_state(capsys, monkeypatch):
     assert event["event"] == "models"
     assert [m["id"] for m in event["models"]] == [
         "base", "gigaam-v3", "small", "parakeet-v3", "canary-1b-v2", "medium", "large-v3-turbo", "large-v3",
+        "nllb-1.3b", "madlad-3b",
     ]
     assert set(event["models"][0]) == {
-        "id", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "downloaded",
+        "id", "kind", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "license", "downloaded",
     }
     assert event["models"][1]["backend"] == "onnx" and event["models"][1]["languages"] == ["ru"]
     assert event["models"][0]["languages"] is None
-    assert [m["downloaded"] for m in event["models"]] == [True, False, True, False, False, False, False, False]
-    assert [m["disk_mb"] for m in event["models"]] == [141, None, 464, None, None, None, None, None]
+    assert event["models"][0]["kind"] == "transcription" and event["models"][0]["license"] == "MIT"
+    assert event["models"][-2]["kind"] == "translation"
+    assert event["models"][-2]["license"] == "CC-BY-NC-4.0"
+    assert event["models"][-1]["license"] == "Apache-2.0"
+    assert [m["downloaded"] for m in event["models"]] == [True, False, True, False, False, False, False, False, False, False]
+    assert [m["disk_mb"] for m in event["models"]] == [141, None, 464, None, None, None, None, None, None, None]
 
 
 def test_models_table_without_json(capsys, monkeypatch):
