@@ -10,13 +10,23 @@ public struct EngineCommand: Sendable {
         self.arguments = arguments
     }
 
+    /// Paketli motorun yeri: `Contents/Resources/subtitle-engine/subtitle-engine` (PyInstaller onedir),
+    /// yoksa `Contents/MacOS/subtitle-engine`. Bulunamazsa `nil`.
+    public static func bundledEngine(in bundle: Bundle = .main) -> URL? {
+        if let resources = bundle.resourceURL {
+            let onedir = resources.appending(path: "subtitle-engine").appending(path: "subtitle-engine")
+            if FileManager.default.isExecutableFile(atPath: onedir.path) { return onedir }
+        }
+        return bundle.url(forAuxiliaryExecutable: "subtitle-engine")
+    }
+
     /// Sırayla: `SUBTITLE_ENGINE` ortam değişkeni (motor ikilisi), bundle içindeki
     /// `subtitle-engine`, geliştirme ortamında repo'daki `engine/` projesi (`uv run`).
     public static func locate(environment: [String: String] = ProcessInfo.processInfo.environment) -> EngineCommand? {
         if let path = environment["SUBTITLE_ENGINE"] {
             return EngineCommand(executable: URL(filePath: path))
         }
-        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "subtitle-engine") {
+        if let bundled = bundledEngine() {
             return EngineCommand(executable: bundled)
         }
         let repoEngine = URL(filePath: #filePath)

@@ -22,6 +22,9 @@ struct SubtitleAdderApp: App {
         WindowGroup("Subtitle Adder") {
             ContentView(vm: vm, catalog: catalog)
                 .frame(minWidth: 760, minHeight: 600)
+                // Finder'dan "Birlikte Aç"/Dock'a bırakma: yeni pencere açma, açık pencereye ver.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+                .onOpenURL { vm.openVideo($0) }
         }
         Settings {
             SettingsView(vm: vm, catalog: catalog)

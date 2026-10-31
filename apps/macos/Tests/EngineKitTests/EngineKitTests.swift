@@ -246,6 +246,24 @@ private func waitUntilDead(_ pid: pid_t) async throws -> Bool {
     #expect(command?.arguments.contains("subtitle-engine") == true)
 }
 
+@Test func findsEngineInsideAppBundle() throws {
+    let tmp = FileManager.default.temporaryDirectory.appending(path: "bundle-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let root = tmp.appending(path: "Fake.app/Contents")
+    let engineDir = root.appending(path: "Resources/subtitle-engine")
+    try FileManager.default.createDirectory(at: engineDir, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: root.appending(path: "MacOS"), withIntermediateDirectories: true)
+    try Data("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>test.fake</string></dict></plist>".utf8)
+        .write(to: root.appending(path: "Info.plist"))
+    let bundle = try #require(Bundle(url: root.deletingLastPathComponent()))
+    #expect(EngineCommand.bundledEngine(in: bundle) == nil)
+    let binary = engineDir.appending(path: "subtitle-engine")
+    try Data("#!/bin/sh\n".utf8).write(to: binary)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+    #expect(EngineCommand.bundledEngine(in: bundle)?.lastPathComponent == "subtitle-engine")
+    #expect(EngineCommand.bundledEngine(in: bundle)?.path.contains("Resources/subtitle-engine/") == true)
+}
+
 /// Gerçek motorla uçtan uca: `ENGINE_E2E=1 swift test` (samples/demo.mp4 ve base modeli gerekir).
 @Test(.enabled(if: ProcessInfo.processInfo.environment["ENGINE_E2E"] == "1"))
 func realEngineOnDemoVideo() async throws {

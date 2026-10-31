@@ -45,7 +45,7 @@ stdout'a satır başına bir JSON olay yazar:
 
 stderr serbest log'dur (model yükleme uyarıları vb.); uygulamalar onu dosyaya yönlendirir, protokol değildir. Protokol değişirse `cli.py`'deki `PROTOCOL_VERSION`, `EngineEvent.swift` ve bu bölüm birlikte güncellenir. Sürüm 1'de kalır: `downloading_model` aşaması, `models` komutu, `models` olayındaki `backend`/`languages`/`disk_mb` alanları, `delete-model` komutu ve `deleted` olayı, onnx model kimlikleri, `translate` komutu, `translating` aşaması, `translation` olayı ile `models` olayındaki `kind`/`license` alanları geriye uyumlu eklemelerdir.
 
-Uygulama motoru şu sırayla bulur: `SUBTITLE_ENGINE` ortam değişkeni → bundle içindeki `subtitle-engine` → geliştirmede `uv run --project engine subtitle-engine`.
+Uygulama motoru şu sırayla bulur: `SUBTITLE_ENGINE` ortam değişkeni → bundle içindeki `Contents/Resources/subtitle-engine/subtitle-engine` (PyInstaller onedir; yoksa `Contents/MacOS/subtitle-engine`) → geliştirmede `uv run --project engine subtitle-engine`.
 
 ## Komutlar
 
@@ -56,7 +56,10 @@ cd engine && uv run subtitle-engine transcribe ../samples/demo.mp4 -m base -l tr
 cd apps/macos && swift build && swift test         # uygulama + EngineKit testleri
 cd apps/macos && ENGINE_E2E=1 swift test           # Swift → motor uçtan uca
 cd apps/macos && swift run SubtitleAdderApp
+scripts/package-macos.sh                           # build/Subtitle Adder.app (uv/repo gerektirmez)
 ```
+
+Paketleme: `engine/subtitle-engine.spec` motoru PyInstaller ile onedir derler (`build` bağımlılık grubu), betik `.app`'i kurup içten dışa imzalar (`codesign --verify --deep --strict` ile doğrular). Varsayılan ad-hoc imzadır, yalnız derlenen makinede çalışır. `SIGN_IDENTITY="Developer ID Application: ..."` hardened runtime + `scripts/macos/engine.entitlements` (yalnız `disable-library-validation`) ile imzalar; `NOTARY_PROFILE=<notarytool profili>` notarization + staple yapar; `MAKE_DMG=1` `.dmg` üretir; `SKIP_ENGINE_BUILD=1` hazır motoru yeniden kullanır. Motor `Contents/Resources` altındadır, çünkü codesign `Frameworks`/`MacOS` altında Mach-O olmayan dosyaları reddeder; içindeki tüm Mach-O dosyalar tek tek imzalanır. Model dosyaları pakete girmez, ilk kullanımda indirilir.
 
 Örnek video:
 

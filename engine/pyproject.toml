@@ -16,6 +16,9 @@ dependencies = [
 subtitle-engine = "subtitle_engine.cli:main"
 
 [dependency-groups]
+build = [
+    "pyinstaller>=6.22.3",
+]
 dev = ["pytest>=8"]
 
 [build-system]
