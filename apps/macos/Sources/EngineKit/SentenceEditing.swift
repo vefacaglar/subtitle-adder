@@ -1,29 +1,29 @@
 import Foundation
 
-/// Altyazı satırı düzenlemesinde kullanılan sabitler.
+/// Constants used when editing subtitle lines.
 public enum SentenceEditing {
-    /// Bir satırın en kısa süresi (saniye).
+    /// Shortest duration of a line (seconds).
     public static let minimumDuration: Double = 0.1
-    /// Ayar düğmelerinin adım büyüklüğü (saniye).
+    /// Step size of the adjustment buttons (seconds).
     public static let nudgeStep: Double = 0.1
 }
 
 extension [Sentence] {
-    /// `time` anında gösterilmesi gereken satırın indeksi: `start <= time < end`.
+    /// Index of the line that should be shown at `time`: `start <= time < end`.
     public func activeIndex(at time: Double) -> Int? {
         firstIndex { $0.start <= time && time < $0.end }
     }
 
-    /// Verilen kararlı kimliğe (`uid`) sahip satırın indeksi.
+    /// Index of the line with the given stable identity (`uid`).
     public func index(ofUID uid: UUID) -> Int? {
         firstIndex { $0.uid == uid }
     }
 
-    /// Başlangıcı ayarlar. Önceki satırın bitişinin (ya da 0'ın) altına inemez, kendi
-    /// bitişine `minimumDuration`'dan fazla yaklaşamaz. Değişiklik olduysa `true`.
+    /// Sets the start. Cannot go below the previous line's end (or 0), and cannot come closer than
+    /// `minimumDuration` to its own end. Returns `true` if something changed.
     ///
-    /// Değer zaten geçerli aralığın dışındaysa yalnızca aralığa doğru olan harekete izin
-    /// verilir; istenen yönün tersine taşınmaz.
+    /// If the value is already outside the valid range, only movement toward the range is allowed;
+    /// it is never moved against the requested direction.
     @discardableResult
     public mutating func setStart(_ value: Double, at index: Int) -> Bool {
         guard let bounds = startBounds(at: index) else { return false }
@@ -33,8 +33,8 @@ extension [Sentence] {
         return true
     }
 
-    /// Bitişi ayarlar. Sonraki satırın başlangıcını aşamaz, başlangıca `minimumDuration`'dan
-    /// fazla yaklaşamaz. Değişiklik olduysa `true`. Yön kuralı `setStart` ile aynıdır.
+    /// Sets the end. Cannot exceed the next line's start, and cannot come closer than `minimumDuration`
+    /// to the start. Returns `true` if something changed. The direction rule is the same as `setStart`.
     @discardableResult
     public mutating func setEnd(_ value: Double, at index: Int) -> Bool {
         guard let bounds = endBounds(at: index) else { return false }
@@ -63,8 +63,8 @@ extension [Sentence] {
         return true
     }
 
-    /// Satırı sonrakiyle birleştirir: metinler boşlukla eklenir, süre ikisini kapsar.
-    /// İlk satırın kimliği korunur.
+    /// Merges the line with the next: texts are joined with a space, the duration covers both.
+    /// The first line's identity is kept.
     @discardableResult
     public mutating func mergeWithNext(at index: Int) -> Bool {
         guard indices.contains(index), indices.contains(index + 1) else { return false }
@@ -95,11 +95,11 @@ extension [Sentence] {
         return true
     }
 
-    /// Satırı `time` anından ikiye böler. Kelime zaman damgaları varsa bölme noktası
-    /// oynatma konumuna en yakın kelime sınırına denk gelir; kelime yoksa metin ortadaki
-    /// boşluktan ikiye ayrılır ve süre metin uzunluğuna göre orantılı paylaştırılır. İlk
-    /// parça kimliğini korur, ikinci parça yeni bir kimlik alır. `time` satırın içinde
-    /// değilse ya da parçalar en kısa süreden kısa kalıyorsa değişiklik yapılmaz.
+    /// Splits the line in two at `time`. If word timestamps exist, the split point falls on the word
+    /// boundary nearest the playback position; if there are no words, the text is split at the middle
+    /// space and the duration is shared in proportion to the text length. The first
+    /// part keeps the identity, the second gets a new one. If `time` is not inside the line,
+    /// or the parts would be shorter than the minimum duration, nothing changes.
     @discardableResult
     public mutating func splitSentence(at index: Int, at time: Double) -> Bool {
         guard indices.contains(index) else { return false }
@@ -163,8 +163,8 @@ extension [Sentence] {
         return true
     }
 
-    /// `time` anında satır bölünebilir mi? Düğmelerin etkinliği için `splitSentence` ile
-    /// aynı koşulları kullanır.
+    /// Can the line be split at `time`? Uses the same conditions as `splitSentence` to decide
+    /// whether the buttons are enabled.
     public func canSplit(at index: Int, at time: Double) -> Bool {
         guard indices.contains(index) else { return false }
         let sentence = self[index]
@@ -176,7 +176,7 @@ extension [Sentence] {
         return sentence.text.split(whereSeparator: \.isWhitespace).count >= 2
     }
 
-    /// Kimlikleri 1'den başlayarak sıralı yapar; `uid` değerlerine dokunmaz.
+    /// Renumbers ids sequentially from 1; does not touch `uid` values.
     public mutating func renumber() {
         for index in indices { self[index].id = index + 1 }
     }
@@ -197,9 +197,9 @@ extension [Sentence] {
         return (lower, upper)
     }
 
-    /// Değeri geçerli aralığa sıkıştırır, ancak sonuç istenen yönün tersine düşüyorsa
-    /// değişiklik yapmaz. Aralık dışındaki değerler yalnızca istenen yön geçerliliğe
-    /// doğruysa taşınır.
+    /// Clamps the value to the valid range, but makes no change if the result would go against
+    /// the requested direction. Values outside the range are moved only if the requested direction
+    /// is toward validity.
     private func clamped(
         _ value: Double,
         from current: Double,

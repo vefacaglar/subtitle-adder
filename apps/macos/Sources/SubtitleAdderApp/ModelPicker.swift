@@ -1,9 +1,9 @@
 import EngineKit
 import SwiftUI
 
-/// Araç çubuğundaki model seçici. Kapalıyken yalnız modelin Türkçe adını gösterir;
-/// menü satırları indirme durumunu/boyutunu ikincil metinle birlikte taşır.
-/// Whisper modelleriyle diğerleri (onnx) arasında bölücü vardır.
+/// The model picker in the toolbar. When closed it shows only the model's Turkish name;
+/// menu rows carry the download status/size as secondary text.
+/// There is a divider between Whisper models and the others (onnx).
 struct ModelPicker: View {
     @Binding var selection: String
     let models: [EngineModel]

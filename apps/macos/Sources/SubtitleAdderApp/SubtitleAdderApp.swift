@@ -8,9 +8,9 @@ struct SubtitleAdderApp: App {
     @State private var vm: SubtitleViewModel
 
     init() {
-        // Motor erken çıkarsa stdin'e yazmak uygulamayı SIGPIPE ile öldürmesin.
+        // If the engine exits early, writing to stdin shouldn't kill the app with SIGPIPE.
         signal(SIGPIPE, SIG_IGN)
-        // `swift run` ile bundle'sız açılınca da öne gelsin ve Dock'ta görünsün.
+        // Come to the front and show in the Dock even when launched without a bundle via `swift run`.
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate()
         let catalog = ModelCatalog()
@@ -22,7 +22,7 @@ struct SubtitleAdderApp: App {
         WindowGroup("Subtitle Adder") {
             ContentView(vm: vm, catalog: catalog)
                 .frame(minWidth: 760, minHeight: 600)
-                // Finder'dan "Birlikte Aç"/Dock'a bırakma: yeni pencere açma, açık pencereye ver.
+                // Opening with "Open With" from Finder / dropping on the Dock: don't open a new window, hand it to the open one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .onOpenURL { vm.openVideo($0) }
         }

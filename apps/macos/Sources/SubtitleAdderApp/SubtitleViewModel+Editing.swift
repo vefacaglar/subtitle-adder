@@ -5,7 +5,7 @@ enum TimingEdge {
     case start, end
 }
 
-/// Satır düzenleme işlemleri. Hepsi `sentences` üzerinde çalışır ve geri alınabilir.
+/// Line editing operations. All of them work on `sentences` and can be undone.
 extension SubtitleViewModel {
     var selectedSentence: Sentence? {
         guard let uid = selection else { return nil }
@@ -17,9 +17,9 @@ extension SubtitleViewModel {
         return index + 1 < sentences.count
     }
 
-    // MARK: - Metin taslağı
+    // MARK: - Text draft
 
-    /// Satırın gösterilecek metni: odaklı satırda henüz commit edilmemiş taslak.
+    /// The text to display for a line: for the focused line, the draft that hasn't been committed yet.
     func draftText(for sentence: Sentence) -> String {
         guard let draft, draft.uid == sentence.uid else { return sentence.text }
         return draft.text
@@ -45,8 +45,8 @@ extension SubtitleViewModel {
         }
     }
 
-    /// Taslağı satıra yazar. Yapısal işlemlerden ve geri al/yinele öncesinde çağrılır.
-    /// Geri alma sürerken yığını bozmamak için kayıt oluşturmadan yazar.
+    /// Writes the draft to the line. Called before structural operations and before undo/redo.
+    /// While undoing, it writes without creating a record so the stack isn't corrupted.
     func commitDraft() {
         guard let draft else { return }
         self.draft = nil
@@ -59,7 +59,7 @@ extension SubtitleViewModel {
         }
     }
 
-    // MARK: - İşlemler
+    // MARK: - Operations
 
     func setText(_ text: String, for uid: UUID) {
         guard let index = sentences.index(ofUID: uid) else { return }
@@ -106,7 +106,7 @@ extension SubtitleViewModel {
     func splitSelected(at time: Double) {
         commitDraft()
         guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
-        // İlk parça kimliğini korur ama metni değişir; iki parçanın çevirisi de geçersizdir.
+        // The first part keeps its identity but its text changes; the translation of both parts is invalid.
         commit("Satırı Böl", clearingTranslations: [uid]) { $0.splitSentence(at: index, at: time) }
     }
 
@@ -122,9 +122,9 @@ extension SubtitleViewModel {
         return true
     }
 
-    /// `sentences`'ı değiştirir ve eski değeri geri alma yığınına kaydeder (geri alma sırasında
-    /// bu çağrı yineleme kaydını da oluşturur). Silinen/birleşen satırların çevirileri temizlenir;
-    /// `translations` verilirse (geri alma/yinele) o sözlük olduğu gibi geri yüklenir.
+    /// Changes `sentences` and records the old value on the undo stack (during undo,
+    /// this call also creates the redo record). Translations of deleted/merged lines are cleared;
+    /// if `translations` is given (undo/redo), that dictionary is restored as is.
     private func replaceSentences(
         _ updated: [Sentence],
         actionName: String,
@@ -133,7 +133,7 @@ extension SubtitleViewModel {
     ) {
         let previous = sentences
         let previousTranslations = translations
-        // Dışarıdan gelen değişiklik (geri alma/yinele) odaklı taslağı geçersiz kılabilir.
+        // A change from outside (undo/redo) can invalidate the focused draft.
         if let draft, updated.first(where: { $0.uid == draft.uid })?.text != draft.text {
             self.draft = nil
         }

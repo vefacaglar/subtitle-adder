@@ -3,7 +3,7 @@ import EngineKit
 import Foundation
 import Observation
 
-/// Önizleme oynatıcısı: `AVPlayer`'ı sarar, ~10 Hz oynatma zamanını ve o anki satırı tutar.
+/// Preview player: wraps `AVPlayer`, tracks the ~10 Hz playback time and the current line.
 @MainActor
 @Observable
 final class PlayerModel {
@@ -14,7 +14,7 @@ final class PlayerModel {
     private(set) var currentTime: Double = 0
     private(set) var isPlaying = false
     private(set) var videoSize = CGSize(width: 16, height: 9)
-    /// O an oynayan satırın kararlı kimliği; yalnız değişince güncellenir (gereksiz yeniden çizim olmasın).
+    /// Stable identity of the line currently playing; updated only when it changes (to avoid needless redraws).
     private(set) var activeID: UUID?
     private var sentences: [Sentence] = []
 
@@ -32,7 +32,7 @@ final class PlayerModel {
         player.pause()
         isPlaying = false
         currentTime = 0
-        // Yeni video ölçüsü gelene kadar eski videonun oranını kullanma.
+        // Don't use the old video's aspect ratio until the new video size arrives.
         videoSize = CGSize(width: 16, height: 9)
         updateActive()
         guard let url else {

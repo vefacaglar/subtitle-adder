@@ -1,7 +1,7 @@
 import EngineKit
 import Foundation
 
-/// Video üstündeki altyazıda neyin gösterileceği; seçim kalıcıdır.
+/// What to show in the subtitle over the video; the choice is persistent.
 enum SubtitleDisplay: String, CaseIterable, Identifiable, Sendable {
     case original
     case translation
@@ -18,8 +18,8 @@ enum SubtitleDisplay: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Bir satırın çevirisi. `sourceText`, çevrildiği andaki orijinal metindir; orijinal
-/// sonradan değişirse çeviri "eski" sayılır ve arayüzde işaretlenir.
+/// A line's translation. `sourceText` is the original text at the time it was translated; if the original
+/// changes later, the translation counts as "eski" (stale) and is marked in the UI.
 struct TranslationEntry: Equatable, Sendable {
     var text: String
     var sourceText: String

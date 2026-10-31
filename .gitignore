@@ -16,11 +16,11 @@ build/
 # macOS
 .DS_Store
 
-# Üretilen medya ve çıktılar
+# Generated media and output
 output/
 samples/
 *.wav
 *.aiff
 
-# Yerel Claude ayarları
+# Local Claude settings
 .claude/settings.local.json

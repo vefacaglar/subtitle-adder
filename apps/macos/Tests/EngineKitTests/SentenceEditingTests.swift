@@ -106,11 +106,11 @@ import Testing
             Sentence(id: 1, start: 0.0, end: 5.20, text: "Önceki"),
             Sentence(id: 2, start: 5.05, end: 6.00, text: "Sonraki"),
         ]
-        // Başlangıç önceki satırın bitişinin altında; geriye istemek onu ileri itmemeli.
+        // The start is below the previous line's end; asking to go back must not push it forward.
         let backward = s.nudgeStart(at: 1, by: -SentenceEditing.nudgeStep)
         #expect(!backward)
         #expect(s[1].start == 5.05)
-        // Geçerliliğe doğru hareket istenen yönde olduğu için kabul edilir.
+        // Movement toward validity is accepted because it is in the requested direction.
         let forward = s.nudgeStart(at: 1, by: SentenceEditing.nudgeStep)
         #expect(forward)
         #expect(s[1].start == 5.20)

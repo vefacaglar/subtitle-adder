@@ -1,8 +1,8 @@
 import EngineKit
 import SwiftUI
 
-/// Ayarlar penceresi (⌘,). Model kataloğu paylaşıldığı için burada yapılan silme
-/// araç çubuğundaki seçiciyi de anında günceller.
+/// The Settings window (⌘,). Since the model catalog is shared, a delete made here
+/// also updates the toolbar picker immediately.
 struct SettingsView: View {
     @Bindable var vm: SubtitleViewModel
     let catalog: ModelCatalog

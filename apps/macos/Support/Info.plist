@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- `swift run`/VS Code ile bundle'sız çalışırken menü çubuğunda ve Dock'ta görünen ad.
-         Paketli .app'te scripts/macos/Info.plist.in geçerlidir. CFBundleIdentifier bilerek yok:
-         eklenirse geliştirmedeki UserDefaults alanı değişir, kayıtlı seçimler kaybolur. -->
+    <!-- The name shown in the menu bar and Dock when running without a bundle via `swift run`/VS Code.
+         In the packaged .app, scripts/macos/Info.plist.in applies. CFBundleIdentifier is left out on purpose:
+         adding it would change the UserDefaults domain in development and lose saved selections. -->
     <key>CFBundleName</key><string>Subtitle Adder</string>
     <key>CFBundleDisplayName</key><string>Subtitle Adder</string>
 </dict>

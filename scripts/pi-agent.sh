@@ -1,16 +1,16 @@
 #!/bin/sh
-# .claude/agents/<ajan>.md tanımını pi'ye sistem promptu olarak verip DeepSeek (opencode) ile çalıştırır.
-# Kullanım: scripts/pi-agent.sh <ajan> "<görev>"     ör. scripts/pi-agent.sh subtitle-engineer "..."
-# Model PI_MODEL ile değişir (varsayılan: DeepSeek flash, thinking max).
-# explorer ve module-reviewer salt okunur çalışır (read,bash); diğerleri edit/write da alır.
-# Oturumlar kaydedilir (~/.pi/agent/sessions); `pi --session <id>` ile açılır.
+# Runs an agent definition (.claude/agents/<agent>.md) as the system prompt in pi, using DeepSeek (opencode).
+# Usage: scripts/pi-agent.sh <agent> "<task>"     e.g. scripts/pi-agent.sh subtitle-engineer "..."
+# Set the model with PI_MODEL (default: DeepSeek flash, thinking max).
+# explorer and module-reviewer run read-only (read,bash); the others also get edit/write.
+# Sessions are saved (~/.pi/agent/sessions); reopen one with `pi --session <id>`.
 set -eu
 
-agent="${1:?ajan adı gerekli}"
-task="${2:?görev gerekli}"
+agent="${1:?agent name required}"
+task="${2:?task required}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 definition="$root/.claude/agents/$agent.md"
-[ -f "$definition" ] || { echo "ajan tanımı yok: $definition" >&2; exit 2; }
+[ -f "$definition" ] || { echo "agent definition not found: $definition" >&2; exit 2; }
 
 model="${PI_MODEL:-opencode-go/deepseek-v4.1-flash:max}"
 case "$agent" in

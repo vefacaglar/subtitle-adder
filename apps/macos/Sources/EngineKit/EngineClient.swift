@@ -1,6 +1,6 @@
 import Foundation
 
-/// Motoru başlatma komutu. Geliştirmede `uv run`, paketli uygulamada bundle içindeki ikili.
+/// Command that launches the engine. `uv run` in development, the binary inside the bundle in the packaged app.
 public struct EngineCommand: Sendable {
     public var executable: URL
     public var arguments: [String]
@@ -10,8 +10,8 @@ public struct EngineCommand: Sendable {
         self.arguments = arguments
     }
 
-    /// Paketli motorun yeri: `Contents/Resources/subtitle-engine/subtitle-engine` (PyInstaller onedir),
-    /// yoksa `Contents/MacOS/subtitle-engine`. Bulunamazsa `nil`.
+    /// Location of the bundled engine: `Contents/Resources/subtitle-engine/subtitle-engine` (PyInstaller onedir),
+    /// otherwise `Contents/MacOS/subtitle-engine`. `nil` if not found.
     public static func bundledEngine(in bundle: Bundle = .main) -> URL? {
         if let resources = bundle.resourceURL {
             let onedir = resources.appending(path: "subtitle-engine").appending(path: "subtitle-engine")
@@ -20,8 +20,8 @@ public struct EngineCommand: Sendable {
         return bundle.url(forAuxiliaryExecutable: "subtitle-engine")
     }
 
-    /// Sırayla: `SUBTITLE_ENGINE` ortam değişkeni (motor ikilisi), bundle içindeki
-    /// `subtitle-engine`, geliştirme ortamında repo'daki `engine/` projesi (`uv run`).
+    /// In order: the `SUBTITLE_ENGINE` environment variable (engine binary), the `subtitle-engine`
+    /// in the bundle, and in development the `engine/` project in the repo (`uv run`).
     public static func locate(environment: [String: String] = ProcessInfo.processInfo.environment) -> EngineCommand? {
         if let path = environment["SUBTITLE_ENGINE"] {
             return EngineCommand(executable: URL(filePath: path))
@@ -79,7 +79,7 @@ public struct EngineClient: Sendable {
         }
     }
 
-    /// Videoyu işler; aşama olaylarını ve sonunda `.result` ya da hata verir. Akış iptal edilirse motor durdurulur.
+    /// Processes the video; emits stage events and finally `.result` or an error. If the stream is cancelled, the engine is stopped.
     public func transcribe(video: URL, outDir: URL, options: TranscribeOptions = .init()) -> AsyncThrowingStream<EngineEvent, Error> {
         var args = ["transcribe", video.path, "--out-dir", outDir.path, "--model", options.model, "--json", "--format"]
         args += options.formats.map(\.rawValue)
@@ -87,8 +87,8 @@ public struct EngineClient: Sendable {
         return stream(args, stdin: nil)
     }
 
-    /// Cümleleri yerel çeviri modeliyle hedef dile çevirir; aşama olayları ve sonunda
-    /// `.translation` yayınlar. Kaynak dil `nil` ise model kendi algılar (NLLB kabul etmez).
+    /// Translates the sentences to the target language with a local translation model; emits stage events and finally
+    /// `.translation`. If the source language is `nil`, the model detects it itself (NLLB does not accept that).
     public func translate(
         _ sentences: [Sentence],
         to language: String,
@@ -106,7 +106,7 @@ public struct EngineClient: Sendable {
         return stream(args, stdin: input)
     }
 
-    /// Ortak süreç akışı: stdout'taki JSON olaylarını çözer, hatayı akış sonunda fırlatır.
+    /// Shared process stream: decodes the JSON events on stdout and throws the error at the end of the stream.
     private func stream(_ arguments: [String], stdin input: Data?) -> AsyncThrowingStream<EngineEvent, Error> {
         AsyncThrowingStream { continuation in
             let run: RunningEngine
@@ -117,7 +117,7 @@ public struct EngineClient: Sendable {
                 return
             }
             let task = Task {
-                // Her çıkış yolunda (hata, geçersiz satır, iptal) süreç sonlandırılır, log silinir.
+                // On every exit path (error, invalid line, cancel) the process is terminated and the log is deleted.
                 defer { run.cleanup() }
                 do {
                     var engineError: String?
@@ -141,7 +141,7 @@ public struct EngineClient: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
-            // stdout okuması iptale duyarlı değil; tüketici bırakırsa süreci doğrudan öldür.
+            // Reading stdout is not cancellation-aware; if the consumer drops it, kill the process directly.
             continuation.onTermination = { _ in
                 run.terminate()
                 task.cancel()
@@ -149,7 +149,7 @@ public struct EngineClient: Sendable {
         }
     }
 
-    /// Cümleleri (uygulamada düzenlenmiş olabilir) motora verip istenen formatta metin alır.
+    /// Sends the sentences (possibly edited in the app) to the engine and gets text in the requested format.
     public func render(_ sentences: [Sentence], as format: SubtitleFormat) async throws -> String {
         let input = try JSONEncoder().encode(sentences)
         let run = try start(["render", "--format", format.rawValue], stdin: input)
@@ -166,7 +166,7 @@ public struct EngineClient: Sendable {
         }
     }
 
-    /// Model kataloğunu ve yerel indirme durumunu alır (`models --json`, tek satır `models` olayı).
+    /// Gets the model catalog and local download status (`models --json`, a single `models` event line).
     public func models() async throws -> [EngineModel] {
         let run = try start(["models", "--json"], stdin: nil)
         defer { run.cleanup() }
@@ -191,7 +191,7 @@ public struct EngineClient: Sendable {
         }
     }
 
-    /// İndirilmiş bir modeli önbellekten siler, boşalan MB'ı döndürür (`delete-model <id> --json`).
+    /// Deletes a downloaded model from the cache and returns the freed MB (`delete-model <id> --json`).
     public func deleteModel(_ id: String) async throws -> Int {
         let run = try start(["delete-model", id, "--json"], stdin: nil)
         defer { run.cleanup() }
@@ -222,7 +222,7 @@ public struct EngineClient: Sendable {
         process.arguments = command.arguments + args
         let stdout = Pipe()
         process.standardOutput = stdout
-        // stderr dosyaya: model indirme ilerlemesi pipe tamponunu doldurup süreci kilitlemesin.
+        // stderr goes to a file: so model download progress can't fill the pipe buffer and hang the process.
         let log = FileManager.default.temporaryDirectory.appending(path: "subtitle-engine-\(UUID().uuidString).log")
         FileManager.default.createFile(atPath: log.path, contents: nil)
         process.standardError = try FileHandle(forWritingTo: log)
@@ -235,7 +235,7 @@ public struct EngineClient: Sendable {
             throw EngineError.failed("Motor başlatılamadı: \(error.localizedDescription)")
         }
         if let input {
-            // Motor erken çıkarsa yazma hata verir (SIGPIPE yok sayılır); çıkış kodu zaten raporlanır.
+            // If the engine exits early, writing fails (SIGPIPE is ignored); the exit code is reported anyway.
             try? stdinPipe.fileHandleForWriting.write(contentsOf: input)
             try? stdinPipe.fileHandleForWriting.close()
         }
@@ -243,14 +243,14 @@ public struct EngineClient: Sendable {
     }
 }
 
-/// `models --json` çıktısı: başarıda `models`, hatada `error` alanı dolu gelir.
+/// `models --json` output: `models` is filled on success, `error` on failure.
 private struct ModelsPayload: Decodable {
     let event: String
     let models: [EngineModel]?
     let message: String?
 }
 
-/// `delete-model --json` çıktısı: başarıda `deleted`, hatada `error` alanı dolu gelir.
+/// `delete-model --json` output: `deleted` is filled on success, `error` on failure.
 private struct DeletePayload: Decodable {
     let event: String
     let id: String?
@@ -263,7 +263,7 @@ private struct DeletePayload: Decodable {
     }
 }
 
-/// Çalışan motor süreci. Bekleyen görev iptal edilirse süreç sonlandırılır.
+/// The running engine process. If the waiting task is cancelled, the process is terminated.
 private struct RunningEngine: @unchecked Sendable {
     let process: Process
     let stdout: FileHandle
@@ -282,12 +282,12 @@ private struct RunningEngine: @unchecked Sendable {
         }
     }
 
-    /// Süreç hâlâ çalışıyorsa SIGTERM gönderir (`uv run` bunu Python çocuğuna iletir).
+    /// Sends SIGTERM if the process is still running (`uv run` forwards it to the Python child).
     func terminate() {
         if process.isRunning { process.terminate() }
     }
 
-    /// Süreci sonlandırır ve geçici log dosyasını siler.
+    /// Terminates the process and deletes the temporary log file.
     func cleanup() {
         terminate()
         try? FileManager.default.removeItem(at: log)

@@ -11,14 +11,14 @@ public struct Word: Sendable, Hashable, Codable {
         self.text = text
     }
 
-    /// Kelimenin zaman aralığının ortası; bölme noktasını seçmek için kullanılır.
+    /// Midpoint of the word's time range; used to pick the split point.
     var midpoint: Double { (start + end) / 2 }
 }
 
 public struct Sentence: Sendable, Hashable, Codable {
-    /// Görüntülenen sıra numarası (1'den başlar); birleştirme/silme sonrası yenilenir.
+    /// Displayed sequence number (starts at 1); renumbered after merging/deleting.
     public var id: Int
-    /// Görünüm kimliği ve seçim anahtarı. `id` yenilenirken değişmez ve motora gönderilmez.
+    /// View identity and selection key. Does not change when `id` is renumbered and is not sent to the engine.
     public let uid: UUID
     public var start: Double
     public var end: Double
@@ -34,7 +34,7 @@ public struct Sentence: Sendable, Hashable, Codable {
         self.words = words
     }
 
-    // `uid` yalnız uygulama içi bir kimliktir; motor protokolünde yer almaz.
+    // `uid` is an app-internal identity only; it is not part of the engine protocol.
     private enum CodingKeys: String, CodingKey {
         case id, start, end, text, words
     }
@@ -58,7 +58,7 @@ public struct Sentence: Sendable, Hashable, Codable {
         try container.encode(words, forKey: .words)
     }
 
-    /// İçerik eşitliği; geçici görünüm kimliği (`uid`) karşılaştırmaya girmez.
+    /// Content equality; the transient view identity (`uid`) is not part of the comparison.
     public static func == (lhs: Sentence, rhs: Sentence) -> Bool {
         lhs.id == rhs.id && lhs.start == rhs.start && lhs.end == rhs.end
             && lhs.text == rhs.text && lhs.words == rhs.words
@@ -78,21 +78,21 @@ public enum SubtitleFormat: String, CaseIterable, Sendable, Identifiable {
     public var id: String { rawValue }
 }
 
-/// Motorun `models --json` çıktısındaki katalog satırı.
+/// A catalog row from the engine's `models --json` output.
 public struct EngineModel: Sendable, Equatable, Decodable, Identifiable {
     public var id: String
-    /// "transcription" (konuşma tanıma) ya da "translation" (çeviri).
+    /// "transcription" (speech recognition) or "translation".
     public var kind: String
-    /// "whisper" (tüm dilleri destekler, dil algılar) ya da "onnx" (dil listesi sabit).
+    /// "whisper" (supports all languages, detects language) or "onnx" (fixed language list).
     public var backend: String
-    /// Desteklenen ISO 639-1 kodları; `nil` tüm diller anlamına gelir.
+    /// Supported ISO 639-1 codes; `nil` means all languages.
     public var languages: [String]?
     public var sizeMB: Int
-    /// Önbellekte kapladığı gerçek alan (MB); indirilmemişse `nil`.
+    /// Actual space taken in the cache (MB); `nil` if not downloaded.
     public var diskMB: Int?
     public var speed: Int
     public var accuracy: Int
-    /// Model kartındaki SPDX kısa adı (ör. "MIT", "CC-BY-NC-4.0").
+    /// SPDX short name from the model card (e.g. "MIT", "CC-BY-NC-4.0").
     public var license: String?
     public var downloaded: Bool
 
@@ -122,15 +122,15 @@ public struct EngineModel: Sendable, Equatable, Decodable, Identifiable {
 
     public var isTranslation: Bool { kind == "translation" }
 
-    /// Ticari kullanıma kapalı lisanslar (SPDX adında "NC" geçer).
+    /// Licenses that forbid commercial use ("NC" appears in the SPDX name).
     public var hasNonCommercialLicense: Bool {
         license?.uppercased().contains("NC") ?? false
     }
 
-    /// Otomatik dil algılamayı yalnız Whisper backend'i yapar.
+    /// Only the Whisper backend does automatic language detection.
     public var detectsLanguage: Bool { backend == "whisper" }
 
-    /// `languages` boşsa model her dili destekliyordur.
+    /// If `languages` is empty, the model supports every language.
     public func supports(language code: String) -> Bool {
         languages?.contains(code) ?? true
     }
@@ -141,8 +141,8 @@ public struct EngineModel: Sendable, Equatable, Decodable, Identifiable {
         case diskMB = "disk_mb"
     }
 
-    // Eski motor çıktılarında kind/license/backend/languages/disk_mb yok;
-    // altyazı modeli ve Whisper varsayılanları geriye uyum sağlar.
+    // Older engine output has no kind/license/backend/languages/disk_mb;
+    // defaults for a subtitle model and Whisper keep it backward compatible.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)

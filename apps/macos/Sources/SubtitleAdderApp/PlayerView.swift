@@ -2,7 +2,7 @@ import AVKit
 import EngineKit
 import SwiftUI
 
-/// Video önizlemesi ve üzerine bindirilmiş aktif altyazı satırı.
+/// Video preview with the active subtitle line overlaid.
 struct PlayerView: View {
     let model: PlayerModel
     let sentences: [Sentence]
@@ -74,7 +74,7 @@ struct PlayerView: View {
         return text.isEmpty ? nil : text
     }
 
-    /// Videonun kapsayıcı içinde (aspect-fit) kapladığı boyut.
+    /// The size the video takes inside its container (aspect-fit).
     private func videoSize(in container: CGSize) -> CGSize {
         let aspect = model.videoSize.width / max(model.videoSize.height, 1)
         guard container.width > 0, container.height > 0 else { return .zero }
@@ -88,8 +88,8 @@ struct PlayerView: View {
     }
 }
 
-/// AVKit'in kendi oynatıcısı. SwiftUI `VideoPlayer` AVKit'i bağlatmadığı için SwiftPM ikilisinde
-/// `AVPlayerView` sınıfı bulunamayıp ilk çizimde çöküyordu; sınıfa doğrudan başvurmak bağlanmasını sağlar.
+/// AVKit's own player. SwiftUI's `VideoPlayer` doesn't get AVKit linked, so in the SwiftPM binary
+/// the `AVPlayerView` class wasn't found and it crashed on first draw; referencing the class directly makes it link.
 private struct NativePlayerView: NSViewRepresentable {
     let player: AVPlayer
 
@@ -126,7 +126,7 @@ private struct SubtitleOverlay: View {
                     .padding(.horizontal, 16)
             }
         }
-        // Oynatıcının satır içi denetimlerinin üstünde kalsın.
+        // Stay above the player's inline controls.
         .padding(.bottom, max(44, videoHeight * 0.1))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

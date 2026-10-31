@@ -91,7 +91,7 @@ import Testing
     #expect(try EngineEvent.decode(#"{"event": "error", "message": "olmadı"}"#) == .error("olmadı"))
 }
 
-/// Sahte motor betiğiyle süreç yönetimini (olay akışı, hata olayı, render stdin) uçtan uca dener.
+/// Exercises process management (event stream, error event, render stdin) end to end with a fake engine script.
 private func fakeEngine(_ script: String) throws -> EngineClient {
     let url = FileManager.default.temporaryDirectory.appending(path: "fake-engine-\(UUID().uuidString).sh")
     try ("#!/bin/sh\n" + script).write(to: url, atomically: true, encoding: .utf8)
@@ -102,7 +102,7 @@ private func fakeEngine(_ script: String) throws -> EngineClient {
 @Test func streamsEventsUntilResult() async throws {
     let engine = try fakeEngine("""
     echo '{"event": "stage", "stage": "extracting_audio", "fraction": null}'
-    echo 'motor gürültüsü' >&2
+    echo 'engine noise' >&2
     echo '{"event": "result", "language": "tr", "duration": 1, "audio": "a", "outputs": [], "sentences": []}'
     """)
     var events: [EngineEvent] = []
@@ -124,7 +124,7 @@ private func fakeEngine(_ script: String) throws -> EngineClient {
 }
 
 @Test func renderSendsSentencesOnStdin() async throws {
-    let engine = try fakeEngine("cat")  // stdin'i aynen geri yazar
+    let engine = try fakeEngine("cat")  // echoes stdin back unchanged
     let text = try await engine.render([Sentence(id: 1, start: 0, end: 1, text: "Selam.")], as: .srt)
     #expect(text.contains("\"Selam.\""))
 }
@@ -192,14 +192,14 @@ private func fakeEngine(_ script: String) throws -> EngineClient {
 
 private func isAlive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
 
-/// PID dosyası yazılana kadar bekler.
+/// Waits until the PID file is written.
 private func readPID(_ file: URL) async throws -> pid_t {
     for _ in 0..<100 {
         if let text = try? String(contentsOf: file, encoding: .utf8),
            let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) { return pid }
         try await Task.sleep(for: .milliseconds(50))
     }
-    throw EngineError.failed("PID okunamadı")
+    throw EngineError.failed("Could not read PID")
 }
 
 private func waitUntilDead(_ pid: pid_t) async throws -> Bool {
@@ -221,7 +221,7 @@ private func waitUntilDead(_ pid: pid_t) async throws -> Bool {
         for try await _ in engine.transcribe(video: URL(filePath: "/v.mp4"), outDir: URL(filePath: "/tmp")) {}
     }
     let pid = try await readPID(pidFile)
-    try await Task.sleep(for: .milliseconds(300))  // ilk olay tüketildi, motor hâlâ uyuyor
+    try await Task.sleep(for: .milliseconds(300))  // first event consumed, the engine is still sleeping
     #expect(isAlive(pid))
     consumer.cancel()
     #expect(try await waitUntilDead(pid))
@@ -231,7 +231,7 @@ private func waitUntilDead(_ pid: pid_t) async throws -> Bool {
     let pidFile = FileManager.default.temporaryDirectory.appending(path: "pid-\(UUID().uuidString)")
     let engine = try fakeEngine("""
     echo $$ > '\(pidFile.path)'
-    echo 'bu JSON değil'
+    echo 'not JSON'
     exec sleep 30
     """)
     await #expect(throws: (any Error).self) {
@@ -264,7 +264,7 @@ private func waitUntilDead(_ pid: pid_t) async throws -> Bool {
     #expect(EngineCommand.bundledEngine(in: bundle)?.path.contains("Resources/subtitle-engine/") == true)
 }
 
-/// Gerçek motorla uçtan uca: `ENGINE_E2E=1 swift test` (samples/demo.mp4 ve base modeli gerekir).
+/// End to end with the real engine: `ENGINE_E2E=1 swift test` (needs samples/demo.mp4 and the base model).
 @Test(.enabled(if: ProcessInfo.processInfo.environment["ENGINE_E2E"] == "1"))
 func realEngineOnDemoVideo() async throws {
     let repo = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -284,7 +284,7 @@ func realEngineOnDemoVideo() async throws {
     #expect(srt.hasPrefix("1\n00:00:00,000 --> "))
 }
 
-/// Gerçek motorla uçtan uca çeviri: demo videoyu base ile yazıya döküp madlad-3b ile İspanyolcaya çevirir.
+/// End-to-end translation with the real engine: transcribes the demo video with base and translates it to Spanish with madlad-3b.
 @Test(.enabled(if: ProcessInfo.processInfo.environment["ENGINE_E2E"] == "1"))
 func realEngineTranslatesDemoVideo() async throws {
     let repo = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

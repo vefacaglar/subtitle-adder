@@ -1,9 +1,9 @@
 import EngineKit
 import Foundation
 
-/// Çeviri akışı: satırları motora gönderir, düzenlenebilir çeviri metinlerini `uid` ile eşler.
+/// Translation flow: sends the lines to the engine and maps editable translation texts by `uid`.
 extension SubtitleViewModel {
-    /// Satırın çevirisi varsa döner.
+    /// Returns the line's translation if there is one.
     func translation(for sentence: Sentence) -> TranslationEntry? {
         translations[sentence.uid]
     }
@@ -12,7 +12,7 @@ extension SubtitleViewModel {
         translations[sentence.uid]?.isStale(for: sentence) ?? false
     }
 
-    /// Dışa aktarmada çeviri seçilirse zamanlar korunur, metin çeviriyle değişir.
+    /// If the translation is chosen on export, the times are kept and the text is replaced by the translation.
     func exportSentences(translated: Bool) -> [Sentence] {
         guard translated else { return sentences }
         return sentences.map { sentence in
@@ -25,7 +25,7 @@ extension SubtitleViewModel {
         }
     }
 
-    /// Tüm satırları seçili hedef dile çevirir. Sürerken Durdur aynı işi iptal eder.
+    /// Translates all lines to the selected target language. While running, Stop cancels the same job.
     func translate() {
         guard !sentences.isEmpty else { return }
         guard let engine = catalog.engine else {
@@ -52,7 +52,7 @@ extension SubtitleViewModel {
         catalog.activeModel = model
         status = .working("Çeviri hazırlanıyor…", fraction: nil)
         job = Task {
-            // Hangi yolla biterse bitsin model Ayarlar'da silinebilir olur.
+            // However it ends, the model becomes deletable in Settings.
             defer { if jobID == id { catalog.activeModel = nil } }
             var failed = false
             do {
@@ -73,10 +73,10 @@ extension SubtitleViewModel {
                         status = .failed(message)
                     }
                 }
-                // İptalde akış hata vermeden biter; o durumda durum değişmez.
+                // On cancel the stream ends without an error; in that case the status doesn't change.
                 guard jobID == id, !Task.isCancelled else { return }
                 if !failed { status = .finished }
-                // İndirilen çeviri modeli Ayarlar'da "hazır" görünsün.
+                // Make the downloaded translation model show as "hazır" (ready) in Settings.
                 await catalog.load()
             } catch is CancellationError {
                 if jobID == id { status = .idle }
@@ -86,7 +86,7 @@ extension SubtitleViewModel {
         }
     }
 
-    /// Çevrilen satırları kararlı `uid` değerleriyle eşler; motor sırayı ve kimlikleri korur.
+    /// Maps translated lines by their stable `uid` values; the engine preserves order and ids.
     private func applyTranslation(_ translated: [Sentence], language: String, source: [Sentence]) {
         var entries: [UUID: TranslationEntry] = [:]
         for (index, result) in translated.enumerated() {
@@ -104,7 +104,7 @@ extension SubtitleViewModel {
         translationTarget = language
     }
 
-    // MARK: - Çeviri metnini düzenleme
+    // MARK: - Editing the translation text
 
     func translationDraftText(for sentence: Sentence) -> String {
         guard let translationDraft, translationDraft.uid == sentence.uid else {
@@ -133,7 +133,7 @@ extension SubtitleViewModel {
         }
     }
 
-    /// Çeviri taslağını satıra yazar ve geri alma kaydı oluşturur.
+    /// Writes the translation draft to the line and creates an undo record.
     func commitTranslationDraft() {
         guard let translationDraft else { return }
         self.translationDraft = nil

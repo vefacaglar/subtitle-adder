@@ -12,7 +12,7 @@ final class SubtitleViewModel {
         case failed(String)
     }
 
-    /// Boş kod otomatik algılamadır; seçim UserDefaults'ta kalıcıdır.
+    /// An empty code means automatic detection; the choice is persisted in UserDefaults.
     var language: String {
         didSet {
             guard language != oldValue else { return }
@@ -29,21 +29,21 @@ final class SubtitleViewModel {
             modelNotice = nil
         }
     }
-    /// Çeviri isteğinde kullanılan hedef dil; seçim kalıcıdır.
+    /// Target language used in the translation request; the choice is persistent.
     var translationTarget: String {
         didSet {
             guard translationTarget != oldValue else { return }
             UserDefaults.standard.set(translationTarget, forKey: Self.translationTargetDefaultsKey)
         }
     }
-    /// Çeviri modeli (Ayarlar'dan seçilir, kalıcıdır).
+    /// Translation model (chosen in Settings, persistent).
     var translationModel: String {
         didSet {
             guard translationModel != oldValue else { return }
             UserDefaults.standard.set(translationModel, forKey: Self.translationModelDefaultsKey)
         }
     }
-    /// Video üstü altyazıda orijinalin mi, çevirinin mi gösterileceği; kalıcıdır.
+    /// Whether the subtitle over the video shows the original or the translation; persistent.
     var displayMode: SubtitleDisplay {
         didSet {
             guard displayMode != oldValue else { return }
@@ -53,25 +53,25 @@ final class SubtitleViewModel {
     var status: Status = .idle
     var detectedLanguage: String?
     var sentences: [Sentence] = []
-    /// Satırın kararlı `uid` değerine bağlı çeviriler; metin düzenlemelerinde "eski" işaretlenir.
+    /// Translations keyed by the line's stable `uid`; marked "eski" (stale) when the text is edited.
     var translations: [UUID: TranslationEntry] = [:]
-    /// Son başarılı çevirinin hedef dili (dışa aktarma etiketi için).
+    /// Target language of the last successful translation (for the export label).
     var translationLanguage: String?
-    /// Düzenlenen çevirinin henüz commit edilmemiş metni.
+    /// Uncommitted text of the translation being edited.
     var translationDraft: TextDraft?
-    var selection: UUID?         // seçili satırın `uid` değeri
-    /// Düzenlenen satırın henüz commit edilmemiş metni (odaklıyken kullanılır).
+    var selection: UUID?         // `uid` of the selected line
+    /// Uncommitted text of the line being edited (used while focused).
     var draft: TextDraft?
-    /// Seçili model dil filtresine uymadığı için otomatik değiştiyse kısa bilgi.
+    /// Short notice when the selected model was changed automatically because it didn't match the language filter.
     private(set) var modelNotice: String?
-    /// Pencerenin geri alma yöneticisi (görünüm tarafından verilir).
+    /// The window's undo manager (provided by the view).
     @ObservationIgnored weak var undoManager: UndoManager?
 
-    /// Paylaşılan model kataloğu; araç çubuğu ve Ayarlar aynı listeyi kullanır.
+    /// Shared model catalog; the toolbar and Settings use the same list.
     let catalog: ModelCatalog
 
     var job: Task<Void, Never>?
-    var jobID = UUID()  // yalnız güncel iş durumu değiştirebilir
+    var jobID = UUID()  // only the current job may change the state
 
     private(set) var video: URL?
 
@@ -93,7 +93,7 @@ final class SubtitleViewModel {
     init(catalog: ModelCatalog) {
         self.catalog = catalog
         let savedLanguage = UserDefaults.standard.string(forKey: Self.languageDefaultsKey) ?? ""
-        // Eski sürüm serbest metin kabul ediyordu; listede olmayan kod otomatiğe döner.
+        // The old version accepted free text; a code not in the list falls back to automatic.
         language = SubtitleLanguage(rawValue: savedLanguage) == nil ? "" : savedLanguage
         model = UserDefaults.standard.string(forKey: Self.modelDefaultsKey) ?? Self.defaultModel
         let savedTarget = UserDefaults.standard.string(forKey: Self.translationTargetDefaultsKey) ?? ""
@@ -108,21 +108,21 @@ final class SubtitleViewModel {
         reconcileTranslationTarget()
     }
 
-    /// Dile göre filtrelenmiş katalog; araç çubuğundaki seçici bunu gösterir.
+    /// Catalog filtered by language; the toolbar picker shows this.
     var availableModels: [EngineModel] { catalog.models(for: language) }
 
     var isWorking: Bool {
         if case .working = status { true } else { false }
     }
 
-    /// Dil koduna göre (boşsa otomatik) değişen kaynak dil; çeviri komutuna `--from` olarak gider.
-    /// Otomatik seçimde motorun algıladığı dil kullanılır.
+    /// Source language that changes with the language code (automatic if empty); passed to the translate command as `--from`.
+    /// With automatic selection, the language detected by the engine is used.
     var translationSource: String? {
         if !language.isEmpty { return language }
         return detectedLanguage
     }
 
-    /// Seçili model filtrelenen listede yoksa en doğru (eşitse daha hızlı) modele geçer.
+    /// If the selected model isn't in the filtered list, switches to the most accurate (or, on a tie, the faster) model.
     func reconcileModelSelection() {
         let available = availableModels
         guard !available.isEmpty, !available.contains(where: { $0.id == model }) else { return }
@@ -133,21 +133,21 @@ final class SubtitleViewModel {
         }
     }
 
-    /// Ayarlardaki çeviri modeli katalogda yoksa (eski kayıt) en doğru modele döner.
+    /// If the translation model in Settings isn't in the catalog (an old saved value), falls back to the most accurate model.
     func reconcileTranslationModelSelection() {
         let available = catalog.translationModels
         guard !available.isEmpty, !available.contains(where: { $0.id == translationModel }) else { return }
         translationModel = (available.max(by: { ($0.accuracy, $0.speed) < ($1.accuracy, $1.speed) }) ?? available[0]).id
     }
 
-    /// Kaynak dille aynı hedef dil seçilemez; seçilmişse başka bir hedefe geçer.
+    /// The target language can't be the same as the source language; if it is, switches to another target.
     func reconcileTranslationTarget() {
         guard let source = translationSource, source == translationTarget else { return }
         guard let next = SubtitleLanguage.translationTargets.first(where: { $0.rawValue != source }) else { return }
         translationTarget = next.rawValue
     }
 
-    /// Yeni video seçildiğinde eski videoya ait işi, altyazıları ve geri alma yığınını temizler.
+    /// When a new video is chosen, clears the old video's job, subtitles and undo stack.
     func openVideo(_ url: URL?) {
         guard url != video else { return }
         job?.cancel()
@@ -190,7 +190,7 @@ final class SubtitleViewModel {
         jobID = id
         catalog.activeModel = runningModel
         job = Task {
-            // Hangi yolla biterse bitsin (sonuç, hata, iptal) model Ayarlar'da silinebilir olur.
+            // However it ends (result, error, cancel), the model becomes deletable in Settings.
             defer { if jobID == id { catalog.activeModel = nil } }
             var failed = false
             do {
@@ -203,7 +203,7 @@ final class SubtitleViewModel {
                         sentences = result.sentences
                         detectedLanguage = result.language
                         reconcileTranslationTarget()
-                        // Uygulama çıkarılan WAV'ı kullanmıyor; geçici dosyayı sil.
+                        // The app doesn't use the extracted WAV; delete the temporary file.
                         try? FileManager.default.removeItem(atPath: result.audio)
                     case .translation:
                         break
@@ -212,10 +212,10 @@ final class SubtitleViewModel {
                         status = .failed(message)
                     }
                 }
-                // İptalde akış hata vermeden biter; o durumda durum değişmez.
+                // On cancel the stream ends without an error; in that case the status doesn't change.
                 guard jobID == id, !Task.isCancelled else { return }
                 if !failed { status = .finished }
-                // İndirilen model menüde "hazır" görünsün.
+                // Make the downloaded model show as "hazır" (ready) in the menu.
                 await catalog.load()
             } catch is CancellationError {
                 if jobID == id { status = .idle }

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Motorun `--json` modunda stdout'a satır satır yazdığı olaylar (bkz. engine/src/subtitle_engine/cli.py).
+/// Events the engine writes line by line to stdout in `--json` mode (see engine/src/subtitle_engine/cli.py).
 public enum EngineEvent: Sendable, Equatable {
     case stage(Stage, fraction: Double?)
     case result(EngineResult)

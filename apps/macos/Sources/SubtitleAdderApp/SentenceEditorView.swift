@@ -2,7 +2,7 @@ import Combine
 import EngineKit
 import SwiftUI
 
-/// Video altındaki satır listesi: seçince oynatıcıyı o satıra götürür, metin ve zamanlama düzenlenir.
+/// The line list under the video: selecting moves the player to that line; text and timing are edited.
 struct SentenceEditorView: View {
     @Bindable var vm: SubtitleViewModel
     let player: PlayerModel
@@ -45,7 +45,7 @@ struct SentenceEditorView: View {
                 player.seek(to: sentence.start)
             }
         }
-        // Geri alma/yineleme başlamadan önce odaklı satırın taslağını yaz ve odağı bırak.
+        // Before undo/redo starts, write the focused line's draft and release focus.
         .onReceive(NotificationCenter.default.publisher(for: .NSUndoManagerWillUndoChange)) { note in
             guard let manager = note.object as? UndoManager, manager === undoManager else { return }
             finishEditing()
@@ -70,7 +70,7 @@ struct SentenceEditorView: View {
                 }
             }
             .onChange(of: player.activeID) { _, uid in
-                // Kullanıcı yazarken ya da duraklatmışken listeyi kaydırma.
+                // Don't scroll the list while the user is typing or has paused.
                 guard let uid, player.isPlaying, focusedUID == nil, focusedTranslationUID == nil else { return }
                 withAnimation { proxy.scrollTo(uid, anchor: .center) }
             }
@@ -79,7 +79,7 @@ struct SentenceEditorView: View {
                 vm.deleteSelected()
             }
             .onKeyPress(.space) {
-                // Metin alanı odaktayken boşluk yazılsın.
+                // Let the space key type a space while the text field is focused.
                 guard focusedUID == nil, focusedTranslationUID == nil else { return .ignored }
                 player.togglePlayback()
                 return .handled
@@ -132,7 +132,7 @@ struct SentenceEditorView: View {
         .disabled(vm.selection == nil)
     }
 
-    /// Odaklı metin alanlarını bırakır ve taslakları satırlara yazar.
+    /// Releases focused text fields and writes the drafts to the lines.
     private func finishEditing() {
         focusedUID = nil
         focusedTranslationUID = nil

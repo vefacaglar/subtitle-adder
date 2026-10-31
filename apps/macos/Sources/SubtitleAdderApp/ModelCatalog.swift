@@ -2,12 +2,12 @@ import EngineKit
 import Foundation
 import Observation
 
-/// Model kataloğunun tek kaynağı: araç çubuğundaki seçici, Ayarlar penceresi ve
-/// altyazı üretimi aynı listeyi görür; yenileme/silme sonrası hepsi birlikte güncellenir.
+/// Single source of truth for the model catalog: the toolbar picker, the Settings window and
+/// subtitle generation see the same list; after a refresh/delete all of them update together.
 @MainActor
 @Observable
 final class ModelCatalog {
-    /// Motor bulunamazsa ya da katalog alınamazsa gösterilen liste (motor kataloğuyla aynı).
+    /// List shown when the engine isn't found or the catalog can't be fetched (same as the engine catalog).
     static let fallbackModels: [EngineModel] = [
         EngineModel(id: "base", sizeMB: 145, speed: 5, accuracy: 2, license: "MIT", downloaded: false),
         EngineModel(
@@ -47,7 +47,7 @@ final class ModelCatalog {
     private(set) var deleting: Set<String> = []
     private(set) var deleteErrors: [String: String] = [:]
 
-    /// Süren altyazı üretiminin ya da çevirinin kullandığı model; o model Ayarlar'dan silinemez.
+    /// The model used by the running subtitle generation or translation; that model can't be deleted from Settings.
     var activeModel: String?
 
     @ObservationIgnored let engine: EngineClient?
@@ -56,24 +56,24 @@ final class ModelCatalog {
         self.engine = engine
     }
 
-    /// Katalogdaki toplam gerçek disk kullanımı (indirilmemişler sayılmaz).
+    /// Total actual disk usage in the catalog (models not downloaded are not counted).
     var totalDiskMB: Int {
         models.filter(\.downloaded).reduce(0) { $0 + ($1.diskMB ?? $1.sizeMB) }
     }
 
-    /// Araç çubuğundaki seçicinin gördüğü altyazı modelleri (çeviri modelleri hariç).
+    /// Subtitle models the toolbar picker sees (translation models excluded).
     func models(for language: String) -> [EngineModel] {
         let transcription = models.filter { !$0.isTranslation }
         if language.isEmpty { return transcription.filter(\.detectsLanguage) }
         return transcription.filter { $0.supports(language: language) }
     }
 
-    /// Ayarlar'daki "Çeviri modelleri" bölümü ve varsayılan çeviri modeli seçici.
+    /// The "Çeviri modelleri" section in Settings and the default translation model picker.
     var translationModels: [EngineModel] {
         models.filter(\.isTranslation)
     }
 
-    /// Katalogu motordan yeniler; hata olursa eldeki liste ve hata metni korunur.
+    /// Refreshes the catalog from the engine; on error the current list and the error text are kept.
     func load() async {
         guard let engine else {
             loadError = EngineError.notFound.localizedDescription
@@ -87,13 +87,13 @@ final class ModelCatalog {
             if !list.isEmpty { models = list }
             loadError = nil
         } catch is CancellationError {
-            // Pencere kapandı; hata gösterme, sonraki açılışta yeniden denenir.
+            // The window closed; don't show an error, it will be retried on the next open.
         } catch {
             loadError = error.localizedDescription
         }
     }
 
-    /// Modeli siler; başarıda satırı "yüklü değil" durumuna geçirir.
+    /// Deletes the model; on success sets the row to the "yüklü değil" state.
     func delete(_ model: EngineModel) async {
         guard model.downloaded, !deleting.contains(model.id), activeModel != model.id else { return }
         guard let engine else {

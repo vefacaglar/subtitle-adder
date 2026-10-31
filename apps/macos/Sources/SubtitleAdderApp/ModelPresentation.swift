@@ -1,7 +1,7 @@
 import EngineKit
 import Foundation
 
-/// Araç çubuğundaki dil seçici. Boş kod otomatik algılamadır.
+/// The language picker in the toolbar. An empty code means automatic detection.
 enum SubtitleLanguage: String, CaseIterable, Identifiable, Sendable {
     case automatic = ""
     case turkish = "tr"
@@ -12,7 +12,7 @@ enum SubtitleLanguage: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    /// Menüde görünen ad.
+    /// Name shown in the menu.
     var title: String {
         switch self {
         case .automatic: "Otomatik"
@@ -24,7 +24,7 @@ enum SubtitleLanguage: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Durum çubuğundaki kısa bilgi için ad.
+    /// Name for the short info in the status bar.
     var shortName: String {
         switch self {
         case .automatic: "Otomatik algılama"
@@ -36,12 +36,12 @@ enum SubtitleLanguage: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Çeviri hedefi olabilecek diller; "Otomatik" hedef olamaz.
+    /// Languages that can be a translation target; "Otomatik" can't be a target.
     static var translationTargets: [SubtitleLanguage] {
         allCases.filter { $0 != .automatic }
     }
 
-    /// Hedef dil menüsündeki ad (kod olmadan).
+    /// Name in the target language menu (without the code).
     var targetName: String {
         switch self {
         case .automatic: "Otomatik"
@@ -54,8 +54,8 @@ enum SubtitleLanguage: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Model kimliklerinin Türkçe adları ve katalog satırlarının metinleri.
-/// Etiketler yalnız burada tutulur; araç çubuğu seçicisi ile Ayarlar aynı metni kullanır.
+/// Turkish names of the model ids and the texts of the catalog rows.
+/// Labels are kept only here; the toolbar picker and Settings use the same text.
 enum ModelLabel {
     static func name(for id: String) -> String {
         switch id {
@@ -81,7 +81,7 @@ enum ModelLabel {
         model.downloaded ? "hazır" : "ilk kullanımda ~\(sizeText(model.sizeMB)) indirilir"
     }
 
-    /// Kısa dil özeti: "Tüm diller" ya da "bg, hr, cs…".
+    /// Short language summary: "Tüm diller" or "bg, hr, cs…".
     static func languageSummary(for model: EngineModel) -> String {
         guard let languages = model.languages else { return "Tüm diller" }
         let shown = languages.prefix(3).joined(separator: ", ")
@@ -96,7 +96,7 @@ enum ModelLabel {
         }
     }
 
-    /// Ayarlar satırındaki lisans metni.
+    /// License text in the Settings row.
     static func licenseText(for model: EngineModel) -> String {
         "Lisans: \(model.license ?? "bilinmiyor")"
     }

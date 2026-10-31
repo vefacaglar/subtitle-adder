@@ -1,15 +1,15 @@
-// Uygulama simgesini çizer (flat): beyaz gövde, mor konuşma balonu içinde ses dalgası,
-// altında iki altyazı satırı (konuşma → yazı).
+// Draws the app icon (flat): a white body, a sound wave inside a purple speech bubble,
+// with two subtitle lines below (speech → text).
 //
-//   swift scripts/macos/make-icon.swift <çıktı.png> [boyut]
+//   swift scripts/macos/make-icon.swift <output.png> [size]
 //
-// `scripts/package-macos.sh` bunu 1024 px çizip iconutil ile AppIcon.icns'e çevirir.
+// `scripts/package-macos.sh` draws this at 1024 px and converts it to AppIcon.icns with iconutil.
 import AppKit
 import CoreGraphics
 
 let args = CommandLine.arguments
 guard args.count >= 2 else {
-    FileHandle.standardError.write(Data("kullanım: make-icon.swift <çıktı.png> [boyut]\n".utf8))
+    FileHandle.standardError.write(Data("usage: make-icon.swift <output.png> [size]\n".utf8))
     exit(1)
 }
 let size = args.count >= 3 ? Double(args[2]) ?? 1024 : 1024
@@ -22,7 +22,7 @@ func color(_ hex: UInt32, _ alpha: Double = 1) -> CGColor {
 let accent = color(0x5B4BDB)
 let ink = color(0x1F2333)
 
-/// macOS simge ızgarasındaki "squircle" (süperelips, n=5) gövde.
+/// The "squircle" (superellipse, n=5) body from the macOS icon grid.
 func squircle(_ rect: CGRect, n: Double = 5) -> CGPath {
     let path = CGMutablePath()
     let a = rect.width / 2, b = rect.height / 2
@@ -41,12 +41,12 @@ func squircle(_ rect: CGRect, n: Double = 5) -> CGPath {
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
 guard let ctx = CGContext(data: nil, width: Int(size), height: Int(size), bitsPerComponent: 8, bytesPerRow: 0,
                           space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { exit(1) }
-// Tüm ölçüler 1024'lük ızgarada, üstten ölçülür.
+// All measurements are on the 1024 grid, measured from the top.
 ctx.scaleBy(x: size / 1024, y: size / 1024)
 ctx.translateBy(x: 0, y: 1024)
 ctx.scaleBy(x: 1, y: -1)
 
-// Gövde: beyaz, macOS simgeleri gibi hafif gölgeli (açık Dock'ta kaybolmasın).
+// Body: white, with a light shadow like macOS icons (so it doesn't vanish on a light Dock).
 let bodyPath = squircle(CGRect(x: 100, y: 100, width: 824, height: 824))
 ctx.saveGState()
 ctx.setShadow(offset: CGSize(width: 0, height: 10), blur: 24, color: color(0x000000, 0.25))
@@ -55,7 +55,7 @@ ctx.setFillColor(color(0xFFFFFF))
 ctx.fillPath()
 ctx.restoreGState()
 
-// Konuşma balonu: yuvarlatılmış dikdörtgen + sol altta kuyruk.
+// Speech bubble: rounded rectangle + a tail at the bottom left.
 let bubble = CGRect(x: 232, y: 232, width: 560, height: 360)
 ctx.setFillColor(accent)
 ctx.addPath(CGPath(roundedRect: bubble, cornerWidth: 112, cornerHeight: 112, transform: nil))
@@ -68,7 +68,7 @@ tail.closeSubpath()
 ctx.addPath(tail)
 ctx.fillPath()
 
-// Ses dalgası: beyaz, ortalı dikey çubuklar.
+// Sound wave: white, centered vertical bars.
 let heights: [Double] = [64, 136, 208, 120, 232, 152, 80]
 let barW = 36.0, gap = 28.0
 let totalW = Double(heights.count) * barW + Double(heights.count - 1) * gap
@@ -80,7 +80,7 @@ for (i, h) in heights.enumerated() {
     ctx.fillPath()
 }
 
-// Altyazı satırları: koyu, iki satır, ortalı.
+// Subtitle lines: dark, two lines, centered.
 ctx.setFillColor(ink)
 for (y, w) in [(704.0, 496.0), (776.0, 320.0)] {
     let bar = CGRect(x: 512 - w / 2, y: y, width: w, height: 40)

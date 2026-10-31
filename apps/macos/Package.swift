@@ -2,7 +2,7 @@
 import Foundation
 import PackageDescription
 
-// Bundle'sız çalışan uygulamaya (swift run, VS Code) ad vermek için Info.plist'i ikiliye gömer.
+// Embeds Info.plist into the binary so the app gets a name when running without a bundle (swift run, VS Code).
 let infoPlist = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Support/Info.plist").path
 
 let package = Package(
@@ -12,7 +12,7 @@ let package = Package(
         .executable(name: "SubtitleAdderApp", targets: ["SubtitleAdderApp"]),
     ],
     targets: [
-        // Python motorunu alt süreç olarak çalıştırır, JSON olay akışını Swift tiplerine çevirir.
+        // Runs the Python engine as a subprocess and turns the JSON event stream into Swift types.
         .target(name: "EngineKit"),
         .executableTarget(
             name: "SubtitleAdderApp",

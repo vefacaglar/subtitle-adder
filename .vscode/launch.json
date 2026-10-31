@@ -9,10 +9,10 @@
             "configuration": "debug",
             "cwd": "${workspaceFolder}/apps/macos",
             "args": [],
-            "preLaunchTask": "Hazırla (motor + uygulama)"
+            "preLaunchTask": "Prepare (engine + app)"
         },
         {
-            "name": "Motor: demo videoyu işle (Python)",
+            "name": "Engine: process demo video (Python)",
             "type": "debugpy",
             "request": "launch",
             "module": "subtitle_engine.cli",
@@ -24,7 +24,7 @@
             "preLaunchTask": "engine: uv sync"
         },
         {
-            "name": "Motor: testler (pytest)",
+            "name": "Engine: tests (pytest)",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",

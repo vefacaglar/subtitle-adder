@@ -19,13 +19,13 @@
             "presentation": { "reveal": "silent" }
         },
         {
-            "label": "Hazırla (motor + uygulama)",
+            "label": "Prepare (engine + app)",
             "dependsOn": ["engine: uv sync", "app: build"],
             "group": { "kind": "build", "isDefault": true },
             "problemMatcher": []
         },
         {
-            "label": "Uygulamayı çalıştır",
+            "label": "Run app",
             "type": "shell",
             "command": "swift run SubtitleAdderApp",
             "options": { "cwd": "${workspaceFolder}/apps/macos" },
@@ -34,7 +34,7 @@
             "isBackground": false
         },
         {
-            "label": "Testler (motor + uygulama)",
+            "label": "Tests (engine + app)",
             "type": "shell",
             "command": "(cd engine && uv run pytest) && (cd apps/macos && swift test)",
             "options": { "cwd": "${workspaceFolder}" },
@@ -42,7 +42,7 @@
             "problemMatcher": ["$swiftc"]
         },
         {
-            "label": "Uçtan uca test (gerçek motor)",
+            "label": "End-to-end test (real engine)",
             "type": "shell",
             "command": "ENGINE_E2E=1 swift test --filter realEngineOnDemoVideo",
             "options": { "cwd": "${workspaceFolder}/apps/macos" },
