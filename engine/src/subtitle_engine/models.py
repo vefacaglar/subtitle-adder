@@ -104,7 +104,7 @@ PROGRESS_INTERVAL = 0.1
 
 _MIB = 1024 * 1024
 
-Backend = Literal["whisper", "onnx", "ctranslate2", "sherpa"]
+Backend = Literal["whisper", "onnx", "ctranslate2", "sherpa", "llama"]
 ModelKind = Literal["transcription", "translation", "diarization"]
 
 
@@ -206,6 +206,20 @@ KATALOG: tuple[ModelInfo, ...] = (
         license="CC-BY-NC-4.0",  # no commercial use
     ),
     ModelInfo(
+        id="qwen3.5-4b",
+        repo="unsloth/Qwen3.5-4B-GGUF",
+        size_mb=2614,
+        speed=3,
+        accuracy=4,
+        backend="llama",
+        languages=TRANSLATION_LANGUAGES,
+        files=("Qwen3.5-4B-Q4_K_M.gguf",),
+        kind="translation",
+        license="Apache-2.0",
+        owns_files_only=True,
+        part_bytes=(2_740_937_888,),
+    ),
+    ModelInfo(
         id="madlad-3b",
         repo="Nextcloud-AI/madlad400-3b-mt-ct2-int8",
         size_mb=2839,
@@ -216,6 +230,48 @@ KATALOG: tuple[ModelInfo, ...] = (
         files=MADLAD_FILES,
         kind="translation",
         license="Apache-2.0",
+    ),
+    ModelInfo(
+        id="gemma-4-e4b",
+        repo="unsloth/gemma-4-E4B-it-GGUF",
+        size_mb=4747,
+        speed=2,
+        accuracy=5,
+        backend="llama",
+        languages=TRANSLATION_LANGUAGES,
+        files=("gemma-4-E4B-it-Q4_K_M.gguf",),
+        kind="translation",
+        license="Apache-2.0",
+        owns_files_only=True,
+        part_bytes=(4_977_171_584,),
+    ),
+    ModelInfo(
+        id="qwen3.5-9b",
+        repo="unsloth/Qwen3.5-9B-GGUF",
+        size_mb=5417,
+        speed=2,
+        accuracy=5,
+        backend="llama",
+        languages=TRANSLATION_LANGUAGES,
+        files=("Qwen3.5-9B-Q4_K_M.gguf",),
+        kind="translation",
+        license="Apache-2.0",
+        owns_files_only=True,
+        part_bytes=(5_680_522_464,),
+    ),
+    ModelInfo(
+        id="gemma-4-12b",
+        repo="unsloth/gemma-4-12b-it-GGUF",
+        size_mb=6792,
+        speed=1,
+        accuracy=5,
+        backend="llama",
+        languages=TRANSLATION_LANGUAGES,
+        files=("gemma-4-12b-it-Q4_K_M.gguf",),
+        kind="translation",
+        license="Apache-2.0",
+        owns_files_only=True,
+        part_bytes=(7_121_861_440,),
     ),
     ModelInfo(
         # Speaker diarization: pyannote segmentation-3.0 (MIT) + 3D-Speaker CAM++ embedding model
@@ -242,6 +298,10 @@ DISPLAY_NAMES = {
     "canary-1b-v2": "Canary",
     "madlad-3b": "MADLAD",
     "nllb-1.3b": "NLLB",
+    "qwen3.5-4b": "Qwen 3.5 4B",
+    "gemma-4-e4b": "Gemma 4 E4B",
+    "qwen3.5-9b": "Qwen 3.5 9B",
+    "gemma-4-12b": "Gemma 4 12B",
 }
 
 
@@ -739,7 +799,8 @@ def _repo_bytes(repo: str, patterns: Sequence[str], fallback: int = 0) -> int:
 
 def _total_bytes(info: ModelInfo) -> int:
     """Total bytes of the files to download in the repo; the catalog estimate if it cannot be queried."""
-    return _repo_bytes(info.repo, info.files, info.size_mb * _MIB)
+    fallback = info.part_bytes[0] if info.part_bytes else info.size_mb * _MIB
+    return _repo_bytes(info.repo, info.files, fallback)
 
 
 def model_dir(model_id: str) -> Path:
@@ -755,6 +816,17 @@ def model_dir(model_id: str) -> Path:
     if not isinstance(path, str):
         raise ModelError(t("model_not_downloaded", model=info.id))
     return Path(path).parent
+
+
+def model_file(model_id: str) -> Path:
+    """Local cached file path of a single-file model (e.g. GGUF); no network."""
+    info = find(model_id)
+    if info is None or not info.files:
+        raise ModelError(t("unknown_model", model=model_id))
+    path = huggingface_hub.try_to_load_from_cache(info.repo, info.files[0])
+    if not isinstance(path, str):
+        raise ModelError(t("model_not_downloaded", model=info.id))
+    return Path(path)
 
 
 def support_error(info: ModelInfo, language: str) -> str:

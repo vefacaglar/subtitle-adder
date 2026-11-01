@@ -83,6 +83,15 @@
                     <Border Width="1" Margin="2,6" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
                     <ComboBox x:Name="TargetBox" Width="170" VerticalAlignment="Center" SelectionChanged="TargetBox_SelectionChanged"
                               IsEnabled="{x:Bind loc:Ui.Not(Vm.IsWorking), Mode=OneWay}" loc:Localize.AutomationName="Çeviri dili" />
+                    <DropDownButton x:Name="TranslationModelButton" VerticalAlignment="Center" HorizontalContentAlignment="Left"
+                                    IsEnabled="{x:Bind loc:Ui.Not(Vm.IsWorking), Mode=OneWay}"
+                                    loc:Localize.AutomationName="Çeviri modeli"
+                                    loc:Localize.ToolTip="Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir.">
+                        <TextBlock x:Name="TranslationModelNameText" Text="{x:Bind Vm.TranslationModelName, Mode=OneWay}" MinWidth="110" />
+                        <DropDownButton.Flyout>
+                            <MenuFlyout x:Name="TranslationModelFlyout" Placement="BottomEdgeAlignedLeft" Opening="TranslationModelFlyout_Opening" />
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
                     <Button x:Name="TranslateButton" Style="{StaticResource ToolButtonStyle}" Click="Translate_Click"
                             loc:Localize.ToolTip="Tüm satırları seçili hedef dile yerel modelle çevir" loc:Localize.AutomationName="Çevir…">
                         <StackPanel Orientation="Horizontal" Spacing="8">

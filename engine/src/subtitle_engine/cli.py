@@ -90,26 +90,36 @@ def _translate(args: argparse.Namespace) -> int:
             print(f"… {stage}", file=sys.stderr)
 
     # A language/model problem must surface as a (localized) `error` event before any download starts.
-    check_request(args.model, args.to, args.source)
+    info = check_request(args.model, args.to, args.source)
     sentences = [Sentence.from_dict(d) for d in json.load(sys.stdin)]
     if models.require_download(args.model):
         on_stage("downloading_model", 0.0)
         models.ensure_model(args.model, on_progress=lambda f: on_stage("downloading_model", f))
-    if cuda.needs_cuda_download():
+    if info.backend == "llama":
+        from . import llama
+
+        if llama.require_llama_download():
+            on_stage("downloading_model", 0.0)
+            llama.ensure_llama(on_progress=lambda f: on_stage("downloading_model", f))
+    elif cuda.needs_cuda_download():
         on_stage("downloading_model", 0.0)
         cuda.ensure_cuda(on_progress=lambda f: on_stage("downloading_model", f))
     models.go_offline()
 
     on_stage("loading_model", None)
     translator = create_translator(args.model)
-
-    on_stage("translating", 0.0)
-    translated = translator.translate(
-        sentences,
-        target=args.to,
-        source=args.source,
-        on_progress=lambda f: on_stage("translating", f),
-    )
+    try:
+        on_stage("translating", 0.0)
+        translated = translator.translate(
+            sentences,
+            target=args.to,
+            source=args.source,
+            on_progress=lambda f: on_stage("translating", f),
+        )
+    finally:
+        close = getattr(translator, "close", None)
+        if callable(close):
+            close()
     if args.json:
         _emit({
             "event": "translation",

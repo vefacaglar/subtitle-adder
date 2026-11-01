@@ -50,7 +50,7 @@ def make_cached_repo(cache_dir, repo_id, files, revision="1" * 40, layout="auto"
 def test_catalog_order_and_fields():
     assert [m.id for m in models.KATALOG] == [
         "base", "gigaam-v3", "small", "parakeet-v3", "canary-1b-v2", "medium", "large-v3-turbo", "large-v3",
-        "nllb-1.3b", "madlad-3b", "speaker-diarization",
+        "nllb-1.3b", "qwen3.5-4b", "madlad-3b", "gemma-4-e4b", "qwen3.5-9b", "gemma-4-12b", "speaker-diarization",
     ]
     assert all(m.repo for m in models.KATALOG)
     assert all(m.size_mb > 0 for m in models.KATALOG)
@@ -81,6 +81,14 @@ def test_translation_catalog_kind_languages_and_licenses():
         assert info.backend == "ctranslate2"
         assert {"tr", "pt", "es", "ru", "en"} <= set(info.languages)
         assert set(models.TRANSLATION_FILES) <= set(info.files)
+    for model_id in ("qwen3.5-4b", "gemma-4-e4b", "qwen3.5-9b", "gemma-4-12b"):
+        info = by_id[model_id]
+        assert info.kind == "translation"
+        assert info.backend == "llama"
+        assert {"tr", "pt", "es", "ru", "en"} <= set(info.languages)
+        assert len(info.files) == 1 and info.files[0].endswith(".gguf")
+        assert info.owns_files_only is True
+        assert info.license == "Apache-2.0"
     assert by_id["madlad-3b"].files == models.MADLAD_FILES
     assert "spiece.model" in by_id["madlad-3b"].files
     assert by_id["madlad-3b"].license == "Apache-2.0"

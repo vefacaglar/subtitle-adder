@@ -105,6 +105,14 @@ MESSAGES: dict[str, dict[str, str]] = {
         "tr": "{model} indirilmemiş. Çevrimdışı mod açıkken model indirilemez; Ayarlar'dan çevrimdışı modu kapatıp tekrar deneyin.",
         "en": "{model} is not downloaded. Models cannot be downloaded in offline mode; turn off offline mode in Settings and try again.",
     },
+    "offline_missing_llama": {
+        "tr": "LLM çalışma zamanı (llama.cpp) indirilmemiş. Çevrimdışı mod açıkken indirilemez; Ayarlar'dan çevrimdışı modu kapatıp tekrar deneyin.",
+        "en": "The LLM runtime (llama.cpp) is not downloaded. It cannot be downloaded in offline mode; turn off offline mode in Settings and try again.",
+    },
+    "llama_unavailable": {
+        "tr": "Yerel LLM çalışma zamanı (llama.cpp) başlatılamadı: {error}",
+        "en": "Could not start the local LLM runtime (llama.cpp): {error}",
+    },
     "not_transcription_model": {
         "tr": "{model} bir konuşma tanıma modeli değil; 'models' komutu geçerli modelleri listeler.",
         "en": "{model} is not a speech recognition model; the 'models' command lists the valid models.",

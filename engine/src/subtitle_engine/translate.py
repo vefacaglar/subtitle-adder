@@ -1,11 +1,22 @@
 """Step: translates sentences into the target language with fully local translation models.
 
-The models are in CTranslate2 format. MADLAD's T5 tokenizer is read with sentencepiece,
-NLLB's BPE tokenizer from the Hugging Face `tokenizer.json` file (`tokenizers`,
-Rust); transformers/torch are not needed. The source text never leaves the machine;
-the network is only used to download models.
+Supports two local backends:
+1. CTranslate2 encoder-decoder models (MADLAD-400, NLLB-200) with sentencepiece / Hugging Face tokenizers.
+2. Prompt-driven GGUF LLMs (Gemma 4, Qwen 3.5) executed locally via `llama-server` (llama.cpp) with
+   context-aware, dialect-aware subtitle translation prompts.
+
+The source text never leaves the machine; the network is only used to download models/runtimes.
 """
+import atexit
+import contextlib
+import json
+import re
+import socket
+import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -27,12 +38,27 @@ NLLB_LANGUAGE_CODES = {
 }
 MADLAD_PREFIX = "<2{}>"
 
+# Dialect-aware language descriptions for direct LLM subtitle translation prompts.
+LLM_LANGUAGE_SPECS = {
+    "tr": "Turkish (natural, idiomatic, spoken Turkish suitable for subtitles)",
+    "pt": "Portuguese (including Brazilian Portuguese vernacular, slang, and idioms)",
+    "es": "Spanish (including Mexican and Latin American Spanish vernacular, slang, and idioms)",
+    "en": "English (natural, idiomatic spoken English)",
+    "ru": "Russian (natural, idiomatic spoken Russian)",
+}
+
 # Sentences are translated in batches of this size, not one by one; progress is reported after each batch.
 BATCH_SIZE = 16
+LLM_BATCH_SIZE = 10
+LLM_CONTEXT_LINES = 3
 BEAM_SIZE = 4
 MAX_DECODING_LENGTH = 256
 # add_source_eos is off in CT2 models; we append it to the end of the source like HF tokenizers do.
 EOS_TOKEN = "</s>"
+
+_THINK_BLOCK_RE = re.compile(r"<(?:think|thought|\|thought\|)>.*?</(?:think|thought|\|thought\|)>", re.DOTALL)
+_UNCLOSED_THINK_RE = re.compile(r"\A\s*<(?:think|thought|\|thought\|)>.*?(?=\[\d+\])", re.DOTALL)
+_NUMBERED_LINE_RE = re.compile(r"^\s*(?:\[(\d+)\]|(\d+)[\.\)\:])\s*(.*)$")
 
 
 class Translator(Protocol):
@@ -70,12 +96,14 @@ def check_request(model_id: str, target: str, source: str | None = None) -> mode
 
 
 def create_translator(model_id: str, device: str = "auto", compute_type: str = "int8") -> Translator:
-    """Builds the CTranslate2 translator for a catalog id (GPU when CUDA is usable, otherwise CPU)."""
+    """Builds the local translator for a catalog id (LLM via llama.cpp or CTranslate2)."""
     info = models.find(model_id)
     if info is None or info.kind != "translation":
         raise ModelError(
             t("unknown_translation_model", model=model_id)
         )
+    if info.backend == "llama":
+        return LlamaTranslator(model_id, device=device)
     return Ct2Translator(model_id, device=device, compute_type=compute_type)
 
 
@@ -230,3 +258,275 @@ def _load_ct2_translator(path: Path, device: str, compute_type: str):
     import ctranslate2
 
     return ctranslate2.Translator(str(path), device=device, compute_type=compute_type)
+
+
+# --- Direct Prompt-Based LLM Subtitle Translation (Gemma 4 / Qwen 3.5) ---------
+
+
+def build_system_prompt(target: str, source: str | None = None) -> str:
+    """Builds the direct system prompt for subtitle translation, including dialect/slang guidance."""
+    target_desc = LLM_LANGUAGE_SPECS.get(target, target)
+    source_clause = (
+        f"from {LLM_LANGUAGE_SPECS.get(source, source)} "
+        if source
+        else (
+            "from the source dialogue (including regional vernacular such as Brazilian Portuguese "
+            "or Mexican/Latin American Spanish) "
+        )
+    )
+    return (
+        f"You are an expert film and video subtitle translator. Translate the numbered subtitle lines "
+        f"{source_clause}into {target_desc}.\n"
+        "Rules:\n"
+        "1. Output ONLY the translated numbered lines in the exact format `[N] translated text`.\n"
+        "2. Keep a strict 1-to-1 correspondence with the input line numbers. Never merge, split, skip, or reorder lines.\n"
+        "3. Translate regional slang, idioms, and colloquialisms (such as Brazilian Portuguese or Mexican Spanish expressions) "
+        "by their real conversational meaning into natural spoken language, not literal word-for-word translation.\n"
+        "4. Preserve proper names and numbers. Keep each line concise and readable at subtitle pace. "
+        "Do not add explanations, notes, or markdown."
+    )
+
+
+def build_user_prompt(lines: list[str], context_lines: list[str] | None = None) -> str:
+    """Formats a batch of numbered subtitle lines with optional preceding dialogue context."""
+    parts: list[str] = []
+    if context_lines:
+        ctx = "\n".join(f"- {c}" for c in context_lines if c.strip())
+        if ctx:
+            parts.append(f"Previous lines (for context only, do NOT translate):\n{ctx}\n")
+    numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(lines, start=1))
+    parts.append(f"Translate these subtitle lines:\n{numbered}")
+    return "\n".join(parts)
+
+
+def parse_numbered_translations(raw_output: str, expected_count: int) -> dict[int, str]:
+    """Extracts 1-based `[N] text` lines from the LLM output, stripping any reasoning blocks."""
+    cleaned = _THINK_BLOCK_RE.sub("", raw_output)
+    cleaned = _UNCLOSED_THINK_RE.sub("", cleaned).strip()
+
+    parsed: dict[int, str] = {}
+    current_idx: int | None = None
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("```"):
+            continue
+        match = _NUMBERED_LINE_RE.match(line)
+        if match:
+            num_str = match.group(1) or match.group(2)
+            idx = int(num_str)
+            text = match.group(3).strip()
+            if 1 <= idx <= expected_count:
+                parsed[idx] = text
+                current_idx = idx
+        elif current_idx is not None and current_idx in parsed:
+            parsed[current_idx] = f"{parsed[current_idx]} {line}".strip()
+
+    if not parsed and expected_count > 0:
+        non_empty = [ln.strip() for ln in cleaned.splitlines() if ln.strip() and not ln.strip().startswith("```")]
+        if len(non_empty) == expected_count:
+            for i, text in enumerate(non_empty, start=1):
+                parsed[i] = text
+        elif expected_count == 1 and non_empty:
+            parsed[1] = " ".join(non_empty)
+
+    return parsed
+
+
+def _free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+class LlamaTranslator:
+    """Runs GGUF instruction-tuned LLMs (Gemma 4, Qwen 3.5) locally via `llama-server`."""
+
+    def __init__(
+        self,
+        model_id: str,
+        device: str = "auto",
+        completion_fn: Callable[[list[dict[str, str]]], str] | None = None,
+    ):
+        from . import llama
+
+        info = models.find(model_id)
+        if info is None or info.kind != "translation" or info.backend != "llama":
+            raise ModelError(t("unknown_translation_model_short", model=model_id))
+        self._info = info
+        self._device = device
+        self._completion_fn = completion_fn
+        self._process: subprocess.Popen | None = None
+        self._port: int | None = None
+        if completion_fn is None:
+            self._model_path = models.model_file(model_id)
+            server = llama.llama_server_path()
+            if server is None:
+                raise ModelError(t("offline_missing_llama"))
+            self._server_path = server
+            self._start_server(gpu_layers=0 if device == "cpu" else 99)
+            atexit.register(self.close)
+
+    def _start_server(self, gpu_layers: int) -> None:
+        self.close()
+        port = _free_local_port()
+        cmd = [
+            str(self._server_path),
+            "-m",
+            str(self._model_path),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "-ngl",
+            str(gpu_layers),
+            "-c",
+            "4096",
+        ]
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(self._server_path.parent),
+                creationflags=creationflags,
+            )
+        except OSError as exc:
+            raise ModelError(t("llama_unavailable", error=str(exc))) from exc
+
+        self._process = proc
+        self._port = port
+        health_url = f"http://127.0.0.1:{port}/health"
+        deadline = time.monotonic() + 90.0
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                err_tail = ""
+                if proc.stderr is not None:
+                    err_tail = (proc.stderr.read() or "").strip()[-400:]
+                self.close()
+                if gpu_layers > 0 and self._device == "auto":
+                    print("llama-server GPU init failed, retrying on CPU...", file=sys.stderr)
+                    self._start_server(gpu_layers=0)
+                    return
+                raise ModelError(t("llama_unavailable", error=err_tail or f"exit code {proc.returncode}"))
+            try:
+                with urllib.request.urlopen(health_url, timeout=1.0) as resp:
+                    if resp.status == 200:
+                        return
+            except (urllib.error.URLError, TimeoutError, OSError):
+                time.sleep(0.15)
+
+        self.close()
+        raise ModelError(t("llama_unavailable", error="timed out waiting for llama-server /health"))
+
+    def close(self) -> None:
+        proc = self._process
+        self._process = None
+        self._port = None
+        if proc is None:
+            return
+        with contextlib.suppress(Exception):
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+        if proc.stderr is not None:
+            with contextlib.suppress(Exception):
+                proc.stderr.close()
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
+
+    def _complete(self, messages: list[dict[str, str]]) -> str:
+        if self._completion_fn is not None:
+            return self._completion_fn(messages)
+        if self._process is None or self._process.poll() is not None:
+            self._start_server(gpu_layers=0 if self._device == "cpu" else 99)
+        url = f"http://127.0.0.1:{self._port}/v1/chat/completions"
+        payload = json.dumps(
+            {
+                "messages": messages,
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "max_tokens": 1024,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            raise ModelError(t("llama_unavailable", error=str(exc))) from exc
+        choices = data.get("choices") or []
+        if not choices:
+            return ""
+        msg = choices[0].get("message") or {}
+        return str(msg.get("content") or "")
+
+    def translate(
+        self,
+        sentences: list[Sentence],
+        target: str,
+        source: str | None = None,
+        on_progress: ProgressFn | None = None,
+    ) -> list[Sentence]:
+        check_request(self._info.id, target, source)
+        result_sentences = [
+            Sentence(id=s.id, start=s.start, end=s.end, text=s.text, words=[], speaker=s.speaker)
+            for s in sentences
+        ]
+        pending = [(index, sentence) for index, sentence in enumerate(sentences) if sentence.text.strip()]
+        if not pending:
+            if on_progress is not None:
+                on_progress(1.0)
+            return result_sentences
+
+        system_prompt = build_system_prompt(target=target, source=source)
+        processed = 0
+        for start in range(0, len(pending), LLM_BATCH_SIZE):
+            batch = pending[start : start + LLM_BATCH_SIZE]
+            ctx_start = max(0, start - LLM_CONTEXT_LINES)
+            context_lines = [s.text.strip() for _, s in pending[ctx_start:start]]
+            batch_texts = [s.text.strip() for _, s in batch]
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": build_user_prompt(batch_texts, context_lines)},
+            ]
+            raw_reply = self._complete(messages)
+            parsed = parse_numbered_translations(raw_reply, len(batch))
+
+            for offset, (index, sentence) in enumerate(batch, start=1):
+                text = parsed.get(offset, "").strip()
+                if not text and len(batch) > 1:
+                    # Single-line retry if the model omitted one numbered line in the batch.
+                    single_messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": build_user_prompt([sentence.text.strip()])},
+                    ]
+                    single_parsed = parse_numbered_translations(self._complete(single_messages), 1)
+                    text = single_parsed.get(1, "").strip()
+                result_sentences[index] = Sentence(
+                    id=sentence.id,
+                    start=sentence.start,
+                    end=sentence.end,
+                    text=text or sentence.text,
+                    words=[],
+                    speaker=sentence.speaker,
+                )
+            processed += len(batch)
+            if on_progress is not None:
+                on_progress(min(processed / len(pending), 1.0))
+        return result_sentences

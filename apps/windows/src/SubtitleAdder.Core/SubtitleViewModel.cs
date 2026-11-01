@@ -213,7 +213,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         }
     }
 
-    /// <summary>Translation model (chosen in Settings, persistent).</summary>
+    /// <summary>Translation model (chosen in the toolbar or Settings, persistent).</summary>
     public string TranslationModel
     {
         get => _translationModel;
@@ -221,8 +221,12 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         {
             if (!SetProperty(ref _translationModel, value)) return;
             _settings.SetString(TranslationModelDefaultsKey, value);
+            OnPropertyChanged(nameof(TranslationModelName));
         }
     }
+
+    /// <summary>The selected translation model's localized name (shown in the toolbar picker).</summary>
+    public string TranslationModelName => ModelLabel.Name(_translationModel);
 
     /// <summary>Whether the subtitle over the video shows the original or the translation; persistent.</summary>
     public SubtitleDisplay DisplayMode

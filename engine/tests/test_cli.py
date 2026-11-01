@@ -64,7 +64,7 @@ def test_models_json_lists_catalog_and_cache_state(capsys, monkeypatch):
     assert event["event"] == "models"
     assert [m["id"] for m in event["models"]] == [
         "base", "gigaam-v3", "small", "parakeet-v3", "canary-1b-v2", "medium", "large-v3-turbo", "large-v3",
-        "nllb-1.3b", "madlad-3b", "speaker-diarization",
+        "nllb-1.3b", "qwen3.5-4b", "madlad-3b", "gemma-4-e4b", "qwen3.5-9b", "gemma-4-12b", "speaker-diarization",
     ]
     assert set(event["models"][0]) == {
         "id", "kind", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "license", "downloaded",
@@ -72,13 +72,13 @@ def test_models_json_lists_catalog_and_cache_state(capsys, monkeypatch):
     assert event["models"][1]["backend"] == "onnx" and event["models"][1]["languages"] == ["ru"]
     assert event["models"][0]["languages"] is None
     assert event["models"][0]["kind"] == "transcription" and event["models"][0]["license"] == "MIT"
-    assert event["models"][-3]["kind"] == "translation"
-    assert event["models"][-3]["license"] == "CC-BY-NC-4.0"
-    assert event["models"][-2]["license"] == "Apache-2.0"
+    assert event["models"][8]["kind"] == "translation"
+    assert event["models"][8]["license"] == "CC-BY-NC-4.0"
+    assert event["models"][9]["backend"] == "llama" and event["models"][9]["license"] == "Apache-2.0"
     assert event["models"][-1]["kind"] == "diarization" and event["models"][-1]["backend"] == "sherpa"
     assert event["models"][-1]["license"] == "MIT AND Apache-2.0"
-    assert [m["downloaded"] for m in event["models"]] == [True, False, True] + [False] * 8
-    assert [m["disk_mb"] for m in event["models"]] == [141, None, 464] + [None] * 8
+    assert [m["downloaded"] for m in event["models"]] == [True, False, True] + [False] * 12
+    assert [m["disk_mb"] for m in event["models"]] == [141, None, 464] + [None] * 12
 
 
 def test_models_table_without_json(capsys, monkeypatch):

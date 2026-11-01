@@ -396,6 +396,30 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>Translation model menu: LLM models (Gemma 4, Qwen 3.5), a separator, then encoder-decoder models (MADLAD, NLLB).</summary>
+    private void TranslationModelFlyout_Opening(object? sender, object e)
+    {
+        TranslationModelFlyout.Items.Clear();
+        var models = Vm.Catalog.TranslationModels;
+        var llms = models.Where(m => m.Backend == "llama").ToList();
+        var others = models.Where(m => m.Backend != "llama").ToList();
+        foreach (var model in llms) TranslationModelFlyout.Items.Add(ModelItem(model));
+        if (others.Count > 0 && llms.Count > 0) TranslationModelFlyout.Items.Add(new MenuFlyoutSeparator());
+        foreach (var model in others) TranslationModelFlyout.Items.Add(ModelItem(model));
+
+        MenuFlyoutItemBase ModelItem(EngineModel model)
+        {
+            var item = new RadioMenuFlyoutItem
+            {
+                Text = Core.ModelLabel.MenuTitle(model),
+                GroupName = "translationModel",
+                IsChecked = model.Id == Vm.TranslationModel,
+            };
+            item.Click += (_, _) => Vm.TranslationModel = model.Id;
+            return item;
+        }
+    }
+
     private void SpeakerFlyout_Opening(object? sender, object e)
     {
         SpeakerFlyout.Items.Clear();

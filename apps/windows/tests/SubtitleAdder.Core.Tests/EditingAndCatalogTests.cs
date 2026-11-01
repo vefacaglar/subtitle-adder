@@ -208,7 +208,9 @@ public class ModelCatalogTests
     public void ListsByKindAndLanguage()
     {
         var catalog = new ModelCatalog(null);
-        Assert.Equal(["nllb-1.3b", "madlad-3b"], catalog.TranslationModels.Select(m => m.Id));
+        Assert.Equal(
+            ["nllb-1.3b", "qwen3.5-4b", "madlad-3b", "gemma-4-e4b", "qwen3.5-9b", "gemma-4-12b"],
+            catalog.TranslationModels.Select(m => m.Id));
         Assert.Equal(["speaker-diarization"], catalog.DiarizationModels.Select(m => m.Id));
         Assert.DoesNotContain(catalog.TranscriptionModels, m => m.IsTranslation || m.IsDiarization);
         Assert.Equal(["base", "small", "medium", "large-v3-turbo", "large-v3"], catalog.ModelsFor("").Select(m => m.Id));

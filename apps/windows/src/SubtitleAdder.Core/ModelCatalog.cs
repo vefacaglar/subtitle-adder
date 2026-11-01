@@ -53,8 +53,28 @@ public sealed class ModelCatalog : ObservableObject
         },
         new()
         {
+            Id = "qwen3.5-4b", Kind = "translation", Backend = "llama", Languages = TranslationLanguages,
+            SizeMB = 2614, Speed = 3, Accuracy = 4, License = "Apache-2.0", Downloaded = false,
+        },
+        new()
+        {
             Id = "madlad-3b", Kind = "translation", Backend = "ctranslate2", Languages = TranslationLanguages,
             SizeMB = 2839, Speed = 2, Accuracy = 5, License = "Apache-2.0", Downloaded = false,
+        },
+        new()
+        {
+            Id = "gemma-4-e4b", Kind = "translation", Backend = "llama", Languages = TranslationLanguages,
+            SizeMB = 4747, Speed = 2, Accuracy = 5, License = "Apache-2.0", Downloaded = false,
+        },
+        new()
+        {
+            Id = "qwen3.5-9b", Kind = "translation", Backend = "llama", Languages = TranslationLanguages,
+            SizeMB = 5417, Speed = 2, Accuracy = 5, License = "Apache-2.0", Downloaded = false,
+        },
+        new()
+        {
+            Id = "gemma-4-12b", Kind = "translation", Backend = "llama", Languages = TranslationLanguages,
+            SizeMB = 6792, Speed = 1, Accuracy = 5, License = "Apache-2.0", Downloaded = false,
         },
     ];
 

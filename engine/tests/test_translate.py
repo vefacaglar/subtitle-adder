@@ -272,3 +272,66 @@ def test_translate_keeps_speaker(make_translator):
     ]
     result = translator.translate(sentences, target="es")
     assert [r.speaker for r in result] == [0, 1, None]
+
+
+def test_llama_translator_builds_direct_prompt_with_dialect_and_context(monkeypatch):
+    monkeypatch.setattr(translate, "LLM_BATCH_SIZE", 2)
+    monkeypatch.setattr(translate, "LLM_CONTEXT_LINES", 2)
+    calls: list[list[dict[str, str]]] = []
+    replies = [
+        "<think>Thinking about Brazilian Portuguese and Mexican Spanish slang...</think>\n[1] Ne haber dostum?\n[2] Hiçbir şey olmaz, merak etme.",
+        "[1] Harika görünüyorsun!",
+    ]
+
+    def fake_complete(messages: list[dict[str, str]]) -> str:
+        calls.append(messages)
+        return replies.pop(0)
+
+    translator = translate.LlamaTranslator("gemma-4-e4b", completion_fn=fake_complete)
+    sentences = [
+        Sentence(id=1, start=0.0, end=1.5, text="E aí, mano?", speaker=0),
+        Sentence(id=2, start=1.5, end=3.0, text="No pasa nada, güey.", speaker=1),
+        Sentence(id=3, start=3.0, end=4.5, text="Tá mandando muito bem!", speaker=0),
+    ]
+    progress: list[float] = []
+    result = translator.translate(sentences, target="tr", source="pt", on_progress=progress.append)
+
+    assert len(calls) == 2
+    sys_prompt = calls[0][0]["content"]
+    assert "Brazilian Portuguese" in sys_prompt
+    assert "Turkish" in sys_prompt
+    assert "[1] E aí, mano?\n[2] No pasa nada, güey." in calls[0][1]["content"]
+    # Second batch includes preceding lines as context
+    assert "Previous lines (for context only, do NOT translate):" in calls[1][1]["content"]
+    assert "- E aí, mano?" in calls[1][1]["content"]
+    assert "[1] Tá mandando muito bem!" in calls[1][1]["content"]
+    assert [r.text for r in result] == [
+        "Ne haber dostum?",
+        "Hiçbir şey olmaz, merak etme.",
+        "Harika görünüyorsun!",
+    ]
+    assert [r.speaker for r in result] == [0, 1, 0]
+    assert progress == [2 / 3, 1.0]
+
+
+def test_llama_translator_retries_missing_line_in_batch():
+    calls: list[list[dict[str, str]]] = []
+    replies = [
+        "[1] Birinci satır çevirisi",  # Line [2] omitted by the LLM in batch
+        "[1] İkinci satır tekil çevirisi",  # Single-line retry
+    ]
+
+    def fake_complete(messages: list[dict[str, str]]) -> str:
+        calls.append(messages)
+        return replies.pop(0)
+
+    translator = translate.LlamaTranslator("qwen3.5-4b", completion_fn=fake_complete)
+    sentences = [
+        Sentence(id=1, start=0.0, end=1.0, text="Line one."),
+        Sentence(id=2, start=1.0, end=2.0, text="Line two."),
+    ]
+    result = translator.translate(sentences, target="tr", source="en")
+
+    assert len(calls) == 2
+    assert [r.text for r in result] == ["Birinci satır çevirisi", "İkinci satır tekil çevirisi"]
+

@@ -66,7 +66,11 @@ public static class ModelLabel
         "canary-1b-v2" => L("Canary (çok dilli)"),
         "gigaam-v3" => L("GigaAM (Rusça)"),
         "nllb-1.3b" => L("NLLB-200 1.3B"),
+        "qwen3.5-4b" => L("Qwen 3.5 4B"),
         "madlad-3b" => L("MADLAD-400 3B"),
+        "gemma-4-e4b" => L("Gemma 4 E4B"),
+        "qwen3.5-9b" => L("Qwen 3.5 9B"),
+        "gemma-4-12b" => L("Gemma 4 12B"),
         "speaker-diarization" => L("Konuşmacı ayırma"),
         _ => id,
     };
