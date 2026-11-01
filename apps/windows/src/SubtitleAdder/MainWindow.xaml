@@ -98,7 +98,12 @@
                                     IsEnabled="{x:Bind loc:Ui.Not(Vm.IsWorking), Mode=OneWay}"
                                     loc:Localize.AutomationName="Çeviri modeli"
                                     loc:Localize.ToolTip="Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir.">
-                        <TextBlock x:Name="TranslationModelNameText" Text="{x:Bind Vm.TranslationModelName, Mode=OneWay}" MinWidth="95" />
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon Glyph="&#xE968;" FontSize="14"
+                                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                      Visibility="{x:Bind Vm.IsExternalLlmActive, Mode=OneWay}" />
+                            <TextBlock x:Name="TranslationModelNameText" Text="{x:Bind Vm.TranslationModelName, Mode=OneWay}" MinWidth="95" />
+                        </StackPanel>
                         <DropDownButton.Flyout>
                             <MenuFlyout x:Name="TranslationModelFlyout" Placement="BottomEdgeAlignedLeft" Opening="TranslationModelFlyout_Opening" />
                         </DropDownButton.Flyout>

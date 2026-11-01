@@ -132,6 +132,7 @@ public sealed partial class SettingsWindow : Window
         if (ExternalLlmModelBox.Text != _vm.ExternalLlmModel) ExternalLlmModelBox.Text = _vm.ExternalLlmModel;
         _syncing = false;
         ExternalLlmUrlBox.IsEnabled = _vm.ExternalLlmEnabled;
+        TestExternalLlmButton.IsEnabled = _vm.ExternalLlmEnabled && !_vm.IsLoadingExternalModels;
         ExternalLlmModelBox.IsEnabled = _vm.ExternalLlmEnabled;
         RefreshExternalModelsButton.IsEnabled = _vm.ExternalLlmEnabled && !_vm.IsLoadingExternalModels;
         ExternalLlmAsyncSwitch.IsEnabled = _vm.ExternalLlmEnabled;
@@ -288,6 +289,14 @@ public sealed partial class SettingsWindow : Window
     {
         if (_syncing) return;
         _vm.ExternalLlmModel = ExternalLlmModelBox.Text ?? string.Empty;
+    }
+
+    private async void TestExternalLlmButton_Click(object sender, RoutedEventArgs e)
+    {
+        var (ok, msg) = await _vm.TestExternalLlmConnectionAsync();
+        ExternalLlmTestBar.Severity = ok ? InfoBarSeverity.Success : InfoBarSeverity.Error;
+        ExternalLlmTestBar.Message = msg;
+        ExternalLlmTestBar.IsOpen = true;
     }
 
     private async void RefreshExternalModelsButton_Click(object sender, RoutedEventArgs e)

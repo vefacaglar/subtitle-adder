@@ -436,9 +436,36 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>Translation model menu: LLM models (Gemma 4, Qwen 3.5), a separator, then encoder-decoder models (MADLAD, NLLB).</summary>
-    private void TranslationModelFlyout_Opening(object? sender, object e)
+    private async void TranslationModelFlyout_Opening(object? sender, object e)
     {
         TranslationModelFlyout.Items.Clear();
+        if (Vm.IsExternalLlmActive)
+        {
+            if (Vm.ExternalLlmModels.Count == 0 && !Vm.IsLoadingExternalModels)
+            {
+                await Vm.RefreshExternalModelsAsync();
+            }
+            foreach (var remoteModel in Vm.ExternalLlmModels)
+            {
+                var item = new RadioMenuFlyoutItem
+                {
+                    Text = remoteModel,
+                    GroupName = "externalTranslationModel",
+                    IsChecked = string.Equals(remoteModel, Vm.ExternalLlmModel, StringComparison.OrdinalIgnoreCase),
+                };
+                var captured = remoteModel;
+                item.Click += (_, _) => Vm.ExternalLlmModel = captured;
+                TranslationModelFlyout.Items.Add(item);
+            }
+            if (TranslationModelFlyout.Items.Count > 0)
+            {
+                TranslationModelFlyout.Items.Add(new MenuFlyoutSeparator());
+            }
+            var refreshItem = new MenuFlyoutItem { Text = L("Uzaktaki modelleri listele") };
+            refreshItem.Click += async (_, _) => await Vm.RefreshExternalModelsAsync();
+            TranslationModelFlyout.Items.Add(refreshItem);
+            return;
+        }
         var models = Vm.Catalog.TranslationModels;
         var llms = models.Where(m => m.Backend == "llama").ToList();
         var others = models.Where(m => m.Backend != "llama").ToList();

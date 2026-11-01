@@ -1264,6 +1264,134 @@
           }
         }
       }
+    },
+    "Harici LLM" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "External LLM"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Harici LLM"
+          }
+        }
+      }
+    },
+    "Harici: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "External: %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Harici: %@"
+          }
+        }
+      }
+    },
+    "Harici: %@ (Asenkron)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "External: %@ (Async)"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Harici: %@ (Asenkron)"
+          }
+        }
+      }
+    },
+    "Bağlantıyı test et" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Test connection"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bağlantıyı test et"
+          }
+        }
+      }
+    },
+    "Sunucuya ping at ve modelleri getir" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ping server and fetch models"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sunucuya ping at ve modelleri getir"
+          }
+        }
+      }
+    },
+    "Lütfen geçerli bir sunucu adresi girin." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Please enter a valid server address."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lütfen geçerli bir sunucu adresi girin."
+          }
+        }
+      }
+    },
+    "Sunucuya ulaşılamadı: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not reach server: %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sunucuya ulaşılamadı: %@"
+          }
+        }
+      }
+    },
+    "Bağlantı başarılı (%@ · %lld ms · %lld uygun model bulundu)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connected (%@ · %lld ms · %lld suitable models found)"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bağlantı başarılı (%@ · %lld ms · %lld uygun model bulundu)"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

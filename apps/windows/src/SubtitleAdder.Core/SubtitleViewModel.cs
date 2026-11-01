@@ -248,7 +248,15 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>The selected translation model's localized name (shown in the toolbar picker).</summary>
-    public string TranslationModelName => ModelLabel.Name(_translationModel);
+    public string TranslationModelName
+    {
+        get
+        {
+            if (!IsExternalLlmActive) return ModelLabel.Name(_translationModel);
+            var modelText = !string.IsNullOrWhiteSpace(_externalLlmModel) ? _externalLlmModel.Trim() : L("Harici LLM");
+            return IsExternalAsyncActive ? L("Harici: %@ (Asenkron)", modelText) : L("Harici: %@", modelText);
+        }
+    }
 
     /// <summary>Whether the subtitle over the video shows the original or the translation; persistent.</summary>
     public SubtitleDisplay DisplayMode
@@ -328,6 +336,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             _settings.SetBool(ExternalLlmEnabledDefaultsKey, value);
             OnPropertyChanged(nameof(IsExternalLlmActive));
             OnPropertyChanged(nameof(IsExternalAsyncActive));
+            OnPropertyChanged(nameof(TranslationModelName));
         }
     }
 
@@ -343,6 +352,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             _settings.SetString(ExternalLlmUrlDefaultsKey, next);
             OnPropertyChanged(nameof(IsExternalLlmActive));
             OnPropertyChanged(nameof(IsExternalAsyncActive));
+            OnPropertyChanged(nameof(TranslationModelName));
         }
     }
 
@@ -356,6 +366,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             if (!SetProperty(ref _externalLlmModel, next)) return;
             ExternalLlmState.Shared.Model = next;
             _settings.SetString(ExternalLlmModelDefaultsKey, next);
+            OnPropertyChanged(nameof(TranslationModelName));
         }
     }
 
@@ -371,6 +382,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             if (!SetProperty(ref _externalLlmAsync, value)) return;
             _settings.SetBool(ExternalLlmAsyncDefaultsKey, value);
             OnPropertyChanged(nameof(IsExternalAsyncActive));
+            OnPropertyChanged(nameof(TranslationModelName));
         }
     }
 
@@ -460,32 +472,79 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     /// <summary>Queries the remote LAN LLM server (<c>/v1/models</c> and <c>/api/tags</c>) and populates <see cref="ExternalLlmModels"/>.</summary>
     public async Task RefreshExternalModelsAsync(CancellationToken cancellationToken = default)
     {
+        _ = await TestExternalLlmConnectionAsync(cancellationToken).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// Pings the configured external LAN LLM server, resolves <c>.local</c> mDNS to IPv4 so child processes never fail with
+    /// <c>getaddrinfo</c>, populates <see cref="ExternalLlmModels"/>, and returns a localized status summary.
+    /// </summary>
+    public async Task<(bool Success, string Message)> TestExternalLlmConnectionAsync(CancellationToken cancellationToken = default)
+    {
         if (NormalizeExternalBaseUrl(_externalLlmUrl) is not { } baseUrl)
         {
             ExternalLlmModels = [];
-            return;
+            return (false, L("Lütfen geçerli bir sunucu adresi girin."));
         }
         IsLoadingExternalModels = true;
         try
         {
+            var resolvedBaseUrl = baseUrl;
+            var resolvedHostLabel = "";
+            if (Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
+            {
+                resolvedHostLabel = uri.Host;
+                if (uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var addresses = await System.Net.Dns.GetHostAddressesAsync(uri.Host, cancellationToken).ConfigureAwait(true);
+                        var ipv4 = addresses.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+                        if (ipv4 is not null)
+                        {
+                            resolvedHostLabel = $"{uri.Host} → {ipv4}";
+                            var builder = new UriBuilder(uri) { Host = ipv4.ToString() };
+                            resolvedBaseUrl = builder.Uri.ToString().TrimEnd('/');
+                            ExternalLlmState.Shared.Url = resolvedBaseUrl;
+                        }
+                    }
+                    catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                    {
+                    }
+                }
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             var discovered = new List<string>();
-            foreach (var endpoint in new[] { $"{baseUrl}/v1/models", $"{baseUrl}/api/tags" })
+            Exception? lastError = null;
+            var reachable = false;
+            foreach (var endpoint in new[] { $"{resolvedBaseUrl}/api/tags", $"{resolvedBaseUrl}/v1/models" })
             {
                 try
                 {
                     var json = await ExternalModelsHttp.GetStringAsync(endpoint, cancellationToken).ConfigureAwait(true);
+                    reachable = true;
                     discovered = ParseSuitableExternalModels(json);
                     if (discovered.Count > 0) break;
                 }
-                catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
                 {
+                    lastError = ex;
                 }
             }
+            sw.Stop();
             ExternalLlmModels = discovered;
             if (string.IsNullOrWhiteSpace(_externalLlmModel) && discovered.Count > 0)
             {
                 ExternalLlmModel = discovered[0];
             }
+            if (!reachable)
+            {
+                return (false, L("Sunucuya ulaşılamadı: %@", lastError?.Message ?? "timeout"));
+            }
+            var ms = Math.Max(1, sw.ElapsedMilliseconds);
+            return (true, L("Bağlantı başarılı (%@ · %lld ms · %lld uygun model bulundu)",
+                resolvedHostLabel, ms, (long)discovered.Count));
         }
         finally
         {

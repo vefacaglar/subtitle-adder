@@ -70,6 +70,31 @@ def _external_models_url(chat_url: str) -> str | None:
         return chat_url[: -len("/api/chat")] + "/v1/models"
     return None
 
+
+def _resolve_lan_url(url: str) -> str:
+    """Resolves `.local` mDNS hostnames to IPv4 with retry so Windows child processes don't fail with Errno 11001."""
+    from urllib.parse import urlparse, urlunparse
+
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if not host or not host.lower().endswith(".local"):
+            return url
+        for attempt in range(3):
+            try:
+                infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+                if infos:
+                    ipv4 = infos[0][4][0]
+                    netloc = f"{ipv4}:{parsed.port}" if parsed.port else ipv4
+                    return urlunparse(parsed._replace(netloc=netloc))
+            except OSError:
+                if attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+    except Exception:
+        pass
+    return url
+
 # NLLB source/target language codes use the FLORES-200 format; MADLAD turns the ISO 639-1 code
 # into a "<2xx>" token and needs no source language tag.
 NLLB_LANGUAGE_CODES = {
@@ -591,19 +616,23 @@ class LlamaTranslator:
         if self._completion_fn is not None:
             return self._completion_fn(messages)
         if self._external_chat_url is not None:
+            self._external_chat_url = _resolve_lan_url(self._external_chat_url)
             url = self._external_chat_url
+            # On Ollama (:11434), /api/chat honors `think: false` natively (20x faster than /v1/chat/completions for Gemma 4 / Qwen 3).
+            if ":11434/v1/chat/completions" in url.lower():
+                url = url[: -len("/v1/chat/completions")] + "/api/chat"
             body: dict = {
                 "model": self._discover_external_model(),
                 "messages": messages,
                 "temperature": 0.2,
                 "top_p": 0.9,
-                "max_tokens": 512,
+                "max_tokens": 1024,
                 "stream": False,
                 "think": False,
                 "options": {
                     "temperature": 0.2,
                     "top_p": 0.9,
-                    "num_predict": 512,
+                    "num_predict": 1024,
                 },
                 "chat_template_kwargs": {"enable_thinking": False},
             }

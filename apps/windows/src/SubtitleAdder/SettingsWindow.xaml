@@ -200,17 +200,29 @@
                             </Grid>
                         </Border>
                         <Border Style="{StaticResource CardStyle}">
-                            <Grid ColumnSpacing="16">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                <StackPanel VerticalAlignment="Center" Margin="34,0,0,0">
-                                    <TextBlock loc:Localize.Text="Sunucu adresi (IP ve port)" Style="{StaticResource CardTitleStyle}" />
-                                    <TextBlock loc:Localize.Text="Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"
-                                               Style="{StaticResource SecondaryTextStyle}" />
-                                </StackPanel>
-                                <TextBox x:Name="ExternalLlmUrlBox" Grid.Column="1" MinWidth="260" VerticalAlignment="Center"
-                                         PlaceholderText="http://192.168.1.50:1234" TextChanged="ExternalLlmUrlBox_TextChanged"
-                                         loc:Localize.AutomationName="Sunucu adresi (IP ve port)" />
-                            </Grid>
+                            <StackPanel Spacing="10">
+                                <Grid ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center" Margin="34,0,0,0">
+                                        <TextBlock loc:Localize.Text="Sunucu adresi (IP ve port)" Style="{StaticResource CardTitleStyle}" />
+                                        <TextBlock loc:Localize.Text="Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"
+                                                   Style="{StaticResource SecondaryTextStyle}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                        <TextBox x:Name="ExternalLlmUrlBox" MinWidth="220" VerticalAlignment="Center"
+                                                 PlaceholderText="http://192.168.1.50:11434" TextChanged="ExternalLlmUrlBox_TextChanged"
+                                                 loc:Localize.AutomationName="Sunucu adresi (IP ve port)" />
+                                        <Button x:Name="TestExternalLlmButton" Click="TestExternalLlmButton_Click" VerticalAlignment="Center"
+                                                loc:Localize.ToolTip="Sunucuya ping at ve modelleri getir" loc:Localize.AutomationName="Bağlantıyı test et">
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <FontIcon Glyph="&#xE895;" FontSize="14" />
+                                                <TextBlock loc:Localize.Text="Bağlantıyı test et" />
+                                            </StackPanel>
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+                                <InfoBar x:Name="ExternalLlmTestBar" Margin="34,0,0,0" IsOpen="False" IsClosable="True" />
+                            </StackPanel>
                         </Border>
                         <Border Style="{StaticResource CardStyle}">
                             <Grid ColumnSpacing="16">
