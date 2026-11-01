@@ -393,6 +393,51 @@ import Testing
         #expect(vm.status == .finished)
     }
 
+    @Test func theEditorBadgeShowsWhilePlaylistTranslationsRunInTheBackground() async throws {
+        let folder = try makeFolder()
+        let engine = try FakeEngine.make(
+            transcribe: finished("Merhaba"), translate: "sleep 1\n\(translated("Hello"))"
+        )
+        let (vm, _) = makeModel(engine: engine)
+        vm.externalLlmEnabled = true
+        vm.externalLlmUrl = "10.0.0.2:1234"
+        vm.externalLlmAsync = true
+        vm.translationTarget = "en"
+        vm.addToPlaylist([folder.appending(path: "a.mp4"), folder.appending(path: "b.mp4")], sourceLanguage: "tr")
+        #expect(!vm.isTranslationInProgress && vm.translationBadgeText == nil)
+        vm.startPlaylist()
+        let task = vm.playlistTask
+        // A hand-off sets the flag even though neither the foreground job flag nor the live translation is on.
+        #expect(await eventually { vm.isPlaylistBackgroundTranslating && !vm.isAsyncTranslating && !vm.isTranslationJobRunning })
+        #expect(vm.isTranslationInProgress)
+        #expect(vm.translationBadgeText != nil)
+        await task?.value
+        #expect(!vm.isPlaylistBackgroundTranslating)
+        #expect(!vm.isTranslationInProgress)
+        #expect(vm.translationBadgeText == nil)
+    }
+
+    @Test func cancelClearsThePlaylistBackgroundTranslationFlag() async throws {
+        let folder = try makeFolder()
+        let started = folder.appending(path: "translating")
+        let engine = try FakeEngine.make(
+            transcribe: finished("Merhaba"), translate: "touch \"\(started.path)\"\nexec sleep 20"
+        )
+        let (vm, _) = makeModel(engine: engine)
+        vm.externalLlmEnabled = true
+        vm.externalLlmUrl = "10.0.0.2:1234"
+        vm.externalLlmAsync = true
+        vm.translationTarget = "en"
+        vm.addToPlaylist([folder.appending(path: "a.mp4")], sourceLanguage: "tr")
+        vm.startPlaylist()
+        let task = vm.playlistTask
+        #expect(await eventually { FileManager.default.fileExists(atPath: started.path) })
+        #expect(vm.isPlaylistBackgroundTranslating)
+        vm.cancel()
+        await task?.value
+        #expect(!vm.isPlaylistBackgroundTranslating && !vm.isTranslationInProgress)
+    }
+
     @Test func asyncModeFailsAnItemWhoseFolderIsMissing() async throws {
         let root = try makeFolder()
         let engine = try FakeEngine.make(transcribe: finished("Merhaba"), translate: translated("Hello"))

@@ -130,8 +130,13 @@ final class SubtitleViewModel {
     }
     /// Share of the lines translated in the background (0...0.99); `nil` while unknown or when nothing runs.
     var asyncTranslationFraction: Double?
-    /// A translation job ("Çevir…", "Komple çevir" after transcription, a playlist item) owns the status.
+    /// A translation job ("Çevir…", "Komple çevir" after transcription, a sequential playlist item) owns the status.
     var isTranslationJobRunning = false
+    /// Playlist items handed to the external server (async mode) whose background translation hasn't finished yet.
+    var playlistBackgroundPending = 0
+    /// The playlist is translating in the background, whatever the status bar shows meanwhile (the next video may be
+    /// transcribing).
+    var isPlaylistBackgroundTranslating: Bool { playlistBackgroundPending > 0 }
     /// Show the subtitle editor to the right of the player instead of below it; persistent, off by default.
     var sideBySideLayout: Bool {
         didSet {
@@ -332,12 +337,16 @@ final class SubtitleViewModel {
     }
 
     /// Translation is active, in the foreground or in the background; the editor header shows a badge for it.
-    var isTranslationInProgress: Bool { isAsyncTranslating || isTranslationJobRunning }
+    var isTranslationInProgress: Bool { isAsyncTranslating || isTranslationJobRunning || isPlaylistBackgroundTranslating }
 
     /// Text of the editor-header badge, e.g. "Çevriliyor… 45%"; `nil` when no translation runs.
     var translationBadgeText: String? {
         guard isTranslationInProgress else { return nil }
         if isTranslationJobRunning, case .working(let label, _) = status { return label.text }
+        // Background playlist translations: show the stage while the status is a translation one, else the generic label.
+        if isPlaylistBackgroundTranslating, case .working(let label, _) = status, label.id.hasSuffix(":translation") {
+            return label.text
+        }
         return Self.label(for: .translating, fraction: asyncTranslationFraction, purpose: .translation).text
     }
 

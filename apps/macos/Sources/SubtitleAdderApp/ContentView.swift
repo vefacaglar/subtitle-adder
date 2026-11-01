@@ -30,8 +30,10 @@ struct ContentView: View {
             return true
         }
         .toolbar { toolbar }
-        // Theater mode: the commands live in the menu bar (⌘↩ and the others) while the toolbar is out of the way.
+        // Theater mode: generate (⌘↩) and stop (⌘.) stay in the File menu while the toolbar is out of the way.
         .toolbar(vm.isTheaterMode ? .hidden : .automatic, for: .windowToolbar)
+        // Lets the menu commands act on this window's view model only while it is the key window (not Settings).
+        .focusedSceneValue(\.subtitleVM, vm)
         .background { WindowReader { chrome.attach($0) } }
         .onAppear {
             chrome.onEscape = {
@@ -199,7 +201,7 @@ struct ContentView: View {
             if vm.isWorking {
                 Button(L("Durdur"), systemImage: "stop.fill") { vm.cancel() }
                     .labelStyle(.titleAndIcon)
-                    .help(L("Süren altyazı ya da çeviri işini durdur"))
+                    .help(L("Süren altyazı ya da çeviri işini durdur (⌘.)"))
             } else if vm.workspace == .editor {
                 Button(L("Komple çevir"), systemImage: "wand.and.stars") { generateAndTranslate() }
                     .labelStyle(.titleAndIcon)

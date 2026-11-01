@@ -1777,18 +1777,18 @@
         }
       }
     },
-    "Süren altyazı ya da çeviri işini durdur": {
+    "Süren altyazı ya da çeviri işini durdur (⌘.)": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Süren altyazı ya da çeviri işini durdur"
+            "value": "Süren altyazı ya da çeviri işini durdur (⌘.)"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Stop the running subtitle or translation job"
+            "value": "Stop the running subtitle or translation job (⌘.)"
           }
         }
       }

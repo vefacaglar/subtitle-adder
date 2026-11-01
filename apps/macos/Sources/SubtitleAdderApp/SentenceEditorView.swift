@@ -99,36 +99,37 @@ struct SentenceEditorView: View {
     private static let compactBarWidth: CGFloat = 720
     private static let minimalBarWidth: CGFloat = 540
 
+    /// The bar tries three layouts and takes the first that fits: everything in one row; one row without the
+    /// "Şimdiki an" buttons; two rows (timing on top, badge and actions below) for the narrowest editor.
     private var editBar: some View {
         let showsCaptions = width >= Self.minimalBarWidth
-        return HStack(spacing: 16) {
-            timingControls(L("Başlangıç"), edge: .start, value: vm.selectedSentence?.start, showsCaption: showsCaptions)
-            timingControls(L("Bitiş"), edge: .end, value: vm.selectedSentence?.end, showsCaption: showsCaptions)
-            Spacer(minLength: 0)
-            if let badge = vm.translationBadgeText {
-                TranslationBadge(text: badge)
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) {
+                timingControls(L("Başlangıç"), edge: .start, value: vm.selectedSentence?.start, showsCaption: showsCaptions, showsScope: true)
+                timingControls(L("Bitiş"), edge: .end, value: vm.selectedSentence?.end, showsCaption: showsCaptions, showsScope: true)
+                Spacer(minLength: 0)
+                badge
+                actionButtons
             }
-            Group {
-                Button(L("Böl"), systemImage: "scissors") {
-                    finishEditing()
-                    vm.splitSelected(at: player.currentTime)
-                }
-                .disabled(!vm.canSplitSelected(at: player.currentTime))
-                .help(L("Satırı oynatma konumundan ikiye böl"))
-                Button(L("Sonrakiyle birleştir"), systemImage: "arrow.triangle.merge") {
-                    finishEditing()
-                    vm.mergeSelectedWithNext()
-                }
-                .disabled(!vm.canMergeSelected)
-                .help(L("Sonrakiyle birleştir"))
-                Button(L("Sil"), systemImage: "trash") {
-                    finishEditing()
-                    vm.deleteSelected()
-                }
-                .disabled(vm.selection == nil)
-                .help(L("Sil"))
+            HStack(spacing: 8) {
+                timingControls(L("Başlangıç"), edge: .start, value: vm.selectedSentence?.start, showsCaption: showsCaptions, showsScope: false)
+                timingControls(L("Bitiş"), edge: .end, value: vm.selectedSentence?.end, showsCaption: showsCaptions, showsScope: false)
+                Spacer(minLength: 0)
+                badge
+                actionButtons
             }
-            .labelStyle(AdaptiveLabelStyle(iconOnly: width < Self.compactBarWidth))
+            VStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    timingControls(L("Başlangıç"), edge: .start, value: vm.selectedSentence?.start, showsCaption: false, showsScope: false)
+                    timingControls(L("Bitiş"), edge: .end, value: vm.selectedSentence?.end, showsCaption: false, showsScope: false)
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    badge
+                    actionButtons
+                }
+            }
         }
         .controlSize(.small)
         .padding(.horizontal, 12)
@@ -137,7 +138,37 @@ struct SentenceEditorView: View {
         .disabled(vm.isWorking)
     }
 
-    private func timingControls(_ title: String, edge: TimingEdge, value: Double?, showsCaption: Bool) -> some View {
+    @ViewBuilder private var badge: some View {
+        if let text = vm.translationBadgeText {
+            TranslationBadge(text: text)
+        }
+    }
+
+    private var actionButtons: some View {
+        Group {
+            Button(L("Böl"), systemImage: "scissors") {
+                finishEditing()
+                vm.splitSelected(at: player.currentTime)
+            }
+            .disabled(!vm.canSplitSelected(at: player.currentTime))
+            .help(L("Satırı oynatma konumundan ikiye böl"))
+            Button(L("Sonrakiyle birleştir"), systemImage: "arrow.triangle.merge") {
+                finishEditing()
+                vm.mergeSelectedWithNext()
+            }
+            .disabled(!vm.canMergeSelected)
+            .help(L("Sonrakiyle birleştir"))
+            Button(L("Sil"), systemImage: "trash") {
+                finishEditing()
+                vm.deleteSelected()
+            }
+            .disabled(vm.selection == nil)
+            .help(L("Sil"))
+        }
+        .labelStyle(AdaptiveLabelStyle(iconOnly: width < Self.compactBarWidth))
+    }
+
+    private func timingControls(_ title: String, edge: TimingEdge, value: Double?, showsCaption: Bool, showsScope: Bool) -> some View {
         let step = SentenceEditing.nudgeStep
         return HStack(spacing: 4) {
             if showsCaption {
@@ -150,9 +181,11 @@ struct SentenceEditorView: View {
                 .frame(minWidth: 52)
             Button(L("%@ 0,1 sn ileri", title), systemImage: "plus") { vm.nudge(edge, by: step) }
                 .labelStyle(.iconOnly)
-            Button(L("Şimdiki an"), systemImage: "scope") { vm.setSelected(edge, to: player.currentTime) }
-                .labelStyle(.iconOnly)
-                .help(L("%@ zamanını oynatma konumuna ayarla", title))
+            if showsScope {
+                Button(L("Şimdiki an"), systemImage: "scope") { vm.setSelected(edge, to: player.currentTime) }
+                    .labelStyle(.iconOnly)
+                    .help(L("%@ zamanını oynatma konumuna ayarla", title))
+            }
         }
         .disabled(vm.selection == nil)
     }
@@ -172,7 +205,8 @@ private struct AdaptiveLabelStyle: LabelStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         if iconOnly {
-            configuration.icon
+            // The built-in icon-only style keeps the title as the accessibility label.
+            Label(configuration).labelStyle(.iconOnly)
         } else {
             Label(configuration)
         }
@@ -189,6 +223,7 @@ private struct TranslationBadge: View {
             Text(text)
                 .font(.caption.weight(.semibold))
                 .monospacedDigit()
+                .lineLimit(1)
         }
         .foregroundStyle(Color.accentColor)
         .padding(.horizontal, 10)

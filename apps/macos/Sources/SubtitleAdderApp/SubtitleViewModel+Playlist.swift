@@ -146,6 +146,7 @@ extension SubtitleViewModel {
         // A failed item is retried by the next run, not again by this one.
         var attempted: Set<UUID> = []
         playlistBackground = []
+        playlistBackgroundPending = 0
         while !Task.isCancelled,
               let item = playlist.first(where: { ($0.state == .pending || $0.state == .failed) && !attempted.contains($0.id) }) {
             attempted.insert(item.id)
@@ -182,6 +183,7 @@ extension SubtitleViewModel {
         translationTarget = target
         linesSourceLanguage = linesLanguage
         playlistBackground = []
+        playlistBackgroundPending = 0
         playlistTask = nil
         isPlaylistRunning = false
     }
@@ -287,7 +289,9 @@ extension SubtitleViewModel {
             updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
         }
         let previous = playlistBackground.last
+        playlistBackgroundPending += 1
         playlistBackground.append(Task {
+            defer { playlistBackgroundPending -= 1 }
             // One external translation at a time. (The live translation while a video transcribes is not held back
             // by this, as on Windows: the server queues the requests.)
             await previous?.value

@@ -51,16 +51,26 @@ struct SubtitleAdderApp: App {
     }
 }
 
-/// Menu commands for what the toolbar offers, so they keep working while theater mode hides the toolbar.
+extension FocusedValues {
+    /// The view model of the focused main window; `nil` while another window (Settings) is key.
+    @Entry var subtitleVM: SubtitleViewModel?
+}
+
+/// Menu commands for generate (⌘↩) and stop (⌘.), so they keep working while theater mode hides the toolbar. They act
+/// on the focused main window's view model, so they do nothing while Settings is key (⌘↩ there must not restart a job).
 /// Full screen (⌃⌘F) is the system's own View menu item.
 private struct LayoutCommands: Commands {
     @Bindable var vm: SubtitleViewModel
+    @FocusedValue(\.subtitleVM) private var focused
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button(L("Altyazı üret"), systemImage: "captions.bubble") { vm.generate() }
+            Button(L("Altyazı üret"), systemImage: "captions.bubble") { focused?.generate() }
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(vm.video == nil || vm.isWorking || vm.workspace != .editor)
+                .disabled(focused.map { $0.video == nil || $0.isWorking || $0.workspace != .editor } ?? true)
+            Button(L("Durdur"), systemImage: "stop.fill") { focused?.cancel() }
+                .keyboardShortcut(".", modifiers: .command)
+                .disabled(focused.map { !$0.isWorking } ?? true)
         }
         CommandGroup(after: .toolbar) {
             Toggle(L("Tiyatro modu"), isOn: $vm.isTheaterMode)

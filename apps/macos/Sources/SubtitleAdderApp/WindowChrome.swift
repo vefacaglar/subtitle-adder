@@ -37,7 +37,8 @@ final class WindowChrome {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // Only plain values cross into the main actor; the event itself stays here.
             let keyCode = event.keyCode
-            let plain = event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty
+            // Caps Lock, numeric pad and function flags don't change what Esc means, so only the chord keys count.
+            let plain = event.modifierFlags.intersection([.shift, .control, .option, .command]).isEmpty
             let target = event.window.map(ObjectIdentifier.init)
             let consumed = MainActor.assumeIsolated {
                 self?.handleKey(code: keyCode, hasNoModifiers: plain, target: target) ?? false
