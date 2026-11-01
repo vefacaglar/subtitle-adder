@@ -1,7 +1,7 @@
 from conftest import make_words
 
 from subtitle_engine.models import Word
-from subtitle_engine.sentences import SegmenterConfig, segment
+from subtitle_engine.sentences import SegmenterConfig, fit, segment
 
 
 def test_splits_on_sentence_end_punctuation():
@@ -89,3 +89,65 @@ def test_realigns_trailing_starters_and_mid_sentence_pauses():
         "Tu es ridicule",
         "T'es moche",
     ]
+
+
+# --- fit(): where a too-long, comma-less line is cut ---------------------------------------------------------------
+
+FIT = SegmenterConfig(max_chars=40, max_duration=100, pause_gap=100)
+
+
+def _fit_lines(text: str, config: SegmenterConfig = FIT) -> list[str]:
+    lines = [" ".join(w.text for w in part) for part in fit(make_words(text), config)]
+    # However it is cut, nothing is lost or reordered and every line is within the limits.
+    assert " ".join(lines) == text
+    assert all(len(line) <= config.max_chars for line in lines)
+    return lines
+
+
+def test_fit_cuts_before_a_capitalized_word_when_there_is_no_comma():
+    # 8 words fit; "Ahmet" is the last of them and starts a new clause.
+    lines = _fit_lines("ben dün akşam eve geç geldim çünkü Ahmet ile konuştum ve sonra uyudum")
+    assert lines == ["ben dün akşam eve geç geldim çünkü", "Ahmet ile konuştum ve sonra uyudum"]
+
+
+def test_fit_takes_the_last_capitalized_word_in_the_window():
+    lines = _fit_lines("ben dün Ali ile geç gittik Ece ile eve döndük ve çok yorulduk")
+    assert lines[0] == "ben dün Ali ile geç gittik"
+    assert lines[1].startswith("Ece ")
+
+
+def test_fit_ignores_a_capitalized_word_in_the_first_two_positions():
+    lines = _fit_lines("bugün Ahmet eve gelmedi çünkü yağmur yağıyordu ve hava çok soğuktu", SegmenterConfig(max_chars=30, max_duration=100, pause_gap=100))
+    assert lines[0] == "bugün Ahmet eve gelmedi çünkü"
+
+
+def test_fit_ignores_a_capitalized_word_before_the_start_of_the_window():
+    # 20 one-letter words fit, so the window opens at index 6.
+    early = "a b C d e f g h i j k l m n o p q r s t u v w"
+    assert [len(line.split()) for line in _fit_lines(early)] == [20, 3]
+    boundary = "a b c d e f G h i j k l m n o p q r s t u v w"
+    assert [len(line.split()) for line in _fit_lines(boundary)] == [6, 17]
+    before = "a b c d e Ff g h i j k l m n o p q r s t u v w"
+    assert [len(line.split()) for line in _fit_lines(before)] == [20, 3]
+
+
+def test_fit_without_any_clause_start_cuts_at_the_hard_limit():
+    lines = _fit_lines("kelime " * 11 + "kelime")
+    assert lines[0] == "kelime kelime kelime kelime kelime" and len(lines) == 3
+
+
+def test_fit_prefers_a_comma_in_the_second_half_over_a_capitalized_word():
+    # The comma ends word 12 (>= 20 // 2); the capitalized word at index 16 would cut later.
+    comma = "a b c d e f g h i j k l, m n o p Q r s t u v w"
+    assert [len(line.split()) for line in _fit_lines(comma)] == [12, 11]
+
+
+def test_fit_falls_back_to_a_capitalized_word_when_the_comma_is_too_early():
+    # The comma ends word 4 (< 10), so it is not worth a short first line.
+    early_comma = "a b c, d e f g h i j k l m n o p Q r s t u v w"
+    assert [len(line.split()) for line in _fit_lines(early_comma)] == [16, 7]
+
+
+def test_fit_leaves_a_short_sentence_alone():
+    words = make_words("Kısa bir cümle")
+    assert fit(words, FIT) == [words]

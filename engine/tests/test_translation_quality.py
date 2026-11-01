@@ -165,6 +165,48 @@ def test_checkpoint_identity_includes_scene_metadata_and_server(monkeypatch, tmp
     assert len({original, changed_speaker, changed_time, changed_server}) == 4
 
 
+def test_checkpoint_identity_follows_the_prompt_and_the_configured_remote_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(translate.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.delenv(translate.EXTERNAL_LLM_URL_ENV_VAR, raising=False)
+    monkeypatch.delenv(translate.EXTERNAL_LLM_MODEL_ENV_VAR, raising=False)
+    source = cues("Wait for me.")
+    path = translate._temp_checkpoint_path
+    base = path("gemma-4-e4b", "tr", "en", source, "prompt A")
+    assert path("gemma-4-e4b", "tr", "en", source, "prompt A") == base
+    assert path("gemma-4-e4b", "tr", "en", source, "prompt B") != base
+    monkeypatch.setenv(translate.EXTERNAL_LLM_MODEL_ENV_VAR, "qwen3")
+    assert path("gemma-4-e4b", "tr", "en", source, "prompt A") != base
+
+
+def test_translators_for_other_servers_or_models_do_not_share_a_checkpoint(monkeypatch, tmp_path):
+    """A blank model field means the server's own pick, so the model it resolves to decides the checkpoint too."""
+    monkeypatch.delenv(translate.EXTERNAL_LLM_URL_ENV_VAR, raising=False)
+    monkeypatch.delenv(translate.EXTERNAL_LLM_MODEL_ENV_VAR, raising=False)
+    seen = []
+    real = translate._temp_checkpoint_path
+
+    def record(*args):
+        seen.append(real(*args))
+        return tmp_path / "unused.json"
+
+    monkeypatch.setattr(translate, "_temp_checkpoint_path", record)
+    monkeypatch.setattr(translate.tempfile, "gettempdir", lambda: str(tmp_path))
+    source = cues("Wait for me.")
+
+    def run(url, resolved_model):
+        translator = translate.LlamaTranslator("madlad-3b", external_url=url)
+        monkeypatch.setattr(translator, "_discover_external_model", lambda: resolved_model)
+        monkeypatch.setattr(translator, "_complete", lambda _: "[1] Bekle beni.")
+        translator.translate(source, "tr", source="en")
+
+    run("http://10.0.0.2:1234", "qwen3")
+    run("http://10.0.0.3:1234", "qwen3")
+    run("http://10.0.0.2:1234", "gemma4")
+    run("http://10.0.0.2:1234", "qwen3")
+    assert len(set(seen[:3])) == 3
+    assert seen[3] == seen[0]
+
+
 @pytest.mark.parametrize("model", ["translategemma:4b", "google/translate-gemma-4b-it"])
 def test_translategemma_uses_supported_user_template_and_discards_context_translations(monkeypatch, model):
     monkeypatch.setattr(translate, "LLM_BATCH_SIZE", 2)

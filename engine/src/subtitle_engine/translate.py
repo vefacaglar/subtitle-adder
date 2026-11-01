@@ -24,6 +24,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from . import models
 from .i18n import t
@@ -52,10 +53,17 @@ def external_llm_model() -> str | None:
 def normalize_external_chat_url(raw_url: str) -> str:
     """Normalizes a base LAN server address (LM Studio, Ollama, or llama-server) to its chat completions endpoint."""
     url = raw_url.strip().rstrip("/")
-    if not url:
+    # Nothing but slashes or a bare scheme ("http://" loses its slashes above) names no server.
+    if url.lower() in {"", "http:", "https:"}:
         raise ModelError(t("external_llm_url_empty"))
     if not url.lower().startswith(("http://", "https://")):
         url = f"http://{url}"
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        host = None
+    if not host:
+        raise ModelError(t("external_llm_url_empty"))
     lower = url.lower()
     if lower.endswith(("/v1/chat/completions", "/chat/completions", "/api/chat")):
         return url
@@ -773,6 +781,8 @@ class LlamaTranslator:
             with urllib.request.urlopen(req, timeout=300.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
+            if self._external_chat_url is not None:
+                raise ModelError(t("external_llm_unreachable", url=url, error=str(exc))) from exc
             raise ModelError(t("llama_unavailable", error=str(exc))) from exc
         choices = data.get("choices") or []
         if choices:

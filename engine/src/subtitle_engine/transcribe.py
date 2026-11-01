@@ -155,10 +155,21 @@ def _can_stream_wav_chunks(audio: Path, min_duration: float | None = None) -> bo
         return False
 
 
+def _audio_fingerprint(audio: Path, size: int, blocks: int = 8, block_bytes: int = 16_384) -> str:
+    """Hash of the file size plus a few evenly spaced blocks (first and last included). The extracted WAV of two
+    different videos with the same name and duration has the same size, so the size alone can't tell them apart."""
+    digest = hashlib.sha256(str(size).encode("ascii"))
+    with audio.open("rb") as handle:
+        for i in range(blocks):
+            handle.seek(max(0, (size - block_bytes) * i // max(1, blocks - 1)))
+            digest.update(handle.read(block_bytes))
+    return digest.hexdigest()
+
+
 def _transcribe_checkpoint_path(audio: Path, model_size: str, language: str | None) -> Path | None:
     try:
         stat = audio.stat()
-        key = f"{audio.name}|{stat.st_size}|{model_size}|{language or ''}"
+        key = f"{audio.name}|{_audio_fingerprint(audio, stat.st_size)}|{model_size}|{language or ''}"
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
         folder = Path(tempfile.gettempdir()) / "SubtitleAdder" / "transcriptions"
         folder.mkdir(parents=True, exist_ok=True)

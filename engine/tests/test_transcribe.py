@@ -387,3 +387,32 @@ def test_whisper_streams_chunks_and_emits_partial_words_on_long_wav(tmp_path, mo
     assert partial_batches[0] == ["chunk1"]
     assert partial_batches[-1] == [f"chunk{i}" for i in range(1, len(chunk_calls) + 1)]
     assert progress[-1] == 1.0
+
+
+def test_asr_checkpoint_key_tells_apart_audio_of_the_same_name_and_size(tmp_path):
+    import wave
+
+    from subtitle_engine import transcribe as transcribe_mod
+
+    def write_wav(folder, samples: bytes):
+        folder.mkdir()
+        path = folder / "clip.wav"
+        with wave.open(str(path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16_000)
+            wav.writeframes(samples)
+        return path
+
+    seconds = 16_000 * 200  # samples; long enough for several sampled blocks
+    first = write_wav(tmp_path / "a", b"\x00\x00" * seconds)
+    same = write_wav(tmp_path / "b", b"\x00\x00" * seconds)
+    # Same name, same size, different sound (another video of the same length).
+    different = write_wav(tmp_path / "c", b"\x05\x01" * seconds)
+    assert first.stat().st_size == different.stat().st_size
+
+    key = transcribe_mod._transcribe_checkpoint_path
+    assert key(first, "base", None) == key(same, "base", None)  # a rerun of the same audio still resumes
+    assert key(first, "base", None) != key(different, "base", None)
+    assert key(first, "base", None) != key(first, "small", None)
+    assert key(first, "base", None) != key(first, "base", "tr")

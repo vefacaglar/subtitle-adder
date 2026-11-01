@@ -121,6 +121,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "tr": "Yerel LLM çalışma zamanı (llama.cpp) başlatılamadı: {error}",
         "en": "Could not start the local LLM runtime (llama.cpp): {error}",
     },
+    "external_llm_unreachable": {
+        "tr": "Harici LLM sunucusuna ulaşılamadı ({url}): {error}",
+        "en": "Could not reach the external LLM server ({url}): {error}",
+    },
     "external_llm_url_empty": {
         "tr": "Harici LLM sunucusu adresi boş olamaz.",
         "en": "The external LLM server address cannot be empty.",

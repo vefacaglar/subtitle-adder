@@ -112,3 +112,29 @@ def test_empty_external_llm_url_error_is_localized(monkeypatch):
     monkeypatch.setenv(i18n.ENV_VAR, "en")
     with pytest.raises(models.ModelError, match="The external LLM server address cannot be empty."):
         translate.normalize_external_chat_url("/")
+
+
+@pytest.mark.parametrize("raw", ["", "  ", "/", "http://", "https://", "http:///", "HTTP://", "http://:1234"])
+def test_external_llm_url_without_a_host_is_rejected(raw):
+    with pytest.raises(models.ModelError, match="Harici LLM sunucusu adresi boş olamaz."):
+        translate.normalize_external_chat_url(raw)
+
+
+def test_external_llm_failure_names_the_server_not_llama_cpp(monkeypatch):
+    def refuse(req, timeout=None):
+        raise translate.urllib.error.URLError("[Errno 61] Connection refused")
+
+    monkeypatch.setattr(translate.urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(translate, "_resolve_lan_url", lambda url: url)
+    translator = translate.LlamaTranslator(
+        "gemma-4-e4b", external_url="192.168.1.50:1234", external_model="qwen3"
+    )
+    with pytest.raises(models.ModelError) as tr:
+        translator._complete([{"role": "user", "content": "hi"}])
+    assert "Harici LLM sunucusuna ulaşılamadı (http://192.168.1.50:1234/v1/chat/completions)" in str(tr.value)
+    assert "Connection refused" in str(tr.value) and "llama" not in str(tr.value).lower()
+    monkeypatch.setenv(i18n.ENV_VAR, "en")
+    with pytest.raises(models.ModelError) as en:
+        translator._complete([{"role": "user", "content": "hi"}])
+    assert str(en.value).startswith("Could not reach the external LLM server (http://192.168.1.50:1234")
+    assert "llama" not in str(en.value).lower()

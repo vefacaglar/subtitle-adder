@@ -4,6 +4,7 @@ Events:
   {"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|diarizing|segmenting|translating", "fraction": 0.42|null}
   {"event": "models", "models": [{"id", "kind", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "license", "downloaded"}]}
   {"event": "deleted", "id": "small", "freed_mb": 465}
+  {"event": "partial", "language": "tr"|"?", "sentences": [...]}  (transcribe only: all lines so far, throttled)
   {"event": "result", "language": "tr", "duration": 12.3, "audio": "...", "outputs": [...], "sentences": [...]}
   {"event": "translation", "language": "es", "sentences": [...]}
   {"event": "error", "message": "..."}
