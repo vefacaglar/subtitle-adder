@@ -599,6 +599,12 @@ class LlamaTranslator:
                 "top_p": 0.9,
                 "max_tokens": 512,
                 "stream": False,
+                "think": False,
+                "options": {
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                    "num_predict": 512,
+                },
                 "chat_template_kwargs": {"enable_thinking": False},
             }
         else:
