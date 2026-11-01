@@ -1,4 +1,4 @@
-"""Hattın tamamı: video -> ses -> transkript -> cümleler -> altyazı dosyaları."""
+"""The whole pipeline: video -> audio -> transcript -> sentences -> subtitle files."""
 import gc
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,7 +14,7 @@ from .transcribe import Transcriber
 
 DiarizerFactory = Callable[[], "Diarizer"]
 
-# (aşama, 0..1 arası ilerleme ya da None)
+# (stage, progress in 0..1 or None)
 StageFn = Callable[[str, float | None], None]
 
 
@@ -51,8 +51,8 @@ def run(
     on_stage("extracting_audio", None)
     audio = extract_audio(video, out_dir / f"{video.stem}.wav")
 
-    # Katalogdaki model önbellekte değilse indirmeyi burada yaparız; böylece transkript
-    # başlamadan önce ilerleme raporlanır. Katalog dışı adları faster-whisper indirir.
+    # If a catalog model is not cached we download it here, so progress is reported
+    # before transcription starts. Names outside the catalog are downloaded by faster-whisper.
     if model and models.needs_download(model):
         on_stage("downloading_model", 0.0)
         models.ensure_model(model, on_progress=lambda fraction: on_stage("downloading_model", fraction))

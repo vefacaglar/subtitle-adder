@@ -1,7 +1,7 @@
 [project]
 name = "subtitle-engine"
 version = "0.1.0"
-description = "Subtitle Adder motoru: videodan ses ayırma, speech-to-text, cümle çıkarma, altyazı üretme"
+description = "Subtitle Adder engine: audio extraction, speech-to-text, sentence segmentation, subtitle generation"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
@@ -29,5 +29,5 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: model indirip gerçek model çalıştıran testler (pytest -m slow)"]
+markers = ["slow: tests that download and run real models (pytest -m slow)"]
 addopts = "-m 'not slow'"

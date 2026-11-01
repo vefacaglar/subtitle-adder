@@ -1,4 +1,4 @@
-"""Token→kelime kurma ve onnx-asr backend seçimi testleri: ağa çıkmaz."""
+"""Tests for building words from tokens and for onnx-asr backend selection: no network."""
 import sys
 import types
 import wave
@@ -23,8 +23,8 @@ def test_words_from_subword_tokens_and_trailing_punctuation():
     )
 
     assert [w.text for w in words] == ["Merhaba", "dünya."]
-    assert (words[0].start, words[0].end) == (2.0, 2.6)  # sonraki kelimenin başlangıcı
-    assert (words[1].start, words[1].end) == (2.6, 3.0)  # segment sonu
+    assert (words[0].start, words[0].end) == (2.0, 2.6)  # start of the next word
+    assert (words[1].start, words[1].end) == (2.6, 3.0)  # segment end
 
 
 def test_words_handle_space_markers_and_opening_punctuation():
@@ -110,7 +110,7 @@ def wav_file(tmp_path: Path) -> Path:
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(16_000)
-        wav.writeframes(b"\0\0" * 32_000)  # 2 sn
+        wav.writeframes(b"\0\0" * 32_000)  # 2 s
     return path
 
 
@@ -151,7 +151,7 @@ def test_onnx_transcriber_uses_vad_timestamps_and_absolute_words(wav_file, monke
         "vad_providers": ("CPUExecutionProvider",),
     }
     assert adapter.vad_args[1] == VAD_OPTIONS
-    assert adapter.kwargs == {"language": "pt", "target_language": "pt"}  # Canary hedef dili de ister
+    assert adapter.kwargs == {"language": "pt", "target_language": "pt"}  # Canary also needs the target language
     assert transcript.language == "pt" and transcript.duration == 2.0
     assert [w.text for w in transcript.words] == ["Merhaba", "dünya."]
     assert (transcript.words[1].start, transcript.words[1].end) == (1.2, 2.0)
@@ -193,7 +193,7 @@ def test_create_transcriber_selects_backend(monkeypatch):
     monkeypatch.setattr("subtitle_engine.transcribe.OnnxAsrTranscriber", fake_onnx)
 
     assert create_transcriber("small") == "whisper"
-    assert create_transcriber("turbo") == "whisper"  # katalog dışı: faster-whisper
+    assert create_transcriber("turbo") == "whisper"  # outside the catalog: faster-whisper
     assert create_transcriber("gigaam-v3") == "onnx"
 
     assert calls == [

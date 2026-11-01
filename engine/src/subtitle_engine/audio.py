@@ -1,6 +1,6 @@
-"""Adım 1: videodan sesi ayırır -> 16 kHz mono 16-bit WAV (Whisper'ın beklediği biçim).
+"""Step 1: extracts audio from a video -> 16 kHz mono 16-bit WAV (the format Whisper expects).
 
-PyAV, ffmpeg kütüphanelerini wheel içinde getirir; sistemde ffmpeg kurulu olması gerekmez.
+PyAV ships the ffmpeg libraries inside its wheel; no system ffmpeg is needed.
 """
 import wave
 from pathlib import Path
@@ -8,7 +8,7 @@ from pathlib import Path
 import av
 
 SAMPLE_RATE = 16_000
-GAP_TOLERANCE = SAMPLE_RATE // 20  # 50 ms'den küçük sapmalar doldurulmaz
+GAP_TOLERANCE = SAMPLE_RATE // 20  # drifts under 50 ms are not padded
 
 
 def _write_silence(wav, samples: int) -> None:
@@ -33,15 +33,15 @@ def extract_audio(video: Path, out_wav: Path) -> Path:
                 raise AudioExtractionError("Videoda ses izi yok.")
             stream = container.streams.best("audio") or container.streams.audio[0]
             origin = (container.start_time or 0) / av.time_base
-            cursor = 0  # girişte şu ana kadar kapsanan süre, 16 kHz örnek cinsinden
+            cursor = 0  # input time covered so far, in 16 kHz samples
             resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
             with wave.open(str(out_wav), "wb") as wav:
                 wav.setnchannels(1)
                 wav.setsampwidth(2)
                 wav.setframerate(SAMPLE_RATE)
                 for frame in container.decode(stream):
-                    # Ses akışı geç başlıyorsa/boşluk varsa sessizlikle doldur: WAV zamanı
-                    # kapsayıcı zaman çizelgesiyle hizalı kalsın (altyazı kayması olmasın).
+                    # If the audio stream starts late or has gaps, pad with silence so the WAV
+                    # timeline stays aligned with the container timeline (no subtitle drift).
                     if frame.time is not None:
                         target = round((frame.time - origin) * SAMPLE_RATE)
                         if target - cursor > GAP_TOLERANCE:

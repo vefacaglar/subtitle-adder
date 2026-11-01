@@ -27,11 +27,11 @@ def test_late_audio_start_is_padded_to_container_timeline(tmp_path):
         v.width = v.height = 64
         v.pix_fmt = "yuv420p"
         a = out.add_stream("aac", rate=rate, layout="mono")
-        for i in range(40):  # 4 sn video
+        for i in range(40):  # 4 s video
             f = av.VideoFrame.from_ndarray(np.zeros((64, 64, 3), dtype=np.uint8), format="rgb24")
             f.pts = i
             out.mux(v.encode(f))
-        for i in range(0, rate * 2, 1024):  # ses 2. saniyede başlar, 2 sn sürer
+        for i in range(0, rate * 2, 1024):  # audio starts at second 2 and lasts 2 s
             f = av.AudioFrame.from_ndarray(np.full((1, 1024), 0.2, dtype=np.float32), format="fltp", layout="mono")
             f.sample_rate = rate
             f.pts = offset * rate + i

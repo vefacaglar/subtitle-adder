@@ -1,7 +1,7 @@
-"""Adım 2: sesi kelime zaman damgalı metne çevirir.
+"""Step 2: turns audio into text with word timestamps.
 
-Backend'ler `Transcriber` protokolünü uygular; yenisi (mlx-whisper, bulut API) eklenince
-pipeline ve uygulamalar değişmez.
+Backends implement the `Transcriber` protocol; adding a new one (mlx-whisper, ...) leaves the
+pipeline and the apps unchanged.
 """
 import re
 import wave
@@ -14,12 +14,12 @@ from .models import Transcript, Word
 
 ProgressFn = Callable[[float], None]
 
-# onnx-asr token'larında kelime başı '▁' işaretiyle gelir; kütüphane bunu boşluğa çevirir.
+# In onnx-asr tokens a word start comes with a '▁' marker; the library turns it into a space.
 WORD_MARKERS = (" ", "\u2581")
 _SPECIAL_TOKEN = re.compile(r"^<[^<>]+>$")
 
-# Silero'nun 30 ms dolgusu ilk heceyi kırpabiliyor. 50 ms dolgu ve 200 ms sessizlik
-# eşiği kelime başlarını korur, cümle ortasında gereksiz bölünmeyi azaltır.
+# Silero's 30 ms padding can clip the first syllable. 50 ms padding and a 200 ms silence
+# threshold preserve word starts and reduce needless splits mid-sentence.
 VAD_OPTIONS = {"speech_pad_ms": 50, "min_silence_duration_ms": 200}
 
 
@@ -30,14 +30,14 @@ class Transcriber(Protocol):
 
 
 class FasterWhisperTranscriber:
-    """faster-whisper (CTranslate2). Mac'te CPU int8, Windows'ta CUDA varsa GPU. Model ilk kullanımda indirilir."""
+    """faster-whisper (CTranslate2). CPU int8 on Mac, GPU on Windows when CUDA is available. The model is downloaded on first use."""
 
     def __init__(self, model_size: str = "small", device: str = "auto", compute_type: str | None = None):
         import ctranslate2
         from faster_whisper import WhisperModel
 
         if compute_type is None:
-            # Modeller float16 kayıtlı; CPU'da float32'ye açılıp yavaşlıyor. CPU'da int8, CUDA'da float16.
+            # Models are stored as float16; on CPU they get expanded to float32 and slow down. int8 on CPU, float16 on CUDA.
             on_cuda = device == "cuda" or (device == "auto" and ctranslate2.get_cuda_device_count() > 0)
             compute_type = "float16" if on_cuda else "int8"
         self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
@@ -61,11 +61,11 @@ class FasterWhisperTranscriber:
 
 
 class OnnxAsrTranscriber:
-    """onnx-asr (onnxruntime) backend'i: Parakeet, Canary ve GigaAM.
+    """onnx-asr (onnxruntime) backend: Parakeet, Canary and GigaAM.
 
-    Uzun sesi silero VAD ile böler, her segment için token zaman damgalarını alır ve
-    token'lardan kelimeleri kurar. Canary token zaman damgası üretmediği için segment
-    süresi token uzunluklarına göre paylaştırılır.
+    Splits long audio with silero VAD, takes token timestamps for each segment and builds
+    words from the tokens. Canary produces no token timestamps, so the segment
+    duration is shared out according to token lengths.
     """
 
     def __init__(
@@ -78,8 +78,8 @@ class OnnxAsrTranscriber:
 
         self._canary = model_name.startswith(("canary", "nemo-canary"))
         self._default_language = "ru" if model_name.startswith("gigaam") else None
-        # CoreML int8 grafiği parçalara bölüp hız ve kalite kaybı yaratıyor; CPU int8
-        # her iki platformda da hızlı ve kararlı. GPU isteyen providers ile geçebilir.
+        # CoreML splits the int8 graph into pieces, costing speed and quality; CPU int8
+        # is fast and stable on both platforms. Anyone wanting a GPU can pass providers.
         provider_list = list(providers) if providers else None
         self._model = onnx_asr.load_model(model_name, quantization=quantization, providers=provider_list)
         self._vad = onnx_asr.load_vad("silero", providers=provider_list)
@@ -92,7 +92,7 @@ class OnnxAsrTranscriber:
         options: dict[str, str] = {}
         if language is not None:
             options["language"] = language
-            if self._canary:  # Canary hedef dili ayrıca ister; çeviri değil, aynı dil.
+            if self._canary:  # Canary needs the target language separately; same language, not translation.
                 options["target_language"] = language
 
         adapter = self._model.with_vad(self._vad, **VAD_OPTIONS).with_timestamps()
@@ -110,11 +110,11 @@ def words_from_tokens(
     segment_start: float,
     segment_end: float,
 ) -> list[Word]:
-    """Segment token'larından kelimeleri kurar; zamanları mutlak saniyeye çevirir.
+    """Builds words from segment tokens; converts times to absolute seconds.
 
-    Boşluk ya da '▁' ile başlayan token yeni kelime başlatır, diğerleri (noktalama dahil)
-    önceki kelimeye eklenir. Zaman damgası olmayan modellerde (Canary) token süreleri
-    segment süresine karakter uzunluğu oranında yayılır.
+    A token starting with a space or '▁' begins a new word; the others (punctuation included)
+    are appended to the previous word. For models without timestamps (Canary) token durations
+    are spread over the segment duration in proportion to character length.
     """
     if not tokens:
         return []
@@ -128,7 +128,7 @@ def words_from_tokens(
     current: list[tuple[str, float]] = []
     for token, at in zip(tokens, times):
         stripped = token.strip()
-        if stripped and _SPECIAL_TOKEN.match(stripped):  # <blk>, <|en|> gibi özel token'lar
+        if stripped and _SPECIAL_TOKEN.match(stripped):  # special tokens such as <blk>, <|en|>
             continue
         starts_word = token.startswith(WORD_MARKERS)
         content = token.lstrip(" \u2581")
@@ -152,7 +152,7 @@ def words_from_tokens(
 
 
 def _estimated_timestamps(tokens: Sequence[str], duration: float) -> list[float]:
-    """Zaman damgası üretmeyen modeller için token'ları süreye oransal yerleştirir."""
+    """Places tokens proportionally over the duration for models that produce no timestamps."""
     weights = [max(len(token.strip()), 1) for token in tokens]
     total = sum(weights)
     result: list[float] = []
@@ -173,7 +173,7 @@ def _wav_duration(audio: Path) -> float:
 
 
 def create_transcriber(model_id: str) -> Transcriber:
-    """Katalog kimliğine göre doğru backend'i kurar."""
+    """Builds the right backend for a catalog id."""
     info = models.find(model_id)
     if info is not None and info.backend == "onnx":
         return OnnxAsrTranscriber(info.onnx_model or model_id, info.quantization)

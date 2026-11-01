@@ -1,9 +1,9 @@
-"""Adım: cümleleri tamamen yerel çeviri modelleriyle hedef dile çevirir.
+"""Step: translates sentences into the target language with fully local translation models.
 
-Modeller CTranslate2 biçimindedir. MADLAD'ın T5 tokenizer'ı sentencepiece ile,
-NLLB'nin BPE tokenizer'ı Hugging Face `tokenizer.json` dosyasından (`tokenizers`,
-Rust) okunur; transformers/torch gerekmez. Kaynak metin hiçbir zaman makineden
-çıkmaz; ağ yalnız model indirmek için kullanılır.
+The models are in CTranslate2 format. MADLAD's T5 tokenizer is read with sentencepiece,
+NLLB's BPE tokenizer from the Hugging Face `tokenizer.json` file (`tokenizers`,
+Rust); transformers/torch are not needed. The source text never leaves the machine;
+the network is only used to download models.
 """
 from collections.abc import Callable
 from pathlib import Path
@@ -14,8 +14,8 @@ from .models import ModelError, Sentence
 
 ProgressFn = Callable[[float], None]
 
-# NLLB kaynak/hedef dil kodları FLORES-200 biçimindedir; MADLAD ISO 639-1 kodunu
-# "<2xx>" token'ına çevirir ve kaynak dil etiketi istemez.
+# NLLB source/target language codes use the FLORES-200 format; MADLAD turns the ISO 639-1 code
+# into a "<2xx>" token and needs no source language tag.
 NLLB_LANGUAGE_CODES = {
     "tr": "tur_Latn",
     "pt": "por_Latn",
@@ -25,11 +25,11 @@ NLLB_LANGUAGE_CODES = {
 }
 MADLAD_PREFIX = "<2{}>"
 
-# Cümleler tek tek değil, bu boyutta toplu çevrilir; ilerleme her partiden sonra bildirilir.
+# Sentences are translated in batches of this size, not one by one; progress is reported after each batch.
 BATCH_SIZE = 16
 BEAM_SIZE = 4
 MAX_DECODING_LENGTH = 256
-# CT2 modellerinde add_source_eos kapalı; HF tokenizer'ları gibi kaynağın sonuna ekliyoruz.
+# add_source_eos is off in CT2 models; we append it to the end of the source like HF tokenizers do.
 EOS_TOKEN = "</s>"
 
 
@@ -44,7 +44,7 @@ class Translator(Protocol):
 
 
 def check_request(model_id: str, target: str, source: str | None = None) -> models.ModelInfo:
-    """İstek katalog ve dil desteğiyle uyumlu mu? Değilse Türkçe `ModelError` yükseltir."""
+    """Is the request compatible with the catalog and language support? If not, raises a (Turkish) `ModelError`."""
     info = models.find(model_id)
     if info is None or info.kind != "translation":
         raise ModelError(
@@ -63,12 +63,12 @@ def check_request(model_id: str, target: str, source: str | None = None) -> mode
             )
         if source not in NLLB_LANGUAGE_CODES or target not in NLLB_LANGUAGE_CODES:
             raise ModelError(f"NLLB {target} dili için tanımlı değil.")
-    # MADLAD kaynak dil etiketi kullanmaz; --from verilse de yok sayılır.
+    # MADLAD uses no source language tag; --from is ignored even if given.
     return info
 
 
 def create_translator(model_id: str, device: str = "cpu", compute_type: str = "int8") -> Translator:
-    """Katalog kimliğine göre CTranslate2 çeviriciyi kurar (CPU'da int8)."""
+    """Builds the CTranslate2 translator for a catalog id (int8 on CPU)."""
     info = models.find(model_id)
     if info is None or info.kind != "translation":
         raise ModelError(
@@ -78,7 +78,7 @@ def create_translator(model_id: str, device: str = "cpu", compute_type: str = "i
 
 
 class Ct2Translator:
-    """CTranslate2 T5 (MADLAD) ve M2M100 (NLLB) modellerini tek protokolde çalıştırır."""
+    """Runs CTranslate2 T5 (MADLAD) and M2M100 (NLLB) models behind a single protocol."""
 
     def __init__(self, model_id: str, device: str = "cpu", compute_type: str = "int8"):
         info = models.find(model_id)
@@ -97,7 +97,7 @@ class Ct2Translator:
         on_progress: ProgressFn | None = None,
     ) -> list[Sentence]:
         check_request(self._info.id, target, source)
-        # Boş satırlar modele gitmez; zamanları ve kimlikleri korunarak metinsiz döner.
+        # Empty lines are not sent to the model; they come back textless with their times and ids preserved.
         result_sentences = [
             Sentence(id=s.id, start=s.start, end=s.end, text=s.text, words=[], speaker=s.speaker)
             for s in sentences
@@ -141,7 +141,7 @@ class Ct2Translator:
     def _target_prefix(self, target: str) -> str | None:
         if self._info.id == "nllb-1.3b":
             return NLLB_LANGUAGE_CODES[target]
-        return None  # MADLAD hedef dil etiketini kaynak girdinin başında ister
+        return None  # MADLAD wants the target language tag at the start of the source input
 
     def _source_tokens(self, text: str, source: str | None, target: str) -> list[str]:
         if self._info.id == "nllb-1.3b":
@@ -151,7 +151,7 @@ class Ct2Translator:
 
     def _decode(self, hypothesis: list[str], target: str) -> str:
         text = self._tokenizer.decode(hypothesis).strip()
-        # Model hedef dil etiketini yine de üretirse altyazıya sızmasın.
+        # If the model emits the target language tag anyway, it must not leak into the subtitle.
         tag = self._target_prefix(target)
         if tag is None:
             tag = MADLAD_PREFIX.format(target)
@@ -161,7 +161,7 @@ class Ct2Translator:
 
 
 class _HfTokenizer:
-    """Hugging Face tokenizer.json (NLLB BPE); transformers/torch gerekmez."""
+    """Hugging Face tokenizer.json (NLLB BPE); transformers/torch are not needed."""
 
     def __init__(self, path: Path):
         from tokenizers import Tokenizer
@@ -179,7 +179,7 @@ class _HfTokenizer:
 
 
 class _SentencePieceTokenizer:
-    """T5/MADLAD tokenizer'ı; depodaki spiece.model doğrudan yüklenir."""
+    """T5/MADLAD tokenizer; the repo's spiece.model is loaded directly."""
 
     def __init__(self, path: Path):
         import sentencepiece as spm

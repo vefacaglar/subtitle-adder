@@ -15,7 +15,7 @@ def make_words(text: str, step: float = 0.4) -> list[Word]:
 
 @pytest.fixture
 def tone_video(tmp_path: Path) -> Path:
-    """PyAV ile 2 sn'lik, 44.1 kHz stereo sinüs sesli küçük bir mp4 üretir."""
+    """Generates a small mp4 with 2 s of 44.1 kHz stereo sine audio using PyAV."""
     path = tmp_path / "tone.mp4"
     rate, seconds = 44_100, 2
     with av.open(str(path), "w") as out:

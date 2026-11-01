@@ -1,4 +1,4 @@
-"""Adım 4: cümleleri SRT / VTT / JSON olarak yazar."""
+"""Step 4: writes sentences as SRT / VTT / JSON."""
 import json
 from pathlib import Path
 

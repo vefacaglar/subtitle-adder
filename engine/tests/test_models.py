@@ -1,4 +1,4 @@
-"""Model kataloğu, önbellek boyutu, silme ve indirme ilerlemesi testleri: ağa çıkmaz."""
+"""Tests for the model catalog, cache size, deletion and download progress: no network."""
 import contextlib
 import hashlib
 import os
@@ -12,7 +12,7 @@ MIB = 1024 * 1024
 
 
 def make_cached_repo(cache_dir, repo_id, files, revision="1" * 40):
-    """Gerçek HF önbellek yapısını taklit eder: blobs + snapshots + refs (ağ yok)."""
+    """Imitates the real HF cache layout: blobs + snapshots + refs (no network)."""
     repo = cache_dir / f"models--{repo_id.replace('/', '--')}"
     blobs, snapshot = repo / "blobs", repo / "snapshots" / revision
     blobs.mkdir(parents=True, exist_ok=True)
@@ -24,7 +24,7 @@ def make_cached_repo(cache_dir, repo_id, files, revision="1" * 40):
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             target.symlink_to(os.path.relpath(blob, target.parent))
-        except OSError:  # Windows'ta sembolik bağ izni olmayabilir
+        except OSError:  # symlink permission may be missing on Windows
             shutil.copyfile(blob, target)
     refs = repo / "refs"
     refs.mkdir(exist_ok=True)
@@ -42,7 +42,7 @@ def test_catalog_order_and_fields():
     assert all(1 <= m.speed <= 5 and 1 <= m.accuracy <= 5 for m in models.KATALOG)
     for kind in ("transcription", "translation"):
         sizes = [m.size_mb for m in models.KATALOG if m.kind == kind]
-        assert sizes == sorted(sizes)  # her grup arayüzde küçükten büyüğe
+        assert sizes == sorted(sizes)  # each group is small to large in the UI
 
 
 def test_catalog_backends_and_languages():
@@ -82,7 +82,7 @@ def test_catalog_licenses_are_explicit():
 
 
 def test_catalog_repos_match_faster_whisper():
-    """Whisper repo kimlikleri faster-whisper'ın kendi tablosuyla aynı kalmalı."""
+    """Whisper repo ids must stay identical to faster-whisper's own table."""
     from faster_whisper.utils import _MODELS
 
     whisper = [m for m in models.KATALOG if m.backend == "whisper"]
@@ -90,7 +90,7 @@ def test_catalog_repos_match_faster_whisper():
 
 
 def test_catalog_repos_match_onnx_asr():
-    """onnx modelleri onnx-asr'ın indirdiği Hugging Face depolarına gitmeli."""
+    """onnx models must point to the Hugging Face repos that onnx-asr downloads."""
     from onnx_asr.resolver import model_repos
 
     onnx_models = [m for m in models.KATALOG if m.backend == "onnx"]
@@ -112,7 +112,7 @@ def test_is_downloaded_looks_at_local_cache_only(monkeypatch):
         return "/cache/model.bin" if repo_id == "Systran/faster-whisper-small" else None
 
     def fail_download(*args, **kwargs):
-        raise AssertionError("is_downloaded ağa çıkmamalı")
+        raise AssertionError("is_downloaded must not hit the network")
 
     monkeypatch.setattr(models.huggingface_hub, "try_to_load_from_cache", fake_cache)
     monkeypatch.setattr(models.huggingface_hub, "snapshot_download", fail_download)
@@ -121,8 +121,8 @@ def test_is_downloaded_looks_at_local_cache_only(monkeypatch):
     assert models.is_downloaded("base") is False
     assert models.needs_download("base") is True
     assert models.needs_download("small") is False
-    assert models.is_downloaded("turbo") is False  # katalog dışı: önbellek sorgusu yok
-    assert models.needs_download("turbo") is False  # indirme aşaması yayınlanmaz
+    assert models.is_downloaded("turbo") is False  # outside the catalog: no cache lookup
+    assert models.needs_download("turbo") is False  # no download stage is published
 
 
 def test_ensure_model_reports_monotonic_byte_progress(monkeypatch):
@@ -146,7 +146,7 @@ def test_ensure_model_reports_monotonic_byte_progress(monkeypatch):
     assert models.ensure_model("small", on_progress=fractions.append) == "/cache/small"
 
     assert calls == [{"repo_id": "Systran/faster-whisper-small", "allow_patterns": list(models.ALLOW_PATTERNS)}]
-    assert fractions == sorted(fractions)  # artan
+    assert fractions == sorted(fractions)  # increasing
     assert all(0.0 <= f <= 1.0 for f in fractions)
     assert fractions[-1] == 1.0
     assert fractions[0] < 1.0
@@ -174,7 +174,7 @@ def test_translation_download_state_requires_all_files(monkeypatch):
         lambda repo, filename: "/cache/file" if (repo, filename) in present else None,
     )
     monkeypatch.setattr(
-        models.huggingface_hub, "snapshot_download", lambda *a, **kw: pytest.fail("ağa çıkılmamalı")
+        models.huggingface_hub, "snapshot_download", lambda *a, **kw: pytest.fail("must not hit the network")
     )
 
     assert models.is_downloaded("madlad-3b") is True
@@ -214,7 +214,7 @@ def test_onnx_download_state_checks_catalog_files_and_vad(monkeypatch):
         lambda repo, filename: "/cache/file" if (repo, filename) in present else None,
     )
     monkeypatch.setattr(
-        models.huggingface_hub, "snapshot_download", lambda *a, **kw: pytest.fail("ağa çıkılmamalı")
+        models.huggingface_hub, "snapshot_download", lambda *a, **kw: pytest.fail("must not hit the network")
     )
 
     assert models.is_downloaded("gigaam-v3") is True
@@ -351,9 +351,9 @@ def test_delete_model_refuses_catalog_entries_sharing_a_repo(tmp_path, monkeypat
 
 
 def make_shared_repo(cache_dir, repo_id, files, revision="1" * 40):
-    """huggingface_hub 2.x xet düzeni: blob'lar `<önbellek>/blobs/<2 hex>/<sha256>` altında, repo blobs/ sembolik bağ.
+    """huggingface_hub 2.x xet layout: blobs live under `<cache>/blobs/<2 hex>/<sha256>`, the repo's blobs/ is a symlink.
 
-    `files`: ad -> (içerik anahtarı, bayt); aynı anahtar iki repoda aynı paylaşılan blob'u verir.
+    `files`: name -> (content key, bytes); the same key in two repos yields the same shared blob.
     """
     store = cache_dir / "blobs"
     store.mkdir(exist_ok=True)
@@ -380,7 +380,7 @@ def make_shared_repo(cache_dir, repo_id, files, revision="1" * 40):
 
 
 def test_disk_mb_counts_shared_store_targets_once(tmp_path):
-    # Aynı blob iki dosya adıyla ve iki revizyonda: bir kez sayılır.
+    # The same blob under two file names and in two revisions: counted once.
     files = {"model.bin": ("a", 3 * MIB), "alias.bin": ("a", 3 * MIB), "config.json": ("b", 1000)}
     make_shared_repo(tmp_path, "Systran/faster-whisper-base", files)
     make_shared_repo(tmp_path, "Systran/faster-whisper-base", files, revision="2" * 40)
@@ -402,12 +402,12 @@ def test_delete_model_sweeps_shared_blobs_but_keeps_ones_other_repos_use(tmp_pat
     digest = lambda key: hashlib.sha256(key.encode()).hexdigest()  # noqa: E731
     payload = lambda key: store / digest(key)[:2] / digest(key)  # noqa: E731
 
-    assert models.delete_model("base", cache_dir=tmp_path) == 3  # yalnız base'e ait blob boşalır
+    assert models.delete_model("base", cache_dir=tmp_path) == 3  # only the blob owned by base is freed
 
     assert not repo.exists()
     assert not payload("only-base").exists()
     assert not payload("only-base").with_name(digest("only-base") + ".refs").exists()
-    assert payload("only-base").with_name(digest("only-base") + ".lock").exists()  # kilit dosyasına dokunulmaz
+    assert payload("only-base").with_name(digest("only-base") + ".lock").exists()  # the lock file is not touched
     assert payload("common").is_file() and payload("only-small").is_file() and payload("vad").is_file()
     assert other.is_dir() and vad.is_dir()
     assert (other / "snapshots" / ("1" * 40) / "tokenizer.json").read_bytes() == b"x" * (2 * MIB)
@@ -489,10 +489,10 @@ def test_unreadable_other_repo_blocks_deletion(tmp_path, sweep_mode):
     blobs.chmod(0)
     try:
         if os.access(blobs, os.R_OK):
-            pytest.skip("izinler uygulanmıyor (root/Windows)")
-        with contextlib.suppress(models.ModelError):  # tarama okunamayan repo'da hata verebilir
+            pytest.skip("permissions not enforced (root/Windows)")
+        with contextlib.suppress(models.ModelError):  # the scan may fail on an unreadable repo
             models.delete_model("base", cache_dir=tmp_path)
-        # Tarama atlansa bile süpürücü okunamayan repo varken hiçbir şey silmez.
+        # Even if the scan is skipped, the sweeper deletes nothing while an unreadable repo exists.
         assert models._sweep_shared_blobs(tmp_path.resolve(), {_payload(tmp_path.resolve() / "blobs", "a")}) == 0
     finally:
         blobs.chmod(0o755)
@@ -519,7 +519,7 @@ def test_marker_symlink_deletes_nothing(tmp_path, sweep_mode):
 
 def test_regular_repo_blob_with_shared_store_present(tmp_path, sweep_mode):
     repo, store = make_shared_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": ("a", 2 * MIB)})
-    (repo / "blobs" / ("f" * 40)).write_bytes(b"x" * (3 * MIB))  # düzenli dosya (xet dışı)
+    (repo / "blobs" / ("f" * 40)).write_bytes(b"x" * (3 * MIB))  # regular file (not xet)
 
     assert models.delete_model("base", cache_dir=tmp_path) == 5
     assert not repo.exists() and not _payload(store, "a").exists()

@@ -1,1 +1,1 @@
-"""Video -> ses -> metin -> cümle -> altyazı motoru. Native uygulamalar bunu alt süreç olarak çalıştırır."""
+"""Video -> audio -> text -> sentences -> subtitles engine. The native apps run it as a subprocess."""

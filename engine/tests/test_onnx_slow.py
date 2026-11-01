@@ -1,4 +1,4 @@
-"""Gerçek onnx-asr modelleriyle uçtan uca testler (pytest -m slow)."""
+"""End-to-end tests with real onnx-asr models (pytest -m slow)."""
 from pathlib import Path
 
 import pytest
@@ -22,7 +22,7 @@ CASES = [
 def test_onnx_model_transcribes_sample(tmp_path, sample, model, language):
     video = SAMPLES / sample
     if not video.exists():
-        pytest.skip(f"samples/{sample} yok (örnek videolar üretilmemiş)")
+        pytest.skip(f"samples/{sample} missing (sample videos not generated)")
 
     result = pipeline.run(
         video,

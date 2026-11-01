@@ -18,7 +18,7 @@ class FakeTranscriber:
 
 def run_cli(argv, capsys, monkeypatch):
     monkeypatch.setattr("subtitle_engine.transcribe.FasterWhisperTranscriber", lambda model: FakeTranscriber())
-    monkeypatch.setattr("subtitle_engine.models.needs_download", lambda model_id: False)  # ağa çıkma
+    monkeypatch.setattr("subtitle_engine.models.needs_download", lambda model_id: False)  # no network
     code = cli.main(argv)
     return code, [json.loads(line) for line in capsys.readouterr().out.splitlines()]
 
@@ -153,7 +153,7 @@ def test_downloading_model_stage_precedes_loading(tone_video, tmp_path, capsys, 
     download = [fraction for stage, fraction in stages if stage == "downloading_model"]
     assert download[0] == 0.0 and download[-1] == 1.0
     assert download == sorted(download) and all(0.0 <= f <= 1.0 for f in download)
-    assert reported == [0.25, 0.5, 0.99, 1.0]  # ilerleme aynen protokole yansır
+    assert reported == [0.25, 0.5, 0.99, 1.0]  # progress is passed through to the protocol as is
     assert stages.index(("downloading_model", 0.0)) < stages.index(("loading_model", None))
     assert events[-1]["event"] == "result"
 
@@ -203,12 +203,12 @@ def test_cached_model_skips_downloading_stage(tone_video, tmp_path, capsys, monk
 def test_real_stt_on_sample(tmp_path):
     sample = Path(__file__).parents[2] / "samples" / "demo.mp4"
     if not sample.exists():
-        pytest.skip("samples/demo.mp4 yok (CLAUDE.md'deki komutla üret)")
+        pytest.skip("samples/demo.mp4 missing (generate it with the command in CLAUDE.md)")
     assert cli.main(["transcribe", str(sample), "-m", "base", "-l", "tr", "-o", str(tmp_path)]) == 0
 
 
 def test_render_utf8_pipes_regardless_of_locale_encoding():
-    """Windows'taki gibi ANSI kod sayfası (cp1254) ayarlıyken de UTF-8 okunur/yazılır."""
+    """UTF-8 is read/written even when an ANSI code page (cp1254) is set, as on Windows."""
     import os
     import subprocess
 

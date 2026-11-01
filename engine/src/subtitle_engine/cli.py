@@ -1,6 +1,6 @@
-"""Motor CLI. `--json` ile stdout'a satır satır JSON olay yazar (native uygulamalar bunu okur).
+"""Engine CLI. With `--json` it writes one JSON event per line to stdout (the native apps read it).
 
-Olaylar:
+Events:
   {"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|diarizing|segmenting|translating", "fraction": 0.42|null}
   {"event": "models", "models": [{"id", "kind", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "license", "downloaded"}]}
   {"event": "deleted", "id": "small", "freed_mb": 465}
@@ -68,7 +68,7 @@ def _transcribe(args: argparse.Namespace) -> int:
 
 
 def _render(args: argparse.Namespace) -> int:
-    """stdin'den cümle JSON'u okur (uygulamada düzenlenmiş hali), istenen formatta yazar."""
+    """Reads sentence JSON from stdin (as edited in the app) and writes it in the requested format."""
     sentences = [Sentence.from_dict(d) for d in json.load(sys.stdin)]
     if args.out:
         subtitles.write(sentences, args.out, args.format)
@@ -78,7 +78,7 @@ def _render(args: argparse.Namespace) -> int:
 
 
 def _translate(args: argparse.Namespace) -> int:
-    """stdin'deki cümle JSON'unu yerel modelle çevirir; satır başına bir cümle."""
+    """Translates the sentence JSON on stdin with a local model; one sentence per line."""
     from .translate import check_request, create_translator
 
     def on_stage(stage: str, fraction: float | None) -> None:
@@ -87,7 +87,7 @@ def _translate(args: argparse.Namespace) -> int:
         elif fraction is None:
             print(f"… {stage}", file=sys.stderr)
 
-    # Dil/model hatası indirmeye başlamadan, Türkçe `error` olayı olarak dönsün.
+    # A language/model problem must surface as a (Turkish) `error` event before any download starts.
     check_request(args.model, args.to, args.source)
     sentences = [Sentence.from_dict(d) for d in json.load(sys.stdin)]
     if models.needs_download(args.model):
@@ -116,7 +116,7 @@ def _translate(args: argparse.Namespace) -> int:
 
 
 def _models(args: argparse.Namespace) -> int:
-    """Model kataloğunu ve yerel önbellek durumunu listeler (ağa çıkmaz)."""
+    """Lists the model catalog and local cache status (no network)."""
     sizes = cached_disk_mb()
     rows = [
         {
@@ -151,7 +151,7 @@ def _models(args: argparse.Namespace) -> int:
 
 
 def _delete_model(args: argparse.Namespace) -> int:
-    """İndirilmiş bir modelin önbellekteki dosyalarını siler."""
+    """Deletes the cached files of a downloaded model."""
     freed = delete_model(args.id)
     if args.json:
         _emit({"event": "deleted", "id": args.id, "freed_mb": freed})
@@ -165,49 +165,49 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s protocol {PROTOCOL_VERSION}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    t = sub.add_parser("transcribe", help="videodan altyazı üret")
+    t = sub.add_parser("transcribe", help="generate subtitles from a video")
     t.add_argument("video", type=Path)
     t.add_argument("-o", "--out-dir", type=Path, default=Path("output"))
-    t.add_argument("-l", "--language", default=None, help="ör. tr, en (boşsa otomatik algılanır)")
-    t.add_argument("-m", "--model", default="small", help="model kimliği (models listeler); diğer adlar faster-whisper'a gider")
+    t.add_argument("-l", "--language", default=None, help="e.g. tr, en (auto-detected if omitted)")
+    t.add_argument("-m", "--model", default="small", help="model id (see the models command); other names are passed to faster-whisper")
     t.add_argument("-f", "--format", nargs="+", choices=subtitles.FORMATS, default=["srt"])
     t.add_argument("--max-chars", type=int, default=84)
     t.add_argument("--max-duration", type=float, default=6.0)
-    t.add_argument("--diarize", action="store_true", help="konuşmacıları ayır (yerel); cümlelere speaker eklenir")
-    t.add_argument("--speakers", type=int, default=None, help="konuşmacı sayısı (yalnız --diarize ile; boşsa otomatik)")
-    t.add_argument("--json", action="store_true", help="stdout'a JSON olay akışı yaz")
+    t.add_argument("--diarize", action="store_true", help="separate speakers (local); adds a speaker to each sentence")
+    t.add_argument("--speakers", type=int, default=None, help="number of speakers (only with --diarize; auto if omitted)")
+    t.add_argument("--json", action="store_true", help="write a JSON event stream to stdout")
     t.set_defaults(handler=_transcribe)
 
-    tr = sub.add_parser("translate", help="stdin'deki cümle JSON'unu yerel modelle çevir")
-    tr.add_argument("--to", required=True, help="hedef dil (ör. tr, en, es, pt, ru)")
-    tr.add_argument("--from", dest="source", default=None, help="kaynak dil; NLLB'de zorunlu")
-    tr.add_argument("-m", "--model", default="madlad-3b", help="çeviri modeli (models listeler)")
-    tr.add_argument("--json", action="store_true", help="stdout'a JSON olay akışı yaz")
+    tr = sub.add_parser("translate", help="translate the sentence JSON on stdin with a local model")
+    tr.add_argument("--to", required=True, help="target language (e.g. tr, en, es, pt, ru)")
+    tr.add_argument("--from", dest="source", default=None, help="source language; required for NLLB")
+    tr.add_argument("-m", "--model", default="madlad-3b", help="translation model (see the models command)")
+    tr.add_argument("--json", action="store_true", help="write a JSON event stream to stdout")
     tr.set_defaults(handler=_translate)
 
-    r = sub.add_parser("render", help="stdin'deki cümle JSON'unu altyazı formatına çevir")
+    r = sub.add_parser("render", help="convert the sentence JSON on stdin to a subtitle format")
     r.add_argument("-f", "--format", choices=subtitles.FORMATS, default="srt")
     r.add_argument("-o", "--out", type=Path, default=None)
     r.set_defaults(handler=_render)
 
-    ms = sub.add_parser("models", help="model kataloğunu ve indirme durumunu listele")
-    ms.add_argument("--json", action="store_true", help="tek satır JSON yaz")
+    ms = sub.add_parser("models", help="list the model catalog and download status")
+    ms.add_argument("--json", action="store_true", help="write a single JSON line")
     ms.set_defaults(handler=_models)
 
-    dm = sub.add_parser("delete-model", help="indirilmiş modeli önbellekten sil")
-    dm.add_argument("id", help="model kimliği (models listeler)")
-    dm.add_argument("--json", action="store_true", help="tek satır JSON yaz")
+    dm = sub.add_parser("delete-model", help="delete a downloaded model from the cache")
+    dm.add_argument("id", help="model id (see the models command)")
+    dm.add_argument("--json", action="store_true", help="write a single JSON line")
     dm.set_defaults(handler=_delete_model)
     return p
 
 
 def _force_utf8() -> None:
-    """Windows'ta borular ANSI kod sayfası kullanır; protokol UTF-8'dir."""
+    """On Windows pipes use the ANSI code page; the protocol is UTF-8."""
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8")
         except (AttributeError, ValueError, OSError):
-            pass  # akış değiştirilmiş (test, StringIO) ya da yeniden yapılandırılamıyor
+            pass  # stream was replaced (test, StringIO) or cannot be reconfigured
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -215,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.handler(args)
-    except Exception as exc:  # uygulama her hatayı tek tip olay olarak alır
+    except Exception as exc:  # the app receives every failure as a single kind of event
         if getattr(args, "json", False):
             _emit({"event": "error", "message": str(exc)})
         else:

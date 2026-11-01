@@ -1,4 +1,4 @@
-"""Adım 3: kelime akışını cümlelere, uzun cümleleri ekrana sığan altyazı satırlarına böler."""
+"""Step 3: splits the word stream into sentences, and long sentences into subtitle lines that fit the screen."""
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -10,7 +10,7 @@ _CLOSERS = "\"')]»”’"
 
 
 def _core(text: str) -> str:
-    """Sondaki kapanış tırnak/parantezlerini atar: `"Evet."` cümle sonudur."""
+    """Strips trailing closing quotes/brackets: `"Evet."` ends a sentence."""
     return text.rstrip(_CLOSERS)
 
 
@@ -56,7 +56,7 @@ def speaker_runs(
 
 
 def split_sentences(words: list[Word], pause_gap: float) -> list[list[Word]]:
-    """Noktalama ya da uzun sessizlikle biten kelimede cümleyi kapatır."""
+    """Closes the sentence at a word that ends with punctuation or is followed by a long silence."""
     result: list[list[Word]] = []
     current: list[Word] = []
     for i, word in enumerate(words):
@@ -70,7 +70,7 @@ def split_sentences(words: list[Word], pause_gap: float) -> list[list[Word]]:
 
 
 def fit(words: list[Word], config: SegmenterConfig) -> list[list[Word]]:
-    """Sınırı aşan cümleyi tercihen virgülde, yoksa sınırda böler. Metin kaybı olmaz."""
+    """Splits a sentence that exceeds the limits, preferably at a comma, otherwise at the limit. No text is lost."""
     result: list[list[Word]] = []
     while len(words) > 1 and _too_long(words, config):
         cut = 1

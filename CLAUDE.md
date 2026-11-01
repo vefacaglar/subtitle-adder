@@ -1,40 +1,40 @@
 # Subtitle Adder
 
-Videoya otomatik altyazı üreten, tamamen yerel çalışan masaüstü uygulaması. Arayüz her platformda native (önce macOS/SwiftUI, sonra Windows/WinUI); iş ortak bir Python motorunda yapılır.
+A desktop app that adds subtitles to video automatically, running entirely locally. The UI is native on every platform (macOS/SwiftUI first, then Windows/WinUI); the work is done in a shared Python engine.
 
-## Mimari
+## Architecture
 
 ```
 apps/macos  (SwiftUI)  ─┐
-apps/windows (WinUI)   ─┼─ alt süreç + JSON satır olayları ─▶  engine/ (Python)
+apps/windows (WinUI)   ─┼─ subprocess + JSON line events ─▶  engine/ (Python)
                         ┘
 ```
 
-Motor hattı (`engine/src/subtitle_engine/`):
+Engine pipeline (`engine/src/subtitle_engine/`):
 
-1. **Ses ayırma** — `audio.py` (PyAV): video → 16 kHz mono WAV
-2. **Speech-to-text** — `transcribe.py`: `Transcriber` protokolü, varsayılan `FasterWhisperTranscriber` (on-device). Kelime zaman damgalı `Transcript`.
-3. **Cümle çıkarma** — `sentences.py`: noktalama/sessizlikle cümle; uzun cümleyi virgülde ya da `max_chars`/`max_duration` sınırında böler.
-4. **Altyazı** — `subtitles.py`: SRT / VTT / JSON.
-5. **Konuşmacı ayrıştırma (isteğe bağlı)** — `diarize.py`: sherpa-onnx ile `[(start, end, speaker)]`; kelimelere konuşmacı atar, `sentences.py` konuşmacı değişiminde böler.
+1. **Audio extraction** — `audio.py` (PyAV): video → 16 kHz mono WAV
+2. **Speech-to-text** — `transcribe.py`: `Transcriber` protocol, default `FasterWhisperTranscriber` (on-device). Produces a `Transcript` with word timestamps.
+3. **Sentence segmentation** — `sentences.py`: sentences by punctuation/silence; a long sentence is split at a comma or at the `max_chars`/`max_duration` limit.
+4. **Subtitles** — `subtitles.py`: SRT / VTT / JSON.
+5. **Speaker diarization (optional)** — `diarize.py`: `[(start, end, speaker)]` via sherpa-onnx; assigns a speaker to each word, and `sentences.py` splits at speaker changes.
 
-`pipeline.py` beş adımı (diarization isteğe bağlı) uçtan uca çalıştırır, `cli.py` dışarı açar.
+`pipeline.py` runs the five steps end to end (diarization is optional), `cli.py` exposes them.
 
-## Motor protokolü (sürüm 1)
+## Engine protocol (version 1)
 
 `subtitle-engine transcribe <video> --out-dir D [--language tr] [--model small] [--format srt vtt json] --json`
-stdout'a satır başına bir JSON olay yazar:
+writes one JSON event per line to stdout:
 
 - `{"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|diarizing|segmenting|translating", "fraction": 0.42 | null}`
 - `{"event": "models", "models": [{"id", "kind", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "license", "downloaded"}]}`
 - `{"event": "deleted", "id": "small", "freed_mb": 464}`
 - `{"event": "result", "language", "duration", "audio", "outputs": [...], "sentences": [{"id", "start", "end", "text", "speaker": 0 | null, "words": [{"start", "end", "text"}]}]}`
 - `{"event": "translation", "language": "es", "sentences": [{"id", "start", "end", "text", "speaker", "words": []}]}`
-- `{"event": "error", "message": "..."}` (çıkış kodu 1)
+- `{"event": "error", "message": "..."}` (exit code 1)
 
-`models` olayında `kind` `"transcription"` (konuşma tanıma), `"translation"` (çeviri) ya da `"diarization"` (konuşmacı ayrıştırma); `backend` `"whisper"` (faster-whisper), `"onnx"` (onnx-asr), `"ctranslate2"` (çeviri) ya da `"sherpa"` (sherpa-onnx, diarization). `license` model kartındaki SPDX kısa adıdır; `speaker-diarization` iki modelden oluştuğu için SPDX ifadesidir (`"MIT AND Apache-2.0"`). `languages` Whisper'da ve `speaker-diarization`'da `null` (tüm diller), diğerlerinde desteklenen ISO 639-1 kodlarının listesidir. Katalog kimlikleri: `base`, `small`, `medium`, `large-v3-turbo`, `large-v3` (Whisper, MIT) ve `parakeet-v3` (NVIDIA Parakeet TDT 0.6B v3, CC-BY-4.0), `canary-1b-v2` (NVIDIA Canary 1B v2, CC-BY-4.0), `gigaam-v3` (GigaAM v3 e2e RNN-T, yalnız `ru`, MIT); konuşmacı ayrıştırma modeli `speaker-diarization` (pyannote segmentation-3.0 int8, MIT + 3D-Speaker CAM++ embedding, Apache-2.0; `license` `"MIT AND Apache-2.0"`, ~29 MB, iki HF deposundan tek girdi); çeviri modelleri `madlad-3b` (MADLAD-400 3B, Apache-2.0, varsayılan) ve `nllb-1.3b` (NLLB-200 1.3B, CC-BY-NC-4.0, ticari kullanım yok). Parakeet ve Canary 25 Avrupa dilini (`pt`, `es`, `ru` dahil) destekler; `tr` yalnız Whisper'dadır. Çeviri modelleri `tr`, `en`, `pt`, `es`, `ru` dillerini destekler. Seçilen dil modelin `languages` listesinde yoksa motor `error` olayıyla Türkçe açıklama döndürür (ör. "GigaAM yalnız Rusça destekler.").
+In the `models` event, `kind` is `"transcription"` (speech recognition), `"translation"` or `"diarization"` (speaker diarization); `backend` is `"whisper"` (faster-whisper), `"onnx"` (onnx-asr), `"ctranslate2"` (translation) or `"sherpa"` (sherpa-onnx, diarization). `license` is the SPDX short name from the model card; `speaker-diarization` consists of two models, so its value is an SPDX expression (`"MIT AND Apache-2.0"`). `languages` is `null` (all languages) for Whisper and `speaker-diarization`, and a list of supported ISO 639-1 codes for the others. Catalog ids: `base`, `small`, `medium`, `large-v3-turbo`, `large-v3` (Whisper, MIT) and `parakeet-v3` (NVIDIA Parakeet TDT 0.6B v3, CC-BY-4.0), `canary-1b-v2` (NVIDIA Canary 1B v2, CC-BY-4.0), `gigaam-v3` (GigaAM v3 e2e RNN-T, `ru` only, MIT); the speaker diarization model `speaker-diarization` (pyannote segmentation-3.0 int8, MIT + 3D-Speaker CAM++ embedding, Apache-2.0; `license` `"MIT AND Apache-2.0"`, ~29 MB, a single entry spanning two HF repos); the translation models `madlad-3b` (MADLAD-400 3B, Apache-2.0, default) and `nllb-1.3b` (NLLB-200 1.3B, CC-BY-NC-4.0, no commercial use). Parakeet and Canary support 25 European languages (including `pt`, `es`, `ru`); `tr` is only in Whisper. The translation models support `tr`, `en`, `pt`, `es`, `ru`. If the chosen language is not in the model's `languages` list, the engine returns a Turkish explanation in an `error` event (e.g. "GigaAM yalnız Rusça destekler.").
 
-`downloading_model` yalnız katalogdaki (`models.py`) bir model önbellekte yoksa, `loading_model`'den önce yayınlanır; `fraction` indirilen baytın toplam bayta oranıdır (0..1, en fazla ~10 Hz). onnx modellerinde ortak silero VAD dosyası da bu aşamada indirilir. Katalog dışı adlar (`turbo`, `tiny` vb.) faster-whisper'ın kendi indirmesine bırakılır, bu aşama yayınlanmaz.
+`downloading_model` is emitted before `loading_model`, and only when a catalog model (`models.py`) is not in the cache; `fraction` is downloaded bytes over total bytes (0..1, at most ~10 Hz). For onnx models the shared silero VAD file is downloaded in this stage too. Names outside the catalog (`turbo`, `tiny`, etc.) are left to faster-whisper's own download and this stage is not emitted.
 
 With `--diarize`, `downloading_model` can appear twice in one run: first for the transcription model (if missing), then for `speaker-diarization` (if missing), both before `loading_model`; each run goes 0..1 on its own. `transcribe -m` accepts only `kind` `"transcription"` catalog models: anything else (for example `speaker-diarization`, `madlad-3b`) gets a Turkish `error` before any download. `translate --model` likewise accepts only translation models.
 
@@ -42,31 +42,31 @@ With `--diarize`, `downloading_model` can appear twice in one run: first for the
 
 Speaker dash rule (SRT and VTT, computed at render time, never stored in `text`): if the sentences contain at least two distinct non-null speakers, every sentence whose speaker differs from the previous known speaker (sentences with a `null` speaker are skipped and do not reset it; the first sentence included) is prefixed with `- ` unless its text already starts with `- ` or `– `; a sentence continuing with the same speaker gets none. With one speaker or all `null` there are no dashes. JSON keeps `speaker` as is.
 
-`subtitle-engine render --format srt [--out F]`: stdin'den cümle JSON dizisi alır (uygulamada düzenlenmiş hali; varsa `speaker` alanı okunur, çizgi kuralı burada uygulanır), altyazı metni yazar. Altyazı biçimleri yalnız motorda üretilir.
+`subtitle-engine render --format srt [--out F]`: reads a JSON array of sentences from stdin (as edited in the app; the `speaker` field is read if present, and the dash rule is applied here) and writes the subtitle text. Subtitle formats are produced only in the engine.
 
-`subtitle-engine translate --to <dil> [--from <dil>] [--model madlad-3b] [--json]`: stdin'den `render` ile aynı cümle JSON dizisini alır ve her cümleyi tamamen yerel modelle çevirir; `id`/`start`/`end` korunur, `text` çevrilir, `words` boş listeye döner. `--json` ile sırasıyla gerekirse `downloading_model` (`fraction` 0..1), `loading_model`, `translating` (`fraction` 0..1) aşamaları ve en sonda `translation` olayı yayınlanır; `--json` yoksa çevrilmiş SRT stdout'a yazılır. Varsayılan model MADLAD-400'dür ve kaynak dil istemez; `nllb-1.3b` için `--from` zorunludur. Desteklenmeyen dil ya da eksik kaynak dil Türkçe `error` olayı ve çıkış kodu 1 üretir. Model dosyaları ve tokenizer ilk kullanımda Hugging Face önbelleğine iner; ses ya da metin dışarı gönderilmez.
+`subtitle-engine translate --to <lang> [--from <lang>] [--model madlad-3b] [--json]`: reads the same JSON array of sentences as `render` from stdin and translates every sentence with a fully local model; `id`/`start`/`end`/`speaker` are kept, `text` is translated, `words` becomes an empty list. With `--json` it emits, in order, `downloading_model` (`fraction` 0..1, if needed), `loading_model`, `translating` (`fraction` 0..1) stages and finally the `translation` event; without `--json` the translated SRT is written to stdout. The default model is MADLAD-400 and it needs no source language; `--from` is required for `nllb-1.3b`. An unsupported language or a missing source language produces a Turkish `error` event and exit code 1. Model files and the tokenizer are downloaded to the Hugging Face cache on first use; no audio or text is sent out.
 
-`subtitle-engine models [--json]`: model kataloğunu (`base`, `gigaam-v3`, `small`, `parakeet-v3`, `canary-1b-v2`, `medium`, `large-v3-turbo`, `large-v3`, `nllb-1.3b`, `madlad-3b`, `speaker-diarization`) tür, yaklaşık boyut, göreli hız/doğruluk, backend, lisans, desteklenen diller ve yerel önbellek durumuyla listeler; ağa çıkmaz. `disk_mb` modelin önbellekteki repo'sunun gerçek disk kullanımıdır (MB, tam sayıya yuvarlanmış; ortak VAD hariç); indirilmemişse `null`. `--json` tek satır `models` olayı yazar, aksi halde okunur tablo. For `speaker-diarization` (two repos, one of which also holds dozens of unrelated models) `disk_mb` sums only the catalog-owned files of both repos, not the repos' full size.
+`subtitle-engine models [--json]`: lists the model catalog (`base`, `gigaam-v3`, `small`, `parakeet-v3`, `canary-1b-v2`, `medium`, `large-v3-turbo`, `large-v3`, `nllb-1.3b`, `madlad-3b`, `speaker-diarization`) with kind, approximate size, relative speed/accuracy, backend, license, supported languages and local cache status; no network. `disk_mb` is the actual disk usage of the model's repo in the cache (MB, rounded to an integer; shared VAD excluded), or `null` if not downloaded. `--json` writes a single `models` event line, otherwise a readable table. For `speaker-diarization` (two repos, one of which also holds dozens of unrelated models) `disk_mb` sums only the catalog-owned files of both repos, not the repos' full size.
 
-`subtitle-engine delete-model <id> [--json]`: indirilmiş modelin önbellekteki repo'sunu tüm revizyonları ve blob'larıyla siler; yalnız o repo klasörüne dokunur, ortak silero VAD ve diğer modeller korunur. Paylaşılan blob deposundaki (`<önbellek>/blobs/`) başka hiçbir repo'nun kullanmadığı dosyalar da temizlenir; `freed_mb` gerçekten boşalan alandır (başka modelle paylaşılan dosyalarda 0 olabilir). `--json` tek satır `{"event": "deleted", "id": "...", "freed_mb": 123}` yazar. Katalog dışı ya da indirilmemiş modelde anlaşılır Türkçe `error` olayı ve çıkış kodu 1 döner. For `speaker-diarization`, only the owned files (their snapshot entries and blobs, shared-store sweep included) are deleted from both repos, and a repo folder is removed only when nothing else is left in it. If one repo fails, the others are still cleaned and the result is a Turkish `error` saying the model was partially deleted, how many MB were freed and what remains.
+`subtitle-engine delete-model <id> [--json]`: deletes a downloaded model's repo from the cache with all its revisions and blobs; touches only that repo folder, the shared silero VAD and other models are preserved. Files in the shared blob store (`<cache>/blobs/`) that no other repo uses are cleaned too; `freed_mb` is the space actually freed (it can be 0 for files shared with another model). `--json` writes a single line `{"event": "deleted", "id": "...", "freed_mb": 123}`. For a model outside the catalog or not downloaded, a clear Turkish `error` event and exit code 1 are returned. For `speaker-diarization`, only the owned files (their snapshot entries and blobs, shared-store sweep included) are deleted from both repos, and a repo folder is removed only when nothing else is left in it. If one repo fails, the others are still cleaned and the result is a Turkish `error` saying the model was partially deleted, how many MB were freed and what remains.
 
-stderr serbest log'dur (model yükleme uyarıları vb.); uygulamalar onu dosyaya yönlendirir, protokol değildir. Protokol değişirse `cli.py`'deki `PROTOCOL_VERSION`, `EngineEvent.swift` ve bu bölüm birlikte güncellenir. Sürüm 1'de kalır: `downloading_model` aşaması, `models` komutu, `models` olayındaki `backend`/`languages`/`disk_mb` alanları, `delete-model` komutu ve `deleted` olayı, onnx model kimlikleri, `translate` komutu, `translating` aşaması, `translation` olayı, `models` olayındaki `kind`/`license` alanları; ayrıca `diarizing` aşaması, `transcribe --diarize/--speakers` bayrakları, cümlelerde `speaker` alanı, `speaker-diarization` katalog girdisi (`kind` `"diarization"`, `backend` `"sherpa"`) ve render'daki konuşmacı çizgisi geriye uyumlu eklemelerdir (`PROTOCOL_VERSION` değişmez).
+stderr is a free-form log (model loading warnings, etc.); the apps redirect it to a file, and it is not part of the protocol. When the protocol changes, `PROTOCOL_VERSION` in `cli.py`, `EngineEvent.swift` and this section are updated together. These stay in version 1 as backward-compatible additions: the `downloading_model` stage, the `models` command, the `backend`/`languages`/`disk_mb` fields in the `models` event, the `delete-model` command and the `deleted` event, the onnx model ids, the `translate` command, the `translating` stage, the `translation` event, the `kind`/`license` fields in the `models` event; also the `diarizing` stage, the `transcribe --diarize/--speakers` flags, the `speaker` field on sentences, the `speaker-diarization` catalog entry (`kind` `"diarization"`, `backend` `"sherpa"`) and the speaker dash in render (`PROTOCOL_VERSION` does not change).
 
-Uygulama motoru şu sırayla bulur: `SUBTITLE_ENGINE` ortam değişkeni → bundle içindeki `Contents/Resources/subtitle-engine/subtitle-engine` (PyInstaller onedir; yoksa `Contents/MacOS/subtitle-engine`) → geliştirmede `uv run --project engine subtitle-engine`.
+The app finds the engine in this order: the `SUBTITLE_ENGINE` environment variable → `Contents/Resources/subtitle-engine/subtitle-engine` inside the bundle (PyInstaller onedir; otherwise `Contents/MacOS/subtitle-engine`) → in development, `uv run --project engine subtitle-engine`.
 
-## Komutlar
+## Commands
 
 ```bash
-cd engine && uv sync && uv run pytest              # motor testleri
-cd engine && uv run pytest -m slow                 # gerçek STT (samples/demo.mp4)
+cd engine && uv sync && uv run pytest              # engine tests
+cd engine && uv run pytest -m slow                 # real STT (samples/demo.mp4)
 cd engine && uv run subtitle-engine transcribe ../samples/demo.mp4 -m base -l tr -o ../output -f srt vtt json
-cd apps/macos && swift build && swift test         # uygulama + EngineKit testleri
-cd apps/macos && ENGINE_E2E=1 swift test           # Swift → motor uçtan uca
+cd apps/macos && swift build && swift test         # app + EngineKit tests
+cd apps/macos && ENGINE_E2E=1 swift test           # Swift → engine end to end
 cd apps/macos && swift run SubtitleAdderApp
-scripts/package-macos.sh                           # build/Subtitle Adder.app (uv/repo gerektirmez)
+scripts/package-macos.sh                           # build/Subtitle Adder.app (needs no uv/repo)
 ```
 
-Paketleme: `engine/subtitle-engine.spec` motoru PyInstaller ile onedir derler (`build` bağımlılık grubu), betik `.app`'i kurup içten dışa imzalar (`codesign --verify --deep --strict` ile doğrular). Varsayılan ad-hoc imzadır, yalnız derlenen makinede çalışır. `SIGN_IDENTITY="Developer ID Application: ..."` hardened runtime + `scripts/macos/engine.entitlements` (yalnız `disable-library-validation`) ile imzalar; `NOTARY_PROFILE=<notarytool profili>` notarization + staple yapar; `MAKE_DMG=1` `.dmg` üretir; `SKIP_ENGINE_BUILD=1` hazır motoru yeniden kullanır. Motor `Contents/Resources` altındadır, çünkü codesign `Frameworks`/`MacOS` altında Mach-O olmayan dosyaları reddeder; içindeki tüm Mach-O dosyalar tek tek imzalanır. Model dosyaları pakete girmez, ilk kullanımda indirilir.
+Packaging: `engine/subtitle-engine.spec` builds the engine as a PyInstaller onedir (`build` dependency group); the script assembles the `.app` and signs it inside-out (verified with `codesign --verify --deep --strict`). The default is an ad-hoc signature, which only works on the machine that built it. `SIGN_IDENTITY="Developer ID Application: ..."` signs with the hardened runtime + `scripts/macos/engine.entitlements` (only `disable-library-validation`); `NOTARY_PROFILE=<notarytool profile>` does notarization + staple; `MAKE_DMG=1` produces a `.dmg`; `SKIP_ENGINE_BUILD=1` reuses a prebuilt engine. The engine lives under `Contents/Resources` because codesign rejects non-Mach-O files under `Frameworks`/`MacOS`; every Mach-O file inside it is signed individually. Model files are not included in the package; they are downloaded on first use.
 
 Two-voice sample for diarization (macOS; English voices, alternating turns):
 
@@ -83,44 +83,44 @@ ffmpeg -y $(for n in 1 2 3 4 5 6; do echo -n "-i t$n.wav "; done) -filter_comple
 ffmpeg -y -f lavfi -i color=c=black:s=320x240:r=10 -i en.wav -shortest -c:v libx264 -c:a aac dialog-en.mp4
 ```
 
-Örnek video:
+Sample video:
 
 ```bash
 mkdir -p samples && say -v Yelda -o samples/speech.aiff "Merhaba, bu bir altyazı testidir. Sen ne yapacaksın?"
 ffmpeg -y -f lavfi -i color=c=black:s=320x240 -i samples/speech.aiff -shortest -c:v libx264 -c:a aac samples/demo.mp4
 ```
 
-Whisper modelleri ilk kullanımda Hugging Face önbelleğine iner (`~/.cache/huggingface/`).
+Whisper models are downloaded to the Hugging Face cache on first use (`~/.cache/huggingface/`).
 
-## Ajanlar (`.claude/agents/`)
+## Agents (`.claude/agents/`)
 
-Model dağılımı: keşif Haiku, kod yazan ajanlar Sonnet, review Opus.
+Model allocation: exploration Haiku, code-writing agents Sonnet, review Opus.
 
-- `explorer` (Haiku) — salt okunur keşif, API doğrulama
-- `media-engineer` (Sonnet) — ses ayırma, medya (motor)
-- `stt-engineer` (Sonnet) — STT backend'leri, modeller (motor)
-- `subtitle-engineer` (Sonnet) — cümle bölme, altyazı formatları (motor)
-- `macos-ui-engineer` (Sonnet) — SwiftUI uygulaması ve EngineKit
-- `module-reviewer` (Opus) — commit öncesi review (kod yazmaz)
+- `explorer` (Haiku) — read-only exploration, API verification
+- `media-engineer` (Sonnet) — audio extraction, media (engine)
+- `stt-engineer` (Sonnet) — STT backends, models (engine)
+- `subtitle-engineer` (Sonnet) — sentence splitting, subtitle formats (engine)
+- `macos-ui-engineer` (Sonnet) — SwiftUI app and EngineKit
+- `module-reviewer` (Opus) — pre-commit review (writes no code)
 
-Aynı ajanlar DeepSeek ile de çalışır (pi, opencode sağlayıcısı, thinking max):
+The same agents also run with DeepSeek (pi, opencode provider, thinking max):
 
 ```bash
-scripts/pi-agent.sh subtitle-engineer "<görev>"
-PI_MODEL=opencode-go/deepseek-v4-pro:max scripts/pi-agent.sh stt-engineer "<görev>"
+scripts/pi-agent.sh subtitle-engineer "<task>"
+PI_MODEL=opencode-go/deepseek-v4-pro:max scripts/pi-agent.sh stt-engineer "<task>"
 ```
 
-Betik `.claude/agents/<ajan>.md` tanımını sistem promptu olarak verir; explorer ve module-reviewer salt okunurdur. pi oturumları `~/.pi/agent/sessions/` altında kalır.
+The script passes the `.claude/agents/<agent>.md` definition as the system prompt; explorer and module-reviewer are read-only. pi sessions are kept under `~/.pi/agent/sessions/`.
 
-Ana oturum koordinatördür: işi ajana verir, testlerden ve review'dan geçirip küçük topikal commit alır, istenmeden push yapmaz.
+The main session is the coordinator: it hands work to agents, runs it through tests and review, makes small topical commits, and does not push unless asked.
 
-## Kurallar
+## Rules
 
-- Lisans MIT (açık kaynak). Uygulamaya gömülen ya da varsayılan gelen modeller açık lisanslı olmalı; ticari olmayan lisanslı modeller (ör. NLLB) yalnız isteğe bağlı indirilir ve arayüzde işaretlenir.
+- License is MIT (open source). Models bundled with the app or used by default must be openly licensed; models under non-commercial licenses (e.g. NLLB) are downloaded only on request and are marked in the UI.
 
-- Arayüz native ve özenli; iş mantığı arayüze girmez, motordadır.
-- Motor platforma özel varsayım yapmaz (sistem ffmpeg'i yok, sabit yol yok); macOS ve Windows'ta aynı çalışır.
+- The UI is native and polished; business logic does not go into the UI, it lives in the engine.
+- The engine makes no platform-specific assumptions (no system ffmpeg, no hard-coded paths); it works the same on macOS and Windows.
 - Python ≥3.11 (uv), Swift 6 strict concurrency, macOS 15+.
-- UI metinleri ve kullanıcıya giden hata mesajları Türkçe.
-- Yalnız yerel: bulut STT ya da sesi dışarı gönderen hiçbir servis yok. Ağ yalnız model indirmek için kullanılır.
-- Durum ve devam noktası: `.claude/progress/STATE.md`.
+- UI strings and user-facing error messages are Turkish for now (Turkish + English UI localization selectable in Settings is planned). Developer-facing text — code comments, docs, scripts, tests, commit messages — is English.
+- Local only: no cloud STT or any service that sends audio out. The network is used only to download models.
+- State and resume point: `.claude/progress/STATE.md`.

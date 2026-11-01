@@ -1,5 +1,5 @@
-# PyInstaller (onedir) tanımı: `scripts/package-macos.sh` çalıştırır.
-# Elle: cd engine && uv run --group build pyinstaller subtitle-engine.spec
+# PyInstaller (onedir) spec: run by `scripts/package-macos.sh`.
+# Manually: cd engine && uv run --group build pyinstaller subtitle-engine.spec
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas, binaries, hiddenimports = [], [], []
@@ -9,7 +9,7 @@ for pkg in ("ctranslate2", "onnxruntime", "av", "tokenizers", "sentencepiece",
     datas += d
     binaries += b
     hiddenimports += h
-# cli.py bu modülleri tembel içe aktarır.
+# cli.py imports these modules lazily.
 hiddenimports += collect_submodules("subtitle_engine")
 
 a = Analysis(

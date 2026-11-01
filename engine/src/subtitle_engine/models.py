@@ -1,9 +1,8 @@
-"""Motor veri tipleri ve on-device model kataloğu.
+"""Engine data types and the on-device model catalog.
 
-Katalog, arayüzün model listesini (yaklaşık boyut, göreli hız/doğruluk, desteklenen
-diller) ve indirme durumunu besler. İndirme ilerlemesi yalnızca katalogdaki modeller
-için yayınlanır; katalog dışı adlar ("turbo", "tiny" gibi) faster-whisper'ın kendi
-indirmesine bırakılır.
+The catalog feeds the app's model list (approximate size, relative speed/accuracy, supported
+languages) and download status. Download progress is only published for catalog models;
+names outside the catalog (like "turbo", "tiny") are left to faster-whisper's own download.
 """
 import os
 import re
@@ -21,7 +20,7 @@ from huggingface_hub.errors import CacheNotFound
 from huggingface_hub.utils import filter_repo_objects
 from tqdm import tqdm
 
-_SHARED_BLOBS_DIR = "blobs"  # huggingface_hub: önbellek çapında paylaşılan (xet) blob deposu
+_SHARED_BLOBS_DIR = "blobs"  # huggingface_hub: cache-wide shared (xet) blob store
 _SHARED_MARKER = ".huggingface-shared-blobs"
 _SHARED_HASH = re.compile(r"[0-9a-f]{64}")
 
@@ -65,24 +64,24 @@ class Sentence:
         )
 
 
-# --- Model kataloğu -------------------------------------------------------------
+# --- Model catalog -------------------------------------------------------------
 
 ProgressFn = Callable[[float], None]
 
-# faster_whisper.utils.download_model bu desenlerin dışındaki dosyaları indirmez;
-# aynı listeyi kullanınca indirme boyutu ve ilerleme oranı örtüşür.
+# faster_whisper.utils.download_model does not download files outside these patterns;
+# using the same list keeps download size and progress ratio consistent.
 ALLOW_PATTERNS = ("config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*")
 
-# CTranslate2 çeviri modelleri: ağırlıklar, yapılandırma ve paylaşılan sözlük.
+# CTranslate2 translation models: weights, configuration and the shared vocabulary.
 TRANSLATION_FILES = ("config.json", "model.bin", "shared_vocabulary.json", "tokenizer.json")
-# MADLAD T5 tokenizer'ı sentencepiece modeliyle gelir; NLLB deposunda yalnız tokenizer.json var.
+# The MADLAD T5 tokenizer ships as a sentencepiece model; the NLLB repo only has tokenizer.json.
 MADLAD_FILES = (*TRANSLATION_FILES, "spiece.model")
 
-# Katalogda ilan edilen çeviri dilleri (ISO 639-1). Modeller daha fazlasını bilir;
-# arayüz ve doğrulama bu listeyi kullanır.
+# Translation languages declared in the catalog (ISO 639-1). The models know more;
+# the UI and validation use this list.
 TRANSLATION_LANGUAGES = ("tr", "en", "pt", "es", "ru")
 
-# onnx-asr modelleri int8 kullanır: hem hızlı hem de dosyalar daha küçük.
+# onnx-asr models use int8: both faster and smaller files.
 VAD_REPO = "istupakov/silero-vad-onnx"
 VAD_FILE = "silero_vad.onnx"
 
@@ -92,13 +91,13 @@ DIARIZATION_SEGMENTATION_FILE = "model.int8.onnx"
 DIARIZATION_EMBEDDING_REPO = "csukuangfj/speaker-embedding-models"
 DIARIZATION_EMBEDDING_FILE = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
 
-# Parakeet TDT v3 ve Canary 1B v2'nin desteklediği Avrupa dilleri.
+# European languages supported by Parakeet TDT v3 and Canary 1B v2.
 EUROPEAN_LANGUAGES = (
     "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
     "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
 )
 
-# İlerleme çağrıları en fazla ~10 Hz: UI olay akışı boğulmasın.
+# Progress calls at most ~10 Hz so the UI event stream is not flooded.
 PROGRESS_INTERVAL = 0.1
 
 _MIB = 1024 * 1024
@@ -109,26 +108,26 @@ ModelKind = Literal["transcription", "translation", "diarization"]
 
 @dataclass(frozen=True)
 class ModelInfo:
-    """Katalogdaki bir model. Görünen ad/açıklama gibi metinler uygulamada tutulur."""
+    """A model in the catalog. Display text such as names/descriptions lives in the app."""
 
     id: str
-    repo: str  # whisper: faster_whisper.utils._MODELS; onnx: onnx_asr.resolver.model_repos ile aynı
-    size_mb: int  # yaklaşık indirme boyutu (sabit tahmin)
-    speed: int  # 1 (en yavaş) - 5 (en hızlı), göreli
-    accuracy: int  # 1 (en düşük) - 5 (en yüksek), göreli
+    repo: str  # whisper: faster_whisper.utils._MODELS; onnx: same as onnx_asr.resolver.model_repos
+    size_mb: int  # approximate download size (fixed estimate)
+    speed: int  # 1 (slowest) - 5 (fastest), relative
+    accuracy: int  # 1 (lowest) - 5 (highest), relative
     backend: Backend = "whisper"
-    languages: tuple[str, ...] | None = None  # None: Whisper gibi tüm dilleri destekler
-    onnx_model: str | None = None  # onnx-asr model adı (yalnız backend="onnx")
-    quantization: str | None = None  # onnx-asr quantization değeri
-    files: tuple[str, ...] = ALLOW_PATTERNS  # repo içinde indirilecek dosya desenleri
-    kind: ModelKind = "transcription"  # çeviri modelleri arayüzde ayrı listelenir
-    license: str = "MIT"  # model kartındaki lisans (SPDX kısa adı)
+    languages: tuple[str, ...] | None = None  # None: supports all languages, like Whisper
+    onnx_model: str | None = None  # onnx-asr model name (only backend="onnx")
+    quantization: str | None = None  # onnx-asr quantization value
+    files: tuple[str, ...] = ALLOW_PATTERNS  # file patterns to download within the repo
+    kind: ModelKind = "transcription"  # translation models are listed separately in the UI
+    license: str = "MIT"  # license from the model card (SPDX short name)
     extra: tuple[tuple[str, tuple[str, ...]], ...] = ()  # extra repos: (repo, files)
     owns_files_only: bool = False  # repos hold other models too: measure/delete only the listed files
     part_bytes: tuple[int, ...] = ()  # real download sizes aligned with _parts(), used as fallback estimates
 
 
-# Sıra arayüzdeki liste sırasıdır: küçükten büyüğe.
+# The order is the order of the list in the UI: small to large.
 KATALOG: tuple[ModelInfo, ...] = (
     ModelInfo(id="base", repo="Systran/faster-whisper-base", size_mb=145, speed=5, accuracy=2, license="MIT"),
     ModelInfo(
@@ -202,7 +201,7 @@ KATALOG: tuple[ModelInfo, ...] = (
         languages=TRANSLATION_LANGUAGES,
         files=TRANSLATION_FILES,
         kind="translation",
-        license="CC-BY-NC-4.0",  # ticari kullanım yok
+        license="CC-BY-NC-4.0",  # no commercial use
     ),
     ModelInfo(
         id="madlad-3b",
@@ -253,7 +252,7 @@ TURKISH_LANGUAGE_NAMES = {
 
 
 class ModelError(Exception):
-    """Kullanıcıya Türkçe gösterilebilir model hatası (CLI bunu `error` olayına çevirir)."""
+    """Model error with a Turkish message that can be shown to the user (the CLI turns it into an `error` event)."""
 
 
 def find(model_id: str) -> ModelInfo | None:
@@ -266,17 +265,17 @@ def _parts(info: ModelInfo) -> list[tuple[str, tuple[str, ...]]]:
 
 
 def is_downloaded(model_id: str) -> bool:
-    """Model yerel Hugging Face önbelleğinde mi? Yalnız diske bakar, ağa çıkmaz."""
+    """Is the model in the local Hugging Face cache? Only looks at disk, no network."""
     info = find(model_id)
     if info is None:
         return False
     if info.kind == "diarization":
         return all(_cached(repo, name) for repo, files in _parts(info) for name in files)
     if info.kind == "translation":
-        # Ağırlık, yapılandırma, sözlük ve tokenizer birlikte gerekli.
+        # Weights, configuration, vocabulary and tokenizer are all required.
         return all(_cached(info.repo, name) for name in info.files)
     if info.backend == "onnx":
-        # onnx-asr dosyaları tek tek sorgular; VAD ortak ve küçük bir bağımlılık.
+        # onnx-asr queries files one by one; the VAD is a shared, small dependency.
         return all(_cached(info.repo, name) for name in info.files) and _cached(VAD_REPO, VAD_FILE)
     return _cached(info.repo, "model.bin")
 
@@ -286,12 +285,12 @@ def _cached(repo: str, filename: str) -> bool:
 
 
 def needs_download(model_id: str) -> bool:
-    """İndirme aşaması yayınlanmalı mı: katalogda olup önbellekte olmayan model."""
+    """Should a download stage be published: a model that is in the catalog but not in the cache."""
     return find(model_id) is not None and not is_downloaded(model_id)
 
 
 def _scan_cache(cache_dir: str | Path | None = None):
-    """Yerel Hugging Face önbelleğini tarar; dizin yoksa None döner. Ağa çıkmaz."""
+    """Scans the local Hugging Face cache; returns None if the directory is missing. No network."""
     try:
         return huggingface_hub.scan_cache_dir(cache_dir or HF_HUB_CACHE)
     except (CacheNotFound, OSError, ValueError):
@@ -303,7 +302,7 @@ def _mb(size: int) -> int:
 
 
 def cached_disk_mb(cache_dir: str | Path | None = None) -> dict[str, int]:
-    """Önbellekteki model depolarının gerçek disk kullanımı (MB), repo kimliğine göre."""
+    """Actual disk usage (MB) of the model repos in the cache, by repo id."""
     cache = _scan_cache(cache_dir)
     if cache is None:
         return {}
@@ -322,9 +321,9 @@ def cached_disk_mb(cache_dir: str | Path | None = None) -> dict[str, int]:
 
 
 def disk_mb(model_id: str, sizes: dict[str, int] | None = None) -> int | None:
-    """İndirilmiş modelin kapladığı gerçek alan (MB); indirilmemişse None.
+    """Actual space (MB) taken by a downloaded model; None if not downloaded.
 
-    `sizes`, `cached_disk_mb()` sonucudur; liste üretirken tek tarama yeter.
+    `sizes` is the result of `cached_disk_mb()`; one scan is enough when building the list.
     """
     info = find(model_id)
     if info is None or not is_downloaded(model_id):
@@ -342,18 +341,18 @@ def disk_mb(model_id: str, sizes: dict[str, int] | None = None) -> int | None:
 def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
     """Deletes the model's cached repos (all revisions and blobs) and returns the freed MB.
 
-    Paylaşılan blob deposunda (`<önbellek>/blobs/`) başka hiçbir repo'nun kullanmadığı dosyaları da
-    temizler; başka modelle paylaşılanlar kalır. Dönen değer gerçekten boşalan alandır (başka modelle
-    paylaşılan dosyalarda 0 olabilir).
+    Also cleans files in the shared blob store (`<cache>/blobs/`) that no other repo uses; those
+    shared with another model stay. The return value is the space actually freed (it can be 0 for
+    files shared with another model).
 
-    Yalnız hedef repo klasörlerine dokunur: ortak silero VAD gibi yardımcı depolar ve diğer
-    modeller korunur. Katalog dışı ya da indirilmemiş modelde `ModelError` yükseltir.
+    Only touches the target repo folders: helper repos like the shared silero VAD and other
+    models are preserved. Raises `ModelError` for a model outside the catalog or not downloaded.
     """
     info = find(model_id)
     if info is None:
         raise ModelError(f"Bilinmeyen model: {model_id}. Geçerli kimlikleri 'models' komutu listeler.")
 
-    # Aynı repo'yu paylaşan katalog girdileri varsa silme diğerini de bozar.
+    # If other catalog entries share the same repo, deleting would break them too.
     mine = {repo for repo, _ in _parts(info)}
     shared = [
         other.id
@@ -462,7 +461,7 @@ def _entry_blob(link: Path) -> Path:
 
 
 def _shared_target(link: Path, root: Path) -> Path | None:
-    """`link` paylaşılan depoya (`<önbellek>/blobs/<2 hex>/<sha256>`) giden bir sembolik bağsa hedefini verir."""
+    """If `link` is a symlink into the shared store (`<cache>/blobs/<2 hex>/<sha256>`), returns its target."""
     try:
         if not link.is_symlink():
             return None
@@ -479,7 +478,7 @@ def _shared_target(link: Path, root: Path) -> Path | None:
 
 
 def _inspect_repo_blobs(repo_path: Path, root: Path) -> tuple[int, set[Path]]:
-    """Repo `blobs/` klasörü: (repo'ya ait gerçek dosyaların baytı, paylaşılan depodaki hedefler)."""
+    """The repo's `blobs/` folder: (bytes of real files owned by the repo, targets in the shared store)."""
     local = 0
     targets: set[Path] = set()
     try:
@@ -500,7 +499,7 @@ def _inspect_repo_blobs(repo_path: Path, root: Path) -> tuple[int, set[Path]]:
 
 
 def _referenced_shared_blobs(root: Path) -> set[Path] | None:
-    """Önbellekteki tüm repoların paylaşılan depoya bağlı blob hedefleri; okunamazsa None (silme)."""
+    """Blob targets in the shared store referenced by all repos in the cache; None if unreadable (do not delete)."""
     referenced: set[Path] = set()
     try:
         repos = [p for p in root.iterdir() if p.name != _SHARED_BLOBS_DIR and p.is_dir() and "--" in p.name]
@@ -518,7 +517,7 @@ def _referenced_shared_blobs(root: Path) -> set[Path] | None:
 
 
 def _marker_ok(root: Path) -> bool:
-    """Paylaşılan depo bizim tanıdığımız düzende mi: işaret dosyası düzenli dosya ve içeriği tam "1\\n"."""
+    """Is the shared store in the layout we recognize: the marker file is a regular file whose content is exactly "1\\n"."""
     marker = root / _SHARED_BLOBS_DIR / _SHARED_MARKER
     try:
         return stat.S_ISREG(marker.lstat().st_mode) and marker.read_text() == "1\n"
@@ -527,7 +526,7 @@ def _marker_ok(root: Path) -> bool:
 
 
 def _hf_sweep():
-    """huggingface_hub'ın kilitli süpürücüsü (özel API); yoksa None."""
+    """huggingface_hub's locked sweeper (private API); None if missing."""
     try:
         from huggingface_hub.utils import _shared_blobs
 
@@ -538,7 +537,7 @@ def _hf_sweep():
 
 
 def _sweep_locked_fallback(root: Path, store_path: Path) -> int:
-    """`<sha>.lock` kilidi altında: başka repo bağlamıyorsa blob'u ve `.refs`i siler."""
+    """Under the `<sha>.lock` lock: deletes the blob and `.refs` if no other repo links it."""
     from filelock import FileLock
 
     lock = FileLock(store_path.with_name(store_path.name + ".lock"), mode=0o666)
@@ -555,11 +554,11 @@ def _sweep_locked_fallback(root: Path, store_path: Path) -> int:
 
 
 def _sweep_shared_blobs(root: Path, candidates: set[Path]) -> int:
-    """Silinen repoya ait paylaşılan blob'lardan başka hiçbir repo'nun bağlamadığını siler, baytı döndürür.
+    """Deletes the shared blobs of the deleted repo that no other repo links, and returns the bytes.
 
-    Önce kendi dosya sistemi denetimimiz (`.refs` yalnız ipucu); sonra huggingface_hub'ın kilitli
-    `sweep_shared_blob`'u, o yoksa ya da imzası uymuyorsa `.lock` kilidi altında kendi silmemiz.
-    Emin olunamazsa blob'a dokunulmaz. `.lock` dosyalarına hiç dokunulmaz.
+    First our own file system check (`.refs` is only a hint); then huggingface_hub's locked
+    `sweep_shared_blob`, or if that is missing or its signature does not match, our own deletion
+    under the `.lock` lock. If in doubt the blob is left alone. `.lock` files are never touched.
     """
     if not candidates or not _marker_ok(root):
         return 0
@@ -573,7 +572,7 @@ def _sweep_shared_blobs(root: Path, candidates: set[Path]) -> int:
             if sweep is not None:
                 try:
                     result = sweep(store_path, cache_dir=root)
-                except TypeError:  # imza değişmiş: kendi kilitli yolumuza düş
+                except TypeError:  # signature changed: fall back to our own locked path
                     result = _sweep_locked_fallback(root, store_path)
             else:
                 result = _sweep_locked_fallback(root, store_path)
@@ -584,22 +583,22 @@ def _sweep_shared_blobs(root: Path, candidates: set[Path]) -> int:
 
 
 def _remove_repo_leftovers(cache_root: Path, repo_path: Path, repo_id: str) -> None:
-    """Hedef repo klasörünü (revizyonlar, blob'lar, `.incomplete` artıkları) yalnız önbellek içindeyse siler."""
+    """Deletes the target repo folder (revisions, blobs, `.incomplete` leftovers) only if it is inside the cache."""
     expected = f"models--{repo_id.replace('/', '--')}"
     if repo_path.name != expected or not repo_path.exists():
         return
     try:
-        repo_path.resolve().relative_to(cache_root)  # önbellek dışına taşan yol: dokunma
+        repo_path.resolve().relative_to(cache_root)  # path escaping the cache: do not touch
     except (OSError, ValueError):
         return
     shutil.rmtree(repo_path, ignore_errors=True)
 
 
 def ensure_model(model_id: str, on_progress: ProgressFn | None = None) -> str | None:
-    """Model yoksa indirir; toplam bayt üzerinden 0..1 ilerlemeyi `on_progress`e verir.
+    """Downloads the model if missing; reports 0..1 progress over total bytes to `on_progress`.
 
-    Önbellekteyse hemen döner. Katalog dışı adlarda hiçbir şey yapmaz (None döner):
-    onları faster-whisper modeli yüklerken kendi indirir, ilerleme yayınlanmaz.
+    Returns immediately if cached. Does nothing for names outside the catalog (returns None):
+    faster-whisper downloads those itself while loading the model, and no progress is published.
     """
     info = find(model_id)
     if info is None or is_downloaded(model_id):
@@ -616,12 +615,12 @@ def ensure_model(model_id: str, on_progress: ProgressFn | None = None) -> str | 
         tqdm_class=_progress_tqdm(report),
     )
     if on_progress is not None:
-        on_progress(1.0)  # dosyalar yerleşti; son bildirim 0.99'da kalmasın
+        on_progress(1.0)  # files are in place; the last report must not stay at 0.99
     return path
 
 
 def _ensure_onnx(info: ModelInfo, on_progress: ProgressFn | None) -> str | None:
-    """onnx-asr model dosyalarını ve ortak silero VAD'ı indirir."""
+    """Downloads the onnx-asr model files and the shared silero VAD."""
     downloads: list[tuple[str, list[str], int]] = []
     if not all(_cached(info.repo, name) for name in info.files):
         downloads.append((info.repo, list(info.files), _repo_bytes(info.repo, info.files, info.size_mb * _MIB)))
@@ -677,10 +676,10 @@ def _ensure_parts(info: ModelInfo, on_progress: ProgressFn | None) -> str | None
 
 
 def _repo_bytes(repo: str, patterns: Sequence[str], fallback: int = 0) -> int:
-    """Depodaki desenlere uyan dosyaların toplam baytı; sorgulanamazsa tahmin."""
+    """Total bytes of the files matching the patterns in the repo; an estimate if it cannot be queried."""
     try:
         siblings = huggingface_hub.HfApi().model_info(repo, files_metadata=True).siblings
-    except Exception:  # ağ/HTTP hatası: indirme zaten kendi hatasını üretir
+    except Exception:  # network/HTTP error: the download itself produces its own error
         return fallback
     sizes = {f.rfilename: f.size or 0 for f in siblings}
     allowed = filter_repo_objects(list(sizes), allow_patterns=list(patterns))
@@ -688,15 +687,15 @@ def _repo_bytes(repo: str, patterns: Sequence[str], fallback: int = 0) -> int:
 
 
 def _total_bytes(info: ModelInfo) -> int:
-    """Depodaki indirilecek dosyaların toplam baytı; sorgulanamazsa katalog tahmini."""
+    """Total bytes of the files to download in the repo; the catalog estimate if it cannot be queried."""
     return _repo_bytes(info.repo, info.files, info.size_mb * _MIB)
 
 
 def model_dir(model_id: str) -> Path:
-    """İndirilmiş modelin yerel anlık görüntü klasörü; ağa çıkmaz.
+    """Local snapshot folder of a downloaded model; no network.
 
-    CTranslate2 ağırlıkları tek dosya (model.bin) olarak arar; klasör yolu da aynı
-    anlık görüntüdedir. Model yoksa Türkçe `ModelError` yükseltir.
+    CTranslate2 looks for the weights as a single file (model.bin); the folder path lives in the same
+    snapshot. Raises a (Turkish) `ModelError` if the model is missing.
     """
     info = find(model_id)
     if info is None:
@@ -708,7 +707,7 @@ def model_dir(model_id: str) -> Path:
 
 
 def support_error(info: ModelInfo, language: str) -> str:
-    """Seçilen dil modelin destekledikleri arasında değilse Türkçe açıklama döndürür."""
+    """Returns a (Turkish) explanation if the chosen language is not among those the model supports."""
     name = DISPLAY_NAMES.get(info.id, info.id)
     languages = info.languages or ()
     if len(languages) == 1:
@@ -718,13 +717,13 @@ def support_error(info: ModelInfo, language: str) -> str:
 
 
 def _reporter(total: int, on_progress: ProgressFn | None) -> Callable[[float], None]:
-    """Bayt sayacını 0..1 ilerlemeye çevirir; geri gitmez, çağrıları seyreltir."""
+    """Turns the byte counter into 0..1 progress; never goes backwards, throttles calls."""
     if on_progress is None or total <= 0:
         return lambda downloaded: None
     state = {"fraction": 0.0, "at": 0.0}
 
     def report(downloaded: float) -> None:
-        # İndirme barları birbirini geçebildiği için 1.0'ı yalnız ensure_model bildirir.
+        # Download bars can overtake each other, so only ensure_model reports 1.0.
         fraction = min(max(downloaded / total, 0.0), 0.99)
         if fraction <= state["fraction"]:
             return
@@ -738,20 +737,20 @@ def _reporter(total: int, on_progress: ProgressFn | None) -> Callable[[float], N
 
 
 def _progress_tqdm(report: Callable[[float], None]) -> type[tqdm]:
-    """snapshot_download'un bayt barlarını tek ilerleme kanalına bağlar."""
+    """Wires snapshot_download's byte bars into a single progress channel."""
 
     class _ByteProgress(tqdm):
         def __init__(self, *args, **kwargs):
-            # Kapalı tqdm ne `unit` alanını atar ne de `n` sayacını ilerletir; kendi
-            # sayacımızı tutuyoruz ve birimi kuruluş anında yakalıyoruz.
+            # A disabled tqdm neither sets the `unit` field nor advances the `n` counter; we keep
+            # our own counter and capture the unit at construction time.
             self._counts_bytes = kwargs.get("unit") == "B"
             self._bytes = kwargs.pop("initial", 0) or 0
-            kwargs["disable"] = True  # bar çıktısı stderr'e dökülmesin; ilerleme protokolde
+            kwargs["disable"] = True  # keep bar output off stderr; progress goes through the protocol
             super().__init__(*args, **kwargs)
 
         def update(self, n: float | None = 1) -> None:
             super().update(n)
-            if self._counts_bytes:  # transfer ve yeniden kurma barları bayt sayar
+            if self._counts_bytes:  # transfer and reconstruction bars count bytes
                 self._bytes += n or 0
                 report(self._bytes)
 

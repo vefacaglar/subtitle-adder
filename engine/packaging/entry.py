@@ -1,4 +1,4 @@
-"""PyInstaller giriş noktası (paketli `subtitle-engine` ikilisi)."""
+"""PyInstaller entry point (the packaged `subtitle-engine` binary)."""
 import multiprocessing
 import sys
 

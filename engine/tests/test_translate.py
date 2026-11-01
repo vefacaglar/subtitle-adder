@@ -1,4 +1,4 @@
-"""Çeviri katmanı testleri: ağ yok, CTranslate2/tokenizer sahteleri kullanılır."""
+"""Translation layer tests: no network, CTranslate2/tokenizer fakes are used."""
 import io
 import json
 import sys
@@ -12,7 +12,7 @@ from subtitle_engine.models import Sentence, Word
 
 
 class FakeTokenizer:
-    """Kelimeyi boşluktan böler; çözmede token'ları aynen birleştirir."""
+    """Splits on whitespace; when decoding it joins the tokens as is."""
 
     def encode(self, text):
         return text.split()
@@ -30,7 +30,7 @@ class FakeCt2:
         self.calls.append({"source": source, "target_prefix": target_prefix, "kwargs": kwargs})
         if self.outputs is None:
             outputs = [f"çeviri {i}" for i in range(len(source))]
-        else:  # testte verilen çevirileri partiler arasında sırayla paylaştır
+        else:  # share the translations given in the test across batches in order
             outputs, self.outputs = self.outputs[: len(source)], self.outputs[len(source) :]
         return [SimpleNamespace(hypotheses=[[text]]) for text in outputs]
 
@@ -60,7 +60,7 @@ def test_madlad_uses_target_prefix_and_keeps_timing(make_translator):
     result = translator.translate([source], "es")
 
     call = fake.calls[0]
-    # MADLAD hedef dil etiketini kaynak girdinin başına koyar; dekoder öneki kullanmaz.
+    # MADLAD puts the target language tag at the start of the source input; it uses no decoder prefix.
     assert call["source"] == [["<2es>", "Merhaba", "42", "dünya.", "</s>"]]
     assert call["target_prefix"] is None
     assert call["kwargs"]["beam_size"] == 4
@@ -157,7 +157,7 @@ def test_empty_hypothesis_falls_back_to_source(make_translator):
 
     result = translator.translate([sentence(1, 0, 1, "Metin.")], "es")
 
-    assert result[0].text == "Metin."  # boş altyazı üretme
+    assert result[0].text == "Metin."  # do not produce an empty subtitle
 
 
 def test_cli_json_event_order_and_translation_event(capsys, monkeypatch):
@@ -242,7 +242,7 @@ def test_cli_writes_srt_without_json(capsys, monkeypatch):
 
 @pytest.mark.slow
 def test_real_madlad_translates_tr_es_and_ru_pt():
-    """Gerçek model: tr→es ve ru→pt kısa cümleler boş ve kaynakla aynı olmamalı."""
+    """Real model: short tr→es and ru→pt sentences must be neither empty nor identical to the source."""
     models.ensure_model("madlad-3b")
     translator = translate.create_translator("madlad-3b")
 
@@ -256,7 +256,7 @@ def test_real_madlad_translates_tr_es_and_ru_pt():
         assert translated
         assert translated.casefold() != text.casefold()
 
-    # Sayı ve özel ad korunmalı.
+    # Numbers and proper names must be preserved.
     result = translator.translate(
         [sentence(2, 0.0, 2.0, "Oda numarası 42, Mehmet ile görüşün.")], "es", source="tr"
     )
