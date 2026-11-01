@@ -281,9 +281,11 @@ public struct EngineClient: Sendable {
         }
         if let input {
             // Written off the caller's thread: a large payload can block until the engine reads it, and the
-            // caller (often the main actor) must not wait. If the engine exits early, writing fails
-            // (SIGPIPE is ignored); the exit code is reported anyway.
+            // caller (often the main actor) must not wait. If the engine exits early, writing fails with
+            // EPIPE instead of raising SIGPIPE (set on the pipe itself, so hosts that don't ignore SIGPIPE,
+            // such as the test runner, aren't killed); the exit code is reported anyway.
             let writer = stdinPipe.fileHandleForWriting
+            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
             DispatchQueue.global().async {
                 try? writer.write(contentsOf: input)
                 try? writer.close()
