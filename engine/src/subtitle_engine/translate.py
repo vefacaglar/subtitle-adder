@@ -376,6 +376,15 @@ def _save_temp_checkpoint(path: Path, cache: dict[int, str]) -> None:
         tmp.replace(path)
 
 
+def _delete_temp_checkpoint(path: Path | None) -> None:
+    if path is None:
+        return
+    with contextlib.suppress(Exception):
+        path.unlink(missing_ok=True)
+    with contextlib.suppress(Exception):
+        path.with_suffix(".json.tmp").unlink(missing_ok=True)
+
+
 class LlamaTranslator:
     """Runs GGUF instruction-tuned LLMs (Gemma 4, Qwen 3.5) locally via `llama-server`."""
 
@@ -607,4 +616,5 @@ class LlamaTranslator:
                 on_batch(result_sentences[: last_index + 1])
             if on_progress is not None:
                 on_progress(min(processed / len(pending), 1.0))
+        _delete_temp_checkpoint(checkpoint_path)
         return result_sentences

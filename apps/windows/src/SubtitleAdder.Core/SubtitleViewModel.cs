@@ -783,8 +783,12 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     Sentences = [.. result.Value.Sentences];
                     DetectedLanguage = result.Value.Language;
                     ReconcileTranslationTarget();
-                    // The app doesn't use the extracted WAV; delete the temporary file.
+                    // The app doesn't use the extracted WAV or temp CLI outputs; delete them immediately.
                     DeleteQuietly(result.Value.Audio);
+                    if (result.Value.Outputs is { } outputs)
+                    {
+                        foreach (var output in outputs) DeleteQuietly(output);
+                    }
                     break;
                 case EngineEvent.Error error:
                     return new JobStatus.Failed(LocalizedMessage.Verbatim(error.Message));
@@ -1014,7 +1018,22 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         StopJob();
+        CleanupTempDirectory();
         Catalog.PropertyChanged -= OnCatalogChanged;
         _languageState.LanguageChanged -= OnLanguageChanged;
+    }
+
+    private static void CleanupTempDirectory()
+    {
+        try
+        {
+            var tempDir = Path.Combine(Path.GetTempPath(), "SubtitleAdder");
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, recursive: true);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // Ignore locked files if a child process is still exiting.
+        }
     }
 }
