@@ -9,6 +9,8 @@ struct SentenceEditorView: View {
     @Environment(\.undoManager) private var undoManager
     @FocusState private var focusedUID: UUID?
     @FocusState private var focusedTranslationUID: UUID?
+    /// Width of the editor; a narrow one (side-by-side next to the player) trims the edit bar.
+    @State private var width: CGFloat = 1000
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +26,7 @@ struct SentenceEditorView: View {
                 list
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .onAppear { vm.undoManager = undoManager }
         .onChange(of: undoManager) { _, new in vm.undoManager = new }
         .onChange(of: focusedUID) { old, new in
@@ -92,27 +95,40 @@ struct SentenceEditorView: View {
     /// so more speakers can be added; the dash rule separately needs two.
     private var showsSpeakers: Bool { !vm.sentences.speakers.isEmpty }
 
+    /// Below this width the Split/Merge/Delete buttons lose their titles, below the second one the timing captions go.
+    private static let compactBarWidth: CGFloat = 720
+    private static let minimalBarWidth: CGFloat = 540
+
     private var editBar: some View {
-        HStack(spacing: 16) {
-            timingControls(L("Başlangıç"), edge: .start, value: vm.selectedSentence?.start)
-            timingControls(L("Bitiş"), edge: .end, value: vm.selectedSentence?.end)
+        let showsCaptions = width >= Self.minimalBarWidth
+        return HStack(spacing: 16) {
+            timingControls(L("Başlangıç"), edge: .start, value: vm.selectedSentence?.start, showsCaption: showsCaptions)
+            timingControls(L("Bitiş"), edge: .end, value: vm.selectedSentence?.end, showsCaption: showsCaptions)
             Spacer(minLength: 0)
-            Button(L("Böl"), systemImage: "scissors") {
-                finishEditing()
-                vm.splitSelected(at: player.currentTime)
+            if let badge = vm.translationBadgeText {
+                TranslationBadge(text: badge)
             }
-            .disabled(!vm.canSplitSelected(at: player.currentTime))
-            .help(L("Satırı oynatma konumundan ikiye böl"))
-            Button(L("Sonrakiyle birleştir"), systemImage: "arrow.triangle.merge") {
-                finishEditing()
-                vm.mergeSelectedWithNext()
+            Group {
+                Button(L("Böl"), systemImage: "scissors") {
+                    finishEditing()
+                    vm.splitSelected(at: player.currentTime)
+                }
+                .disabled(!vm.canSplitSelected(at: player.currentTime))
+                .help(L("Satırı oynatma konumundan ikiye böl"))
+                Button(L("Sonrakiyle birleştir"), systemImage: "arrow.triangle.merge") {
+                    finishEditing()
+                    vm.mergeSelectedWithNext()
+                }
+                .disabled(!vm.canMergeSelected)
+                .help(L("Sonrakiyle birleştir"))
+                Button(L("Sil"), systemImage: "trash") {
+                    finishEditing()
+                    vm.deleteSelected()
+                }
+                .disabled(vm.selection == nil)
+                .help(L("Sil"))
             }
-            .disabled(!vm.canMergeSelected)
-            Button(L("Sil"), systemImage: "trash") {
-                finishEditing()
-                vm.deleteSelected()
-            }
-            .disabled(vm.selection == nil)
+            .labelStyle(AdaptiveLabelStyle(iconOnly: width < Self.compactBarWidth))
         }
         .controlSize(.small)
         .padding(.horizontal, 12)
@@ -121,10 +137,12 @@ struct SentenceEditorView: View {
         .disabled(vm.isWorking)
     }
 
-    private func timingControls(_ title: String, edge: TimingEdge, value: Double?) -> some View {
+    private func timingControls(_ title: String, edge: TimingEdge, value: Double?, showsCaption: Bool) -> some View {
         let step = SentenceEditing.nudgeStep
         return HStack(spacing: 4) {
-            Text(title).foregroundStyle(.secondary)
+            if showsCaption {
+                Text(title).foregroundStyle(.secondary)
+            }
             Button(L("%@ 0,1 sn geri", title), systemImage: "minus") { vm.nudge(edge, by: -step) }
                 .labelStyle(.iconOnly)
             Text(value.map(SubtitleTime.short) ?? "––:––.––")
@@ -145,6 +163,38 @@ struct SentenceEditorView: View {
         focusedTranslationUID = nil
         vm.commitDraft()
         vm.commitTranslationDraft()
+    }
+}
+
+/// Title and icon, or the icon alone when the bar is narrow.
+private struct AdaptiveLabelStyle: LabelStyle {
+    let iconOnly: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        if iconOnly {
+            configuration.icon
+        } else {
+            Label(configuration)
+        }
+    }
+}
+
+/// Capsule with a small spinner and the translation progress, e.g. "Çevriliyor… 45%".
+private struct TranslationBadge: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.mini)
+            Text(text)
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(Color.accentColor)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 3)
+        .background(Color.accentColor.opacity(0.14), in: Capsule())
+        .accessibilityElement(children: .combine)
     }
 }
 

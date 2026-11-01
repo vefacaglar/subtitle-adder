@@ -91,9 +91,16 @@ extension SubtitleViewModel {
 
     // MARK: - Background translation
 
-    /// Status bar addition while the server translates in the background, e.g. "Çevriliyor… 40%".
+    /// Status bar addition while the server translates in the background, e.g. "Çevriliyor… 40%". Nothing once the
+    /// status itself shows the background translation.
     var asyncStatusDetail: String? {
-        asyncTranslationFraction.map { Self.label(for: .translating, fraction: $0, purpose: .translation).text }
+        guard isAsyncTranslating, !asyncShownInStatus else { return nil }
+        return asyncStatusText
+    }
+
+    /// "Çevriliyor… 40%", or "Çevriliyor…" while the share isn't known.
+    var asyncStatusText: String {
+        Self.label(for: .translating, fraction: asyncTranslationFraction, purpose: .translation).text
     }
 
     /// Drops the background translation: stops the server request and forgets which lines were handed over.
@@ -104,12 +111,15 @@ extension SubtitleViewModel {
         asyncQueued = []
         asyncDraining = false
         asyncFailed = false
-        asyncTranslationFraction = nil
+        asyncShownInStatus = false
+        isAsyncTranslating = false
     }
 
     /// Called with every transcription snapshot: when enough lines are ready and no batch is on its way, sends them.
     /// The last two lines of a snapshot are still being transcribed, so they wait for the next one.
     func startAsyncTranslation(engine: EngineClient) {
+        // The lines keep coming, so the share of translated ones moves even when no batch is sent.
+        updateAsyncFraction()
         guard asyncTask == nil, !asyncDraining, !asyncFailed, !nextAsyncBatch().isEmpty else { return }
         let run = UUID()
         asyncRunID = run
@@ -121,12 +131,12 @@ extension SubtitleViewModel {
     func finishAsyncTranslation() async {
         asyncDraining = true
         if let task = asyncTask {
-            if let fraction = asyncTranslationFraction {
-                status = .working(Self.label(for: .translating, fraction: fraction, purpose: .translation), fraction: fraction)
-            }
+            asyncShownInStatus = true
+            mirrorAsyncInStatus()
             await task.value
         }
-        asyncTranslationFraction = nil
+        asyncShownInStatus = false
+        isAsyncTranslating = false
     }
 
     /// Fewest new lines worth a request: smaller batches lose the context a model translates well with.
@@ -152,9 +162,14 @@ extension SubtitleViewModel {
             // Same language in and out can't be translated; the toolbar target is reconciled when the language is known.
             guard !batch.isEmpty, source != target else { break }
             asyncQueued.formUnion(batch.map(\.uid))
+            isAsyncTranslating = true
             updateAsyncFraction()
             guard await translateAsyncBatch(batch, engine: engine, target: target, source: source, run: run) else {
-                if !Task.isCancelled, asyncRunID == run { asyncFailed = true }
+                if !Task.isCancelled, asyncRunID == run {
+                    asyncFailed = true
+                    asyncShownInStatus = false
+                    isAsyncTranslating = false
+                }
                 break
             }
         }
@@ -169,6 +184,7 @@ extension SubtitleViewModel {
     ) async -> Bool {
         // The neighbours of the batch's lines go along as context; only the batch's own lines are applied.
         let request = Self.withTranslationContext(sentences, requested: batch)
+        let alreadyTranslated = translations.count
         do {
             for try await event in engine.translate(request, to: target, from: source, model: translationModel) {
                 guard !Task.isCancelled, asyncRunID == run else { return false }
@@ -176,9 +192,16 @@ extension SubtitleViewModel {
                 case .translation(let language, let translated):
                     applyBackgroundTranslation(translated, language: language, batch: batch)
                     updateAsyncFraction()
+                case .stage(let stage, let part):
+                    // The model's own progress through this batch, on top of what was translated before it.
+                    guard stage == .translating, let part, isAsyncTranslating else { break }
+                    setAsyncFraction(Self.translationProgress(
+                        alreadyDone: alreadyTranslated, requested: batch.count, part: part,
+                        total: max(sentences.count, alreadyTranslated + batch.count)
+                    ))
                 case .error:
                     return false
-                case .stage, .result, .partial:
+                case .result, .partial:
                     break
                 }
             }
@@ -205,8 +228,23 @@ extension SubtitleViewModel {
         storeTranslations(accepted, language: language, merge: true)
     }
 
-    private func updateAsyncFraction() {
-        let total = max(1, sentences.count)
-        asyncTranslationFraction = min(Double(translations.count) / Double(total), 0.99)
+    /// Background progress from the translations at hand: translated lines over all lines, below 1.
+    func updateAsyncFraction() {
+        guard isAsyncTranslating else { return }
+        setAsyncFraction(Self.translationProgress(done: translations.count, total: sentences.count))
+    }
+
+    private func setAsyncFraction(_ fraction: Double?) {
+        asyncTranslationFraction = fraction
+        mirrorAsyncInStatus()
+    }
+
+    /// After transcription the status is the background translation itself.
+    private func mirrorAsyncInStatus() {
+        guard asyncShownInStatus, case .working = status else { return }
+        status = .working(
+            Self.label(for: .translating, fraction: asyncTranslationFraction, purpose: .translation),
+            fraction: asyncTranslationFraction
+        )
     }
 }

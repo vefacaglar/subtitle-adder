@@ -121,9 +121,26 @@ final class SubtitleViewModel {
     /// Result of the last connection test, shown under the address field.
     var externalConnection: ExternalConnectionNotice?
     var isTestingExternalConnection = false
-    /// Share of the lines translated in the background while transcription is still running; `nil` when no
-    /// background translation is active.
+    /// Background translation (external LLM, async mode) is under way while the video is still being transcribed, or
+    /// its last batch is being awaited. An explicit flag: the status label isn't parsed to find out.
+    var isAsyncTranslating = false {
+        didSet {
+            if !isAsyncTranslating { asyncTranslationFraction = nil }
+        }
+    }
+    /// Share of the lines translated in the background (0...0.99); `nil` while unknown or when nothing runs.
     var asyncTranslationFraction: Double?
+    /// A translation job ("Çevir…", "Komple çevir" after transcription, a playlist item) owns the status.
+    var isTranslationJobRunning = false
+    /// Show the subtitle editor to the right of the player instead of below it; persistent, off by default.
+    var sideBySideLayout: Bool {
+        didSet {
+            guard sideBySideLayout != oldValue else { return }
+            defaults.set(sideBySideLayout, forKey: Self.sideBySideLayoutDefaultsKey)
+        }
+    }
+    /// Hides the window toolbar so the player and the lines get the room; not persisted.
+    var isTheaterMode = false
     /// Separate speakers while transcribing (`--diarize`); persistent, on by default.
     var diarize: Bool {
         didSet {
@@ -152,6 +169,8 @@ final class SubtitleViewModel {
             if case .working(let label, let fraction) = status {
                 syncActivePlaylistItem(label: label, fraction: fraction)
             }
+            // A translation job lives exactly as long as the status it set.
+            if case .working = status {} else { isTranslationJobRunning = false }
             // The offline retry only makes sense for the failure that registered it.
             if case .failed = status { return }
             offlineRetry = nil
@@ -200,6 +219,8 @@ final class SubtitleViewModel {
     /// A batch failed (server unreachable, error event): no further batch starts in this run, so a dead server
     /// isn't retried on every snapshot. The final translation pass picks up the lines and reports the error.
     @ObservationIgnored var asyncFailed = false
+    /// Transcription is over and the status shows the background translation (label and fraction follow it).
+    @ObservationIgnored var asyncShownInStatus = false
     @ObservationIgnored var connectionTestID = UUID()
 
     var job: Task<Void, Never>?
@@ -247,6 +268,7 @@ final class SubtitleViewModel {
     private static let externalLlmAsyncDefaultsKey = "externalLlmAsync"
     private static let diarizeDefaultsKey = "diarizeSpeakers"
     private static let speakerCountDefaultsKey = "speakerCount"
+    static let sideBySideLayoutDefaultsKey = "sideBySideLayout"
 
     init(
         catalog: ModelCatalog,
@@ -279,6 +301,7 @@ final class SubtitleViewModel {
         externalLlmUrl = defaults.string(forKey: Self.externalLlmUrlDefaultsKey) ?? ""
         externalLlmModel = defaults.string(forKey: Self.externalLlmModelDefaultsKey) ?? ""
         externalLlmAsync = defaults.bool(forKey: Self.externalLlmAsyncDefaultsKey)
+        sideBySideLayout = defaults.bool(forKey: Self.sideBySideLayoutDefaultsKey)
         reconcileModelSelection()
         reconcileTranslationTarget()
         publishLaunchSettings()
@@ -300,11 +323,37 @@ final class SubtitleViewModel {
     /// Catalog filtered by language; the toolbar picker shows this.
     var availableModels: [EngineModel] { catalog.models(for: language) }
 
-    /// A job is running, or a playlist run is under way (including its background translations).
+    /// A job is running, a playlist run is under way (including its background translations), or the external server
+    /// is still translating lines in the background.
     var isWorking: Bool {
-        if isPlaylistRunning { return true }
+        if isPlaylistRunning || isAsyncTranslating { return true }
         if case .working = status { return true }
         return false
+    }
+
+    /// Translation is active, in the foreground or in the background; the editor header shows a badge for it.
+    var isTranslationInProgress: Bool { isAsyncTranslating || isTranslationJobRunning }
+
+    /// Text of the editor-header badge, e.g. "Çevriliyor… 45%"; `nil` when no translation runs.
+    var translationBadgeText: String? {
+        guard isTranslationInProgress else { return nil }
+        if isTranslationJobRunning, case .working(let label, _) = status { return label.text }
+        return Self.label(for: .translating, fraction: asyncTranslationFraction, purpose: .translation).text
+    }
+
+    /// Share of `total` lines that are done, held below 1 while the job runs (the last step is the save or the final
+    /// batch, not the progress). Unknown (`nil`) when nothing is done yet.
+    nonisolated static func translationProgress(done: Int, total: Int) -> Double? {
+        guard done > 0, total > 0 else { return nil }
+        return min(max(Double(done) / Double(total), 0), 0.99)
+    }
+
+    /// Progress of a translation that skips `alreadyDone` lines and sends `requested` more: `part` is the engine's own
+    /// 0...1 fraction for the request. Capped like `translationProgress`.
+    nonisolated static func translationProgress(alreadyDone: Int, requested: Int, part: Double, total: Int) -> Double {
+        guard total > 0 else { return min(max(part, 0), 0.99) }
+        let value = (Double(alreadyDone) + Double(requested) * min(max(part, 0), 1)) / Double(total)
+        return min(max(value, 0), 0.99)
     }
 
     /// Source language that changes with the language code (automatic if empty); passed to the translate command as `--from`.
@@ -386,6 +435,7 @@ final class SubtitleViewModel {
         let retry: @MainActor () -> Void = { [weak self] in self?.generate(thenTranslate: thenTranslate) }
         if blockedOffline(needed, retry: retry) { return }
         cancelAsyncTranslation()
+        isTranslationJobRunning = false
         // Komple çevir and playlist items with an external LLM in async mode: the server translates while the Mac is
         // still transcribing. (A playlist item doesn't chain into `translate`; the run hands it off afterwards.)
         let asyncTranslate = (thenTranslate || isPlaylistRunning) && isExternalAsyncActive
@@ -445,6 +495,7 @@ final class SubtitleViewModel {
                         sentences = sentences.mergedWithSnapshot(result.sentences)
                         detectedLanguage = result.language
                         reconcileTranslationTarget()
+                        updateAsyncFraction()
                         // The app doesn't use the extracted WAV, so it goes right away instead of waiting for the
                         // quit cleanup; the subtitle outputs and engine checkpoints stay in the working folder until then.
                         try? FileManager.default.removeItem(atPath: result.audio)
@@ -452,14 +503,15 @@ final class SubtitleViewModel {
                         break
                     case .error(let message):
                         failed = true
+                        cancelAsyncTranslation()
                         status = .failed(.verbatim(message))
                     }
                 }
                 // On cancel the stream ends without an error; in that case the status doesn't change.
                 guard jobID == id, !Task.isCancelled else { return }
                 if failed { cancelAsyncTranslation() }
-                if !failed { status = .finished }
-                // Let the batch already at the server finish; the lines it didn't cover are translated below.
+                // Let the batch already at the server finish (the status shows its progress meanwhile); the lines it
+                // didn't cover are translated below.
                 if asyncTranslate, !failed {
                     await finishAsyncTranslation()
                     guard jobID == id, !Task.isCancelled else { return }
@@ -471,6 +523,7 @@ final class SubtitleViewModel {
                     translate(reuseExisting: asyncTranslate)
                     return
                 }
+                if !failed { status = .finished }
                 // Make the downloaded model show as "hazır" (ready) in the menu.
                 await catalog.load()
             } catch is CancellationError {

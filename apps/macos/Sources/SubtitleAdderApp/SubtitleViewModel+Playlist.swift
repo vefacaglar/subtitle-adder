@@ -279,7 +279,13 @@ extension SubtitleViewModel {
         let format = exportFormat
         // The task may wait minutes for the earlier ones; it must still go to the server chosen now.
         let engine = pinningLaunchSettings(engine)
-        updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
+        if let initial = Self.translationProgress(done: preTranslated.count, total: lines.count) {
+            updatePlaylistItem(
+                item.id, .working, Self.label(for: .translating, fraction: initial, purpose: .translation), initial
+            )
+        } else {
+            updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
+        }
         let previous = playlistBackground.last
         playlistBackground.append(Task {
             // One external translation at a time. (The live translation while a video transcribes is not held back
@@ -309,7 +315,6 @@ extension SubtitleViewModel {
             updatePlaylistItem(item.id, .failed, .key("Kaynak ve hedef dil aynı olamaz."), nil)
             return
         }
-        updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
         // What was translated during transcription stays; only the rest goes to the server, with its neighbours as context.
         var translated: [UUID: String] = [:]
         for line in lines {
@@ -320,6 +325,14 @@ extension SubtitleViewModel {
         let preDone = translated.count
         let total = max(1, lines.count)
         let remaining = lines.filter { translated[$0.uid] == nil }
+        // The row starts at the share the background translation already got through.
+        if let initial = Self.translationProgress(done: preDone, total: total) {
+            updatePlaylistItem(
+                item.id, .working, Self.label(for: .translating, fraction: initial, purpose: .translation), initial
+            )
+        } else {
+            updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
+        }
         let request = Self.withTranslationContext(lines, requested: remaining)
         var engineError: String?
         if !remaining.isEmpty {
@@ -328,8 +341,10 @@ extension SubtitleViewModel {
                     guard !Task.isCancelled else { break }
                     switch event {
                     case .stage(let stage, var fraction):
-                        if preDone > 0, stage == .translating, let part = fraction {
-                            fraction = (Double(preDone) + Double(remaining.count) * min(max(part, 0), 1)) / Double(total)
+                        if stage == .translating, let part = fraction {
+                            fraction = Self.translationProgress(
+                                alreadyDone: preDone, requested: remaining.count, part: part, total: total
+                            )
                         }
                         let label = Self.label(for: stage, fraction: fraction, purpose: .translation)
                         updatePlaylistItem(item.id, .working, label, fraction)

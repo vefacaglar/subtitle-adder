@@ -3600,6 +3600,86 @@
           }
         }
       }
+    },
+    "Altyazıları sağa / alta al": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazıları sağa / alta al"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dock subtitles to right / bottom"
+          }
+        }
+      }
+    },
+    "Tiyatro modu — üst menüleri gizle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiyatro modu — üst menüleri gizle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Theater mode — hide top menus"
+          }
+        }
+      }
+    },
+    "Tiyatro modu": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tiyatro modu"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Theater mode"
+          }
+        }
+      }
+    },
+    "Tam ekran (⌃⌘F)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tam ekran (⌃⌘F)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full screen (⌃⌘F)"
+          }
+        }
+      }
+    },
+    "Tam ekran": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tam ekran"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full screen"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -10,6 +10,11 @@ struct PlayerView: View {
     /// Label of the translation segment, e.g. "Çeviri (es)".
     let translationTitle: String
     @Binding var display: SubtitleDisplay
+    /// Window layout switches that live in the overlay next to the display picker.
+    @Binding var sideBySide: Bool
+    @Binding var theaterMode: Bool
+    let isFullScreen: Bool
+    let toggleFullScreen: () -> Void
     private let overlay = OverlayStyleStorage()
 
     var body: some View {
@@ -22,10 +27,8 @@ struct PlayerView: View {
                     .frame(width: rect.width, height: rect.height)
                     .allowsHitTesting(false)
                 VStack {
-                    HStack {
-                        Spacer()
-                        displayPicker
-                    }
+                    controls
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     Spacer()
                 }
                 .padding(10)
@@ -33,27 +36,80 @@ struct PlayerView: View {
         }
     }
 
-    private var displayPicker: some View {
+    /// The overlay panel: what the video shows, then the window layout switches. In a narrow player the caption goes
+    /// first and then the segmented picker becomes a menu.
+    private var controls: some View {
+        ViewThatFits(in: .horizontal) {
+            panel(captioned: true, compact: false)
+            panel(captioned: false, compact: false)
+            panel(captioned: false, compact: true)
+        }
+    }
+
+    private func panel(captioned: Bool, compact: Bool) -> some View {
         HStack(spacing: 8) {
-            Text(L("Gösterilen"))
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.85))
-            Picker(L("Gösterilen"), selection: $display) {
-                ForEach(SubtitleDisplay.allCases) { mode in
-                    Text(mode == .translation ? translationTitle : mode.title).tag(mode)
-                        .disabled(mode != .original && translations.isEmpty)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 250)
+            displayPicker(captioned: captioned, compact: compact)
+            Divider().frame(height: 16).overlay(.white.opacity(0.35))
+            layoutButton(
+                symbol: "rectangle.righthalf.inset.filled", isOn: sideBySide,
+                title: L("Altyazıları sağa / alta al"), help: L("Altyazıları sağa / alta al")
+            ) { sideBySide.toggle() }
+            layoutButton(
+                symbol: "rectangle.center.inset.filled", isOn: theaterMode,
+                title: L("Tiyatro modu"), help: L("Tiyatro modu — üst menüleri gizle")
+            ) { theaterMode.toggle() }
+            layoutButton(
+                symbol: isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                isOn: isFullScreen, title: L("Tam ekran"), help: L("Tam ekran (⌃⌘F)")
+            ) { toggleFullScreen() }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .fixedSize()
+    }
+
+    private func displayPicker(captioned: Bool, compact: Bool) -> some View {
+        HStack(spacing: 8) {
+            if captioned {
+                Text(L("Gösterilen"))
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            if compact {
+                displayChoices.pickerStyle(.menu).labelsHidden().fixedSize()
+            } else {
+                displayChoices.pickerStyle(.segmented).labelsHidden().frame(width: 250)
+            }
+        }
         .help(translations.isEmpty
             ? L("Önce altyazıları çevir; sonra orijinali, çeviriyi ya da ikisini birden gösterebilirsin.")
             : L("Video üstünde gösterilecek metin"))
+    }
+
+    private var displayChoices: some View {
+        Picker(L("Gösterilen"), selection: $display) {
+            ForEach(SubtitleDisplay.allCases) { mode in
+                Text(mode == .translation ? translationTitle : mode.title).tag(mode)
+                    .disabled(mode != .original && translations.isEmpty)
+            }
+        }
+    }
+
+    private func layoutButton(
+        symbol: String, isOn: Bool, title: String, help: String, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .frame(width: 24, height: 22)
+                .foregroundStyle(isOn ? Color.accentColor : .white)
+                .background(isOn ? Color.white.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 
     private var activeText: String? {

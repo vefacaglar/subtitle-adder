@@ -11,6 +11,7 @@ struct ContentView: View {
     /// "Komple çevir" asked for a video first; the pick starts the run.
     @State private var runAfterPicking = false
     @State private var exportDocument: TextDocument?
+    @State private var chrome = WindowChrome()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,6 +30,16 @@ struct ContentView: View {
             return true
         }
         .toolbar { toolbar }
+        // Theater mode: the commands live in the menu bar (⌘↩ and the others) while the toolbar is out of the way.
+        .toolbar(vm.isTheaterMode ? .hidden : .automatic, for: .windowToolbar)
+        .background { WindowReader { chrome.attach($0) } }
+        .onAppear {
+            chrome.onEscape = {
+                guard vm.isTheaterMode else { return false }
+                vm.isTheaterMode = false
+                return true
+            }
+        }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
         .task { await catalog.load() }
         // The toolbar's model menu lists what the server offers; a menu can't fetch when it opens, so the list is
@@ -87,22 +98,46 @@ struct ContentView: View {
         } else if vm.isPlaylistRunning {
             SentenceEditorView(vm: vm, player: player)
         } else {
-            VSplitView {
-                PlayerView(
-                    model: player,
-                    sentences: vm.sentences,
-                    translations: vm.translations,
-                    translationTitle: vm.translationTitle,
-                    display: Binding(
-                        get: { vm.effectiveDisplayMode },
-                        set: { vm.displayMode = $0 }
-                    )
-                )
-                .frame(minHeight: 200, idealHeight: 360)
-                SentenceEditorView(vm: vm, player: player)
-                    .frame(minHeight: 180)
+            if vm.sideBySideLayout {
+                HSplitView {
+                    playerView
+                        .frame(minWidth: Self.playerMinWidth, idealWidth: 5 * Self.splitUnit, maxHeight: .infinity)
+                    SentenceEditorView(vm: vm, player: player)
+                        .frame(minWidth: Self.editorMinWidth, idealWidth: 4 * Self.splitUnit, maxHeight: .infinity)
+                }
+            } else {
+                VSplitView {
+                    playerView
+                        .frame(maxWidth: .infinity, minHeight: Self.playerMinHeight, idealHeight: 5 * Self.splitUnit)
+                    SentenceEditorView(vm: vm, player: player)
+                        .frame(maxWidth: .infinity, minHeight: Self.editorMinHeight, idealHeight: 4 * Self.splitUnit)
+                }
             }
         }
+    }
+
+    // Player and editor start at about 5:4 and can't be dragged below these sizes.
+    private static let splitUnit: CGFloat = 80
+    private static let playerMinWidth: CGFloat = 260
+    private static let editorMinWidth: CGFloat = 320
+    private static let playerMinHeight: CGFloat = 180
+    private static let editorMinHeight: CGFloat = 160
+
+    private var playerView: some View {
+        PlayerView(
+            model: player,
+            sentences: vm.sentences,
+            translations: vm.translations,
+            translationTitle: vm.translationTitle,
+            display: Binding(
+                get: { vm.effectiveDisplayMode },
+                set: { vm.displayMode = $0 }
+            ),
+            sideBySide: $vm.sideBySideLayout,
+            theaterMode: $vm.isTheaterMode,
+            isFullScreen: chrome.isFullScreen,
+            toggleFullScreen: { chrome.toggleFullScreen() }
+        )
     }
 
     @ToolbarContentBuilder
@@ -173,7 +208,6 @@ struct ContentView: View {
                     .help(L("Altyazıyı üret, seçili dile çevir ve otomatik kaydet"))
                 Button(L("Altyazı üret"), systemImage: "captions.bubble") { vm.generate() }
                     .labelStyle(.titleAndIcon)
-                    .keyboardShortcut(.return, modifiers: .command)
                     .disabled(vm.video == nil)
                     .help(L("Videonun sesini metne çevirip altyazı çıkar (⌘↩)"))
             }
@@ -297,6 +331,14 @@ struct ContentView: View {
     private var statusBar: some View {
         HStack(spacing: 10) {
             switch vm.status {
+            case .idle where vm.isAsyncTranslating:
+                // Background translation with nothing else running.
+                if let fraction = vm.asyncTranslationFraction {
+                    ProgressView(value: fraction).frame(width: 120)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(vm.asyncStatusText)
             case .idle:
                 Text(vm.workspace == .playlist || vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
             case .working(let label, let fraction):

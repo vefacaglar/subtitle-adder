@@ -353,9 +353,10 @@ import Testing
         vm.diarize = false
         vm.openVideo(URL(filePath: "/tmp/never-opened.mp4"))
         vm.generateAndTranslate()
-        for _ in 0..<100 where vm.asyncTranslationFraction == nil { try await Task.sleep(for: .milliseconds(50)) }
+        for _ in 0..<100 where !vm.isAsyncTranslating { try await Task.sleep(for: .milliseconds(50)) }
         #expect(vm.asyncTask != nil)
-        #expect(vm.asyncTranslationFraction != nil)
+        // The server has answered nothing yet, so the share is unknown.
+        #expect(vm.isAsyncTranslating && vm.asyncTranslationFraction == nil)
         vm.cancel()
         #expect(vm.asyncTask == nil && vm.asyncTranslationFraction == nil && vm.asyncQueued.isEmpty)
         #expect(!vm.isWorking)

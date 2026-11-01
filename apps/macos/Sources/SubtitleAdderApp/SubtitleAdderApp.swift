@@ -43,9 +43,28 @@ struct SubtitleAdderApp: App {
                 .onOpenURL { vm.openFiles([$0]) }
                 .environment(\.locale, language.effective.locale)
         }
+        .commands { LayoutCommands(vm: vm) }
         Settings {
             SettingsView(vm: vm, catalog: catalog, language: language)
                 .environment(\.locale, language.effective.locale)
+        }
+    }
+}
+
+/// Menu commands for what the toolbar offers, so they keep working while theater mode hides the toolbar.
+/// Full screen (⌃⌘F) is the system's own View menu item.
+private struct LayoutCommands: Commands {
+    @Bindable var vm: SubtitleViewModel
+
+    var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button(L("Altyazı üret"), systemImage: "captions.bubble") { vm.generate() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(vm.video == nil || vm.isWorking || vm.workspace != .editor)
+        }
+        CommandGroup(after: .toolbar) {
+            Toggle(L("Tiyatro modu"), isOn: $vm.isTheaterMode)
+            Toggle(L("Altyazıları sağa / alta al"), isOn: $vm.sideBySideLayout)
         }
     }
 }

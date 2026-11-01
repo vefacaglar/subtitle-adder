@@ -54,8 +54,12 @@ extension SubtitleViewModel {
         // A partial request carries up to two neighbours per line so the model still sees the dialogue; only the
         // requested lines' results are applied.
         let contextualRequest = Self.withTranslationContext(sentences, requested: request)
-        // Lines that already have a translation count as done in the progress.
-        let alreadyDone = sentences.count - request.count
+        // Lines whose translation stays count as done in the progress; counted from the translations themselves.
+        let alreadyDone = reuseExisting
+            ? sentences.count { sentence in
+                translations[sentence.uid].map { Self.isReusableTranslation(sentence, entry: $0, target: target) } ?? false
+            }
+            : 0
         let total = max(1, sentences.count)
         savedSubtitleName = nil
         job?.cancel()
@@ -66,6 +70,7 @@ extension SubtitleViewModel {
         if request.isEmpty {
             // Everything was translated in the background: only the save is left.
             status = .working(.key("Çeviri hazırlanıyor…"), fraction: nil)
+            isTranslationJobRunning = true
             job = Task {
                 guard jobID == id, !Task.isCancelled else { return }
                 status = .finished
@@ -73,10 +78,12 @@ extension SubtitleViewModel {
             }
             return
         }
-        status = alreadyDone > 0
-            ? .working(Self.label(for: .translating, fraction: Double(alreadyDone) / Double(total), purpose: .translation),
-                       fraction: Double(alreadyDone) / Double(total))
-            : .working(.key("Çeviri hazırlanıyor…"), fraction: nil)
+        if let initial = Self.translationProgress(done: alreadyDone, total: total) {
+            status = .working(Self.label(for: .translating, fraction: initial, purpose: .translation), fraction: initial)
+        } else {
+            status = .working(.key("Çeviri hazırlanıyor…"), fraction: nil)
+        }
+        isTranslationJobRunning = true
         job = Task {
             // However it ends, the model becomes deletable in Settings.
             defer { if jobID == id { catalog.activeModels = [] } }
@@ -86,8 +93,10 @@ extension SubtitleViewModel {
                     guard jobID == id, !Task.isCancelled else { return }
                     switch event {
                     case .stage(let stage, var fraction):
-                        if alreadyDone > 0, stage == .translating, let part = fraction {
-                            fraction = (Double(alreadyDone) + Double(request.count) * min(max(part, 0), 1)) / Double(total)
+                        if stage == .translating, let part = fraction {
+                            fraction = Self.translationProgress(
+                                alreadyDone: alreadyDone, requested: request.count, part: part, total: total
+                            )
                         }
                         status = .working(
                             Self.label(for: stage, fraction: fraction, purpose: .translation),
