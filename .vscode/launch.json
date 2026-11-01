@@ -2,15 +2,12 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Subtitle Adder (Windows, publish)",
-            "type": "coreclr",
+            "name": "Publish (Windows)",
+            "type": "node-terminal",
             "request": "launch",
-            "program": "${workspaceFolder}/build/Subtitle Adder/SubtitleAdder.exe",
-            "args": [],
-            "cwd": "${workspaceFolder}/build/Subtitle Adder",
-            "console": "internalConsole",
-            "stopAtEntry": false,
-            "preLaunchTask": "windows: publish"
+            "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\" -Zip",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "engine: uv sync"
         },
         {
             "name": "Subtitle Adder (Windows)",

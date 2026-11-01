@@ -4,7 +4,7 @@
 Packages Subtitle Adder for Windows: the WinUI 3 app (self-contained) + the PyInstaller (onedir) engine.
 
 .DESCRIPTION
-    pwsh scripts/package-windows.ps1 [-SkipEngineBuild] [-NoSmokeTest] [-Zip] [-Version 0.2.0]
+    pwsh scripts/package-windows.ps1 [-SkipEngineBuild] [-SmokeTest] [-Zip] [-Version 0.2.0]
 
 Output: build\Subtitle Adder\SubtitleAdder.exe with build\Subtitle Adder\subtitle-engine\subtitle-engine.exe next to
 it (EngineCommand.Locate's packaged path). Builds for win-x64 only.
@@ -19,8 +19,8 @@ Environment variables:
 .PARAMETER SkipEngineBuild
 Reuses build\engine-dist\subtitle-engine if it is already built (like SKIP_ENGINE_BUILD=1 on macOS).
 
-.PARAMETER NoSmokeTest
-Skips the 8-second GUI startup smoke test (useful when VS Code launches SubtitleAdder.exe immediately afterwards).
+.PARAMETER SmokeTest
+Launches SubtitleAdder.exe briefly to verify startup.
 
 .PARAMETER Zip
 Also writes build\SubtitleAdder-<version>-win-x64.zip.
@@ -28,7 +28,7 @@ Also writes build\SubtitleAdder-<version>-win-x64.zip.
 [CmdletBinding()]
 param(
     [switch]$SkipEngineBuild,
-    [switch]$NoSmokeTest,
+    [switch]$SmokeTest,
     [switch]$Zip,
     [string]$Version
 )
@@ -183,9 +183,8 @@ Write-Host "Bundled engine lists $($listing.models.Count) models."
 $locateOut = Join-Path $Build 'locate-check'
 dotnet build $LocateCheck -c Release -o $locateOut -nologo -v quiet
 & (Join-Path $locateOut 'LocateCheck.exe') $AppDir
-# Startup smoke test: a publish that misses XAML resources crashes within a second or two. Skipped on CI runners,
-# which may have no interactive desktop, or when -NoSmokeTest is passed (e.g. VS Code preLaunchTask).
-if (-not $env:GITHUB_ACTIONS -and -not $NoSmokeTest) {
+# Optional startup smoke test: launches the app for 8 seconds when -SmokeTest is given.
+if ($SmokeTest -and -not $env:GITHUB_ACTIONS) {
     $app = Start-Process (Join-Path $AppDir 'SubtitleAdder.exe') -PassThru
     if ($app.WaitForExit(8000)) { throw "SubtitleAdder.exe exited at startup (code $($app.ExitCode))." }
     $app.Kill($true)

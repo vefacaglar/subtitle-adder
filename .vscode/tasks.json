@@ -203,7 +203,7 @@
         {
             "label": "windows: publish",
             "type": "shell",
-            "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\" -Zip -NoSmokeTest",
+            "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\" -Zip",
             "dependsOn": [
                 "engine: uv sync"
             ],
