@@ -43,6 +43,7 @@ public sealed partial class SubtitleViewModel
             Status = new JobStatus.Failed(LocalizedMessage.Key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç."));
             return;
         }
+        if (BlockedOffline([_translationModel], Translate)) return;
         var request = _sentences;
         var model = _translationModel;
         Status = new JobStatus.Working(LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);

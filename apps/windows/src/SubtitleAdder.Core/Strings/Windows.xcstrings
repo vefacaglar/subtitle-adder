@@ -17,6 +17,22 @@
         }
       }
     },
+    "%@ indirilmemiş. Çevrimdışı mod açıkken model indirilemez." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ is not downloaded. Models cannot be downloaded while offline mode is on."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ indirilmemiş. Çevrimdışı mod açıkken model indirilemez."
+          }
+        }
+      }
+    },
     "%@ İşlemini Geri Al" : {
       "localizations" : {
         "en" : {
@@ -97,6 +113,22 @@
         }
       }
     },
+    "Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez. Ses ve metin hiçbir durumda dışarı gönderilmez." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "When on, the app never connects to the internet and missing models are not downloaded. Audio and text are never sent anywhere."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez. Ses ve metin hiçbir durumda dışarı gönderilmez."
+          }
+        }
+      }
+    },
     "Dosya kaydedilemedi: %@" : {
       "localizations" : {
         "en" : {
@@ -125,6 +157,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Geri Al"
+          }
+        }
+      }
+    },
+    "Gizlilik" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Privacy"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gizlilik"
           }
         }
       }
@@ -269,6 +317,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Yinele"
+          }
+        }
+      }
+    },
+    "Çevrimdışı mod" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offline mode"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Çevrimdışı mod"
+          }
+        }
+      }
+    },
+    "Çevrimdışı modu kapat ve indir" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turn off offline mode and download"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Çevrimdışı modu kapat ve indir"
           }
         }
       }

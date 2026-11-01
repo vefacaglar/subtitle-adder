@@ -42,20 +42,33 @@ public sealed class EngineClient : IEngineClient
     /// </summary>
     public UILanguage? Language { get; set; }
 
+    /// <summary>
+    /// Strict offline mode passed to the engine as <c>SUBTITLE_ENGINE_OFFLINE</c> (no network, not even for downloads).
+    /// <c>null</c> follows <see cref="OfflineState.Shared"/> at each launch.
+    /// </summary>
+    public bool? Offline { get; set; }
+
     /// <summary>Path of the temporary stderr log for each launch; replaceable by tests.</summary>
     internal Func<string> LogPathFactory { get; set; } =
         () => Path.Combine(Path.GetTempPath(), $"subtitle-engine-{Guid.NewGuid()}.log");
 
-    /// <summary>Environment for the engine process: <paramref name="baseEnvironment"/> (the parent's) plus <c>SUBTITLE_ENGINE_LANG</c>.</summary>
+    /// <summary>
+    /// Environment for the engine process: <paramref name="baseEnvironment"/> (the parent's) plus <c>SUBTITLE_ENGINE_LANG</c>
+    /// and <c>SUBTITLE_ENGINE_OFFLINE</c>.
+    /// </summary>
     internal static Dictionary<string, string?> ProcessEnvironment(
-        UILanguage language, IReadOnlyDictionary<string, string?>? baseEnvironment = null)
+        UILanguage language, bool offline, IReadOnlyDictionary<string, string?>? baseEnvironment = null)
     {
         var env = new Dictionary<string, string?>(baseEnvironment ?? EngineCommand.ProcessEnvironment(), StringComparer.OrdinalIgnoreCase)
         {
             ["SUBTITLE_ENGINE_LANG"] = language.Code(),
+            ["SUBTITLE_ENGINE_OFFLINE"] = offline ? "1" : "0",
         };
         return env;
     }
+
+    /// <summary>The explicit offline setting, or the app's current one when none was set.</summary>
+    internal bool ResolvedOffline() => Offline ?? OfflineState.Shared.Enabled;
 
     /// <summary>The explicit language, or the app's current UI language (<paramref name="current"/>) when none was set.</summary>
     internal UILanguage ResolvedLanguage(UILanguage? current = null) => Language ?? current ?? LanguageState.Shared.Language;
@@ -252,6 +265,7 @@ public sealed class EngineClient : IEngineClient
         foreach (var argument in Command.Arguments) info.ArgumentList.Add(argument);
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
         info.Environment["SUBTITLE_ENGINE_LANG"] = language.Code();
+        info.Environment["SUBTITLE_ENGINE_OFFLINE"] = ResolvedOffline() ? "1" : "0";
 
         // stderr goes to a file (drained continuously), so model download progress can't fill the pipe and hang the engine.
         var logPath = LogPathFactory();

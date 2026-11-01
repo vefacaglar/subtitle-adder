@@ -59,7 +59,9 @@ public class UiThreadTests
     {
         var engine = new FakeEngineClient();
         var catalog = new ModelCatalog(engine);
-        var vm = new SubtitleViewModel(catalog, new InMemorySettingsStore(), new SynchronizationContextDispatcher(), new LanguageState());
+        var settings = new InMemorySettingsStore();
+        settings.SetBool(SubtitleViewModel.OfflineModeDefaultsKey, false);  // these jobs use models the catalog marks missing
+        var vm = new SubtitleViewModel(catalog, settings, new SynchronizationContextDispatcher(), new LanguageState());
         var violations = new ConcurrentQueue<string>();
         PropertyChangedEventHandler check(string owner) => (_, e) =>
         {

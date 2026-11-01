@@ -77,6 +77,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public const string DisplayModeDefaultsKey = "subtitleDisplayMode";
     public const string DiarizeDefaultsKey = "diarizeSpeakers";
     public const string SpeakerCountDefaultsKey = "speakerCount";
+    public const string OfflineModeDefaultsKey = "offlineMode";
 
     private readonly ISettingsStore _settings;
     private readonly IUiDispatcher _ui;
@@ -89,6 +90,9 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private SubtitleDisplay _displayMode;
     private bool _diarize;
     private int _speakerCount;
+    private bool _offlineMode;
+    /// <summary>The job a missing-model failure in offline mode can be retried with ("Çevrimdışı modu kapat ve indir").</summary>
+    private Action? _offlineRetry;
     private JobStatus _status = JobStatus.IdleStatus;
     private string? _detectedLanguage;
     private IReadOnlyList<Sentence> _sentences = [];
@@ -125,6 +129,8 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         _diarize = settings.GetBool(DiarizeDefaultsKey) ?? true;
         var savedCount = settings.GetInt(SpeakerCountDefaultsKey) ?? 0;
         _speakerCount = savedCount >= 2 ? savedCount : 0;
+        _offlineMode = settings.GetBool(OfflineModeDefaultsKey) ?? true;
+        OfflineState.Shared.Enabled = _offlineMode;
 
         GenerateCommand = new RelayCommand(Generate, () => Video is not null && !IsWorking);
         CancelCommand = new RelayCommand(Cancel, () => IsWorking);
@@ -253,6 +259,54 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     /// <summary>Choices of the speaker count picker: 0 (automatic) and 2…6 (same as macOS).</summary>
     public static IReadOnlyList<int> SpeakerCountChoices { get; } = [0, 2, 3, 4, 5, 6];
 
+    /// <summary>
+    /// Strict offline mode: the engine never uses the network, so missing models are not downloaded. Persistent, on by
+    /// default; applied to every engine launch through <see cref="OfflineState.Shared"/>.
+    /// </summary>
+    public bool OfflineMode
+    {
+        get => _offlineMode;
+        set
+        {
+            if (!SetProperty(ref _offlineMode, value)) return;
+            OfflineState.Shared.Enabled = value;
+            _settings.SetBool(OfflineModeDefaultsKey, value);
+        }
+    }
+
+    /// <summary>The current failure is a model offline mode kept from downloading; the error bar offers to go online.</summary>
+    public bool CanGoOnlineAndRetry => _offlineRetry is not null && _status is JobStatus.Failed;
+
+    /// <summary>Turns offline mode off and runs the blocked job again, which downloads the missing model.</summary>
+    public void GoOnlineAndRetry()
+    {
+        if (!CanGoOnlineAndRetry || _offlineRetry is not { } retry) return;
+        _offlineRetry = null;
+        OfflineMode = false;
+        retry();
+    }
+
+    /// <summary>
+    /// In offline mode a catalog model that is not on disk can't be downloaded: fails before starting, with a retry that goes
+    /// online. Models the catalog doesn't know (catalog not loaded yet) are left to the engine, which reports them too.
+    /// </summary>
+    private bool BlockedOffline(IEnumerable<string> modelIds, Action retry)
+    {
+        _offlineRetry = null;
+        if (!_offlineMode) return false;
+        var missing = modelIds
+            .Where(id => Catalog.Models.FirstOrDefault(m => m.Id == id) is { Downloaded: false })
+            .ToList();
+        if (missing.Count == 0) return false;
+        // Set before the status, so views reacting to the status change already see the retry.
+        _offlineRetry = retry;
+        Status = new JobStatus.Failed(new LocalizedMessage(
+            "offline:" + string.Join(",", missing),
+            () => L("%@ indirilmemiş. Çevrimdışı mod açıkken model indirilemez.", string.Join(", ", missing.Select(ModelLabel.Name)))));
+        OnPropertyChanged(nameof(CanGoOnlineAndRetry));
+        return true;
+    }
+
     /// <summary>Label of a speaker count choice ("Otomatik" for 0).</summary>
     public static string SpeakerCountTitle(int count) => count == 0 ? L("Otomatik") : count.ToString(CultureInfo.InvariantCulture);
 
@@ -264,6 +318,8 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         private set
         {
             if (!SetProperty(ref _status, value)) return;
+            if (value is not JobStatus.Failed) _offlineRetry = null;
+            OnPropertyChanged(nameof(CanGoOnlineAndRetry));
             OnPropertyChanged(nameof(IsWorking));
             OnPropertyChanged(nameof(StatusKind));
             OnPropertyChanged(nameof(StatusText));
@@ -593,6 +649,8 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             Status = new JobStatus.Failed(LocalizedMessage.Error(EngineException.NotFound()));
             return;
         }
+        string[] needed = _diarize ? [_model, DiarizationModelId] : [_model];
+        if (BlockedOffline(needed, Generate)) return;
         Sentences = [];
         Translations = new Dictionary<Guid, TranslationEntry>();
         TranslationDraft = null;

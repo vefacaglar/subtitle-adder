@@ -122,7 +122,12 @@ internal static class Make
         InMemorySettingsStore? settings = null, bool engine = true)
     {
         var fake = new FakeEngineClient();
-        settings ??= new InMemorySettingsStore();
+        if (settings is null)
+        {
+            settings = new InMemorySettingsStore();
+            // Job tests exercise downloads; the offline-mode tests turn it on explicitly.
+            settings.SetBool(SubtitleViewModel.OfflineModeDefaultsKey, false);
+        }
         var vm = new SubtitleViewModel(new ModelCatalog(engine ? fake : null), settings);
         return (vm, fake, settings);
     }

@@ -181,6 +181,24 @@
                                           loc:Localize.AutomationName="Konuşmacı sayısı" />
                             </Grid>
                         </Border>
+
+                        <TextBlock loc:Localize.Text="Gizlilik" Style="{StaticResource SectionHeaderStyle}" />
+                        <Border Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <Grid ColumnSpacing="16" VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xE709;" FontSize="18" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock loc:Localize.Text="Çevrimdışı mod" Style="{StaticResource CardTitleStyle}" />
+                                        <TextBlock loc:Localize.Text="Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez. Ses ve metin hiçbir durumda dışarı gönderilmez."
+                                                   Style="{StaticResource SecondaryTextStyle}" />
+                                    </StackPanel>
+                                </Grid>
+                                <ToggleSwitch x:Name="OfflineSwitch" Grid.Column="1" MinWidth="0" Toggled="OfflineSwitch_Toggled"
+                                              OnContent="" OffContent="" loc:Localize.AutomationName="Çevrimdışı mod" />
+                            </Grid>
+                        </Border>
                     </StackPanel>
 
                     <!-- Appearance -->

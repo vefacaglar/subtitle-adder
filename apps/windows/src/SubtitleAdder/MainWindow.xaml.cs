@@ -202,11 +202,16 @@ public sealed partial class MainWindow : Window
             ErrorBar.IsOpen = false;
             _shownError = null;
         }
+        GoOnlineButton.Visibility = Vm.CanGoOnlineAndRetry && _saveError is null ? Visibility.Visible : Visibility.Collapsed;
     }
+
+    /// <summary>A model offline mode kept from downloading: turn offline mode off and run the job again.</summary>
+    private void GoOnlineButton_Click(object sender, RoutedEventArgs e) => Vm.GoOnlineAndRetry();
 
     private void ShowSaveError(Func<string> message)
     {
         _saveError = message;
+        GoOnlineButton.Visibility = Visibility.Collapsed;
         ErrorBar.Message = message();
         ErrorBar.IsOpen = true;
     }

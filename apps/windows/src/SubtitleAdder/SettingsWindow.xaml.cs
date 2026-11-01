@@ -118,6 +118,7 @@ public sealed partial class SettingsWindow : Window
         TranslationModelBox.IsEnabled = translationModels.Count > 0;
         _syncing = true;
         DiarizeSwitch.IsOn = _vm.Diarize;
+        OfflineSwitch.IsOn = _vm.OfflineMode;
         _syncing = false;
         var counts = SubtitleViewModel.SpeakerCountChoices;
         Fill(SpeakerCountBox, counts.Select(SubtitleViewModel.SpeakerCountTitle), IndexOf(counts, c => c == _vm.SpeakerCount), refill);
@@ -234,6 +235,12 @@ public sealed partial class SettingsWindow : Window
     {
         if (_syncing) return;
         _vm.Diarize = DiarizeSwitch.IsOn;
+    }
+
+    private void OfflineSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        _vm.OfflineMode = OfflineSwitch.IsOn;
     }
 
     private void SpeakerCountBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

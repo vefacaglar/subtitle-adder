@@ -116,7 +116,12 @@
             </StackPanel>
         </Grid>
 
-        <InfoBar x:Name="ErrorBar" Grid.Row="2" Margin="12,0,12,10" Severity="Error" IsOpen="False" IsClosable="True" />
+        <InfoBar x:Name="ErrorBar" Grid.Row="2" Margin="12,0,12,10" Severity="Error" IsOpen="False" IsClosable="True">
+            <InfoBar.ActionButton>
+                <Button x:Name="GoOnlineButton" Click="GoOnlineButton_Click" Visibility="Collapsed"
+                        loc:Localize.Content="Çevrimdışı modu kapat ve indir" />
+            </InfoBar.ActionButton>
+        </InfoBar>
 
         <!-- Content -->
         <Grid Grid.Row="3" Margin="12,0,12,0">

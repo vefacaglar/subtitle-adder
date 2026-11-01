@@ -59,10 +59,41 @@ public class LanguageEnvTests
     public void EnvironmentKeepsParentVariablesAndOverridesLanguage()
     {
         var engine = new EngineClient(new EngineCommand(@"C:\x"), UILanguage.En);
-        var env = EngineClient.ProcessEnvironment(engine.ResolvedLanguage(),
-            new Dictionary<string, string?> { ["PATH"] = @"C:\bin", ["SUBTITLE_ENGINE_LANG"] = "tr" });
+        var env = EngineClient.ProcessEnvironment(engine.ResolvedLanguage(), offline: true,
+            new Dictionary<string, string?> { ["PATH"] = @"C:\bin", ["SUBTITLE_ENGINE_LANG"] = "tr", ["SUBTITLE_ENGINE_OFFLINE"] = "0" });
         Assert.Equal("en", env["SUBTITLE_ENGINE_LANG"]);
+        Assert.Equal("1", env["SUBTITLE_ENGINE_OFFLINE"]);
         Assert.Equal(@"C:\bin", env["PATH"]);
+    }
+
+    [Fact]
+    public async Task LaunchPassesOfflineMode()
+    {
+        var engine = Fake.Engine("drain\nout ${SUBTITLE_ENGINE_OFFLINE}", UILanguage.En);
+        engine.Offline = true;
+        Assert.Equal("1", (await engine.RenderAsync(Sample, SubtitleFormat.Srt)).Trim());
+        engine.Offline = false;
+        Assert.Equal("0", (await engine.RenderAsync(Sample, SubtitleFormat.Srt)).Trim());
+    }
+
+    [Fact]
+    public void OfflineFollowsSharedStateUnlessSet()
+    {
+        var engine = new EngineClient(new EngineCommand(@"C:\x"));
+        var saved = OfflineState.Shared.Enabled;
+        try
+        {
+            OfflineState.Shared.Enabled = true;
+            Assert.True(engine.ResolvedOffline());
+            OfflineState.Shared.Enabled = false;
+            Assert.False(engine.ResolvedOffline());
+            engine.Offline = true;
+            Assert.True(engine.ResolvedOffline());
+        }
+        finally
+        {
+            OfflineState.Shared.Enabled = saved;
+        }
     }
 
     [Fact]
