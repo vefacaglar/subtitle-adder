@@ -99,7 +99,8 @@ class Ct2Translator:
         check_request(self._info.id, target, source)
         # Boş satırlar modele gitmez; zamanları ve kimlikleri korunarak metinsiz döner.
         result_sentences = [
-            Sentence(id=s.id, start=s.start, end=s.end, text=s.text, words=[]) for s in sentences
+            Sentence(id=s.id, start=s.start, end=s.end, text=s.text, words=[], speaker=s.speaker)
+            for s in sentences
         ]
         pending = [(index, sentence) for index, sentence in enumerate(sentences) if sentence.text.strip()]
         if not pending:
@@ -130,6 +131,7 @@ class Ct2Translator:
                     end=sentence.end,
                     text=text or sentence.text,
                     words=[],
+                    speaker=sentence.speaker,
                 )
             processed += len(batch)
             if on_progress is not None:

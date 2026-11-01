@@ -1,7 +1,7 @@
 """Motor CLI. `--json` ile stdout'a satır satır JSON olay yazar (native uygulamalar bunu okur).
 
 Olaylar:
-  {"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|segmenting|translating", "fraction": 0.42|null}
+  {"event": "stage", "stage": "extracting_audio|downloading_model|loading_model|transcribing|diarizing|segmenting|translating", "fraction": 0.42|null}
   {"event": "models", "models": [{"id", "kind", "backend", "languages", "size_mb", "disk_mb", "speed", "accuracy", "license", "downloaded"}]}
   {"event": "deleted", "id": "small", "freed_mb": 465}
   {"event": "result", "language": "tr", "duration": 12.3, "audio": "...", "outputs": [...], "sentences": [...]}
@@ -26,6 +26,8 @@ def _emit(payload: dict) -> None:
 
 
 def _transcribe(args: argparse.Namespace) -> int:
+    if args.speakers is not None and not args.diarize:
+        raise ValueError("--speakers yalnız --diarize ile kullanılabilir.")
     def on_stage(stage: str, fraction: float | None) -> None:
         if args.json:
             _emit({"event": "stage", "stage": stage, "fraction": fraction})
@@ -46,6 +48,8 @@ def _transcribe(args: argparse.Namespace) -> int:
         formats=tuple(args.format),
         config=SegmenterConfig(max_chars=args.max_chars, max_duration=args.max_duration),
         on_stage=on_stage,
+        diarize=args.diarize,
+        num_speakers=args.speakers,
     )
     if args.json:
         _emit({
@@ -133,15 +137,15 @@ def _models(args: argparse.Namespace) -> int:
         _emit({"event": "models", "models": rows})
         return 0
     print(
-        f"{'model':<16}{'tür':>14}{'boyut':>10}{'disk':>10}"
-        f"{'hız':>6}{'doğruluk':>10}{'lisans':>14}{'önbellek':>10}"
+        f"{'model':<22}{'tür':>14}{'boyut':>10}{'disk':>10}"
+        f"{'hız':>6}{'doğruluk':>10}{'lisans':>20}{'önbellek':>10}"
     )
     for row in rows:
         disk = "—" if row["disk_mb"] is None else f"{row['disk_mb']} MB"
         cached = "var" if row["downloaded"] else "yok"
         print(
-            f"{row['id']:<16}{row['kind']:>14}{row['size_mb']:>7} MB{disk:>10}"
-            f"{row['speed']:>6}{row['accuracy']:>10}{row['license']:>14}{cached:>10}"
+            f"{row['id']:<22}{row['kind']:>14}{row['size_mb']:>7} MB{disk:>10}"
+            f"{row['speed']:>6}{row['accuracy']:>10}{row['license']:>20}{cached:>10}"
         )
     return 0
 
@@ -169,6 +173,8 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("-f", "--format", nargs="+", choices=subtitles.FORMATS, default=["srt"])
     t.add_argument("--max-chars", type=int, default=84)
     t.add_argument("--max-duration", type=float, default=6.0)
+    t.add_argument("--diarize", action="store_true", help="konuşmacıları ayır (yerel); cümlelere speaker eklenir")
+    t.add_argument("--speakers", type=int, default=None, help="konuşmacı sayısı (yalnız --diarize ile; boşsa otomatik)")
     t.add_argument("--json", action="store_true", help="stdout'a JSON olay akışı yaz")
     t.set_defaults(handler=_transcribe)
 

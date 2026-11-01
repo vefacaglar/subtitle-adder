@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("ctranslate2", "onnxruntime", "av", "tokenizers", "sentencepiece",
-            "onnx_asr", "faster_whisper", "huggingface_hub", "hf_xet"):
+            "onnx_asr", "sherpa_onnx", "faster_whisper", "huggingface_hub", "hf_xet"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b

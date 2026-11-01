@@ -261,3 +261,14 @@ def test_real_madlad_translates_tr_es_and_ru_pt():
         [sentence(2, 0.0, 2.0, "Oda numarası 42, Mehmet ile görüşün.")], "es", source="tr"
     )
     assert "42" in result[0].text and "Mehmet" in result[0].text
+
+
+def test_translate_keeps_speaker(make_translator):
+    translator, _ = make_translator("madlad-3b")
+    sentences = [
+        Sentence(id=1, start=0.0, end=1.0, text="Merhaba.", speaker=0),
+        Sentence(id=2, start=1.0, end=2.0, text=" ", speaker=1),
+        Sentence(id=3, start=2.0, end=3.0, text="Selam.", speaker=None),
+    ]
+    result = translator.translate(sentences, target="es")
+    assert [r.speaker for r in result] == [0, 1, None]

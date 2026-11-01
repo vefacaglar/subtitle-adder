@@ -1,4 +1,5 @@
 """Adım 3: kelime akışını cümlelere, uzun cümleleri ekrana sığan altyazı satırlarına böler."""
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .models import Sentence, Word
@@ -20,9 +21,38 @@ class SegmenterConfig:
     max_duration: float = 6.0
 
 
-def segment(words: list[Word], config: SegmenterConfig = SegmenterConfig()) -> list[Sentence]:
-    lines = [line for sentence in split_sentences(words, config.pause_gap) for line in fit(sentence, config)]
-    return [_join(line, i) for i, line in enumerate(lines, 1)]
+def segment(
+    words: list[Word],
+    config: SegmenterConfig = SegmenterConfig(),
+    speakers: Sequence[int | None] | None = None,
+) -> list[Sentence]:
+    """Splits words into subtitle lines. If `speakers` is parallel to the words, it also splits at every
+    speaker change: a line never contains two speakers."""
+    lines: list[tuple[list[Word], int | None]] = []
+    for run, speaker in speaker_runs(words, speakers):
+        lines.extend(
+            (line, speaker) for sentence in split_sentences(run, config.pause_gap) for line in fit(sentence, config)
+        )
+    return [_join(line, i, speaker) for i, (line, speaker) in enumerate(lines, 1)]
+
+
+def speaker_runs(
+    words: list[Word], speakers: Sequence[int | None] | None
+) -> list[tuple[list[Word], int | None]]:
+    """Consecutive words of the same speaker. Without `speakers`, a single run (speaker None)."""
+    if not words:
+        return []
+    if speakers is None:
+        return [(list(words), None)]
+    if len(speakers) != len(words):
+        raise ValueError("Konuşmacı listesi kelime sayısıyla aynı uzunlukta olmalı.")
+    runs: list[tuple[list[Word], int | None]] = []
+    for word, speaker in zip(words, speakers):
+        if runs and runs[-1][1] == speaker:
+            runs[-1][0].append(word)
+        else:
+            runs.append(([word], speaker))
+    return runs
 
 
 def split_sentences(words: list[Word], pause_gap: float) -> list[list[Word]]:
@@ -60,11 +90,12 @@ def _too_long(words: list[Word], config: SegmenterConfig) -> bool:
     return chars > config.max_chars or words[-1].end - words[0].start > config.max_duration
 
 
-def _join(words: list[Word], id: int) -> Sentence:
+def _join(words: list[Word], id: int, speaker: int | None = None) -> Sentence:
     return Sentence(
         id=id,
         start=words[0].start,
         end=words[-1].end,
         text=" ".join(w.text for w in words),
         words=list(words),
+        speaker=speaker,
     )

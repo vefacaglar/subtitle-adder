@@ -35,7 +35,7 @@ def make_cached_repo(cache_dir, repo_id, files, revision="1" * 40):
 def test_catalog_order_and_fields():
     assert [m.id for m in models.KATALOG] == [
         "base", "gigaam-v3", "small", "parakeet-v3", "canary-1b-v2", "medium", "large-v3-turbo", "large-v3",
-        "nllb-1.3b", "madlad-3b",
+        "nllb-1.3b", "madlad-3b", "speaker-diarization",
     ]
     assert all(m.repo for m in models.KATALOG)
     assert all(m.size_mb > 0 for m in models.KATALOG)

@@ -47,6 +47,7 @@ class Sentence:
     end: float
     text: str
     words: list[Word] = field(default_factory=list)
+    speaker: int | None = None  # 0-based speaker; None when diarization was off
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -54,7 +55,14 @@ class Sentence:
     @classmethod
     def from_dict(cls, data: dict) -> "Sentence":
         words = [Word(**w) for w in data.get("words", [])]
-        return cls(id=data["id"], start=data["start"], end=data["end"], text=data["text"], words=words)
+        return cls(
+            id=data["id"],
+            start=data["start"],
+            end=data["end"],
+            text=data["text"],
+            words=words,
+            speaker=data.get("speaker"),
+        )
 
 
 # --- Model kataloğu -------------------------------------------------------------
@@ -78,6 +86,12 @@ TRANSLATION_LANGUAGES = ("tr", "en", "pt", "es", "ru")
 VAD_REPO = "istupakov/silero-vad-onnx"
 VAD_FILE = "silero_vad.onnx"
 
+# Speaker diarization (sherpa-onnx): segmentation-3.0 int8 (~1.5 MB) and CAM++ embedding (~28 MB).
+DIARIZATION_SEGMENTATION_REPO = "csukuangfj/sherpa-onnx-pyannote-segmentation-3-0"
+DIARIZATION_SEGMENTATION_FILE = "model.int8.onnx"
+DIARIZATION_EMBEDDING_REPO = "csukuangfj/speaker-embedding-models"
+DIARIZATION_EMBEDDING_FILE = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+
 # Parakeet TDT v3 ve Canary 1B v2'nin desteklediği Avrupa dilleri.
 EUROPEAN_LANGUAGES = (
     "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
@@ -89,8 +103,8 @@ PROGRESS_INTERVAL = 0.1
 
 _MIB = 1024 * 1024
 
-Backend = Literal["whisper", "onnx", "ctranslate2"]
-ModelKind = Literal["transcription", "translation"]
+Backend = Literal["whisper", "onnx", "ctranslate2", "sherpa"]
+ModelKind = Literal["transcription", "translation", "diarization"]
 
 
 @dataclass(frozen=True)
@@ -109,6 +123,9 @@ class ModelInfo:
     files: tuple[str, ...] = ALLOW_PATTERNS  # repo içinde indirilecek dosya desenleri
     kind: ModelKind = "transcription"  # çeviri modelleri arayüzde ayrı listelenir
     license: str = "MIT"  # model kartındaki lisans (SPDX kısa adı)
+    extra: tuple[tuple[str, tuple[str, ...]], ...] = ()  # extra repos: (repo, files)
+    owns_files_only: bool = False  # repos hold other models too: measure/delete only the listed files
+    part_bytes: tuple[int, ...] = ()  # real download sizes aligned with _parts(), used as fallback estimates
 
 
 # Sıra arayüzdeki liste sırasıdır: küçükten büyüğe.
@@ -199,6 +216,22 @@ KATALOG: tuple[ModelInfo, ...] = (
         kind="translation",
         license="Apache-2.0",
     ),
+    ModelInfo(
+        # Speaker diarization: pyannote segmentation-3.0 (MIT) + 3D-Speaker CAM++ embedding model
+        # (Apache-2.0), run by sherpa-onnx. Both repos belong to this entry only.
+        id="speaker-diarization",
+        repo=DIARIZATION_SEGMENTATION_REPO,
+        size_mb=29,
+        speed=4,
+        accuracy=3,
+        backend="sherpa",
+        files=(DIARIZATION_SEGMENTATION_FILE,),
+        kind="diarization",
+        license="MIT AND Apache-2.0",
+        extra=((DIARIZATION_EMBEDDING_REPO, (DIARIZATION_EMBEDDING_FILE,)),),
+        owns_files_only=True,  # the embedding repo holds dozens of unrelated models
+        part_bytes=(1_540_506, 28_281_164),
+    ),
 )
 KATALOG_BY_ID = {m.id: m for m in KATALOG}
 
@@ -208,6 +241,7 @@ DISPLAY_NAMES = {
     "canary-1b-v2": "Canary",
     "madlad-3b": "MADLAD",
     "nllb-1.3b": "NLLB",
+    "speaker-diarization": "Konuşmacı ayrıştırma",
 }
 TURKISH_LANGUAGE_NAMES = {
     "ru": "Rusça",
@@ -226,11 +260,18 @@ def find(model_id: str) -> ModelInfo | None:
     return KATALOG_BY_ID.get(model_id)
 
 
+def _parts(info: ModelInfo) -> list[tuple[str, tuple[str, ...]]]:
+    """All repos and files of a model: the main repo plus `extra`."""
+    return [(info.repo, info.files), *info.extra]
+
+
 def is_downloaded(model_id: str) -> bool:
     """Model yerel Hugging Face önbelleğinde mi? Yalnız diske bakar, ağa çıkmaz."""
     info = find(model_id)
     if info is None:
         return False
+    if info.kind == "diarization":
+        return all(_cached(repo, name) for repo, files in _parts(info) for name in files)
     if info.kind == "translation":
         # Ağırlık, yapılandırma, sözlük ve tokenizer birlikte gerekli.
         return all(_cached(info.repo, name) for name in info.files)
@@ -266,7 +307,18 @@ def cached_disk_mb(cache_dir: str | Path | None = None) -> dict[str, int]:
     cache = _scan_cache(cache_dir)
     if cache is None:
         return {}
-    return {repo.repo_id: _mb(repo.size_on_disk) for repo in cache.repos if repo.repo_type == "model"}
+    sizes = {repo.repo_id: _mb(repo.size_on_disk) for repo in cache.repos if repo.repo_type == "model"}
+    # Models that own only some files of a shared repo: per-file sizes under "<repo>#<file>".
+    owned = {repo: set(files) for info in KATALOG if info.owns_files_only for repo, files in _parts(info)}
+    for repo in cache.repos:
+        if repo.repo_type == "model" and repo.repo_id in owned:
+            seen: dict[str, int] = {}
+            for revision in repo.revisions:
+                for file in revision.files:
+                    if file.file_name in owned[repo.repo_id]:
+                        seen[file.file_name] = file.size_on_disk
+            sizes.update({f"{repo.repo_id}#{name}": _mb(size) for name, size in seen.items()})
+    return sizes
 
 
 def disk_mb(model_id: str, sizes: dict[str, int] | None = None) -> int | None:
@@ -277,17 +329,24 @@ def disk_mb(model_id: str, sizes: dict[str, int] | None = None) -> int | None:
     info = find(model_id)
     if info is None or not is_downloaded(model_id):
         return None
-    return (cached_disk_mb() if sizes is None else sizes).get(info.repo)
+    table = cached_disk_mb() if sizes is None else sizes
+    if info.owns_files_only:
+        found = [table.get(f"{repo}#{name}") for repo, files in _parts(info) for name in files]
+    else:
+        found = [table.get(repo) for repo, _ in _parts(info)]
+    if any(size is None for size in found):
+        return None
+    return sum(found)
 
 
 def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
-    """Modelin önbellekteki deposunu (tüm revizyonlar ve blob'lar) siler, boşalan MB'ı döndürür.
+    """Deletes the model's cached repos (all revisions and blobs) and returns the freed MB.
 
     Paylaşılan blob deposunda (`<önbellek>/blobs/`) başka hiçbir repo'nun kullanmadığı dosyaları da
     temizler; başka modelle paylaşılanlar kalır. Dönen değer gerçekten boşalan alandır (başka modelle
     paylaşılan dosyalarda 0 olabilir).
 
-    Yalnız hedef repo klasörüne dokunur: ortak silero VAD gibi yardımcı depolar ve diğer
+    Yalnız hedef repo klasörlerine dokunur: ortak silero VAD gibi yardımcı depolar ve diğer
     modeller korunur. Katalog dışı ya da indirilmemiş modelde `ModelError` yükseltir.
     """
     info = find(model_id)
@@ -295,30 +354,111 @@ def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
         raise ModelError(f"Bilinmeyen model: {model_id}. Geçerli kimlikleri 'models' komutu listeler.")
 
     # Aynı repo'yu paylaşan katalog girdileri varsa silme diğerini de bozar.
-    shared = [other.id for other in KATALOG if other.repo == info.repo and other.id != info.id]
+    mine = {repo for repo, _ in _parts(info)}
+    shared = [
+        other.id
+        for other in KATALOG
+        if other.id != info.id and mine & {repo for repo, _ in _parts(other)}
+    ]
     if shared:
         raise ModelError(f"{info.id} modeli {', '.join(shared)} ile aynı dosyaları paylaşıyor; silinmedi.")
 
     root = Path(cache_dir or HF_HUB_CACHE).expanduser().resolve()
     cache = _scan_cache(root)
-    repo = None
+    repos = []
     if cache is not None:
-        repo = next(
-            (r for r in cache.repos if r.repo_type == "model" and r.repo_id == info.repo),
-            None,
-        )
-    if repo is None:
+        repos = [
+            (repo, found)
+            for repo, _ in _parts(info)
+            for found in cache.repos
+            if found.repo_type == "model" and found.repo_id == repo
+        ]
+    if not repos:
         raise ModelError(f"{info.id} modeli indirilmemiş; silinecek dosya yok.")
 
+    freed = 0
+    leftovers: list[str] = []
+    for repo_id, repo in repos:
+        try:
+            if info.owns_files_only:
+                owned = next(files for part, files in _parts(info) if part == repo_id)
+                freed += _delete_owned_files(root, repo, repo_id, set(owned))
+            else:
+                freed += _delete_whole_repo(root, repo, repo_id)
+        except OSError as exc:
+            leftovers.append(f"{repo.repo_path} ({exc})")
+        except ModelError as exc:
+            leftovers.append(str(exc))
+    if leftovers:
+        # Keep going past a failing repo, then say honestly what happened instead of losing the freed bytes.
+        raise ModelError(
+            f"{DISPLAY_NAMES.get(info.id, info.id)} modeli kısmen silindi ({_mb(freed)} MB boşaldı); "
+            f"kalan: {'; '.join(leftovers)}"
+        )
+    return _mb(freed)
+
+
+def _delete_whole_repo(root: Path, repo, repo_id: str) -> int:
+    """Removes a repo folder entirely; returns the freed bytes (shared blobs swept afterwards)."""
     repo_path = repo.repo_path
     local_bytes, shared_targets = _inspect_repo_blobs(repo_path, root)
-    # delete_revisions commit kimliğini tüm önbellekte arar; yalnız bu repo klasörünü silmek daha güvenli.
-    _remove_repo_leftovers(root, repo_path, info.repo)
-    freed = local_bytes
+    # delete_revisions looks the commit id up in the whole cache; removing just this repo folder is safer.
+    _remove_repo_leftovers(root, repo_path, repo_id)
     if repo_path.exists():
         raise ModelError(f"Model dosyaları tamamen silinemedi: {repo_path}")
-    freed += _sweep_shared_blobs(root, shared_targets)
-    return _mb(freed)
+    return local_bytes + _sweep_shared_blobs(root, shared_targets)
+
+
+def _delete_owned_files(root: Path, repo, repo_id: str, names: set[str]) -> int:
+    """Deletes only `names` from a repo that other things may share: their snapshot entries and blobs.
+
+    Blobs still referenced by another snapshot entry stay. Blobs in the shared store go through the
+    usual sweep. The repo folder itself is removed only when nothing else remains in it.
+    """
+    repo_path = repo.repo_path
+    doomed = [Path(f.file_path) for rev in repo.revisions for f in rev.files if f.file_name in names]
+    kept_blobs = {
+        _entry_blob(Path(f.file_path))
+        for rev in repo.revisions
+        for f in rev.files
+        if Path(f.file_path) not in set(doomed)
+    }
+    freed, targets = 0, set()
+    for link in doomed:
+        blob = _entry_blob(link)  # the repo-local blob (or the file itself where symlinks are unavailable)
+        if blob == link:  # copied file (no symlinks): it is its own data
+            try:
+                freed += link.stat().st_size
+            except OSError:
+                pass
+        link.unlink(missing_ok=True)
+        if blob == link or blob in kept_blobs:
+            continue
+        target = _shared_target(blob, root)
+        if target is not None:
+            targets.add(target)
+        else:
+            try:
+                freed += blob.stat().st_size
+            except OSError:
+                pass
+        blob.unlink(missing_ok=True)
+    remaining = [p for p in (repo_path / "snapshots").rglob("*") if not p.is_dir()] if repo_path.exists() else []
+    if not remaining:
+        local, more = _inspect_repo_blobs(repo_path, root)
+        _remove_repo_leftovers(root, repo_path, repo_id)
+        if repo_path.exists():
+            raise ModelError(f"Model dosyaları tamamen silinemedi: {repo_path}")
+        freed += local
+        targets |= more
+    return freed + _sweep_shared_blobs(root, targets)
+
+
+def _entry_blob(link: Path) -> Path:
+    try:
+        return Path(os.path.normpath(link.parent / os.readlink(link))) if link.is_symlink() else link
+    except OSError:
+        return link
 
 
 def _shared_target(link: Path, root: Path) -> Path | None:
@@ -466,6 +606,8 @@ def ensure_model(model_id: str, on_progress: ProgressFn | None = None) -> str | 
         return None
     if info.backend == "onnx":
         return _ensure_onnx(info, on_progress)
+    if info.extra:
+        return _ensure_parts(info, on_progress)
 
     report = _reporter(_total_bytes(info), on_progress)
     path = huggingface_hub.snapshot_download(
@@ -486,6 +628,37 @@ def _ensure_onnx(info: ModelInfo, on_progress: ProgressFn | None) -> str | None:
     if not _cached(VAD_REPO, VAD_FILE):
         downloads.append((VAD_REPO, [VAD_FILE], _repo_bytes(VAD_REPO, (VAD_FILE,), 2 * _MIB)))
 
+    report = _reporter(sum(size for _, _, size in downloads), on_progress)
+    model_path: str | None = None
+    base = 0
+    for repo, patterns, size in downloads:
+        path = huggingface_hub.snapshot_download(
+            repo,
+            allow_patterns=patterns,
+            tqdm_class=_progress_tqdm(lambda downloaded, base=base: report(base + downloaded)),
+        )
+        if repo == info.repo:
+            model_path = path
+        base += size
+    if on_progress is not None:
+        on_progress(1.0)
+    return model_path
+
+
+def _fallback_bytes(info: ModelInfo, index: int) -> int:
+    """Estimated download size of one part when the Hub cannot be queried."""
+    if index < len(info.part_bytes):
+        return info.part_bytes[index]
+    return max(info.size_mb // len(_parts(info)), 1) * _MIB
+
+
+def _ensure_parts(info: ModelInfo, on_progress: ProgressFn | None) -> str | None:
+    """Downloads a multi-repo model (speaker diarization) through a single progress channel."""
+    downloads = [
+        (repo, list(files), _repo_bytes(repo, files, _fallback_bytes(info, index)))
+        for index, (repo, files) in enumerate(_parts(info))
+        if not all(_cached(repo, name) for name in files)
+    ]
     report = _reporter(sum(size for _, _, size in downloads), on_progress)
     model_path: str | None = None
     base = 0

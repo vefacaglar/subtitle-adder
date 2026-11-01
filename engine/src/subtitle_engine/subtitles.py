@@ -15,15 +15,42 @@ def timestamp(seconds: float, sep: str) -> str:
     return f"{h:02}:{m:02}:{s:02}{sep}{ms:03}"
 
 
+def speaker_dashes(sentences: list[Sentence]) -> list[bool]:
+    """Which sentences get a leading "- ": with at least two distinct speakers, every sentence whose speaker
+    differs from the previous one (the first included). None with one speaker or no speaker info."""
+    if len({s.speaker for s in sentences if s.speaker is not None}) < 2:
+        return [False] * len(sentences)
+    dashes: list[bool] = []
+    previous: int | None = None  # last known speaker; sentences without one do not reset it
+    for s in sentences:
+        dashes.append(s.speaker is not None and s.speaker != previous)
+        if s.speaker is not None:
+            previous = s.speaker
+    return dashes
+
+
+def _texts(sentences: list[Sentence]) -> list[str]:
+    return [
+        "- " + s.text if dash and not _has_dash(s.text) else s.text
+        for s, dash in zip(sentences, speaker_dashes(sentences))
+    ]
+
+
+def _has_dash(text: str) -> bool:
+    """Does the (possibly user-edited) text already start with a dialogue dash?"""
+    return text.startswith(("- ", "\u2013 "))
+
+
 def render(sentences: list[Sentence], fmt: str) -> str:
     if fmt == "srt":
         return "\n".join(
-            f"{i}\n{timestamp(s.start, ',')} --> {timestamp(s.end, ',')}\n{s.text}\n"
-            for i, s in enumerate(sentences, 1)
+            f"{i}\n{timestamp(s.start, ',')} --> {timestamp(s.end, ',')}\n{text}\n"
+            for i, (s, text) in enumerate(zip(sentences, _texts(sentences)), 1)
         )
     if fmt == "vtt":
         return "WEBVTT\n\n" + "\n".join(
-            f"{timestamp(s.start, '.')} --> {timestamp(s.end, '.')}\n{s.text}\n" for s in sentences
+            f"{timestamp(s.start, '.')} --> {timestamp(s.end, '.')}\n{text}\n"
+            for s, text in zip(sentences, _texts(sentences))
         )
     if fmt == "json":
         return json.dumps([s.to_dict() for s in sentences], ensure_ascii=False, indent=2)
