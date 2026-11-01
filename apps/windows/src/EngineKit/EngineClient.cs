@@ -266,6 +266,16 @@ public sealed class EngineClient : IEngineClient
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
         info.Environment["SUBTITLE_ENGINE_LANG"] = language.Code();
         info.Environment["SUBTITLE_ENGINE_OFFLINE"] = ResolvedOffline() ? "1" : "0";
+        if (ExternalLlmState.Shared.ActiveUrl is { } extUrl)
+        {
+            info.Environment["SUBTITLE_ENGINE_EXTERNAL_LLM_URL"] = extUrl;
+            info.Environment["SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL"] = ExternalLlmState.Shared.ActiveModel ?? "";
+        }
+        else
+        {
+            info.Environment.Remove("SUBTITLE_ENGINE_EXTERNAL_LLM_URL");
+            info.Environment.Remove("SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL");
+        }
 
         // stderr goes to a file (drained continuously), so model download progress can't fill the pipe and hang the engine.
         var logPath = LogPathFactory();

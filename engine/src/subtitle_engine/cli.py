@@ -95,7 +95,7 @@ def _render(args: argparse.Namespace) -> int:
 
 def _translate(args: argparse.Namespace) -> int:
     """Translates the sentence JSON on stdin with a local model; one sentence per line."""
-    from .translate import check_request, create_translator
+    from .translate import check_request, create_translator, external_llm_url
 
     def on_stage(stage: str, fraction: float | None) -> None:
         if args.json:
@@ -106,18 +106,19 @@ def _translate(args: argparse.Namespace) -> int:
     # A language/model problem must surface as a (localized) `error` event before any download starts.
     info = check_request(args.model, args.to, args.source)
     sentences = [Sentence.from_dict(d) for d in json.load(sys.stdin)]
-    if models.require_download(args.model):
-        on_stage("downloading_model", 0.0)
-        models.ensure_model(args.model, on_progress=lambda f: on_stage("downloading_model", f))
-    if info.backend == "llama":
-        from . import llama
-
-        if llama.require_llama_download():
+    if external_llm_url() is None:
+        if models.require_download(args.model):
             on_stage("downloading_model", 0.0)
-            llama.ensure_llama(on_progress=lambda f: on_stage("downloading_model", f))
-    elif cuda.needs_cuda_download():
-        on_stage("downloading_model", 0.0)
-        cuda.ensure_cuda(on_progress=lambda f: on_stage("downloading_model", f))
+            models.ensure_model(args.model, on_progress=lambda f: on_stage("downloading_model", f))
+        if info.backend == "llama":
+            from . import llama
+
+            if llama.require_llama_download():
+                on_stage("downloading_model", 0.0)
+                llama.ensure_llama(on_progress=lambda f: on_stage("downloading_model", f))
+        elif cuda.needs_cuda_download():
+            on_stage("downloading_model", 0.0)
+            cuda.ensure_cuda(on_progress=lambda f: on_stage("downloading_model", f))
     models.go_offline()
 
     on_stage("loading_model", None)

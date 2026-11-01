@@ -22,7 +22,9 @@ public sealed partial class SubtitleViewModel
     }
 
     /// <summary>Translates all lines to the selected target language. While running, Stop cancels the same job.</summary>
-    public void Translate()
+    public void Translate() => TranslateCore(reuseExistingTranslations: false);
+
+    private void TranslateCore(bool reuseExistingTranslations)
     {
         if (_sentences.Count == 0) return;
         if (Catalog.Engine is not { } engine)
@@ -38,14 +40,30 @@ public sealed partial class SubtitleViewModel
             Status = new JobStatus.Failed(LocalizedMessage.Key("Kaynak ve hedef dil aynı olamaz."));
             return;
         }
-        if (_translationModel == "nllb-1.3b" && source is null)
+        if (_translationModel == "nllb-1.3b" && source is null && !IsExternalLlmActive)
         {
             Status = new JobStatus.Failed(LocalizedMessage.Key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç."));
             return;
         }
         if (BlockedOffline([_translationModel], Translate)) return;
         _savedSubtitleName = null;
-        var request = _sentences;
+        var request = reuseExistingTranslations
+            ? _sentences
+                .Where(s => !_translations.TryGetValue(s.Uid, out var existing) || existing.IsStale(s) || existing.Language != target)
+                .ToList()
+            : _sentences;
+        if (request.Count == 0)
+        {
+            Status = JobStatus.FinishedStatus;
+            if (_autoSaveSubtitle && HasTranslations && CanSaveSubtitle &&
+                VideoSubtitlePath is { } autoPath &&
+                Path.GetDirectoryName(autoPath) is { Length: > 0 } autoDir &&
+                Directory.Exists(autoDir))
+            {
+                CurrentJob = SaveSubtitleToVideoFolderAsync();
+            }
+            return;
+        }
         var model = _translationModel;
         Status = new JobStatus.Working(LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);
         StartJob(new HashSet<string> { model }, token => engine.Translate(request, target, source, model, token), engineEvent =>
@@ -56,7 +74,7 @@ public sealed partial class SubtitleViewModel
                     Status = new JobStatus.Working(Label(stage.Kind, stage.Fraction, JobPurpose.Translation), stage.Fraction);
                     break;
                 case EngineEvent.Translation translation:
-                    ApplyTranslation(translation.Sentences, translation.Language, request);
+                    ApplyTranslation(translation.Sentences, translation.Language, request, mergeIntoExisting: reuseExistingTranslations);
                     break;
                 case EngineEvent.Error error:
                     return new JobStatus.Failed(LocalizedMessage.Verbatim(error.Message));
@@ -79,11 +97,46 @@ public sealed partial class SubtitleViewModel
         });
     }
 
+    private async Task TranslatePartialBatchExternallyAsync(
+        IEngineClient engine,
+        IReadOnlyList<Sentence> batch,
+        string target,
+        string? source,
+        string model,
+        CancellationToken token)
+    {
+        if (batch.Count == 0 || source == target) return;
+        try
+        {
+            await foreach (var engineEvent in engine.Translate(batch, target, source, model, token).ConfigureAwait(false))
+            {
+                if (token.IsCancellationRequested) return;
+                if (engineEvent is EngineEvent.Translation translation)
+                {
+                    await _ui.InvokeAsync(() =>
+                    {
+                        if (!token.IsCancellationRequested)
+                        {
+                            ApplyTranslation(translation.Sentences, translation.Language, batch, mergeIntoExisting: true);
+                        }
+                    }).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Any lines not translated in the partial background pass are picked up by the final TranslateCore call.
+        }
+    }
+
     /// <summary>Maps translated lines by their stable <c>Uid</c> values; supports both incremental batches and final results.</summary>
-    private void ApplyTranslation(IReadOnlyList<Sentence> translated, string language, IReadOnlyList<Sentence> source)
+    private void ApplyTranslation(
+        IReadOnlyList<Sentence> translated, string language, IReadOnlyList<Sentence> source, bool mergeIntoExisting = false)
     {
         var hadTranslations = _translations.Count > 0;
-        var entries = new Dictionary<Guid, TranslationEntry>();
+        var entries = mergeIntoExisting && _translationLanguage == language
+            ? new Dictionary<Guid, TranslationEntry>(_translations)
+            : new Dictionary<Guid, TranslationEntry>();
         for (var index = 0; index < translated.Count; index++)
         {
             var result = translated[index];

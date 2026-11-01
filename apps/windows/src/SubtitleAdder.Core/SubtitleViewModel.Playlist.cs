@@ -202,6 +202,8 @@ public sealed partial class SubtitleViewModel
         // Lock the user's chosen target translation language for the entire batch run.
         var batchTargetLanguage = _translationTarget;
         var originalSourceLanguage = _language;
+        var pendingExternalTranslations = new List<Task>();
+        using var externalSemaphore = new SemaphoreSlim(1, 1);
 
         IsPlaylistRunning = true;
         try
@@ -247,7 +249,32 @@ public sealed partial class SubtitleViewModel
                     continue;
                 }
 
-                // Step 3: Translate into the user's selected target language.
+                // Optional Asynchronous External LLM Mode: hand off translation + auto-save of this video to the external
+                // LAN LLM in the background and immediately start transcribing the next video on the local GPU!
+                if (IsExternalAsyncActive && Catalog.Engine is { } asyncEngine)
+                {
+                    var itemSnapshot = nextItem;
+                    var sentencesSnapshot = _sentences.ToList();
+                    var sourceSnapshot = TranslationSource;
+                    var modelSnapshot = _translationModel;
+                    var formatSnapshot = _exportFormat;
+                    _activePlaylistItemId = null;
+                    UpdatePlaylistItem(itemSnapshot.Id, PlaylistItemState.Working, LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);
+                    pendingExternalTranslations.Add(TranslateAndSavePlaylistItemExternallyAsync(
+                        asyncEngine,
+                        externalSemaphore,
+                        itemSnapshot.Id,
+                        itemSnapshot.VideoPath,
+                        sentencesSnapshot,
+                        batchTargetLanguage,
+                        sourceSnapshot,
+                        modelSnapshot,
+                        formatSnapshot,
+                        token));
+                    continue;
+                }
+
+                // Standard Sequential Mode: translate and save before moving to the next video.
                 TranslationTarget = batchTargetLanguage;
                 Translate();
                 await CurrentJob.ConfigureAwait(true);
@@ -285,6 +312,11 @@ public sealed partial class SubtitleViewModel
                     : LocalizedMessage.Key("Tamamlandı");
                 UpdatePlaylistItem(nextItem.Id, PlaylistItemState.Completed, doneMessage, 1.0);
             }
+
+            if (pendingExternalTranslations.Count > 0)
+            {
+                await Task.WhenAll(pendingExternalTranslations).ConfigureAwait(true);
+            }
         }
         finally
         {
@@ -292,6 +324,107 @@ public sealed partial class SubtitleViewModel
             TranslationTarget = batchTargetLanguage;
             Language = originalSourceLanguage;
             IsPlaylistRunning = false;
+        }
+    }
+
+    private async Task TranslateAndSavePlaylistItemExternallyAsync(
+        IEngineClient engine,
+        SemaphoreSlim semaphore,
+        Guid itemId,
+        string videoPath,
+        IReadOnlyList<Sentence> sentences,
+        string target,
+        string? source,
+        string model,
+        SubtitleFormat format,
+        CancellationToken token)
+    {
+        try
+        {
+            await semaphore.WaitAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            await _ui.InvokeAsync(() =>
+                UpdatePlaylistItem(itemId, PlaylistItemState.Pending, LocalizedMessage.Key("Sırada"), null)).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            IReadOnlyList<Sentence>? finalTranslated = null;
+            string? engineError = null;
+            await foreach (var engineEvent in engine.Translate(sentences, target, source, model, token).ConfigureAwait(false))
+            {
+                switch (engineEvent)
+                {
+                    case EngineEvent.Stage stage:
+                        await _ui.InvokeAsync(() =>
+                            UpdatePlaylistItem(
+                                itemId,
+                                PlaylistItemState.Working,
+                                Label(stage.Kind, stage.Fraction, JobPurpose.Translation),
+                                stage.Fraction)).ConfigureAwait(false);
+                        break;
+                    case EngineEvent.Translation translation:
+                        finalTranslated = translation.Sentences;
+                        await _ui.InvokeAsync(() =>
+                        {
+                            if (_video == videoPath)
+                            {
+                                ApplyTranslation(translation.Sentences, translation.Language, sentences);
+                            }
+                        }).ConfigureAwait(false);
+                        break;
+                    case EngineEvent.Error error:
+                        engineError = error.Message;
+                        break;
+                }
+            }
+
+            if (engineError is not null || finalTranslated is null || finalTranslated.Count == 0)
+            {
+                var msg = engineError is not null
+                    ? LocalizedMessage.Verbatim(engineError)
+                    : LocalizedMessage.Key("Çeviri tamamlanamadı.");
+                await _ui.InvokeAsync(() =>
+                    UpdatePlaylistItem(itemId, PlaylistItemState.Failed, msg, null)).ConfigureAwait(false);
+                return;
+            }
+
+            var rendered = await engine.RenderAsync(finalTranslated, format, token).ConfigureAwait(false);
+            var outPath = Path.ChangeExtension(videoPath, format.RawValue());
+            var savedName = Path.GetFileName(outPath);
+            if (Path.GetDirectoryName(outPath) is { Length: > 0 } dir && Directory.Exists(dir))
+            {
+                await File.WriteAllTextAsync(outPath, rendered, new System.Text.UTF8Encoding(false), token).ConfigureAwait(false);
+            }
+
+            await _ui.InvokeAsync(() =>
+            {
+                if (_video == videoPath)
+                {
+                    _savedSubtitleName = savedName;
+                    if (_status is not JobStatus.Working) Status = JobStatus.FinishedStatus;
+                    else OnPropertyChanged(nameof(StatusText));
+                }
+                var doneMessage = new LocalizedMessage($"saved:{savedName}", () => L("Kaydedildi: %@", savedName));
+                UpdatePlaylistItem(itemId, PlaylistItemState.Completed, doneMessage, 1.0);
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            await _ui.InvokeAsync(() =>
+                UpdatePlaylistItem(itemId, PlaylistItemState.Pending, LocalizedMessage.Key("Sırada"), null)).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            await _ui.InvokeAsync(() =>
+                UpdatePlaylistItem(itemId, PlaylistItemState.Failed, LocalizedMessage.Error(error), null)).ConfigureAwait(false);
+        }
+        finally
+        {
+            semaphore.Release();
         }
     }
 

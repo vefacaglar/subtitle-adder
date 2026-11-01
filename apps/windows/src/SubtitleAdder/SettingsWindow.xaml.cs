@@ -119,7 +119,14 @@ public sealed partial class SettingsWindow : Window
         _syncing = true;
         DiarizeSwitch.IsOn = _vm.Diarize;
         OfflineSwitch.IsOn = _vm.OfflineMode;
+        ExternalLlmSwitch.IsOn = _vm.ExternalLlmEnabled;
+        if (ExternalLlmUrlBox.Text != _vm.ExternalLlmUrl) ExternalLlmUrlBox.Text = _vm.ExternalLlmUrl;
+        if (ExternalLlmModelBox.Text != _vm.ExternalLlmModel) ExternalLlmModelBox.Text = _vm.ExternalLlmModel;
+        ExternalLlmAsyncSwitch.IsOn = _vm.ExternalLlmAsync;
         _syncing = false;
+        ExternalLlmUrlBox.IsEnabled = _vm.ExternalLlmEnabled;
+        ExternalLlmModelBox.IsEnabled = _vm.ExternalLlmEnabled;
+        ExternalLlmAsyncSwitch.IsEnabled = _vm.ExternalLlmEnabled;
         var counts = SubtitleViewModel.SpeakerCountChoices;
         Fill(SpeakerCountBox, counts.Select(SubtitleViewModel.SpeakerCountTitle), IndexOf(counts, c => c == _vm.SpeakerCount), refill);
         SpeakerCountBox.IsEnabled = _vm.Diarize;
@@ -241,6 +248,30 @@ public sealed partial class SettingsWindow : Window
     {
         if (_syncing) return;
         _vm.OfflineMode = OfflineSwitch.IsOn;
+    }
+
+    private void ExternalLlmSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        _vm.ExternalLlmEnabled = ExternalLlmSwitch.IsOn;
+    }
+
+    private void ExternalLlmUrlBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_syncing) return;
+        _vm.ExternalLlmUrl = ExternalLlmUrlBox.Text;
+    }
+
+    private void ExternalLlmModelBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_syncing) return;
+        _vm.ExternalLlmModel = ExternalLlmModelBox.Text;
+    }
+
+    private void ExternalLlmAsyncSwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        _vm.ExternalLlmAsync = ExternalLlmAsyncSwitch.IsOn;
     }
 
     private void SpeakerCountBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

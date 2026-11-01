@@ -336,3 +336,49 @@ def test_llama_translator_retries_missing_line_in_batch():
     assert len(calls) == 2
     assert [r.text for r in result] == ["Birinci satır çevirisi", "İkinci satır tekil çevirisi"]
 
+
+def test_normalize_external_chat_url_handles_lm_studio_ollama_and_raw_ip():
+    assert translate.normalize_external_chat_url("192.168.1.50:1234") == "http://192.168.1.50:1234/v1/chat/completions"
+    assert translate.normalize_external_chat_url("http://192.168.1.50:11434/") == "http://192.168.1.50:11434/v1/chat/completions"
+    assert translate.normalize_external_chat_url("http://192.168.1.50:1234/v1") == "http://192.168.1.50:1234/v1/chat/completions"
+    assert (
+        translate.normalize_external_chat_url("http://mac-studio.local:8080/v1/chat/completions")
+        == "http://mac-studio.local:8080/v1/chat/completions"
+    )
+
+
+def test_external_llm_skips_local_model_download_and_posts_to_remote_server(monkeypatch):
+    monkeypatch.setenv(translate.EXTERNAL_LLM_URL_ENV_VAR, "192.168.1.42:1234")
+    monkeypatch.setenv(translate.EXTERNAL_LLM_MODEL_ENV_VAR, "gemma-3-27b-it")
+    monkeypatch.setattr(translate, "_temp_checkpoint_path", lambda *a, **kw: None)
+
+    captured_requests: list[tuple[str, dict]] = []
+
+    class FakeHttpResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"choices": [{"message": {"content": "[1] Merhaba M1 Max!"}}]}
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        captured_requests.append((req.full_url, json.loads(req.data.decode("utf-8"))))
+        return FakeHttpResponse()
+
+    monkeypatch.setattr(translate.urllib.request, "urlopen", fake_urlopen)
+
+    # Even if the toolbar model is madlad-3b (not downloaded locally), external LLM mode uses LlamaTranslator over LAN.
+    translator = translate.create_translator("madlad-3b")
+    result = translator.translate([Sentence(id=1, start=0.0, end=1.5, text="Hello M1 Max!")], target="tr", source="en")
+
+    assert [r.text for r in result] == ["Merhaba M1 Max!"]
+    assert len(captured_requests) == 1
+    assert captured_requests[0][0] == "http://192.168.1.42:1234/v1/chat/completions"
+    assert captured_requests[0][1]["model"] == "gemma-3-27b-it"
+
+

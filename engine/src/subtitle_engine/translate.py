@@ -11,6 +11,7 @@ import atexit
 import contextlib
 import hashlib
 import json
+import os
 import re
 import socket
 import subprocess
@@ -29,6 +30,45 @@ from .models import ModelError, Sentence
 
 ProgressFn = Callable[[float], None]
 BatchFn = Callable[[list[Sentence]], None]
+
+EXTERNAL_LLM_URL_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_URL"
+EXTERNAL_LLM_MODEL_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL"
+
+
+def external_llm_url() -> str | None:
+    """Returns the configured external LAN LLM server URL from the environment, or `None` when disabled."""
+    raw = os.environ.get(EXTERNAL_LLM_URL_ENV_VAR, "").strip()
+    return raw or None
+
+
+def external_llm_model() -> str | None:
+    """Returns the optional remote model identifier for the external LAN LLM server."""
+    raw = os.environ.get(EXTERNAL_LLM_MODEL_ENV_VAR, "").strip()
+    return raw or None
+
+
+def normalize_external_chat_url(raw_url: str) -> str:
+    """Normalizes a base LAN server address (LM Studio, Ollama, or llama-server) to its chat completions endpoint."""
+    url = raw_url.strip().rstrip("/")
+    if not url:
+        raise ValueError("External LLM URL cannot be empty.")
+    if not url.lower().startswith(("http://", "https://")):
+        url = f"http://{url}"
+    lower = url.lower()
+    if lower.endswith(("/v1/chat/completions", "/chat/completions", "/api/chat")):
+        return url
+    if lower.endswith("/v1"):
+        return f"{url}/chat/completions"
+    return f"{url}/v1/chat/completions"
+
+
+def _external_models_url(chat_url: str) -> str | None:
+    lower = chat_url.lower()
+    if lower.endswith("/v1/chat/completions"):
+        return chat_url[: -len("/chat/completions")] + "/models"
+    if lower.endswith("/api/chat"):
+        return chat_url[: -len("/api/chat")] + "/v1/models"
+    return None
 
 # NLLB source/target language codes use the FLORES-200 format; MADLAD turns the ISO 639-1 code
 # into a "<2xx>" token and needs no source language tag.
@@ -93,7 +133,7 @@ def check_request(model_id: str, target: str, source: str | None = None) -> mode
     supported = info.languages or ()
     if target not in supported:
         raise ModelError(models.support_error(info, target))
-    if info.id == "nllb-1.3b":
+    if info.id == "nllb-1.3b" and not external_llm_url():
         if not source:
             raise ModelError(t("nllb_source_required"))
         if source not in supported:
@@ -108,13 +148,13 @@ def check_request(model_id: str, target: str, source: str | None = None) -> mode
 
 
 def create_translator(model_id: str, device: str = "auto", compute_type: str = "int8") -> Translator:
-    """Builds the local translator for a catalog id (LLM via llama.cpp or CTranslate2)."""
+    """Builds the local translator for a catalog id (LLM via llama.cpp / external LAN server or CTranslate2)."""
     info = models.find(model_id)
     if info is None or info.kind != "translation":
         raise ModelError(
             t("unknown_translation_model", model=model_id)
         )
-    if info.backend == "llama":
+    if info.backend == "llama" or external_llm_url() is not None:
         return LlamaTranslator(model_id, device=device)
     return Ct2Translator(model_id, device=device, compute_type=compute_type)
 
@@ -395,26 +435,39 @@ def _delete_temp_checkpoint(path: Path | None) -> None:
 
 
 class LlamaTranslator:
-    """Runs GGUF instruction-tuned LLMs (Gemma 4, Qwen 3.5) locally via `llama-server`."""
+    """Runs GGUF instruction-tuned LLMs locally via `llama-server` or against an external LAN OpenAI-compatible server."""
 
     def __init__(
         self,
         model_id: str,
         device: str = "auto",
         completion_fn: Callable[[list[dict[str, str]]], str] | None = None,
+        external_url: str | None = None,
+        external_model: str | None = None,
     ):
         from . import llama
 
+        resolved_external_url = external_url if external_url is not None else (
+            external_llm_url() if completion_fn is None else None
+        )
+        resolved_external_model = external_model if external_model is not None else (
+            external_llm_model() if completion_fn is None else None
+        )
         info = models.find(model_id)
-        if info is None or info.kind != "translation" or info.backend != "llama":
+        if info is None or info.kind != "translation" or (info.backend != "llama" and not resolved_external_url):
             raise ModelError(t("unknown_translation_model_short", model=model_id))
         self._info = info
         self._device = device
         self._completion_fn = completion_fn
+        self._external_chat_url = (
+            normalize_external_chat_url(resolved_external_url) if resolved_external_url else None
+        )
+        self._external_model = (resolved_external_model or "").strip() or None
+        self._resolved_external_model: str | None = self._external_model
         self._process: subprocess.Popen | None = None
         self._stderr_file = None
         self._port: int | None = None
-        if completion_fn is None:
+        if completion_fn is None and self._external_chat_url is None:
             self._model_path = models.model_file(model_id)
             server = llama.llama_server_path()
             if server is None:
@@ -511,14 +564,48 @@ class LlamaTranslator:
         with contextlib.suppress(Exception):
             self.close()
 
+    def _discover_external_model(self) -> str:
+        if self._resolved_external_model:
+            return self._resolved_external_model
+        if self._external_chat_url:
+            models_url = _external_models_url(self._external_chat_url)
+            if models_url:
+                try:
+                    req = urllib.request.Request(models_url, method="GET")
+                    with urllib.request.urlopen(req, timeout=2.5) as resp:
+                        payload = json.loads(resp.read().decode("utf-8"))
+                    items = payload.get("data") or payload.get("models") or []
+                    if isinstance(items, list) and items:
+                        first = items[0]
+                        if isinstance(first, dict):
+                            candidate = str(first.get("id") or first.get("name") or "").strip()
+                            if candidate:
+                                self._resolved_external_model = candidate
+                                return candidate
+                except Exception:
+                    pass
+        self._resolved_external_model = self._info.id
+        return self._resolved_external_model
+
     def _complete(self, messages: list[dict[str, str]]) -> str:
         if self._completion_fn is not None:
             return self._completion_fn(messages)
-        if self._process is None or self._process.poll() is not None:
-            self._start_server(gpu_layers=0 if self._device == "cpu" else 99)
-        url = f"http://127.0.0.1:{self._port}/v1/chat/completions"
-        payload = json.dumps(
-            {
+        if self._external_chat_url is not None:
+            url = self._external_chat_url
+            body: dict = {
+                "model": self._discover_external_model(),
+                "messages": messages,
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "max_tokens": 512,
+                "stream": False,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        else:
+            if self._process is None or self._process.poll() is not None:
+                self._start_server(gpu_layers=0 if self._device == "cpu" else 99)
+            url = f"http://127.0.0.1:{self._port}/v1/chat/completions"
+            body = {
                 "messages": messages,
                 "temperature": 0.2,
                 "top_p": 0.9,
@@ -526,7 +613,7 @@ class LlamaTranslator:
                 "cache_prompt": False,
                 "chat_template_kwargs": {"enable_thinking": False},
             }
-        ).encode("utf-8")
+        payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=payload,
@@ -539,10 +626,12 @@ class LlamaTranslator:
         except Exception as exc:
             raise ModelError(t("llama_unavailable", error=str(exc))) from exc
         choices = data.get("choices") or []
-        if not choices:
-            return ""
-        msg = choices[0].get("message") or {}
-        return str(msg.get("content") or "")
+        if choices:
+            msg = choices[0].get("message") or {}
+            return str(msg.get("content") or "")
+        if isinstance(data.get("message"), dict):
+            return str(data["message"].get("content") or "")
+        return ""
 
     def translate(
         self,

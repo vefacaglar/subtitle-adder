@@ -79,6 +79,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public const string SpeakerCountDefaultsKey = "speakerCount";
     public const string OfflineModeDefaultsKey = "offlineMode";
     public const string AutoSaveSubtitleDefaultsKey = "autoSaveSubtitle";
+    public const string ExternalLlmEnabledDefaultsKey = "externalLlmEnabled";
+    public const string ExternalLlmUrlDefaultsKey = "externalLlmUrl";
+    public const string ExternalLlmModelDefaultsKey = "externalLlmModel";
+    public const string ExternalLlmAsyncDefaultsKey = "externalLlmAsync";
 
     private readonly ISettingsStore _settings;
     private readonly IUiDispatcher _ui;
@@ -93,6 +97,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private int _speakerCount;
     private bool _offlineMode;
     private bool _autoSaveSubtitle;
+    private bool _externalLlmEnabled;
+    private string _externalLlmUrl;
+    private string _externalLlmModel;
+    private bool _externalLlmAsync;
     /// <summary>The job a missing-model failure in offline mode can be retried with ("Çevrimdışı modu kapat ve indir").</summary>
     private Action? _offlineRetry;
     private JobStatus _status = JobStatus.IdleStatus;
@@ -137,6 +145,13 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         _offlineMode = settings.GetBool(OfflineModeDefaultsKey) ?? true;
         OfflineState.Shared.Enabled = _offlineMode;
         _autoSaveSubtitle = settings.GetBool(AutoSaveSubtitleDefaultsKey) ?? true;
+        _externalLlmEnabled = settings.GetBool(ExternalLlmEnabledDefaultsKey) ?? false;
+        _externalLlmUrl = settings.GetString(ExternalLlmUrlDefaultsKey) ?? "";
+        _externalLlmModel = settings.GetString(ExternalLlmModelDefaultsKey) ?? "";
+        _externalLlmAsync = settings.GetBool(ExternalLlmAsyncDefaultsKey) ?? false;
+        ExternalLlmState.Shared.Enabled = _externalLlmEnabled;
+        ExternalLlmState.Shared.Url = _externalLlmUrl;
+        ExternalLlmState.Shared.Model = _externalLlmModel;
 
         GenerateCommand = new RelayCommand(Generate, () => Video is not null && !IsWorking);
         GenerateAndTranslateCommand = new RelayCommand(GenerateAndTranslate, () => CanGenerateAndTranslate);
@@ -302,6 +317,69 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>Uses an external LAN OpenAI-compatible LLM server (LM Studio, Ollama, llama-server) on another machine for translation.</summary>
+    public bool ExternalLlmEnabled
+    {
+        get => _externalLlmEnabled;
+        set
+        {
+            if (!SetProperty(ref _externalLlmEnabled, value)) return;
+            ExternalLlmState.Shared.Enabled = value;
+            _settings.SetBool(ExternalLlmEnabledDefaultsKey, value);
+            OnPropertyChanged(nameof(IsExternalLlmActive));
+            OnPropertyChanged(nameof(IsExternalAsyncActive));
+        }
+    }
+
+    /// <summary>Base URL or IP:Port of the external LAN LLM server (e.g. <c>http://192.168.1.50:1234</c>).</summary>
+    public string ExternalLlmUrl
+    {
+        get => _externalLlmUrl;
+        set
+        {
+            var next = value ?? "";
+            if (!SetProperty(ref _externalLlmUrl, next)) return;
+            ExternalLlmState.Shared.Url = next;
+            _settings.SetString(ExternalLlmUrlDefaultsKey, next);
+            OnPropertyChanged(nameof(IsExternalLlmActive));
+            OnPropertyChanged(nameof(IsExternalAsyncActive));
+        }
+    }
+
+    /// <summary>Optional model identifier on the external LAN LLM server (auto-discovered via <c>/v1/models</c> if left empty).</summary>
+    public string ExternalLlmModel
+    {
+        get => _externalLlmModel;
+        set
+        {
+            var next = value ?? "";
+            if (!SetProperty(ref _externalLlmModel, next)) return;
+            ExternalLlmState.Shared.Model = next;
+            _settings.SetString(ExternalLlmModelDefaultsKey, next);
+        }
+    }
+
+    /// <summary>
+    /// Optional asynchronous translation (ONLY active when <see cref="IsExternalLlmActive"/> is true).
+    /// When false, translation strictly runs sequentially after transcription/diarization finishes.
+    /// </summary>
+    public bool ExternalLlmAsync
+    {
+        get => _externalLlmAsync;
+        set
+        {
+            if (!SetProperty(ref _externalLlmAsync, value)) return;
+            _settings.SetBool(ExternalLlmAsyncDefaultsKey, value);
+            OnPropertyChanged(nameof(IsExternalAsyncActive));
+        }
+    }
+
+    /// <summary>True when external LAN LLM mode is enabled and a server URL is configured.</summary>
+    public bool IsExternalLlmActive => _externalLlmEnabled && !string.IsNullOrWhiteSpace(_externalLlmUrl);
+
+    /// <summary>True ONLY when external LAN LLM mode is active AND optional asynchronous translation is enabled.</summary>
+    public bool IsExternalAsyncActive => IsExternalLlmActive && _externalLlmAsync;
+
     /// <summary>Whether "Komple çevir" is enabled (either a video is open or lines are already loaded, and no job is running).</summary>
     public bool CanGenerateAndTranslate => !IsWorking && (_video is not null || _sentences.Count > 0);
 
@@ -325,7 +403,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     {
         _offlineRetry = null;
         if (!_offlineMode) return false;
-        var missing = modelIds
+        var filteredIds = IsExternalLlmActive
+            ? modelIds.Where(id => Catalog.TranslationModels.All(m => m.Id != id))
+            : modelIds;
+        var missing = filteredIds
             .Where(id => Catalog.Models.FirstOrDefault(m => m.Id == id) is { Downloaded: false })
             .ToList();
         if (missing.Count == 0) return false;
@@ -820,7 +901,15 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             diarizationDownloaded: Catalog.DiarizationModels.FirstOrDefault()?.Downloaded ?? true);
         var running = new HashSet<string> { runningModel };
         if (_diarize) running.Add(DiarizationModelId);
-        StartJob(running, token => engine.Transcribe(video, outDir, options, token), engineEvent =>
+        var asyncPreTranslate = chainTranslate && IsExternalAsyncActive;
+        var queuedAsyncUids = new HashSet<Guid>();
+        var asyncTranslationTask = Task.CompletedTask;
+        CancellationToken currentJobToken = CancellationToken.None;
+        StartJob(running, token =>
+        {
+            currentJobToken = token;
+            return engine.Transcribe(video, outDir, options, token);
+        }, engineEvent =>
         {
             switch (engineEvent)
             {
@@ -835,6 +924,19 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     {
                         DetectedLanguage = lang;
                         ReconcileTranslationTarget();
+                    }
+                    if (asyncPreTranslate && _sentences.Count > 1 && asyncTranslationTask.IsCompleted)
+                    {
+                        var finalized = _sentences
+                            .Take(_sentences.Count - 1)
+                            .Where(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text))
+                            .ToList();
+                        if (finalized.Count > 0)
+                        {
+                            foreach (var s in finalized) queuedAsyncUids.Add(s.Uid);
+                            asyncTranslationTask = TranslatePartialBatchExternallyAsync(
+                                engine, finalized, _translationTarget, TranslationSource, _translationModel, currentJobToken);
+                        }
                     }
                     break;
                 case EngineEvent.Result result:
@@ -857,12 +959,20 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             return null;
         }, chainTranslate ? async () =>
         {
+            try
+            {
+                await asyncTranslationTask.ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Any remaining untranslated lines will be handled by the final TranslateCore pass below.
+            }
             Task? nextJob = null;
             await _ui.InvokeAsync(() =>
             {
                 if (_sentences.Count > 0)
                 {
-                    Translate();
+                    TranslateCore(reuseExistingTranslations: asyncPreTranslate);
                     nextJob = CurrentJob;
                 }
             }).ConfigureAwait(false);
@@ -935,12 +1045,31 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         IReadOnlyList<Sentence> existing, IReadOnlyList<Sentence> incoming)
     {
         if (existing.Count == 0) return [.. incoming];
+        var uidBySpan = new Dictionary<(long StartMs, long EndMs, string Text), Guid>(existing.Count);
         var uidById = new Dictionary<int, Guid>(existing.Count);
-        foreach (var s in existing) uidById.TryAdd(s.Id, s.Uid);
+        foreach (var s in existing)
+        {
+            var key = ((long)Math.Round(s.Start * 1000), (long)Math.Round(s.End * 1000), s.Text);
+            uidBySpan.TryAdd(key, s.Uid);
+            uidById.TryAdd(s.Id, s.Uid);
+        }
+        var usedUids = new HashSet<Guid>();
         var merged = new List<Sentence>(incoming.Count);
         foreach (var s in incoming)
         {
-            merged.Add(uidById.TryGetValue(s.Id, out var uid) ? s with { Uid = uid } : s);
+            var spanKey = ((long)Math.Round(s.Start * 1000), (long)Math.Round(s.End * 1000), s.Text);
+            if (uidBySpan.TryGetValue(spanKey, out var spanUid) && usedUids.Add(spanUid))
+            {
+                merged.Add(s with { Uid = spanUid });
+            }
+            else if (uidById.TryGetValue(s.Id, out var idUid) && usedUids.Add(idUid))
+            {
+                merged.Add(s with { Uid = idUid });
+            }
+            else
+            {
+                merged.Add(s);
+            }
         }
         return merged;
     }

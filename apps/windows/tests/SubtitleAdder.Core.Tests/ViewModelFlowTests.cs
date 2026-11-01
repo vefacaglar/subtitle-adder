@@ -791,4 +791,63 @@ public class ViewModelTranslationTests
             Directory.Delete(rootDir, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task ExternalAsyncModeIsOnlyActiveWithExternalLlmAndTranslatesWithoutRequiringLocalTranslationModel()
+    {
+        using var _ = new LanguageScope(UILanguage.Tr);
+        var rootDir = Path.Combine(Path.GetTempPath(), $"subtitle-adder-ext-async-{Guid.NewGuid()}");
+        Directory.CreateDirectory(rootDir);
+        try
+        {
+            var videoA = Path.Combine(rootDir, "ClipA.mp4");
+            var (vm, engine, _) = Make.ViewModel();
+            vm.TranslationTarget = "tr";
+
+            // Mark madlad-3b as NOT downloaded locally, while strict offline mode is ON.
+            engine.CatalogModels =
+            [
+                Make.Model("large-v3", downloaded: true),
+                Make.Model("speaker-diarization", kind: "diarization", downloaded: true),
+                Make.Model("madlad-3b", kind: "translation", downloaded: false),
+            ];
+            await vm.Catalog.LoadAsync();
+
+            // Async mode is strictly off unless External LLM is enabled AND URL is set AND ExternalLlmAsync is true.
+            vm.ExternalLlmAsync = true;
+            Assert.False(vm.IsExternalLlmActive);
+            Assert.False(vm.IsExternalAsyncActive);
+
+            vm.ExternalLlmEnabled = true;
+            vm.ExternalLlmUrl = "http://192.168.1.50:1234";
+            vm.ExternalLlmModel = "gemma-3-27b-it";
+            Assert.True(vm.IsExternalLlmActive);
+            Assert.True(vm.IsExternalAsyncActive);
+            Assert.Equal("http://192.168.1.50:1234", ExternalLlmState.Shared.ActiveUrl);
+            Assert.Equal("gemma-3-27b-it", ExternalLlmState.Shared.ActiveModel);
+
+            // Even though madlad-3b is not downloaded locally and OfflineMode is true, external LLM mode does not block!
+            vm.AddToPlaylist([videoA]);
+            var runTask = vm.RunPlaylistAsync();
+
+            await Make.Eventually(() => engine.TranscribeCalls.Count == 1, "video A transcribe");
+            engine.Finish(Make.Result("en", "", new Sentence(1, 0, 1, "Hello from M1 Max")));
+
+            await Make.Eventually(() => engine.TranslateCalls.Count == 1, "video A external translate");
+            var reqA = engine.TranslateCalls[0].Sentences;
+            engine.Finish(new EngineEvent.Translation("tr", [new Sentence(reqA[0].Id, reqA[0].Start, reqA[0].End, "M1 Max'ten merhaba")]));
+
+            await runTask;
+
+            Assert.All(vm.Playlist, item => Assert.Equal(PlaylistItemState.Completed, item.State));
+            Assert.Equal("M1 Max'ten merhaba", await File.ReadAllTextAsync(Path.Combine(rootDir, "ClipA.srt")));
+        }
+        finally
+        {
+            ExternalLlmState.Shared.Enabled = false;
+            ExternalLlmState.Shared.Url = "";
+            ExternalLlmState.Shared.Model = "";
+            Directory.Delete(rootDir, recursive: true);
+        }
+    }
 }

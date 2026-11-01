@@ -182,6 +182,62 @@
                             </Grid>
                         </Border>
 
+                        <TextBlock loc:Localize.Text="Harici LLM sunucusu (Yerel ağ)" Style="{StaticResource SectionHeaderStyle}" />
+                        <Border Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <Grid ColumnSpacing="16" VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xE968;" FontSize="18" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock loc:Localize.Text="Ağdaki başka bir cihazın LLM sunucusunu kullan" Style="{StaticResource CardTitleStyle}" />
+                                        <TextBlock loc:Localize.Text="Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır."
+                                                   Style="{StaticResource SecondaryTextStyle}" />
+                                    </StackPanel>
+                                </Grid>
+                                <ToggleSwitch x:Name="ExternalLlmSwitch" Grid.Column="1" MinWidth="0" Toggled="ExternalLlmSwitch_Toggled"
+                                              OnContent="" OffContent="" loc:Localize.AutomationName="Ağdaki başka bir cihazın LLM sunucusunu kullan" />
+                            </Grid>
+                        </Border>
+                        <Border Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="34,0,0,0">
+                                    <TextBlock loc:Localize.Text="Sunucu adresi (IP ve port)" Style="{StaticResource CardTitleStyle}" />
+                                    <TextBlock loc:Localize.Text="Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"
+                                               Style="{StaticResource SecondaryTextStyle}" />
+                                </StackPanel>
+                                <TextBox x:Name="ExternalLlmUrlBox" Grid.Column="1" MinWidth="260" VerticalAlignment="Center"
+                                         PlaceholderText="http://192.168.1.50:1234" TextChanged="ExternalLlmUrlBox_TextChanged"
+                                         loc:Localize.AutomationName="Sunucu adresi (IP ve port)" />
+                            </Grid>
+                        </Border>
+                        <Border Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="34,0,0,0">
+                                    <TextBlock loc:Localize.Text="Uzak model adı (isteğe bağlı)" Style="{StaticResource CardTitleStyle}" />
+                                    <TextBlock loc:Localize.Text="Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır."
+                                               Style="{StaticResource SecondaryTextStyle}" />
+                                </StackPanel>
+                                <TextBox x:Name="ExternalLlmModelBox" Grid.Column="1" MinWidth="260" VerticalAlignment="Center"
+                                         PlaceholderText="gemma-3-27b-it" TextChanged="ExternalLlmModelBox_TextChanged"
+                                         loc:Localize.AutomationName="Uzak model adı (isteğe bağlı)" />
+                            </Grid>
+                        </Border>
+                        <Border Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="34,0,0,0">
+                                    <TextBlock loc:Localize.Text="Asenkron çeviri (Sadece harici LLM ile)" Style="{StaticResource CardTitleStyle}" />
+                                    <TextBlock loc:Localize.Text="Açıkken bu bilgisayar konuşmayı metne dökerken harici cihaz aynı anda çeviri yapar; kapalıyken sıralı çevrilir."
+                                               Style="{StaticResource SecondaryTextStyle}" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="ExternalLlmAsyncSwitch" Grid.Column="1" MinWidth="0" Toggled="ExternalLlmAsyncSwitch_Toggled"
+                                              OnContent="" OffContent="" loc:Localize.AutomationName="Asenkron çeviri (Sadece harici LLM ile)" />
+                            </Grid>
+                        </Border>
+
                         <TextBlock loc:Localize.Text="Gizlilik" Style="{StaticResource SectionHeaderStyle}" />
                         <Border Style="{StaticResource CardStyle}">
                             <Grid ColumnSpacing="16">
