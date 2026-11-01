@@ -206,7 +206,7 @@ final class SubtitleViewModel {
         detectedLanguage = nil
         modelNotice = nil
         status = .working(.key("Başlıyor…"), fraction: nil)
-        let outDir = FileManager.default.temporaryDirectory.appending(path: "SubtitleAdder")
+        let outDir = WorkingDirectory.url()
         let options = EngineClient.TranscribeOptions(
             language: language.isEmpty ? nil : language,
             model: model,
@@ -245,7 +245,7 @@ final class SubtitleViewModel {
                         reconcileTranslationTarget()
                         // The app doesn't use the extracted WAV; delete the temporary file.
                         try? FileManager.default.removeItem(atPath: result.audio)
-                    case .translation:
+                    case .translation, .partial:
                         break
                     case .error(let message):
                         failed = true

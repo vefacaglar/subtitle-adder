@@ -321,3 +321,59 @@ func realEngineTranslatesDemoVideo() async throws {
     #expect(textsNonEmpty)
     #expect(textsDiffer)
 }
+
+@Test func decodesPartialEvent() throws {
+    let line = #"{"event": "partial", "language": "tr", "sentences": [{"id": 1, "start": 0.0, "end": 1.0, "text": "Merhaba.", "speaker": null, "words": [{"start": 0.0, "end": 1.0, "text": "Merhaba."}]}]}"#
+    let expected = EngineEvent.partial(
+        language: "tr",
+        sentences: [Sentence(id: 1, start: 0, end: 1, text: "Merhaba.", words: [Word(start: 0, end: 1, text: "Merhaba.")])]
+    )
+    #expect(try EngineEvent.decode(line) == expected)
+    // The language is "?" until the engine has detected it.
+    #expect(try EngineEvent.decode(#"{"event": "partial", "language": "?", "sentences": []}"#)
+        == .partial(language: "?", sentences: []))
+}
+
+@Test func unknownEventsAreIgnoredNotFatal() throws {
+    #expect(try EngineEvent.decode(#"{"event": "heartbeat", "n": 3}"#) == nil)
+    // A malformed line is still an error.
+    #expect(throws: (any Error).self) { try EngineEvent.decode("not json") }
+    #expect(throws: (any Error).self) { try EngineEvent.decode(#"{"event": "partial", "language": "tr"}"#) }
+}
+
+@Test func streamSkipsUnknownEventsAndDeliversPartials() async throws {
+    let engine = try fakeEngine("""
+    echo '{"event": "stage", "stage": "extracting_audio", "fraction": 0.5}'
+    echo '{"event": "partial", "language": "?", "sentences": [{"id": 1, "start": 0.0, "end": 1.0, "text": "Mer", "speaker": null, "words": []}]}'
+    echo '{"event": "something_new", "x": 1}'
+    echo '{"event": "partial", "language": "tr", "sentences": [{"id": 1, "start": 0.0, "end": 1.0, "text": "Merhaba.", "speaker": null, "words": []}]}'
+    echo '{"event": "result", "language": "tr", "duration": 1, "audio": "a", "outputs": [], "sentences": []}'
+    """)
+    var events: [EngineEvent] = []
+    for try await event in engine.transcribe(video: URL(filePath: "/v.mp4"), outDir: URL(filePath: "/tmp")) {
+        events.append(event)
+    }
+    #expect(events.count == 4)
+    #expect(events[0] == .stage(.extractingAudio, fraction: 0.5))
+    #expect(events[1] == .partial(language: "?", sentences: [Sentence(id: 1, start: 0, end: 1, text: "Mer")]))
+    #expect(events[2] == .partial(language: "tr", sentences: [Sentence(id: 1, start: 0, end: 1, text: "Merhaba.")]))
+    guard case .result = events[3] else { Issue.record("result bekleniyordu"); return }
+}
+
+@Test func translateStreamsEveryIncrementalTranslation() async throws {
+    let engine = try fakeEngine("""
+    cat > /dev/null
+    echo '{"event": "translation", "language": "es", "sentences": [{"id": 1, "start": 0.0, "end": 1.0, "text": "Hola.", "words": []}]}'
+    echo '{"event": "stage", "stage": "translating", "fraction": 0.5}'
+    echo '{"event": "translation", "language": "es", "sentences": [{"id": 1, "start": 0.0, "end": 1.0, "text": "Hola.", "words": []}, {"id": 2, "start": 1.0, "end": 2.0, "text": "Adios.", "words": []}]}'
+    """)
+    let source = [
+        Sentence(id: 1, start: 0, end: 1, text: "Merhaba."),
+        Sentence(id: 2, start: 1, end: 2, text: "Hoşça kal."),
+    ]
+    var translations: [[String]] = []
+    for try await event in engine.translate(source, to: "es", from: "tr") {
+        if case .translation(_, let sentences) = event { translations.append(sentences.map(\.text)) }
+    }
+    #expect(translations == [["Hola."], ["Hola.", "Adios."]])
+}

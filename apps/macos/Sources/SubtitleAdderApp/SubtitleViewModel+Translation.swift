@@ -66,7 +66,7 @@ extension SubtitleViewModel {
                         )
                     case .translation(let language, let translated):
                         applyTranslation(translated, language: language, source: request)
-                    case .result:
+                    case .result, .partial:
                         break
                     case .error(let message):
                         failed = true

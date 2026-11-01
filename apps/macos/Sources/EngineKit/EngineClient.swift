@@ -67,6 +67,9 @@ public struct EngineClient: Sendable {
     /// Language passed to the engine as `SUBTITLE_ENGINE_LANG` (its error messages follow it).
     /// `nil` follows the app's current UI language (`LanguageState.shared`) at each launch.
     public var language: UILanguage?
+    /// Offline mode and external LLM passed through the environment.
+    /// `nil` follows the app's current settings (`EngineLaunchState.shared`) at each launch.
+    public var launchSettings: EngineLaunchSettings?
 
     public init(command: EngineCommand) {
         self.command = command
@@ -77,13 +80,22 @@ public struct EngineClient: Sendable {
         self.language = language
     }
 
-    /// Environment for the engine process: the parent's plus `SUBTITLE_ENGINE_LANG`.
+    /// Environment for the engine process: the parent's plus `SUBTITLE_ENGINE_LANG`, `SUBTITLE_ENGINE_OFFLINE`
+    /// and, with an external LLM, `SUBTITLE_ENGINE_EXTERNAL_LLM_URL` / `_MODEL` (removed otherwise).
     func processEnvironment(
-        language: UILanguage, base: [String: String] = ProcessInfo.processInfo.environment
+        language: UILanguage,
+        settings: EngineLaunchSettings = EngineLaunchState.shared.settings,
+        base: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
         var env = base
         env["SUBTITLE_ENGINE_LANG"] = language.rawValue
+        settings.apply(to: &env)
         return env
+    }
+
+    /// The explicit launch settings, or the app's current ones (`current`) when none were set.
+    func resolvedLaunchSettings(current: EngineLaunchSettings = EngineLaunchState.shared.settings) -> EngineLaunchSettings {
+        launchSettings ?? current
     }
 
     /// The explicit language, or the app's current UI language (`current`) when none was set.
@@ -130,8 +142,9 @@ public struct EngineClient: Sendable {
         return args
     }
 
-    /// Translates the sentences to the target language with a local translation model; emits stage events and finally
-    /// `.translation`. If the source language is `nil`, the model detects it itself (NLLB does not accept that).
+    /// Translates the sentences to the target language with a local translation model (or the external LLM when the
+    /// launch settings configure one); emits stage events and `.translation` once per batch (a growing prefix of the
+    /// sentences, the last one complete). If the source language is `nil`, the model detects it itself (NLLB does not accept that).
     public func translate(
         _ sentences: [Sentence],
         to language: String,
@@ -165,7 +178,8 @@ public struct EngineClient: Sendable {
                 do {
                     var engineError: String?
                     for try await line in run.stdout.bytes.lines where !line.isEmpty {
-                        let event = try EngineEvent.decode(line)
+                        // Events from a newer engine that this client doesn't know are skipped.
+                        guard let event = try EngineEvent.decode(line) else { continue }
                         if case .error(let message) = event {
                             engineError = message
                         } else {
@@ -264,11 +278,11 @@ public struct EngineClient: Sendable {
         process.executableURL = command.executable
         process.arguments = command.arguments + args
         let lang = resolvedLanguage()
-        process.environment = processEnvironment(language: lang)
+        process.environment = processEnvironment(language: lang, settings: resolvedLaunchSettings())
         let stdout = Pipe()
         process.standardOutput = stdout
         // stderr goes to a file: so model download progress can't fill the pipe buffer and hang the process.
-        let log = FileManager.default.temporaryDirectory.appending(path: "subtitle-engine-\(UUID().uuidString).log")
+        let log = WorkingDirectory.newLogURL()
         FileManager.default.createFile(atPath: log.path, contents: nil)
         process.standardError = try FileHandle(forWritingTo: log)
         let stdinPipe = Pipe()
