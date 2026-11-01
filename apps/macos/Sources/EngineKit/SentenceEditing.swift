@@ -109,10 +109,12 @@ extension [Sentence] {
         return setEnd(self[index].end + delta, at: index)
     }
 
+    /// Sets the text. A hand edit makes the line the user's own, so an imported `needsReview` marker is cleared.
     @discardableResult
     public mutating func setText(_ text: String, at index: Int) -> Bool {
         guard indices.contains(index), self[index].text != text else { return false }
         self[index].text = text
+        self[index].needsReview = false
         return true
     }
 

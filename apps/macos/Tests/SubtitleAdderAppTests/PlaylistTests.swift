@@ -393,6 +393,28 @@ import Testing
         #expect(vm.status == .finished)
     }
 
+    @Test func asyncModeKeepsTheReviewMarkerInTheSavedJSON() async throws {
+        let folder = try makeFolder()
+        let engine = try FakeEngine.make(
+            transcribe: finished("Merhaba"),
+            translate: """
+            echo '{"event": "translation", "language": "en", "sentences": [{"id": 1, "start": 0, "end": 1, "text": "Merhaba", "words": [], "needs_review": true}]}'
+            """
+        )
+        let (vm, _) = makeModel(engine: engine)
+        vm.externalLlmEnabled = true
+        vm.externalLlmUrl = "10.0.0.2:1234"
+        vm.externalLlmAsync = true
+        vm.translationTarget = "en"
+        vm.exportFormat = .json
+        vm.addToPlaylist([folder.appending(path: "a.mp4")], sourceLanguage: "tr")
+        await run(vm)
+        #expect(vm.playlist.allSatisfy { $0.state == .completed })
+        // The fake renderer echoes the lines it was sent as JSON.
+        let saved = try String(contentsOf: folder.appending(path: savedName("a", .json)), encoding: .utf8)
+        #expect(saved.contains("\"needs_review\":true"))
+    }
+
     @Test func theEditorBadgeShowsWhilePlaylistTranslationsRunInTheBackground() async throws {
         let folder = try makeFolder()
         let engine = try FakeEngine.make(

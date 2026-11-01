@@ -336,6 +336,11 @@ final class SubtitleViewModel {
     /// The mode actually shown: without translations only the original exists, whatever was chosen last.
     var effectiveDisplayMode: SubtitleDisplay { hasTranslations ? displayMode : .original }
 
+    /// Exactly one line is selected: split, merge and the timing controls only act on a single line, so they stay
+    /// unavailable for a multi-selection instead of silently picking one of its lines. Delete and retranslate take the
+    /// whole selection.
+    var hasSingleSelection: Bool { selectedUIDs.count == 1 && selection != nil }
+
     /// Selects `uids` (only those that exist). The active line is `active` if selected, else the previous active line
     /// if still selected, else the first selected line in document order; `nil` when nothing is selected.
     func setSelectedLines(_ uids: Set<UUID>, active: UUID?) {
@@ -355,10 +360,19 @@ final class SubtitleViewModel {
         if selection != newActive { selection = newActive }
     }
 
-    /// The list's selection changed: the newly added line (the last one in document order if several) becomes active.
+    /// The list's selection changed. The active line becomes the newly added one that lies farthest from the previous
+    /// active line, which is the row the user clicked when a ⇧-click extended a range in either direction (a single
+    /// ⌘-click adds just one). Without a previous active line the first added line in document order is used.
     func updateSelection(to uids: Set<UUID>) {
         let added = uids.subtracting(selectedUIDs)
-        setSelectedLines(uids, active: sentences.last { added.contains($0.uid) }?.uid)
+        let candidates = sentences.enumerated().filter { added.contains($0.element.uid) }
+        var active: UUID?
+        if let selection, let anchor = sentences.index(ofUID: selection) {
+            active = candidates.max { abs($0.offset - anchor) < abs($1.offset - anchor) }?.element.uid
+        } else {
+            active = candidates.first?.element.uid
+        }
+        setSelectedLines(uids, active: active)
     }
 
     /// A row was focused or opened its menu: inside the current multi-selection only the active line moves, anywhere

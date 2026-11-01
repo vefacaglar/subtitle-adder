@@ -65,7 +65,11 @@ public enum SubtitleParser {
     // MARK: Formats
 
     private static func parseJSON(_ json: String) -> [Sentence] {
-        (try? JSONDecoder().decode([Sentence].self, from: Data(json.utf8))) ?? []
+        // Like SRT/VTT/ASS, the lines are numbered 1...n: a third-party file with repeated or constant ids would
+        // otherwise make results (matched by id) land on the wrong line.
+        var sentences = (try? JSONDecoder().decode([Sentence].self, from: Data(json.utf8))) ?? []
+        sentences.renumber()
+        return sentences
     }
 
     private static func parseSRTOrVTT(_ content: String) -> [Sentence] {

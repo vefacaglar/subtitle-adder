@@ -13,7 +13,7 @@ extension SubtitleViewModel {
     }
 
     var canMergeSelected: Bool {
-        guard let uid = selection, let index = sentences.index(ofUID: uid) else { return false }
+        guard hasSingleSelection, let uid = selection, let index = sentences.index(ofUID: uid) else { return false }
         return index + 1 < sentences.count
     }
 
@@ -68,7 +68,7 @@ extension SubtitleViewModel {
 
     func nudge(_ edge: TimingEdge, by delta: Double) {
         commitDraft()
-        guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
+        guard hasSingleSelection, let uid = selection, let index = sentences.index(ofUID: uid) else { return }
         commit(L("Zamanlamayı Değiştir")) { list in
             edge == .start ? list.nudgeStart(at: index, by: delta) : list.nudgeEnd(at: index, by: delta)
         }
@@ -76,7 +76,7 @@ extension SubtitleViewModel {
 
     func setSelected(_ edge: TimingEdge, to time: Double) {
         commitDraft()
-        guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
+        guard hasSingleSelection, let uid = selection, let index = sentences.index(ofUID: uid) else { return }
         commit(L("Zamanlamayı Değiştir")) { list in
             edge == .start ? list.setStart(time, at: index) : list.setEnd(time, at: index)
         }
@@ -84,7 +84,7 @@ extension SubtitleViewModel {
 
     func mergeSelectedWithNext() {
         commitDraft()
-        guard let uid = selection, let index = sentences.index(ofUID: uid),
+        guard hasSingleSelection, let uid = selection, let index = sentences.index(ofUID: uid),
               index + 1 < sentences.count
         else { return }
         let affected: Set<UUID> = [sentences[index].uid, sentences[index + 1].uid]
@@ -103,21 +103,29 @@ extension SubtitleViewModel {
         setSpeaker(sentences.nextNewSpeaker, for: uid)
     }
 
+    /// Deletes every selected line in one undo step; the line after the removed block (or the last one) becomes selected.
     func deleteSelected() {
         commitDraft()
-        guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
-        guard commit(L("Satırı Sil"), { $0.deleteSentence(at: index) }) else { return }
-        selection = sentences.isEmpty ? nil : sentences[min(index, sentences.count - 1)].uid
+        let indices = sentences.indices.filter { selectedUIDs.contains(sentences[$0].uid) }
+        guard let first = indices.first else { return }
+        let name = indices.count > 1 ? L("Satırları Sil") : L("Satırı Sil")
+        guard commit(name, { list in
+            var changed = false
+            // From the back so the earlier indices stay valid.
+            for index in indices.reversed() where list.deleteSentence(at: index) { changed = true }
+            return changed
+        }) else { return }
+        selection = sentences.isEmpty ? nil : sentences[min(first, sentences.count - 1)].uid
     }
 
     func canSplitSelected(at time: Double) -> Bool {
-        guard let uid = selection, let index = sentences.index(ofUID: uid) else { return false }
+        guard hasSingleSelection, let uid = selection, let index = sentences.index(ofUID: uid) else { return false }
         return sentences.canSplit(at: index, at: time)
     }
 
     func splitSelected(at time: Double) {
         commitDraft()
-        guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
+        guard hasSingleSelection, let uid = selection, let index = sentences.index(ofUID: uid) else { return }
         // The first part keeps its identity but its text changes; the translation of both parts is invalid.
         commit(L("Satırı Böl"), clearingTranslations: [uid]) { $0.splitSentence(at: index, at: time) }
     }

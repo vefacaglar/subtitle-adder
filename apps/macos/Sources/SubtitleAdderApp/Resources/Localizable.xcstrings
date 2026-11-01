@@ -1649,6 +1649,38 @@
         }
       }
     },
+    "Satırları Sil": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Satırları Sil"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Lines"
+          }
+        }
+      }
+    },
+    "Seçilenleri Yeniden Çevir": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seçilenleri Yeniden Çevir"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retranslate Selected Lines"
+          }
+        }
+      }
+    },
     "Satırı Sil": {
       "localizations": {
         "tr": {

@@ -62,4 +62,21 @@ import Testing
         let incoming = [Sentence(id: 1, start: 0, end: 1, text: "A", needsReview: true)]
         #expect(old.mergedWithSnapshot(incoming).first?.needsReview == true)
     }
+
+    @Test func editingTheTextClearsTheMarkerButTheSameTextKeepsIt() {
+        var list = [Sentence(id: 1, start: 0, end: 1, text: "A", needsReview: true)]
+        #expect(!list.setText("A", at: 0) && list[0].needsReview)
+        #expect(list.setText("B", at: 0) && !list[0].needsReview)
+    }
+
+    @Test func anImportedJSONFileKeepsTheFlagAndIsNumberedFromOne() {
+        let json = """
+        [{"id": 0, "start": 0, "end": 1, "text": "A", "needs_review": true},
+         {"id": 0, "start": 1, "end": 2, "text": "B"},
+         {"id": 0, "start": 2, "end": 3, "text": "C"}]
+        """
+        let lines = SubtitleParser.parse(json, extension: "json")
+        #expect(lines.map(\.id) == [1, 2, 3])
+        #expect(lines.map(\.needsReview) == [true, false, false])
+    }
 }

@@ -320,10 +320,10 @@ extension SubtitleViewModel {
             return
         }
         // What was translated during transcription stays; only the rest goes to the server, with its neighbours as context.
-        var translated: [UUID: String] = [:]
+        var translated: [UUID: (text: String, needsReview: Bool)] = [:]
         for line in lines {
             if let entry = preTranslated[line.uid], Self.isReusableTranslation(line, entry: entry, target: target) {
-                translated[line.uid] = entry.text
+                translated[line.uid] = (entry.text, entry.needsReview)
             }
         }
         let preDone = translated.count
@@ -359,7 +359,7 @@ extension SubtitleViewModel {
                     case .translation(let language, let batch):
                         // A growing prefix per batch plus a final complete one; context lines are not applied.
                         let pairs = Self.pairs(batch, with: remaining).filter { !$0.result.text.isEmpty }
-                        for pair in pairs { translated[pair.original.uid] = pair.result.text }
+                        for pair in pairs { translated[pair.original.uid] = (pair.result.text, pair.result.needsReview) }
                         if editorShows(item) { storeTranslations(pairs, language: language, merge: true) }
                     case .error(let message):
                         engineError = message
@@ -383,11 +383,9 @@ extension SubtitleViewModel {
             updatePlaylistItem(item.id, .failed, .key("Çeviri tamamlanamadı."), nil)
             return
         }
-        let finalLines = lines.map { line -> Sentence in
-            var copy = line
-            if let text = translated[line.uid] { copy.text = text }
-            copy.words = []
-            return copy
+        // The same lines the editor would export: a line the engine gave up on keeps its source text and its marker.
+        let finalLines = lines.map { line in
+            Self.exportLine(line, text: translated[line.uid]?.text, needsReview: translated[line.uid]?.needsReview ?? false)
         }
         let text: String
         do {

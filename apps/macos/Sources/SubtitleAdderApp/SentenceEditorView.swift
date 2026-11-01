@@ -196,7 +196,7 @@ struct SentenceEditorView: View {
                     .help(L("%@ zamanını oynatma konumuna ayarla", title))
             }
         }
-        .disabled(vm.selection == nil)
+        .disabled(!vm.hasSingleSelection)
     }
 
     /// Releases focused text fields and writes the drafts to the lines.
@@ -266,15 +266,19 @@ private struct SentenceRow: View {
                     .frame(width: 124, alignment: .leading)
             }
             VStack(alignment: .leading, spacing: 3) {
-                TextField(L("Cümle"), text: Binding(
-                    get: { vm.draftText(for: sentence) },
-                    set: { vm.updateDraft($0, for: sentence.uid) }
-                ), axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...4)
-                .focused(focus, equals: sentence.uid)
-                .onSubmit { vm.commitDraft() }
-                .disabled(vm.isWorking)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    TextField(L("Cümle"), text: Binding(
+                        get: { vm.draftText(for: sentence) },
+                        set: { vm.updateDraft($0, for: sentence.uid) }
+                    ), axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...4)
+                    .focused(focus, equals: sentence.uid)
+                    .onSubmit { vm.commitDraft() }
+                    .disabled(vm.isWorking)
+                    // A line imported with the flag (JSON) has no translation row to carry the marker.
+                    if vm.translation(for: sentence) == nil, vm.needsReview(for: sentence) { reviewMarker }
+                }
                 if vm.translation(for: sentence) != nil {
                     translationField
                 }
@@ -370,13 +374,15 @@ private struct SentenceRow: View {
                     .help(L("Orijinal metin değişti; çeviri eski olabilir. “Çevir…” ile yenile."))
                     .accessibilityLabel(L("Çeviri eski"))
             }
-            if vm.translation(for: sentence)?.needsReview == true {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .help(L("Bu satır çevrilemedi. Seçip yeniden çevirebilir veya elle düzeltebilirsin."))
-                    .accessibilityLabel(L("Çeviriyi kontrol et"))
-            }
+            if vm.needsReview(for: sentence) { reviewMarker }
         }
+    }
+
+    private var reviewMarker: some View {
+        Image(systemName: "exclamationmark.triangle")
+            .font(.caption2)
+            .foregroundStyle(.orange)
+            .help(L("Bu satır çevrilemedi. Seçip yeniden çevirebilir veya elle düzeltebilirsin."))
+            .accessibilityLabel(L("Çeviriyi kontrol et"))
     }
 }

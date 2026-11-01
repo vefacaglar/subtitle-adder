@@ -12,18 +12,32 @@ extension SubtitleViewModel {
         translations[sentence.uid]?.isStale(for: sentence) ?? false
     }
 
+    /// Whether the line shows the review marker: its translation's flag, or (without a translation) the flag the line
+    /// itself carries from an imported JSON file.
+    func needsReview(for sentence: Sentence) -> Bool {
+        translations[sentence.uid]?.needsReview ?? sentence.needsReview
+    }
+
     /// If the translation is chosen on export, the times are kept and the text is replaced by the translation.
     func exportSentences(translated: Bool) -> [Sentence] {
         guard translated else { return sentences }
         return sentences.map { sentence in
-            var copy = sentence
-            if let entry = translations[sentence.uid], !entry.text.isEmpty {
-                copy.text = entry.text
-                copy.needsReview = entry.needsReview
-            }
-            copy.words = []
-            return copy
+            let entry = translations[sentence.uid]
+            return Self.exportLine(sentence, text: entry?.text, needsReview: entry?.needsReview ?? false)
         }
+    }
+
+    /// The line as exported with a translation: a non-empty `text` replaces the original (the times are kept) and
+    /// carries the translation's `needsReview`, replacing a flag the line itself had; without text the line keeps its
+    /// own text and flag. Word timestamps never go with a translated text.
+    nonisolated static func exportLine(_ line: Sentence, text: String?, needsReview: Bool) -> Sentence {
+        var copy = line
+        if let text, !text.isEmpty {
+            copy.text = text
+            copy.needsReview = needsReview
+        }
+        copy.words = []
+        return copy
     }
 
     /// Translates all lines to the selected target language. While running, Stop cancels the same job.
@@ -69,6 +83,8 @@ extension SubtitleViewModel {
             : 0
         // The progress of a selected retry is the share of the selection, not of the whole subtitle.
         let total = max(1, selectedRequest?.count ?? sentences.count)
+        // What the lines had before the job: a line the engine fails on keeps this, whatever earlier batches stored.
+        let baseline = translations
         savedSubtitleName = nil
         job?.cancel()
         let id = UUID()
@@ -93,6 +109,7 @@ extension SubtitleViewModel {
         }
         isTranslationJobRunning = true
         job = Task {
+            var undoRegistered = false
             // However it ends, the model becomes deletable in Settings.
             defer { if jobID == id { catalog.activeModels = [] } }
             var failed = false
@@ -111,10 +128,17 @@ extension SubtitleViewModel {
                             fraction: fraction
                         )
                     case .translation(let language, let translated):
+                        // A selected retry is one undo step back to what the lines had before it, however many batches
+                        // it applies and even if it is stopped; registered with the first batch.
+                        if selectedRequest != nil, !undoRegistered {
+                            undoRegistered = true
+                            registerTranslationUndo(restoring: baseline, actionName: L("Seçilenleri Yeniden Çevir"))
+                        }
                         // One event per batch (a growing prefix) plus a final one; each is applied as it arrives.
                         applyTranslation(
                             translated, language: language, source: request,
-                            merge: reuseExisting || selectedRequest != nil, preserveOtherLanguages: selectedRequest != nil
+                            merge: reuseExisting || selectedRequest != nil, preserveOtherLanguages: selectedRequest != nil,
+                            reviewFallback: baseline
                         )
                     case .result, .partial:
                         break
@@ -183,13 +207,14 @@ extension SubtitleViewModel {
     /// Maps translated lines by their stable `uid` values; the engine preserves order and ids. With `merge` the
     /// translations of other lines (same language) are kept and these are added to them.
     /// With `preserveOtherLanguages` the kept translations stay even when they are in another language.
+    /// `reviewFallback` is what the lines had before the whole job (see `storeTranslations`).
     func applyTranslation(
         _ translated: [Sentence], language: String, source: [Sentence], merge: Bool = false,
-        preserveOtherLanguages: Bool = false
+        preserveOtherLanguages: Bool = false, reviewFallback: [UUID: TranslationEntry]? = nil
     ) {
         storeTranslations(
             Self.pairs(translated, with: source), language: language, merge: merge,
-            preserveOtherLanguages: preserveOtherLanguages
+            preserveOtherLanguages: preserveOtherLanguages, reviewFallback: reviewFallback
         )
     }
 
@@ -201,19 +226,25 @@ extension SubtitleViewModel {
         return translated.compactMap { result in byID[result.id].map { (result, $0) } }
     }
 
+    /// A result the engine flagged keeps the line's earlier translation (only the marker is set) when that is in the
+    /// same language or `preserveOtherLanguages` is on (a selected retry); otherwise it shows the source text the engine
+    /// returned, flagged, so a full translation into a new language never mixes in the old language. The earlier
+    /// translation is looked up in `reviewFallback` (the translations from before the job) when given: every batch event
+    /// rebuilds the dictionary, so `translations` itself only holds what earlier batches stored.
     func storeTranslations(
         _ pairs: [(result: Sentence, original: Sentence)], language: String, merge: Bool,
-        preserveOtherLanguages: Bool = false
+        preserveOtherLanguages: Bool = false, reviewFallback: [UUID: TranslationEntry]? = nil
     ) {
         let hadTranslations = hasTranslations
-        let previous = translations
+        let previous = reviewFallback ?? translations
         var entries: [UUID: TranslationEntry] = merge
             && (preserveOtherLanguages || translationLanguage == language || translations.isEmpty)
             ? translations
             : [:]
         for (result, original) in pairs {
-            if result.needsReview, var existing = previous[original.uid] {
-                // A failed retry keeps what the line had (even if stale or in another language); only the marker is set.
+            if result.needsReview, var existing = previous[original.uid],
+               preserveOtherLanguages || existing.language == language {
+                // A failed retry keeps what the line had (even if stale); only the marker is set.
                 existing.needsReview = true
                 entries[original.uid] = existing
                 continue
@@ -282,6 +313,16 @@ extension SubtitleViewModel {
         var updated = translations
         updated[uid] = entry
         replaceTranslations(updated, actionName: L("Çeviriyi Değiştir"))
+    }
+
+    /// Puts an undo record on the stack that restores `baseline` without changing the translations now; undoing it
+    /// records the redo, like any other translation change.
+    private func registerTranslationUndo(restoring baseline: [UUID: TranslationEntry], actionName: String) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated { model.replaceTranslations(baseline, actionName: actionName) }
+        }
+        undoManager.setActionName(actionName)
     }
 
     private func replaceTranslations(_ updated: [UUID: TranslationEntry], actionName: String) {
