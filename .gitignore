@@ -24,3 +24,9 @@ samples/
 
 # Local Claude settings
 .claude/settings.local.json
+
+# .NET
+bin/
+obj/
+*.user
+TestResults/

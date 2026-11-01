@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>SubtitleAdder.EngineKit</RootNamespace>
+    <AssemblyName>SubtitleAdder.EngineKit</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The macOS String Catalog is the single source of truth for EngineKit's user-facing strings. -->
+    <EmbeddedResource Include="..\..\..\macos\Sources\EngineKit\Resources\Localizable.xcstrings"
+                      Link="Resources\Localizable.xcstrings"
+                      LogicalName="SubtitleAdder.EngineKit.Localizable.xcstrings" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EngineKit.Tests" />
+  </ItemGroup>
+
+</Project>
