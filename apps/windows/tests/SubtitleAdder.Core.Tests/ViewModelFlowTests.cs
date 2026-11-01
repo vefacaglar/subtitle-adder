@@ -410,6 +410,49 @@ public class ViewModelTranslationTests
     }
 
     [Fact]
+    public async Task UndoingAnEditMadeBeforeTranslatingKeepsTheTranslation()
+    {
+        var (vm, engine) = await Transcribed();
+        vm.SetText("Değişti.", vm.Sentences[2].Uid);
+        await Translate(vm, engine, "es");
+        vm.Undo();
+        Assert.Equal("Üç.", vm.Sentences[2].Text);
+        Assert.Equal(["T1", "T2", "T3"], vm.Sentences.Select(s => vm.TranslationFor(s)?.Text));
+        vm.Redo();
+        Assert.Equal("Değişti.", vm.Sentences[2].Text);
+        Assert.Equal("T3", vm.TranslationFor(vm.Sentences[2])?.Text);
+    }
+
+    [Fact]
+    public async Task RedoingAMergeClearsTheMergedTranslationAgain()
+    {
+        var (vm, engine) = await Transcribed();
+        await Translate(vm, engine);
+        vm.Selection = vm.Sentences[0].Uid;
+        vm.MergeSelectedWithNext();
+        vm.Undo();
+        Assert.Equal("T1", vm.TranslationFor(vm.Sentences[0])?.Text);
+        vm.Redo();
+        Assert.Equal(2, vm.Sentences.Count);
+        Assert.Null(vm.TranslationFor(vm.Sentences[0]));
+        Assert.Equal("T3", vm.TranslationFor(vm.Sentences[1])?.Text);
+    }
+
+    [Fact]
+    public async Task UndoingATranslationTextEditAfterRetranslatingKeepsTheNewTranslation()
+    {
+        var (vm, engine) = await Transcribed();
+        await Translate(vm, engine, "es");
+        vm.SetTranslationText("Editado", vm.Sentences[0].Uid);
+        engine.Reset();
+        vm.TranslationTarget = "pt";
+        await Translate(vm, engine, "pt");
+        vm.Undo();
+        Assert.All(vm.Sentences, s => Assert.Equal("pt", vm.TranslationFor(s)?.Language));
+        Assert.Equal("T1", vm.TranslationFor(vm.Sentences[0])?.Text);
+    }
+
+    [Fact]
     public async Task TranslationDraftCommitsAsOneUndoableEdit()
     {
         var (vm, engine) = await Transcribed();

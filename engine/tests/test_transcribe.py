@@ -233,6 +233,40 @@ def test_whisper_falls_back_to_cpu_when_cuda_libraries_fail(wav_file, monkeypatc
     assert [w.text for w in transcript.words] == ["Hello"]
 
 
+def test_cpu_fallback_after_a_mid_run_cuda_error_keeps_progress_monotonic(wav_file, monkeypatch):
+    """A CUDA error after some segments restarts on the CPU without the progress jumping back to 0."""
+    import types
+
+    from subtitle_engine import cuda
+    from subtitle_engine.transcribe import FasterWhisperTranscriber
+
+    def segment(end):
+        return types.SimpleNamespace(end=end, words=[types.SimpleNamespace(start=end - 0.1, end=end, word=" w")])
+
+    class FakeWhisperModel:
+        def __init__(self, size, device, compute_type, **kwargs):
+            self.device = device
+
+        def transcribe(self, *args, **kwargs):
+            def segments():
+                yield segment(2.0)
+                yield segment(6.0)
+                if self.device == "cuda":
+                    raise RuntimeError("CUDA failed with error out of memory")
+                yield segment(10.0)
+
+            return segments(), types.SimpleNamespace(language="en", duration=10.0)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeWhisperModel))
+    monkeypatch.setattr(cuda, "cuda_usable", lambda: True)
+
+    progress: list[float] = []
+    transcript = FasterWhisperTranscriber("base").transcribe(wav_file, on_progress=progress.append)
+
+    assert progress == [0.2, 0.6, 0.6, 1.0]
+    assert len(transcript.words) == 3
+
+
 def test_whisper_uses_cpu_when_cuda_is_not_usable(monkeypatch):
     import types
 

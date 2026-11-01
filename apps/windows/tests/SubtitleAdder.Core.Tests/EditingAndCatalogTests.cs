@@ -402,6 +402,26 @@ public class AppLanguageAndSettingsTests
     }
 
     [Fact]
+    public async Task JsonFileStoreSavesOffThreadAfterADebounce()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"subtitle-adder-settings-{Guid.NewGuid()}", "settings.json");
+        try
+        {
+            using var store = new JsonFileSettingsStore(path, TimeSpan.FromMilliseconds(50));
+            for (var tick = 0; tick < 20; tick++) store.SetDouble("overlayOpacity", tick / 20.0);
+            Assert.Equal(0.95, store.GetDouble("overlayOpacity"));   // memory is updated at once
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!File.Exists(path) && DateTime.UtcNow < deadline) await Task.Delay(20);
+            await Task.Delay(100);
+            Assert.Equal(0.95, new JsonFileSettingsStore(path).GetDouble("overlayOpacity"));
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(path)!, recursive: true);
+        }
+    }
+
+    [Fact]
     public void JsonFileStoreRoundTripsAndSurvivesCorruption()
     {
         var path = Path.Combine(Path.GetTempPath(), $"subtitle-adder-settings-{Guid.NewGuid()}", "settings.json");
@@ -412,6 +432,7 @@ public class AppLanguageAndSettingsTests
             store.SetBool("diarizeSpeakers", false);
             store.SetInt("speakerCount", 3);
             store.SetDouble("overlayFontSize", 0.07);
+            store.Flush();
             var reloaded = new JsonFileSettingsStore(path);
             Assert.Equal("small", reloaded.GetString("selectedModel"));
             Assert.False(reloaded.GetBool("diarizeSpeakers"));
@@ -424,6 +445,7 @@ public class AppLanguageAndSettingsTests
             var corrupt = new JsonFileSettingsStore(path);
             Assert.Null(corrupt.GetString("selectedModel"));
             corrupt.SetString("selectedModel", "base");
+            corrupt.Dispose();
             Assert.Equal("base", new JsonFileSettingsStore(path).GetString("selectedModel"));
         }
         finally

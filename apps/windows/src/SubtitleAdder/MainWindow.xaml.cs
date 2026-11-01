@@ -35,7 +35,7 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<(int Speaker, bool Dark), Brush> _speakerBrushes = [];
     private bool _syncing;
     private LocalizedMessage? _shownError;
-    private string? _saveError;
+    private Func<string>? _saveError;   // rebuilt on a language switch
 
     public MainWindow()
     {
@@ -49,7 +49,7 @@ public sealed partial class MainWindow : Window
         _player.ActiveChanged += OnActiveChanged;
         _player.VideoSizeChanged += UpdateOverlay;
         _player.Ticked += () => SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
-        _player.Failed += message => ShowSaveError(L("Video oynatılamadı: %@", message));
+        _player.Failed += message => ShowSaveError(() => L("Video oynatılamadı: %@", message));
         Splitter.Target = PlayerRow;
         Splitter.Other = EditorRow;
 
@@ -156,6 +156,7 @@ public sealed partial class MainWindow : Window
         UpdatePickers(refill: true);
         UpdateSpeakerButton();
         UpdateStatus();
+        if (_saveError is { } saveError && ErrorBar.IsOpen) ErrorBar.Message = saveError();
         UpdateUndoTips();
         UpdateTimingTips();
         UpdateTimingEnabled();
@@ -203,10 +204,10 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void ShowSaveError(string message)
+    private void ShowSaveError(Func<string> message)
     {
         _saveError = message;
-        ErrorBar.Message = message;
+        ErrorBar.Message = message();
         ErrorBar.IsOpen = true;
     }
 
@@ -549,6 +550,8 @@ public sealed partial class MainWindow : Window
         switch (e.Key)
         {
             case VirtualKey.Space:
+                // Only when the row (or list) itself has focus; Space must still activate a focused row button.
+                if (e.OriginalSource is not (ListViewItem or ListView)) return;
                 _player.TogglePlayback();
                 e.Handled = true;
                 break;
@@ -714,7 +717,8 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            ShowSaveError(L("Dosya kaydedilemedi: %@", error.Message));
+            var reason = error.Message;
+            ShowSaveError(() => L("Dosya kaydedilemedi: %@", reason));
         }
     }
 

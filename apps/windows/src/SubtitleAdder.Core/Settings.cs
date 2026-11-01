@@ -26,7 +26,7 @@ public interface ISettingsStore
 /// <summary>Settings held in memory as JSON values; the base of the file store and the test store.</summary>
 public class InMemorySettingsStore : ISettingsStore
 {
-    private readonly Lock _lock = new();
+    protected readonly Lock SyncRoot = new();
     protected readonly Dictionary<string, JsonNode?> Values;
 
     public InMemorySettingsStore() : this(new Dictionary<string, JsonNode?>(StringComparer.Ordinal)) { }
@@ -66,7 +66,7 @@ public class InMemorySettingsStore : ISettingsStore
 
     public void Remove(string key)
     {
-        lock (_lock)
+        lock (SyncRoot)
         {
             if (!Values.Remove(key)) return;
             Persist();
@@ -76,12 +76,12 @@ public class InMemorySettingsStore : ISettingsStore
 
     private T Read<T>(string key, Func<JsonNode?, T> convert)
     {
-        lock (_lock) return Values.TryGetValue(key, out var node) ? convert(node) : convert(null);
+        lock (SyncRoot) return Values.TryGetValue(key, out var node) ? convert(node) : convert(null);
     }
 
     private void Write(string key, JsonNode value)
     {
-        lock (_lock)
+        lock (SyncRoot)
         {
             if (Values.TryGetValue(key, out var old) && JsonNode.DeepEquals(old, value)) return;
             Values[key] = value;
@@ -90,7 +90,7 @@ public class InMemorySettingsStore : ISettingsStore
         Changed?.Invoke(this, key);
     }
 
-    /// <summary>Called under the lock after every change.</summary>
+    /// <summary>Called under <see cref="SyncRoot"/> after every change; must not block (it runs on the caller's thread).</summary>
     protected virtual void Persist() { }
 
     protected JsonObject Snapshot()
@@ -102,15 +102,25 @@ public class InMemorySettingsStore : ISettingsStore
 }
 
 /// <summary>
-/// Settings in a JSON file, by default <c>%LOCALAPPDATA%\SubtitleAdder\settings.json</c>. Every change is written
-/// at once (temp file + replace); a missing or corrupt file starts with defaults.
+/// Settings in a JSON file, by default <c>%LOCALAPPDATA%\SubtitleAdder\settings.json</c>. Values change in memory at
+/// once; the file is written off the caller's thread after a short debounce (temp file + replace), so dragging a
+/// slider does not hit the disk on the UI thread. <see cref="Flush"/> writes pending changes (call it on exit).
+/// A missing or corrupt file starts with defaults.
 /// </summary>
-public sealed class JsonFileSettingsStore : InMemorySettingsStore
+public sealed class JsonFileSettingsStore : InMemorySettingsStore, IDisposable
 {
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
+    private readonly Lock _fileLock = new();   // one writer at a time (timer vs. Flush)
+    private readonly Timer _saveTimer;
+    private readonly TimeSpan _saveDelay;
+    private bool _dirty;   // guarded by SyncRoot
 
-    public JsonFileSettingsStore(string? path = null) : base(Load(path ??= DefaultPath)) => FilePath = path;
-
+    public JsonFileSettingsStore(string? path = null, TimeSpan? saveDelay = null) : base(Load(path ??= DefaultPath))
+    {
+        FilePath = path;
+        _saveDelay = saveDelay ?? TimeSpan.FromMilliseconds(300);
+        _saveTimer = new Timer(_ => Flush(), null, Timeout.Infinite, Timeout.Infinite);
+    }
     public static string DefaultPath { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SubtitleAdder", "settings.json");
 
@@ -135,16 +145,46 @@ public sealed class JsonFileSettingsStore : InMemorySettingsStore
 
     protected override void Persist()
     {
+        _dirty = true;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            var temp = FilePath + ".tmp";
-            File.WriteAllText(temp, Snapshot().ToJsonString(WriteOptions));
-            File.Move(temp, FilePath, overwrite: true);
+            _saveTimer.Change(_saveDelay, Timeout.InfiniteTimeSpan);
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        catch (ObjectDisposedException)
         {
-            // The value stays in memory for this session.
+            // Disposed (app exit): the change stays pending; a later Flush/Dispose writes it.
         }
+    }
+
+    /// <summary>Writes pending changes now (synchronously).</summary>
+    public void Flush()
+    {
+        lock (_fileLock)
+        {
+            string json;
+            lock (SyncRoot)
+            {
+                if (!_dirty) return;
+                _dirty = false;
+                json = Snapshot().ToJsonString(WriteOptions);
+            }
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+                var temp = FilePath + ".tmp";
+                File.WriteAllText(temp, json);
+                File.Move(temp, FilePath, overwrite: true);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                // The value stays in memory for this session.
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _saveTimer.Dispose();
+        Flush();
     }
 }

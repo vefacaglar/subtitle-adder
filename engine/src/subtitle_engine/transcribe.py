@@ -62,16 +62,26 @@ class FasterWhisperTranscriber:
     ) -> Transcript:
         from . import cuda
 
+        # Progress never goes backwards, also across the CPU retry below.
+        reported = 0.0
+
+        def progress(fraction: float) -> None:
+            nonlocal reported
+            if on_progress is not None and fraction >= reported:
+                reported = fraction
+                on_progress(fraction)
+
         try:
-            return self._transcribe(audio, language, on_progress)
+            return self._transcribe(audio, language, progress)
         except RuntimeError as exc:
-            # The GPU path fails on the first batch when a CUDA library is missing or the GPU is unsupported;
-            # nothing has been reported yet, so the run restarts on the CPU.
+            # The GPU path usually fails on the first batch (a CUDA library is missing or the GPU is unsupported),
+            # but a CUDA error (e.g. out of memory) can also come mid-run. Either way the run restarts on the CPU;
+            # progress stays at the last reported value until the retry passes it.
             if self._device != "cuda" or not cuda.is_cuda_library_error(exc):
                 raise
             print(f"CUDA unavailable, falling back to CPU: {exc}", file=sys.stderr)
             self._load("cpu")
-            return self._transcribe(audio, language, on_progress)
+            return self._transcribe(audio, language, progress)
 
     def _transcribe(self, audio: Path, language: str | None, on_progress: ProgressFn | None) -> Transcript:
         segments, info = self._model.transcribe(

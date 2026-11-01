@@ -779,16 +779,19 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     /// <summary>Cancels the running job (if any) and makes sure none of its late events change the state.</summary>
     private void StopJob()
     {
+        // Retire the id before cancelling: the cancelled job's handlers may run on another thread
+        // right away and must already see that they are stale.
+        var job = _job;
+        _job = null;
+        _jobId = Guid.NewGuid();
         try
         {
-            _job?.Cancel();
+            job?.Cancel();
         }
         catch (ObjectDisposedException)
         {
             // The job already finished.
         }
-        _job = null;
-        _jobId = Guid.NewGuid();
     }
 
     private static void DeleteQuietly(string path)

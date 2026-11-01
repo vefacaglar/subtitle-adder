@@ -7,7 +7,8 @@ namespace SubtitleAdder;
 
 /// <summary>
 /// Horizontal splitter between the player and the line list (the VSplitView of the macOS app): dragging resizes
-/// <see cref="Target"/> in pixels within <see cref="Minimum"/> and the space left for the row below.
+/// <see cref="Target"/> within <see cref="Minimum"/> and the space left for the row below. Both rows are set as star
+/// proportions, so the split keeps its ratio (and the row minimums) when the window is resized later.
 /// </summary>
 public sealed partial class SplitterHandle : Grid
 {
@@ -44,8 +45,16 @@ public sealed partial class SplitterHandle : Grid
         if (!_dragging || Target is null || Parent is not FrameworkElement parent) return;
         var available = parent.ActualHeight - ActualHeight;
         var height = Math.Clamp(_startHeight + e.GetCurrentPoint(null).Position.Y - _startY, Minimum, Math.Max(Minimum, available - OtherMinimum));
-        Target.Height = new GridLength(height, GridUnitType.Pixel);
-        if (Other is not null) Other.Height = new GridLength(1, GridUnitType.Star);
+        if (Other is not null)
+        {
+            var other = Math.Max(1, available - height);
+            Target.Height = new GridLength(height, GridUnitType.Star);
+            Other.Height = new GridLength(other, GridUnitType.Star);
+        }
+        else
+        {
+            Target.Height = new GridLength(height, GridUnitType.Pixel);
+        }
         e.Handled = true;
     }
 

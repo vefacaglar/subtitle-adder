@@ -100,7 +100,12 @@
                                 <Grid ColumnSpacing="16" VerticalAlignment="Center">
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                                     <FontIcon Glyph="&#xF2B7;" FontSize="18" />
-                                    <TextBlock Grid.Column="1" loc:Localize.Text="Arayüz dili" Style="{StaticResource CardTitleStyle}" VerticalAlignment="Center" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock loc:Localize.Text="Arayüz dili" Style="{StaticResource CardTitleStyle}" />
+                                        <TextBlock loc:Localize.Text="Menüler ve sistem diyalogları uygulama yeniden açılınca güncellenir."
+                                                   Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
                                 </Grid>
                                 <ComboBox x:Name="UiLanguageBox" Grid.Column="1" Style="{StaticResource CardControlStyle}" SelectionChanged="UiLanguageBox_SelectionChanged"
                                           loc:Localize.AutomationName="Arayüz dili" />

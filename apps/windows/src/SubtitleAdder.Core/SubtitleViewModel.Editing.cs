@@ -200,12 +200,12 @@ public sealed partial class SubtitleViewModel
     /// <summary>
     /// Changes <see cref="Sentences"/> and records the old value on the undo stack (during undo, this call also creates
     /// the redo record). Translations of deleted/merged lines are cleared; if <paramref name="restoredTranslations"/> is
-    /// given (undo/redo), that dictionary is restored as is.
+    /// given (undo/redo), only the translation changes of the reverted step are rolled back (see <see cref="RevertedTranslations"/>).
     /// </summary>
     private void ReplaceSentences(
         IReadOnlyList<Sentence> updated,
         string actionKey,
-        IReadOnlyDictionary<Guid, TranslationEntry>? restoredTranslations = null,
+        (IReadOnlyDictionary<Guid, TranslationEntry> From, IReadOnlyDictionary<Guid, TranslationEntry> To)? revert = null,
         IReadOnlySet<Guid>? clearedUids = null)
     {
         var previous = _sentences;
@@ -214,13 +214,16 @@ public sealed partial class SubtitleViewModel
         if (_draft is { } draft && updated.FirstOrDefault(s => s.Uid == draft.Uid)?.Text != draft.Text) Draft = null;
         var validUids = updated.Select(s => s.Uid).ToHashSet();
         Sentences = updated;
-        Translations = restoredTranslations ?? _translations
-            .Where(pair => validUids.Contains(pair.Key) && !(clearedUids?.Contains(pair.Key) ?? false))
-            .ToDictionary(pair => pair.Key, pair => pair.Value);
+        Translations = revert is { } step
+            ? RevertedTranslations(step.From, step.To, validUids)
+            : _translations
+                .Where(pair => validUids.Contains(pair.Key) && !(clearedUids?.Contains(pair.Key) ?? false))
+                .ToDictionary(pair => pair.Key, pair => pair.Value);
         if (_translationDraft is { } translationDraft
             && (!validUids.Contains(translationDraft.Uid) || (clearedUids?.Contains(translationDraft.Uid) ?? false)))
             TranslationDraft = null;
         if (_selection is { } selected && !validUids.Contains(selected)) Selection = null;
-        UndoStack.Register(actionKey, () => ReplaceSentences(previous, actionKey, previousTranslations));
+        var applied = _translations;
+        UndoStack.Register(actionKey, () => ReplaceSentences(previous, actionKey, (applied, previousTranslations)));
     }
 }

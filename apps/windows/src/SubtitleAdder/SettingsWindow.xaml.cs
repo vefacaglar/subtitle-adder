@@ -20,6 +20,7 @@ public sealed partial class SettingsWindow : Window
     private readonly AppLanguage _language = App.Current.Language;
     private readonly AppearanceSettings _appearance = App.Current.Appearance;
     private bool _syncing;
+    private int? _freedMB;   // shown in FreedBar; its text is rebuilt on a language switch
 
     public SettingsWindow()
     {
@@ -61,9 +62,20 @@ public sealed partial class SettingsWindow : Window
 
     private void OnChanged(object? sender, PropertyChangedEventArgs e) => Refresh(refill: string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == nameof(AppLanguage.Effective));
 
+    private static readonly HashSet<string> ModelListProperties =
+    [
+        nameof(ModelCatalog.TranscriptionRows), nameof(ModelCatalog.DiarizationRows), nameof(ModelCatalog.TranslationRows),
+        nameof(ModelCatalog.IsLoading), nameof(ModelCatalog.LoadError), nameof(ModelCatalog.TotalDiskText),
+    ];
+
     private void OnCatalogChanged(object? sender, PropertyChangedEventArgs e)
     {
-        UpdateModels();
+        // One catalog change raises several notifications; only these affect the model page, and unchanged lists are
+        // not rebuilt (that would drop keyboard focus from a card). Models also fires on a language switch: rebind then.
+        if (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == nameof(ModelCatalog.Models))
+            UpdateModels(force: true);
+        else if (ModelListProperties.Contains(e.PropertyName))
+            UpdateModels();
         if (e.PropertyName == nameof(ModelCatalog.Models)) Refresh(refill: false);
     }
 
@@ -133,23 +145,32 @@ public sealed partial class SettingsWindow : Window
         ColorSwatch.Background = new SolidColorBrush(Ui.Color(style.TextColor));
         ColorHex.Text = style.TextHex.ToUpperInvariant();
         UpdatePreview();
-        if (refill) UpdateModels();
+        if (refill && _freedMB is { } freed && FreedBar.IsOpen) FreedBar.Message = FreedText(freed);
+        if (refill) UpdateModels(force: true);
     }
+
+    private static string FreedText(int mb) => L("%@ boşaltıldı.", Core.ModelLabel.SizeText(mb));
 
     private void UpdatePreview() =>
         PreviewLabel.Update(L("Örnek altyazı metni"), _appearance.Style, 150);
 
-    private void UpdateModels()
+    private void UpdateModels(bool force = false)
     {
-        TranscriptionList.ItemsSource = _catalog.TranscriptionRows;
-        DiarizationList.ItemsSource = _catalog.DiarizationRows;
+        SetRows(TranscriptionList, _catalog.TranscriptionRows, force);
+        SetRows(DiarizationList, _catalog.DiarizationRows, force);
         DiarizationSection.Visibility = _catalog.DiarizationRows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        TranslationList.ItemsSource = _catalog.TranslationRows;
+        SetRows(TranslationList, _catalog.TranslationRows, force);
         LoadingRing.IsActive = _catalog.IsLoading;
         LoadingRing.Visibility = _catalog.IsLoading ? Visibility.Visible : Visibility.Collapsed;
         TotalDisk.Text = _catalog.TotalDiskText;
         LoadErrorBar.Message = _catalog.LoadError?.Text ?? "";
         LoadErrorBar.IsOpen = _catalog.LoadError is not null;
+    }
+
+    private static void SetRows(ItemsControl list, IReadOnlyList<ModelRow> rows, bool force)
+    {
+        if (!force && list.ItemsSource is IReadOnlyList<ModelRow> shown && shown.SequenceEqual(rows)) return;
+        list.ItemsSource = rows;
     }
 
     private static int IndexOf<T>(IReadOnlyList<T> list, Func<T, bool> match)
@@ -279,7 +300,8 @@ public sealed partial class SettingsWindow : Window
         var freed = await _catalog.DeleteAsync(row.Model);
         if (freed is { } mb)
         {
-            FreedBar.Message = L("%@ boşaltıldı.", Core.ModelLabel.SizeText(mb));
+            _freedMB = mb;
+            FreedBar.Message = FreedText(mb);
             FreedBar.IsOpen = true;
         }
     }

@@ -29,6 +29,23 @@ public class EngineKitTests
         Assert.ThrowsAny<System.Text.Json.JsonException>(() => EngineEvent.Decode("""{"event": "mystery"}"""));
     }
 
+    [Theory]
+    [InlineData("""{"stage": "transcribing"}""")]
+    [InlineData("""[1]""")]
+    [InlineData("""42""")]
+    [InlineData("""{"event": 7}""")]
+    public void LineWithoutAStringEventThrowsJsonException(string line)
+    {
+        Assert.ThrowsAny<System.Text.Json.JsonException>(() => EngineEvent.Decode(line));
+    }
+
+    [Fact]
+    public void StageWithoutFractionDecodesAsIndeterminate()
+    {
+        Assert.Equal(new EngineEvent.Stage(EngineStage.Segmenting, null),
+            EngineEvent.Decode("""{"event": "stage", "stage": "segmenting"}"""));
+    }
+
     [Fact]
     public async Task ListsModelsFromEngine()
     {

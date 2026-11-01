@@ -16,6 +16,7 @@ public sealed class PlayerController : IDisposable
     private readonly DispatcherQueueTimer _timer;
     private IReadOnlyList<Sentence> _sentences = [];
     private int _loadGeneration;
+    private MediaSource? _source;   // disposed when replaced so the old file is not kept open
 
     public PlayerController(DispatcherQueue queue)
     {
@@ -57,11 +58,8 @@ public sealed class PlayerController : IDisposable
         VideoSize = (16, 9);
         VideoSizeChanged?.Invoke();
         UpdateActive();
-        if (path is null)
-        {
-            Player.Source = null;
-            return;
-        }
+        ReleaseSource();
+        if (path is null) return;
         MediaSource source;
         try
         {
@@ -71,8 +69,20 @@ public sealed class PlayerController : IDisposable
         {
             source = MediaSource.CreateFromUri(new Uri(path));
         }
-        if (generation != _loadGeneration) return;
+        if (generation != _loadGeneration)
+        {
+            source.Dispose();
+            return;
+        }
+        _source = source;
         Player.Source = source;
+    }
+
+    private void ReleaseSource()
+    {
+        Player.Source = null;
+        _source?.Dispose();
+        _source = null;
     }
 
     public void SetSentences(IReadOnlyList<Sentence> sentences)
@@ -141,6 +151,7 @@ public sealed class PlayerController : IDisposable
     public void Dispose()
     {
         _timer.Stop();
+        ReleaseSource();
         Player.Dispose();
     }
 }

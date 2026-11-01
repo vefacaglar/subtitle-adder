@@ -129,6 +129,43 @@ public sealed partial class SubtitleViewModel
     {
         var previous = _translations;
         Translations = updated;
-        UndoStack.Register(actionKey, () => ReplaceTranslations(previous, actionKey));
+        UndoStack.Register(actionKey, () => RevertTranslations(updated, previous, actionKey));
+    }
+
+    private void RevertTranslations(
+        IReadOnlyDictionary<Guid, TranslationEntry> from, IReadOnlyDictionary<Guid, TranslationEntry> to, string actionKey)
+    {
+        var current = _translations;
+        Translations = RevertedTranslations(from, to);
+        var applied = _translations;
+        UndoStack.Register(actionKey, () => RevertTranslations(applied, current, actionKey));
+    }
+
+    /// <summary>
+    /// Rolls an undo step's translation change (<paramref name="from"/> -> <paramref name="to"/>) back into the current
+    /// translations, line by line and only where the line still holds the step's value, so undoing an edit made before
+    /// a (re)translation never throws that translation away. Entries in another language than the current translation
+    /// are not brought back. <paramref name="validUids"/> drops entries of lines that no longer exist.
+    /// </summary>
+    private Dictionary<Guid, TranslationEntry> RevertedTranslations(
+        IReadOnlyDictionary<Guid, TranslationEntry> from, IReadOnlyDictionary<Guid, TranslationEntry> to,
+        IReadOnlySet<Guid>? validUids = null)
+    {
+        var current = _translations;
+        var result = new Dictionary<Guid, TranslationEntry>(current);
+        var language = current.Values.FirstOrDefault()?.Language;
+        foreach (var uid in from.Keys.Union(to.Keys))
+        {
+            var before = from.GetValueOrDefault(uid);
+            var after = to.GetValueOrDefault(uid);
+            if (Equals(before, after) || !Equals(current.GetValueOrDefault(uid), before)) continue;
+            if (after is null) result.Remove(uid);
+            else if (language is null || after.Language == language) result[uid] = after;
+        }
+        if (validUids is not null)
+        {
+            foreach (var uid in result.Keys.Where(uid => !validUids.Contains(uid)).ToList()) result.Remove(uid);
+        }
+        return result;
     }
 }

@@ -46,6 +46,7 @@ public partial class App : Application
         Settings = new JsonFileSettingsStore();
         // Must exist before anything builds a localized string.
         Language = new AppLanguage(Settings, () => GlobalizationPreferences.Languages);
+        ApplySystemLanguage(Language.Effective);
         var ui = new SynchronizationContextDispatcher();
         LocalizedStrings.Shared.Dispatcher = ui;
         Appearance = new AppearanceSettings(Settings);
@@ -57,12 +58,29 @@ public partial class App : Application
         {
             _settingsWindow?.Close();
             ViewModel.Dispose();
+            (Settings as IDisposable)?.Dispose();   // writes pending settings
         };
         _window.Activate();
 
         // "Open with" / a path on the command line.
         var path = Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(File.Exists);
         if (path is not null) ViewModel.OpenVideo(Path.GetFullPath(path));
+    }
+
+    /// <summary>
+    /// Built-in WinUI and system text (transport control tooltips, text box menus, pickers) follows the process language
+    /// override, which takes effect for windows created afterwards; Settings tells the user a restart applies it.
+    /// </summary>
+    private static void ApplySystemLanguage(EngineKit.UILanguage language)
+    {
+        try
+        {
+            Microsoft.Windows.Globalization.ApplicationLanguages.PrimaryLanguageOverride = language == EngineKit.UILanguage.En ? "en-US" : "tr-TR";
+        }
+        catch (Exception error) when (error is System.Runtime.InteropServices.COMException or ArgumentException)
+        {
+            // Not fatal: system strings stay in the OS language.
+        }
     }
 
     /// <summary>Opens Settings (one window), optionally on a page.</summary>

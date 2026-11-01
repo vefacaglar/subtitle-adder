@@ -17,6 +17,7 @@ public static class Localize
 
     private static readonly List<(WeakReference<DependencyObject> Element, Target Target, string Key)> Registered = [];
     private static bool _subscribed;
+    private static int _pruneAt = 256;   // regenerated list items keep registering; dead entries are dropped in batches
 
     public static readonly DependencyProperty TextProperty = Register(nameof(Target.Text), Target.Text);
     public static readonly DependencyProperty ContentProperty = Register(nameof(Target.Content), Target.Content);
@@ -61,6 +62,11 @@ public static class Localize
                 if (e.NewValue is not string key) return;
                 Subscribe();
                 Registered.Add((new WeakReference<DependencyObject>(o), target, key));
+                if (Registered.Count >= _pruneAt)
+                {
+                    Registered.RemoveAll(r => !r.Element.TryGetTarget(out var _));
+                    _pruneAt = Math.Max(256, Registered.Count * 2);
+                }
                 Apply(o, target, key);
             }));
 

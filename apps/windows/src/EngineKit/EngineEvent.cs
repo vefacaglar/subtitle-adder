@@ -68,7 +68,13 @@ public abstract record EngineEvent
     {
         using var document = JsonDocument.Parse(line);
         var root = document.RootElement;
-        var name = root.GetProperty("event").GetString();
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("event", out var eventName)
+            || eventName.ValueKind != JsonValueKind.String)
+        {
+            throw new JsonException("event missing");
+        }
+        var name = eventName.GetString();
         var options = EngineJson.Options;
         switch (name)
         {
@@ -92,7 +98,7 @@ public abstract record EngineEvent
 
     private sealed record StagePayload(
         [property: JsonPropertyName("stage")] string Stage,
-        [property: JsonPropertyName("fraction")] double? Fraction);
+        [property: JsonPropertyName("fraction")] double? Fraction = null);
 
     private sealed record TranslationPayload(
         [property: JsonPropertyName("language")] string Language,

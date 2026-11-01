@@ -130,11 +130,18 @@ public sealed class EngineClient : IEngineClient
         if (status != 0) throw await run.FailureAsync(status).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Starts the engine on the thread pool: resolving it, opening the log and <c>Process.Start</c> can take hundreds of
+    /// milliseconds (antivirus), and these methods are called from the UI thread.
+    /// </summary>
+    private Task<RunningEngine> StartOffThread(List<string> arguments, byte[]? input, CancellationToken cancellationToken) =>
+        Task.Run(() => Start(arguments, input, cancellationToken), CancellationToken.None);
+
     /// <summary>Sends the sentences (possibly edited in the app) to the engine and gets text in the requested format.</summary>
     public async Task<string> RenderAsync(
         IReadOnlyList<Sentence> sentences, SubtitleFormat format, CancellationToken cancellationToken = default)
     {
-        await using var run = Start(["render", "--format", format.RawValue()], Encode(sentences), cancellationToken);
+        await using var run = await StartOffThread(["render", "--format", format.RawValue()], Encode(sentences), cancellationToken).ConfigureAwait(false);
         var output = await ReadToEndAsync(run, cancellationToken).ConfigureAwait(false);
         var status = await run.ExitCodeAsync().ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
@@ -145,7 +152,7 @@ public sealed class EngineClient : IEngineClient
     /// <summary>Gets the model catalog and local download status (<c>models --json</c>, a single <c>models</c> event line).</summary>
     public async Task<IReadOnlyList<EngineModel>> ModelsAsync(CancellationToken cancellationToken = default)
     {
-        await using var run = Start(["models", "--json"], null, cancellationToken);
+        await using var run = await StartOffThread(["models", "--json"], null, cancellationToken).ConfigureAwait(false);
         var line = LastLine(await ReadToEndAsync(run, cancellationToken).ConfigureAwait(false));
         var status = await run.ExitCodeAsync().ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
@@ -172,7 +179,7 @@ public sealed class EngineClient : IEngineClient
     /// <summary>Deletes a downloaded model from the cache and returns the freed MB (<c>delete-model &lt;id&gt; --json</c>).</summary>
     public async Task<int> DeleteModelAsync(string id, CancellationToken cancellationToken = default)
     {
-        await using var run = Start(["delete-model", id, "--json"], null, cancellationToken);
+        await using var run = await StartOffThread(["delete-model", id, "--json"], null, cancellationToken).ConfigureAwait(false);
         var line = LastLine(await ReadToEndAsync(run, cancellationToken).ConfigureAwait(false));
         var status = await run.ExitCodeAsync().ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
