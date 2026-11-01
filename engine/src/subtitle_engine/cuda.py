@@ -172,7 +172,11 @@ def cuda_usable() -> bool:
 
 
 def needs_cuda_download() -> bool:
-    """True when an NVIDIA GPU is present on Windows/Linux but the CUDA runtime libraries are missing."""
+    """True when an NVIDIA GPU is present on Windows/Linux, CUDA runtime libraries are missing, and not offline."""
+    from . import models
+
+    if models.offline_requested():
+        return False
     return sys.platform in _CUDA_WHEELS and has_nvidia_gpu() and not cuda_usable()
 
 

@@ -54,6 +54,13 @@ def test_ensure_cuda_returns_false_on_network_error(monkeypatch, tmp_path):
     assert cuda.ensure_cuda() is False
 
 
+def test_needs_cuda_download_is_false_in_strict_offline_mode(monkeypatch):
+    monkeypatch.setenv(models.OFFLINE_ENV_VAR, "1")
+    monkeypatch.setattr(cuda, "has_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(cuda, "cuda_usable", lambda: False)
+    assert cuda.needs_cuda_download() is False
+
+
 def test_translator_falls_back_to_cpu_on_cuda_library_error(monkeypatch):
     loads: list[str] = []
 
