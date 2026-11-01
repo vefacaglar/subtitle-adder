@@ -1098,12 +1098,13 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public void Generate() => GenerateCore(chainTranslate: false);
 
     /// <summary>
-    /// End-to-end flow ("Komple çevir"): if lines are already loaded (e.g. from a sidecar .srt), translates them
-    /// immediately; otherwise runs speech recognition and automatically starts translation when it completes.
+    /// End-to-end flow ("Komple çevir"): when a video is open, always runs speech recognition from scratch and
+    /// chains into translation (overwriting any existing lines/sidecar .srt); if only a standalone subtitle file
+    /// is loaded with no video, translates those lines.
     /// </summary>
     public void GenerateAndTranslate()
     {
-        if (_sentences.Count > 0)
+        if (_video is null && _sentences.Count > 0)
         {
             Translate();
             return;
