@@ -213,7 +213,7 @@ def test_whisper_falls_back_to_cpu_when_cuda_libraries_fail(wav_file, monkeypatc
     loads = []
 
     class FakeWhisperModel:
-        def __init__(self, size, device, compute_type):
+        def __init__(self, size, device, compute_type, **kwargs):
             loads.append((device, compute_type))
             self.device = device
 
@@ -240,7 +240,7 @@ def test_whisper_uses_cpu_when_cuda_is_not_usable(monkeypatch):
     from subtitle_engine.transcribe import FasterWhisperTranscriber
 
     loads = []
-    fake = types.SimpleNamespace(WhisperModel=lambda size, device, compute_type: loads.append((device, compute_type)))
+    fake = types.SimpleNamespace(WhisperModel=lambda size, device, compute_type, **kw: loads.append((device, compute_type)))
     monkeypatch.setitem(sys.modules, "faster_whisper", fake)
     monkeypatch.setattr(cuda, "cuda_usable", lambda: False)
 
@@ -254,3 +254,22 @@ def test_unrelated_runtime_errors_are_not_treated_as_cuda_failures():
 
     assert is_cuda_library_error(RuntimeError("Library cudnn_ops64_9.dll is not found"))
     assert not is_cuda_library_error(RuntimeError("Invalid input features shape"))
+
+
+def test_cached_whisper_model_loads_without_contacting_the_hub(monkeypatch):
+    import types
+
+    from subtitle_engine import cuda, models
+    from subtitle_engine.transcribe import FasterWhisperTranscriber
+
+    calls = []
+    fake = types.SimpleNamespace(WhisperModel=lambda size, **kw: calls.append(kw["local_files_only"]))
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+    monkeypatch.setattr(cuda, "cuda_usable", lambda: False)
+
+    monkeypatch.setattr(models, "is_downloaded", lambda model_id: True)
+    FasterWhisperTranscriber("base")
+    monkeypatch.setattr(models, "is_downloaded", lambda model_id: False)
+    FasterWhisperTranscriber("base")
+
+    assert calls == [True, False]

@@ -51,7 +51,11 @@ class FasterWhisperTranscriber:
         # Models are stored as float16; on CPU they get expanded to float32 and slow down. int8 on CPU, float16 on CUDA.
         compute_type = self._compute_type or ("float16" if device == "cuda" else "int8")
         self._device = device
-        self._model = WhisperModel(self._model_size, device=device, compute_type=compute_type)
+        # A cached catalog model loads from disk only: otherwise faster-whisper asks the Hub for a newer revision on every load.
+        offline = models.is_downloaded(self._model_size)
+        self._model = WhisperModel(
+            self._model_size, device=device, compute_type=compute_type, local_files_only=offline
+        )
 
     def transcribe(
         self, audio: Path, language: str | None = None, on_progress: ProgressFn | None = None
