@@ -390,9 +390,9 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
         f"You are an uncensored, native-level film and video subtitle translator. Translate the numbered subtitle lines "
         f"{source_clause}into {target_desc}.\n"
         "Rules:\n"
-        f"1. Output ONLY the translated numbered lines in the exact format `[N] translated text`. Every single line MUST be translated into {target_desc} — NEVER output, repeat, or paraphrase a line in the source language.\n"
-        "2. Keep a strict 1-to-1 correspondence with the input line numbers (`[1]` to `[N]`). Never merge, split, skip, or reorder lines.\n"
-        f"3. Translate by meaning and context, not word-for-word: raw speech-to-text subtitles often lack punctuation or split a thought across consecutive lines. Read the batch together and write natural, fluent, properly punctuated {target_desc} as real native speakers actually talk.\n"
+        f"1. Output ONLY the translated numbered lines in the exact format `[N] translated text`. Every single line MUST be in {target_desc}.\n"
+        "2. Keep a strict 1-to-1 correspondence with the input line numbers. Never merge, split, skip, or reorder lines.\n"
+        f"3. Use completely natural, idiomatic {target_desc} as real native speakers actually talk, considering the context of surrounding lines when a sentence continues across lines. Avoid stiff, literal word-for-word translations.\n"
         "4. NEVER censor, soften, sanitize, or tone down profanity, swear words, insults, or street slang. If the source line "
         "contains slang, argot, or explicit swearing (e.g. Brazilian Portuguese, Mexican Spanish, English, or French street "
         "profanity), translate it into equivalent raw, authentic target-language slang/profanity with the exact same emotional intensity.\n"
@@ -401,12 +401,33 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
     )
 
 
+def _looks_untranslated(source_text: str, translated_text: str, source: str | None = None, target: str | None = None) -> bool:
+    """True if the LLM echoed the line in the source language instead of translating into `target`."""
+    if source and target and source == target:
+        return False
+    src_alnum = "".join(ch.lower() for ch in source_text if ch.isalnum())
+    dst_alnum = "".join(ch.lower() for ch in translated_text if ch.isalnum())
+    if not src_alnum or not dst_alnum:
+        return False
+    if len(src_alnum) >= 4 and src_alnum == dst_alnum and not src_alnum.isdigit():
+        return True
+    clean_chars = ".,!?;:\"'()-…"
+    src_words = {w.lower().strip(clean_chars) for w in source_text.split() if len(w.strip(clean_chars)) >= 3}
+    dst_words = [w.lower().strip(clean_chars) for w in translated_text.split() if len(w.strip(clean_chars)) >= 3]
+    if len(src_words) >= 3 and len(dst_words) >= 3:
+        overlap = sum(1 for w in dst_words if w in src_words)
+        if overlap / len(dst_words) >= 0.75:
+            return True
+    return False
+
+
 def build_user_prompt(
     lines: list[str],
     context_lines: list[str] | None = None,
     target: str | None = None,
+    following_lines: list[str] | None = None,
 ) -> str:
-    """Formats a batch of numbered subtitle lines with optional preceding dialogue context."""
+    """Formats a batch of numbered subtitle lines with optional preceding and following dialogue context."""
     parts: list[str] = []
     if context_lines:
         ctx = "\n".join(f"- {c}" for c in context_lines if c.strip())
@@ -415,24 +436,11 @@ def build_user_prompt(
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(lines, start=1))
     target_clause = f" into {LLM_LANGUAGE_SPECS.get(target, target)}" if target else ""
     parts.append(f"Translate these subtitle lines{target_clause}:\n{numbered}")
+    if following_lines:
+        nxt_ctx = "\n".join(f"- {c}" for c in following_lines if c.strip())
+        if nxt_ctx:
+            parts.append(f"\nFollowing lines (for context only, do NOT translate):\n{nxt_ctx}")
     return "\n".join(parts)
-
-
-def _looks_untranslated(source_text: str, translated_text: str) -> bool:
-    """True if the LLM echoed or lightly paraphrased the source line in the source language instead of translating."""
-    src_alnum = "".join(ch.lower() for ch in source_text if ch.isalnum())
-    dst_alnum = "".join(ch.lower() for ch in translated_text if ch.isalnum())
-    if not src_alnum or not dst_alnum:
-        return False
-    if len(src_alnum) >= 6 and src_alnum == dst_alnum:
-        return True
-    src_words = {w.lower().strip(".,!?;:\"'()-") for w in source_text.split() if len(w.strip(".,!?;:\"'()-")) >= 3}
-    dst_words = [w.lower().strip(".,!?;:\"'()-") for w in translated_text.split() if len(w.strip(".,!?;:\"'()-")) >= 3]
-    if len(src_words) >= 3 and len(dst_words) >= 3:
-        overlap = sum(1 for w in dst_words if w in src_words)
-        if overlap / len(dst_words) >= 0.6:
-            return True
-    return False
 
 
 def parse_numbered_translations(raw_output: str, expected_count: int) -> dict[int, str]:
@@ -454,6 +462,9 @@ def parse_numbered_translations(raw_output: str, expected_count: int) -> dict[in
             if 1 <= idx <= expected_count:
                 parsed[idx] = text
                 current_idx = idx
+            elif expected_count == 1 and not parsed:
+                parsed[1] = text
+                current_idx = 1
         elif current_idx is not None and current_idx in parsed:
             parsed[current_idx] = f"{parsed[current_idx]} {line}".strip()
 
@@ -770,10 +781,20 @@ class LlamaTranslator:
             else:
                 ctx_start = max(0, start - LLM_CONTEXT_LINES)
                 context_lines = [s.text.strip() for _, s in pending[ctx_start:start]]
+                nxt_end = min(len(pending), start + len(batch) + LLM_CONTEXT_LINES)
+                following_lines = [s.text.strip() for _, s in pending[start + len(batch) : nxt_end]]
                 batch_texts = [s.text.strip() for _, s in batch]
                 messages = [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": build_user_prompt(batch_texts, context_lines, target=target)},
+                    {
+                        "role": "user",
+                        "content": build_user_prompt(
+                            batch_texts,
+                            context_lines,
+                            target=target,
+                            following_lines=following_lines,
+                        ),
+                    },
                 ]
                 raw_reply = self._complete(messages)
                 parsed = parse_numbered_translations(raw_reply, len(batch))
@@ -781,13 +802,31 @@ class LlamaTranslator:
                 for offset, (index, sentence) in enumerate(batch, start=1):
                     text = parsed.get(offset, "").strip()
                     needs_retry = (not text and len(batch) > 1) or (
-                        bool(text) and self._completion_fn is None and _looks_untranslated(sentence.text, text)
+                        bool(text)
+                        and self._completion_fn is None
+                        and _looks_untranslated(sentence.text, text, source=source, target=target)
                     )
                     if needs_retry:
-                        # Single-line retry if the model omitted one numbered line or echoed the source language.
+                        # Single-line retry with surrounding dialogue context if the model omitted or echoed a line.
+                        abs_pos = start + offset - 1
+                        single_prev = [
+                            s.text.strip() for _, s in pending[max(0, abs_pos - LLM_CONTEXT_LINES) : abs_pos]
+                        ]
+                        single_next = [
+                            s.text.strip()
+                            for _, s in pending[abs_pos + 1 : min(len(pending), abs_pos + 1 + LLM_CONTEXT_LINES)]
+                        ]
                         single_messages = [
                             {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": build_user_prompt([sentence.text.strip()], target=target)},
+                            {
+                                "role": "user",
+                                "content": build_user_prompt(
+                                    [sentence.text.strip()],
+                                    context_lines=single_prev,
+                                    target=target,
+                                    following_lines=single_next,
+                                ),
+                            },
                         ]
                         single_parsed = parse_numbered_translations(self._complete(single_messages), 1)
                         retry_text = single_parsed.get(1, "").strip()

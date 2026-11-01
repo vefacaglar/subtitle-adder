@@ -49,7 +49,7 @@ public sealed partial class SubtitleViewModel
         _savedSubtitleName = null;
         var request = reuseExistingTranslations
             ? _sentences
-                .Where(s => !_translations.TryGetValue(s.Uid, out var existing) || existing.IsStale(s) || existing.Language != target)
+                .Where(s => !_translations.TryGetValue(s.Uid, out var existing) || !IsReusableTranslation(s, existing, target))
                 .ToList()
             : _sentences;
         if (request.Count == 0)
@@ -107,6 +107,21 @@ public sealed partial class SubtitleViewModel
         });
     }
 
+    private const int MinAsyncBatchSentences = 10;
+
+    internal static bool IsReusableTranslation(Sentence sentence, TranslationEntry existing, string target)
+    {
+        if (existing.IsStale(sentence) || existing.Language != target) return false;
+        var translated = existing.Text.Trim();
+        if (translated.Length == 0) return false;
+        var source = sentence.Text.Trim();
+        if (source.Length >= 4 && translated.Equals(source, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        return true;
+    }
+
     private async Task PumpPartialTranslationsExternallyAsync(
         IEngineClient engine,
         HashSet<Guid> queuedAsyncUids,
@@ -120,17 +135,18 @@ public sealed partial class SubtitleViewModel
             var model = "";
             await _ui.InvokeAsync(() =>
             {
-                if (token.IsCancellationRequested || _sentences.Count <= 1) return;
+                if (token.IsCancellationRequested || _sentences.Count <= 2) return;
                 target = _translationTarget;
                 source = TranslationSource;
                 model = _translationModel;
                 if (source == target) return;
-                batch = _sentences
-                    .Take(_sentences.Count - 1)
+                var candidates = _sentences
+                    .Take(_sentences.Count - 2)
                     .Where(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text))
                     .ToList();
-                if (batch.Count > 0)
+                if (candidates.Count >= MinAsyncBatchSentences)
                 {
+                    batch = candidates;
                     foreach (var s in batch) queuedAsyncUids.Add(s.Uid);
                 }
             }).ConfigureAwait(false);

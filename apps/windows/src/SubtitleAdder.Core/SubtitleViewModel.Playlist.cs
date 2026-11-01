@@ -372,7 +372,7 @@ public sealed partial class SubtitleViewModel
             var mergedEntries = new Dictionary<Guid, TranslationEntry>();
             foreach (var s in sentences)
             {
-                if (preTranslated.TryGetValue(s.Uid, out var entry) && !entry.IsStale(s) && entry.Language == target && entry.Text.Length > 0)
+                if (preTranslated.TryGetValue(s.Uid, out var entry) && IsReusableTranslation(s, entry, target))
                 {
                     mergedEntries[s.Uid] = entry;
                 }
