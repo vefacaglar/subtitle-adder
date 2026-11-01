@@ -104,3 +104,11 @@ def test_subcommand_lang_wins_over_global(capsys):
     assert "Unknown model: nope" in json.loads(capsys.readouterr().out)["message"]
     assert cli.main(["--lang", "en", "delete-model", "nope", "--json"]) == 1
     assert "Unknown model: nope" in json.loads(capsys.readouterr().out)["message"]
+
+
+def test_empty_external_llm_url_error_is_localized(monkeypatch):
+    with pytest.raises(models.ModelError, match="Harici LLM sunucusu adresi boş olamaz."):
+        translate.normalize_external_chat_url("  ")
+    monkeypatch.setenv(i18n.ENV_VAR, "en")
+    with pytest.raises(models.ModelError, match="The external LLM server address cannot be empty."):
+        translate.normalize_external_chat_url("/")

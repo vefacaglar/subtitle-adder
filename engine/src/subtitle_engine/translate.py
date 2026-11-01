@@ -51,7 +51,7 @@ def normalize_external_chat_url(raw_url: str) -> str:
     """Normalizes a base LAN server address (LM Studio, Ollama, or llama-server) to its chat completions endpoint."""
     url = raw_url.strip().rstrip("/")
     if not url:
-        raise ValueError("External LLM URL cannot be empty.")
+        raise ModelError(t("external_llm_url_empty"))
     if not url.lower().startswith(("http://", "https://")):
         url = f"http://{url}"
     lower = url.lower()

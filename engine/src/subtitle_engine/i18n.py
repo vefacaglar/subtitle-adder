@@ -113,6 +113,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "tr": "Yerel LLM çalışma zamanı (llama.cpp) başlatılamadı: {error}",
         "en": "Could not start the local LLM runtime (llama.cpp): {error}",
     },
+    "external_llm_url_empty": {
+        "tr": "Harici LLM sunucusu adresi boş olamaz.",
+        "en": "The external LLM server address cannot be empty.",
+    },
     "not_transcription_model": {
         "tr": "{model} bir konuşma tanıma modeli değil; 'models' komutu geçerli modelleri listeler.",
         "en": "{model} is not a speech recognition model; the 'models' command lists the valid models.",
