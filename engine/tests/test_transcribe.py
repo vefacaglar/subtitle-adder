@@ -307,3 +307,33 @@ def test_cached_whisper_model_loads_without_contacting_the_hub(monkeypatch):
     FasterWhisperTranscriber("base")
 
     assert calls == [True, False]
+
+
+
+def test_whisper_passes_fast_dialogue_vad_and_decoding_options(wav_file, monkeypatch):
+    import types
+
+    from subtitle_engine import cuda
+    from subtitle_engine.transcribe import FasterWhisperTranscriber, WHISPER_VAD_OPTIONS
+
+    captured: dict = {}
+
+    class FakeWhisperModel:
+        def __init__(self, size, **kwargs):
+            pass
+
+        def transcribe(self, audio, **kwargs):
+            captured.update(kwargs)
+            return iter([]), types.SimpleNamespace(language="pt", duration=1.0)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeWhisperModel))
+    monkeypatch.setattr(cuda, "cuda_usable", lambda: False)
+
+    FasterWhisperTranscriber("large-v3-turbo").transcribe(wav_file, language="pt")
+
+    assert captured["vad_parameters"] == WHISPER_VAD_OPTIONS
+    assert captured["vad_parameters"]["min_silence_duration_ms"] == 250
+    assert captured["vad_parameters"]["max_speech_duration_s"] == 14.0
+    assert captured["condition_on_previous_text"] is False
+    assert captured["no_speech_threshold"] == 0.8
+    assert captured["log_prob_threshold"] == -1.2

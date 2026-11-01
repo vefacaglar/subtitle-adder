@@ -23,6 +23,19 @@ _SPECIAL_TOKEN = re.compile(r"^<[^<>]+>$")
 # threshold preserve word starts and reduce needless splits mid-sentence.
 VAD_OPTIONS = {"speech_pad_ms": 50, "min_silence_duration_ms": 200}
 
+# Faster-Whisper Silero VAD defaults wait 2000 ms of silence and allow 30 s chunks, which glues
+# rapid multi-speaker dialogue (e.g. fast Brazilian Portuguese) into huge windows where middle
+# phrases get skipped. Tighter turn splitting (250 ms silence, <=14 s chunks, 0.35 threshold)
+# preserves fast interjections and overlapping turns.
+WHISPER_VAD_OPTIONS = {
+    "threshold": 0.35,
+    "neg_threshold": 0.20,
+    "min_speech_duration_ms": 120,
+    "max_speech_duration_s": 14.0,
+    "min_silence_duration_ms": 250,
+    "speech_pad_ms": 200,
+}
+
 
 class Transcriber(Protocol):
     def transcribe(
@@ -85,7 +98,15 @@ class FasterWhisperTranscriber:
 
     def _transcribe(self, audio: Path, language: str | None, on_progress: ProgressFn | None) -> Transcript:
         segments, info = self._model.transcribe(
-            str(audio), language=language, word_timestamps=True, vad_filter=True
+            str(audio),
+            language=language,
+            word_timestamps=True,
+            vad_filter=True,
+            vad_parameters=WHISPER_VAD_OPTIONS,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.8,
+            log_prob_threshold=-1.2,
+            hallucination_silence_threshold=1.5,
         )
         words: list[Word] = []
         for seg in segments:
