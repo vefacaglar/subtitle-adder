@@ -26,15 +26,52 @@ public enum UILanguage: String, Sendable, CaseIterable, Equatable {
     /// Looks `key` up in the `<lang>.lproj` sub-bundle of `bundle` (a SwiftPM resource bundle) and formats it.
     /// Keys are the Turkish source strings, so a missing translation falls back to Turkish text.
     public func string(_ key: String, in bundle: Bundle, _ args: [CVarArg] = []) -> String {
-        let lookup: Bundle
+        let format: String
         if let path = bundle.path(forResource: rawValue, ofType: "lproj"), let found = Bundle(path: path) {
-            lookup = found
+            format = found.localizedString(forKey: key, value: key, table: nil)
         } else {
-            lookup = bundle
+            // SwiftPM's native build system (Xcode ≤ 26) copies the catalog uncompiled; read it directly.
+            format = RawStringCatalog.shared.value(for: key, language: rawValue, in: bundle) ?? key
         }
-        let format = lookup.localizedString(forKey: key, value: key, table: nil)
         guard !args.isEmpty else { return format }
         return String(format: format, locale: locale, arguments: args)
+    }
+}
+
+/// Reads an uncompiled `Localizable.xcstrings` (JSON) from a resource bundle, cached per bundle.
+final class RawStringCatalog: @unchecked Sendable {
+    static let shared = RawStringCatalog()
+
+    private let lock = NSLock()
+    /// bundle path → key → language → value
+    private var catalogs: [String: [String: [String: String]]] = [:]
+
+    func value(for key: String, language: String, in bundle: Bundle) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        if catalogs[bundle.bundlePath] == nil {
+            catalogs[bundle.bundlePath] = Self.load(bundle)
+        }
+        return catalogs[bundle.bundlePath]?[key]?[language]
+    }
+
+    private static func load(_ bundle: Bundle) -> [String: [String: String]] {
+        guard let url = bundle.url(forResource: "Localizable", withExtension: "xcstrings"),
+              let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let strings = root["strings"] as? [String: Any]
+        else { return [:] }
+        var table: [String: [String: String]] = [:]
+        for (key, entry) in strings {
+            guard let localizations = (entry as? [String: Any])?["localizations"] as? [String: Any] else { continue }
+            for (language, localization) in localizations {
+                if let unit = (localization as? [String: Any])?["stringUnit"] as? [String: Any],
+                   let value = unit["value"] as? String {
+                    table[key, default: [:]][language] = value
+                }
+            }
+        }
+        return table
     }
 }
 
