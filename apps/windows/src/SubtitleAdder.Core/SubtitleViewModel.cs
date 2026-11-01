@@ -1330,37 +1330,72 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         }
     }
 
-    private static IReadOnlyList<Sentence> MergeSentencesPreservingUid(
+    internal static IReadOnlyList<Sentence> MergeSentencesPreservingUid(
         IReadOnlyList<Sentence> existing, IReadOnlyList<Sentence> incoming)
     {
         if (existing.Count == 0) return [.. incoming];
-        var uidBySpan = new Dictionary<(long StartMs, long EndMs, string Text), Guid>(existing.Count);
-        var uidById = new Dictionary<int, Guid>(existing.Count);
+        var uidBySpan = new Dictionary<(long StartMs, long EndMs, string Text), Queue<Guid>>(existing.Count);
         foreach (var s in existing)
         {
             var key = ((long)Math.Round(s.Start * 1000), (long)Math.Round(s.End * 1000), s.Text);
-            uidBySpan.TryAdd(key, s.Uid);
-            uidById.TryAdd(s.Id, s.Uid);
-        }
-        var usedUids = new HashSet<Guid>();
-        var merged = new List<Sentence>(incoming.Count);
-        foreach (var s in incoming)
-        {
-            var spanKey = ((long)Math.Round(s.Start * 1000), (long)Math.Round(s.End * 1000), s.Text);
-            if (uidBySpan.TryGetValue(spanKey, out var spanUid) && usedUids.Add(spanUid))
+            if (!uidBySpan.TryGetValue(key, out var queue))
             {
-                merged.Add(s with { Uid = spanUid });
+                queue = new Queue<Guid>();
+                uidBySpan[key] = queue;
             }
-            else if (uidById.TryGetValue(s.Id, out var idUid) && usedUids.Add(idUid))
+            queue.Enqueue(s.Uid);
+        }
+
+        var usedUids = new HashSet<Guid>();
+        var merged = new Sentence?[incoming.Count];
+
+        // Pass 1: Reserve exact (StartMs, EndMs, Text) matches first so speaker-split lines never steal
+        // a subsequent sentence's Uid when line IDs shift after diarization.
+        for (var i = 0; i < incoming.Count; i++)
+        {
+            var s = incoming[i];
+            var spanKey = ((long)Math.Round(s.Start * 1000), (long)Math.Round(s.End * 1000), s.Text);
+            if (uidBySpan.TryGetValue(spanKey, out var queue))
             {
-                merged.Add(s with { Uid = idUid });
+                while (queue.Count > 0)
+                {
+                    var candidate = queue.Dequeue();
+                    if (usedUids.Add(candidate))
+                    {
+                        merged[i] = s with { Uid = candidate };
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Pass 2: Match remaining sentences if an unused existing sentence has the same text near the same timestamp.
+        for (var i = 0; i < incoming.Count; i++)
+        {
+            if (merged[i] is not null) continue;
+            var s = incoming[i];
+            Sentence? nearMatch = null;
+            foreach (var old in existing)
+            {
+                if (!usedUids.Contains(old.Uid) &&
+                    old.Text == s.Text &&
+                    Math.Abs(old.Start - s.Start) <= 1.5)
+                {
+                    nearMatch = old;
+                    break;
+                }
+            }
+            if (nearMatch is not null && usedUids.Add(nearMatch.Uid))
+            {
+                merged[i] = s with { Uid = nearMatch.Uid };
             }
             else
             {
-                merged.Add(s);
+                merged[i] = s;
             }
         }
-        return merged;
+
+        return merged!;
     }
 
     /// <summary>

@@ -391,19 +391,30 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
         f"{source_clause}into {target_desc}.\n"
         "Rules:\n"
         "1. Output ONLY the translated numbered lines in the exact format `[N] translated text`.\n"
-        "2. Keep a strict 1-to-1 correspondence with the input line numbers. Never merge, split, skip, or reorder lines.\n"
-        "3. Use completely natural, everyday spoken language as real native speakers actually talk. Avoid stiff, robotic, "
-        "or literal word-for-word translations.\n"
-        "4. NEVER censor, soften, sanitize, or tone down profanity, swear words, insults, or street slang. If the source line "
-        "contains slang, argot, or explicit swearing (e.g. Brazilian Portuguese, Mexican Spanish, English, or French street "
-        "profanity), translate it into equivalent raw, authentic target-language slang/profanity with the exact same emotional intensity.\n"
-        "5. Preserve proper names and numbers. Keep each line concise and readable at subtitle pace. "
+        "2. Keep a strict 1-to-1 correspondence with the input line numbers (`[1]` to `[N]`). Never drop or merge line numbers.\n"
+        "3. TRANSLATE BY MEANING AND CONTEXT, NOT WORD-FOR-WORD: Read the entire batch (and surrounding context lines) "
+        "first as one continuous spoken monologue/dialogue to grasp the speaker's real meaning.\n"
+        "4. HANDLE UNPUNCTUATED ASR & CROSS-LINE SENTENCES: Raw speech-to-text lines often lack punctuation, have spaced "
+        "apostrophes (e.g. `c 'est`, `l 'être`), have random mid-line capital letters where new clauses start, or split "
+        "a single phrase across `[N]` and `[N+1]` (e.g. `[3] ...Il` followed by `[4] faut l'être...`). Reconstruct the "
+        "complete sentence meaning across line boundaries, translate it into natural, idiomatic target-language grammar "
+        "and word order, and distribute the translated flow smoothly across `[N]` and `[N+1]` so they read coherently "
+        "together. Never leave broken literal word-by-word fragments or copy random mid-sentence capital letters.\n"
+        "5. Add natural punctuation (`.`, `,`, `?`, `!`) and normal sentence capitalization in the translation even when "
+        "the raw source transcript is unpunctuated.\n"
+        "6. NEVER censor, soften, sanitize, or tone down profanity, swear words, insults, or street slang. Translate "
+        "slang and explicit swearing into equivalent raw, authentic target-language slang/profanity with the exact same intensity.\n"
+        "7. Preserve proper names and numbers. Keep each line concise and readable at subtitle pace. "
         "Do not add explanations, notes, or markdown."
     )
 
 
-def build_user_prompt(lines: list[str], context_lines: list[str] | None = None) -> str:
-    """Formats a batch of numbered subtitle lines with optional preceding dialogue context."""
+def build_user_prompt(
+    lines: list[str],
+    context_lines: list[str] | None = None,
+    following_lines: list[str] | None = None,
+) -> str:
+    """Formats a batch of numbered subtitle lines with optional preceding and following dialogue context."""
     parts: list[str] = []
     if context_lines:
         ctx = "\n".join(f"- {c}" for c in context_lines if c.strip())
@@ -411,6 +422,10 @@ def build_user_prompt(lines: list[str], context_lines: list[str] | None = None) 
             parts.append(f"Previous lines (for context only, do NOT translate):\n{ctx}\n")
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(lines, start=1))
     parts.append(f"Translate these subtitle lines:\n{numbered}")
+    if following_lines:
+        nxt = "\n".join(f"- {c}" for c in following_lines if c.strip())
+        if nxt:
+            parts.append(f"\nFollowing lines (for context only, do NOT translate):\n{nxt}")
     return "\n".join(parts)
 
 
@@ -742,10 +757,12 @@ class LlamaTranslator:
             else:
                 ctx_start = max(0, start - LLM_CONTEXT_LINES)
                 context_lines = [s.text.strip() for _, s in pending[ctx_start:start]]
+                nxt_start = start + len(batch)
+                following_lines = [s.text.strip() for _, s in pending[nxt_start : nxt_start + LLM_CONTEXT_LINES]]
                 batch_texts = [s.text.strip() for _, s in batch]
                 messages = [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": build_user_prompt(batch_texts, context_lines)},
+                    {"role": "user", "content": build_user_prompt(batch_texts, context_lines, following_lines)},
                 ]
                 raw_reply = self._complete(messages)
                 parsed = parse_numbered_translations(raw_reply, len(batch))
