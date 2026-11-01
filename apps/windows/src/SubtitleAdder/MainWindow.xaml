@@ -233,11 +233,15 @@
                     </Grid.ColumnDefinitions>
 
                     <Border x:Name="PlayerBorder" Grid.ColumnSpan="3" CornerRadius="8" Background="Black">
-                        <Grid x:Name="PlayerGrid" SizeChanged="PlayerGrid_SizeChanged">
+                        <Grid x:Name="PlayerGrid" SizeChanged="PlayerGrid_SizeChanged"
+                              PointerEntered="PlayerGrid_PointerEntered" PointerExited="PlayerGrid_PointerExited">
                             <MediaPlayerElement x:Name="PlayerElement" AreTransportControlsEnabled="True" Stretch="Uniform" RequestedTheme="Dark"
                                                 loc:Localize.AutomationName="Video">
                                 <MediaPlayerElement.TransportControls>
-                                    <loc:PreviewTransportControls x:Name="PreviewControls" IsCompact="False" />
+                                    <loc:PreviewTransportControls x:Name="PreviewControls" IsCompact="True"
+                                                                  ShowAndHideAutomatically="False" HorizontalAlignment="Center"
+                                                                  VerticalAlignment="Bottom" Width="640" MinWidth="0" MaxWidth="680"
+                                                                  Margin="12" Opacity="0" IsHitTestVisible="False" />
                                 </MediaPlayerElement.TransportControls>
                             </MediaPlayerElement>
                             <Grid x:Name="OverlayArea" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">

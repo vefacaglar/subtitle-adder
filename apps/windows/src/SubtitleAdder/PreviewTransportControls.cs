@@ -30,6 +30,30 @@ public sealed class PreviewTransportControls : MediaTransportControls
         _time = null;
         _readout = null;
         _scrubbing = false;
+        // Hover visibility is controlled by the player surface. Remove the native slide/fade
+        // storyboards so showing controls never moves them up from below the video.
+        if (GetTemplateChild("RootGrid") is Grid root)
+        {
+            var groups = VisualStateManager.GetVisualStateGroups(root);
+            var visibility = groups.FirstOrDefault(g => g.Name == "ControlPanelVisibilityStates");
+            if (visibility is not null)
+            {
+                foreach (var state in visibility.States) state.Storyboard?.Stop();
+                groups.Remove(visibility);
+            }
+        }
+        if (GetTemplateChild("ControlPanel_ControlPanelVisibilityStates_Border") is Border panelBorder)
+        {
+            panelBorder.Opacity = 1;
+            panelBorder.IsHitTestVisible = true;
+        }
+        if (GetTemplateChild("ControlPanelGrid") is Grid panel)
+        {
+            panel.RenderTransform = null;
+            panel.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(210, 24, 24, 28));
+            panel.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(40, 255, 255, 255));
+            panel.CornerRadius = new CornerRadius(12);
+        }
         // These named parts are supplied by the pinned WinUI MediaTransportControls template.
         // The native slider's private playback tracking can lag after an external subtitle seek.
         if (GetTemplateChild("ProgressSlider") is Slider native && VisualTreeHelper.GetParent(native) is Grid timeline)
@@ -37,7 +61,7 @@ public sealed class PreviewTransportControls : MediaTransportControls
             native.Visibility = Visibility.Collapsed;
             _seek = new Slider
             {
-                Margin = native.Margin, Height = native.Height, MinWidth = native.MinWidth,
+                Margin = new Thickness(8, 0, 2, 0), Height = 32, MinWidth = 24,
                 VerticalAlignment = VerticalAlignment.Center, IsThumbToolTipEnabled = false,
                 StepFrequency = 0.1, SmallChange = 1, LargeChange = 10,
             };
@@ -48,16 +72,17 @@ public sealed class PreviewTransportControls : MediaTransportControls
             _seek.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, _) => _scrubbing = false), true);
             _seek.AddHandler(PointerCaptureLostEvent, new PointerEventHandler((_, _) => _scrubbing = false), true);
             timeline.Children.Add(_seek);
-        }
-        if (GetTemplateChild("TimeTextGrid") is Grid timeGrid)
-        {
-            foreach (var child in timeGrid.Children) child.Opacity = 0;
+            // Keep time beside the slider: CompactMode collapses the native time row.
+            timeline.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             _time = new TextBlock
             {
                 FontFamily = new FontFamily("Consolas"), FontSize = 12,
-                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 10, 0),
+                VerticalAlignment = VerticalAlignment.Center,
             };
-            timeGrid.Children.Add(_time);
+            Grid.SetColumn(_time, timeline.ColumnDefinitions.Count - 1);
+            Grid.SetRow(_time, Grid.GetRow(native));
+            timeline.Children.Add(_time);
         }
         Synchronize(_position, _duration);
     }
@@ -78,6 +103,7 @@ public sealed class PreviewTransportControls : MediaTransportControls
             }
             if (_time is not null)
             {
+                _time.FontSize = ActualWidth is > 0 and < 360 ? 10 : 12;
                 var hours = _duration >= 3600;
                 var elapsed = PlaybackTimeline.FormatTime(_scrubbing ? _seek?.Value ?? _position : _position, hours);
                 var total = _duration > 0 ? PlaybackTimeline.FormatTime(_duration, hours) : "--:--";
