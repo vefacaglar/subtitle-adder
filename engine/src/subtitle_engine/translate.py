@@ -625,5 +625,4 @@ class LlamaTranslator:
                 on_batch(result_sentences[: last_index + 1])
             if on_progress is not None:
                 on_progress(min(processed / len(pending), 1.0))
-        _delete_temp_checkpoint(checkpoint_path)
         return result_sentences

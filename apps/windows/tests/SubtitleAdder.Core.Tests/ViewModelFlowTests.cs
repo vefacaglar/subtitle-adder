@@ -167,10 +167,12 @@ public class ViewModelJobTests
         Assert.Equal("2 satır · dil: tr", vm.StatusText);
         Assert.Equal(2, vm.Sentences.Count);
         Assert.Equal("tr", vm.DetectedLanguage);
-        Assert.False(File.Exists(wav));                 // the extracted WAV is deleted
+        Assert.True(File.Exists(wav));                  // temp WAV is kept during session and deleted on Dispose
         Assert.Equal(1, engine.ModelsCalls);            // catalog reloaded after the job
         Assert.Empty(vm.Catalog.ActiveModels);
         Assert.True(vm.TranslateCommand.CanExecute(null));
+        vm.Dispose();
+        Assert.False(File.Exists(wav));                 // deleted when the app closes
     }
 
     [Fact]

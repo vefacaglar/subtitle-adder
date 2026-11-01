@@ -1,5 +1,6 @@
 """The whole pipeline: video -> audio -> transcript -> sentences -> subtitle files."""
 import gc
+import hashlib
 import inspect
 import time
 from collections.abc import Callable
@@ -20,6 +21,25 @@ DiarizerFactory = Callable[[], "Diarizer"]
 # (stage, progress in 0..1 or None)
 StageFn = Callable[[str, float | None], None]
 PartialFn = Callable[[list[Sentence], str], None]
+
+MAX_SAFE_PATH_CHARS = 210
+
+
+def _safe_out_stem(video: Path, out_dir: Path) -> str:
+    """Keeps output paths in `out_dir` safely below the Windows 260-char MAX_PATH limit.
+
+    A video with a 215-char filename on `D:\\` is under 260 chars in its source folder, but
+    `C:\\Users\\User\\AppData\\Local\\Temp\\SubtitleAdder\\<215-char-stem>.wav` exceeds 260 chars
+    and causes Windows/Python to raise `[Errno 2] No such file or directory`.
+    """
+    stem = video.stem.rstrip(" .") or "video"
+    candidate = out_dir / f"{stem}.wav"
+    if len(str(candidate)) <= MAX_SAFE_PATH_CHARS:
+        return stem
+    digest = hashlib.sha256(stem.encode("utf-8", errors="replace")).hexdigest()[:10]
+    allowed = max(24, MAX_SAFE_PATH_CHARS - len(str(out_dir)) - 20)
+    prefix = stem[:allowed].rstrip(" .")
+    return f"{prefix}_{digest}"
 
 
 @dataclass
@@ -59,11 +79,15 @@ def run(
     if diarize:
         models.require_download(diarization.MODEL_ID)
 
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = _safe_out_stem(video, out_dir)
+    wav_path = out_dir / f"{safe_stem}.wav"
+
     on_stage("extracting_audio", None)
     extract_kwargs: dict = {}
     if "on_progress" in inspect.signature(extract_audio).parameters:
         extract_kwargs["on_progress"] = lambda f: on_stage("extracting_audio", f)
-    audio = extract_audio(video, out_dir / f"{video.stem}.wav", **extract_kwargs)
+    audio = extract_audio(video, wav_path, **extract_kwargs)
 
     # If a catalog model is not cached we download it here, so progress is reported
     # before transcription starts. Names outside the catalog are downloaded by faster-whisper.
@@ -87,6 +111,11 @@ def run(
 
     on_stage("loading_model", None)
     transcriber = transcriber_factory()
+
+    # Self-heal if an external cleaner removed the temp WAV while models were downloading/loading.
+    if isinstance(audio, Path) and not audio.is_file() and video.is_file():
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        audio = extract_audio(video, wav_path, **extract_kwargs)
 
     on_stage("transcribing", 0.0)
     transcribe_kwargs: dict = {
@@ -114,6 +143,10 @@ def run(
     if diarize:
         del transcriber  # large Whisper models keep gigabytes resident; free them before diarizing
         gc.collect()
+        # Self-heal if an external cleaner removed the temp WAV during a long transcription run.
+        if isinstance(audio, Path) and not audio.is_file() and video.is_file():
+            audio.parent.mkdir(parents=True, exist_ok=True)
+            audio = extract_audio(video, wav_path, **extract_kwargs)
         on_stage("diarizing", 0.0)
         diarizer = (diarizer_factory or diarization.create_diarizer)()
         diarize_kwargs: dict = {
@@ -127,5 +160,6 @@ def run(
 
     on_stage("segmenting", None)
     sentences = segment(transcript.words, config, speakers)
-    outputs = [subtitles.write(sentences, out_dir / f"{video.stem}.{fmt}", fmt) for fmt in formats]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    outputs = [subtitles.write(sentences, out_dir / f"{safe_stem}.{fmt}", fmt) for fmt in formats]
     return PipelineResult(audio, transcript.language, transcript.duration, sentences, outputs)

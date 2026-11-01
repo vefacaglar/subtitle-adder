@@ -43,6 +43,7 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        SubtitleViewModel.CleanupTempDirectory();
         Settings = new JsonFileSettingsStore();
         // Must exist before anything builds a localized string.
         Language = new AppLanguage(Settings, () => GlobalizationPreferences.Languages);

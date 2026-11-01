@@ -112,6 +112,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
 
     private CancellationTokenSource? _job;
     private Guid _jobId = Guid.NewGuid();  // only the current job may change the state
+    private readonly HashSet<string> _sessionTempFiles = new(StringComparer.OrdinalIgnoreCase);
 
     public SubtitleViewModel(ModelCatalog catalog, ISettingsStore settings, IUiDispatcher? dispatcher = null, LanguageState? languageState = null)
     {
@@ -840,11 +841,14 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     Sentences = MergeSentencesPreservingUid(_sentences, result.Value.Sentences);
                     DetectedLanguage = result.Value.Language;
                     ReconcileTranslationTarget();
-                    // The app doesn't use the extracted WAV or temp CLI outputs; delete them immediately.
-                    DeleteQuietly(result.Value.Audio);
+                    // Keep extracted WAV and temp files untouched during conversion; delete them only on app exit/startup.
+                    if (result.Value.Audio is { Length: > 0 } audioPath) _sessionTempFiles.Add(audioPath);
                     if (result.Value.Outputs is { } outputs)
                     {
-                        foreach (var output in outputs) DeleteQuietly(output);
+                        foreach (var output in outputs)
+                        {
+                            if (output.Length > 0) _sessionTempFiles.Add(output);
+                        }
                     }
                     break;
                 case EngineEvent.Error error:
@@ -1114,12 +1118,14 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         StopJob();
+        foreach (var path in _sessionTempFiles) DeleteQuietly(path);
+        _sessionTempFiles.Clear();
         CleanupTempDirectory();
         Catalog.PropertyChanged -= OnCatalogChanged;
         _languageState.LanguageChanged -= OnLanguageChanged;
     }
 
-    private static void CleanupTempDirectory()
+    public static void CleanupTempDirectory()
     {
         try
         {

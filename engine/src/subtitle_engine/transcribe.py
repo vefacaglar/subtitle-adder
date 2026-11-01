@@ -43,10 +43,46 @@ WHISPER_VAD_OPTIONS = {
     "speech_pad_ms": 200,
 }
 
-# Long audio files (> 3 minutes) are decoded in 3-minute windows split at a quiet boundary so
-# Silero VAD and Whisper never block on multi-hour WAVs before producing the first subtitle.
+# Long audio files (> 3 minutes) are decoded in ~3-minute windows split ONLY at a genuine silence pause
+# (extending up to 5 minutes if a speaker is in the middle of a continuous monologue), so speech is
+# NEVER cut in the middle of a sentence or word.
 TRANSCRIBE_CHUNK_SECONDS = 180.0
-CHUNK_SEARCH_TAIL_SECONDS = 12.0
+MAX_CHUNK_EXTENSION_SECONDS = 120.0
+CHUNK_SEARCH_TAIL_SECONDS = 45.0
+
+
+def _find_silence_pause_cut(buf: np.ndarray, rate: int, tail_frames: int) -> tuple[int, bool]:
+    """Finds the midpoint of the quietest 350 ms pause inside the last `tail_frames` samples of `buf`.
+
+    Returns `(cut_index, is_clean_silence)`. If `is_clean_silence` is False, the caller can read ahead
+    further so a continuous monologue is never split mid-sentence.
+    """
+    pause_frames = max(int(0.35 * rate), 1)  # 350 ms natural sentence pause
+    step_frames = max(int(0.05 * rate), 1)   # 50 ms stride
+    if buf.size <= pause_frames * 2:
+        return buf.size, True
+
+    search_start = max(buf.size - tail_frames, pause_frames)
+    tail = buf[search_start:].astype(np.float32) / 32768.0
+    if tail.size < pause_frames:
+        return buf.size, True
+
+    # Compute sliding 350 ms RMS energy with 50 ms step using cumulative sum of squares (O(N)).
+    sq = np.square(tail)
+    csum = np.concatenate(([0.0], np.cumsum(sq, dtype=np.float64)))
+    starts = np.arange(0, tail.size - pause_frames + 1, step_frames)
+    if starts.size == 0:
+        return buf.size, True
+    window_means = (csum[starts + pause_frames] - csum[starts]) / pause_frames
+    min_idx = int(np.argmin(window_means))
+    min_rms = float(np.sqrt(max(window_means[min_idx], 0.0)))
+    median_rms = float(np.sqrt(max(float(np.median(window_means)), 0.0)))
+
+    # A pause is clean silence if its RMS is < 0.008 (~ -42 dBFS) or < 25% of the median speech level.
+    is_clean = min_rms <= 0.008 or (median_rms > 0 and min_rms <= median_rms * 0.25)
+    best_offset = int(starts[min_idx])
+    cut = search_start + best_offset + (pause_frames // 2)
+    return cut, is_clean
 
 
 def _iter_wav_chunks(
@@ -54,7 +90,8 @@ def _iter_wav_chunks(
 ) -> Iterator[tuple[int, float, np.ndarray, float]]:
     """Yields `(chunk_index, offset_seconds, float32_samples, total_duration)` windows from a 16-bit mono WAV file.
 
-    Splits near the end of each window at the quietest 100 ms frame so words are not cut mid-syllable.
+    Never splits in the middle of speech: searches for a 350 ms silence pause and extends the window if someone
+    is still speaking across the nominal boundary.
     """
     effective_chunk = chunk_seconds if chunk_seconds is not None else TRANSCRIBE_CHUNK_SECONDS
     with wave.open(str(audio), "rb") as wav:
@@ -62,8 +99,9 @@ def _iter_wav_chunks(
         total_frames = wav.getnframes()
         total_duration = total_frames / rate if rate > 0 else 0.0
         target_frames = int(effective_chunk * rate)
-        tail_frames = int(CHUNK_SEARCH_TAIL_SECONDS * rate)
-        window_100ms = max(int(0.1 * rate), 1)
+        max_extra_frames = int(MAX_CHUNK_EXTENSION_SECONDS * rate)
+        step_extend_frames = max(int(30.0 * rate), target_frames // 4)
+        tail_frames = min(int(CHUNK_SEARCH_TAIL_SECONDS * rate), max(target_frames // 2, 1))
 
         cursor_frames = 0
         chunk_idx = 0
@@ -77,20 +115,24 @@ def _iter_wav_chunks(
             if buf.size == 0:
                 break
 
-            at_eof = (wav.tell() >= total_frames) and (buf.size <= target_frames)
-            if at_eof or buf.size <= tail_frames + window_100ms * 2:
+            # If the speaker is in the middle of a sentence at the boundary, keep reading until a pause!
+            extended = 0
+            while wav.tell() < total_frames and extended < max_extra_frames:
+                _, is_clean = _find_silence_pause_cut(buf, rate, tail_frames)
+                if is_clean:
+                    break
+                more_raw = wav.readframes(step_extend_frames)
+                if not more_raw:
+                    break
+                more_samples = np.frombuffer(more_raw, dtype="<i2")
+                buf = np.concatenate((buf, more_samples))
+                extended += more_samples.size
+
+            at_eof = (wav.tell() >= total_frames) and (buf.size <= target_frames + extended)
+            if at_eof:
                 cut = buf.size
             else:
-                # Find the lowest-energy 100 ms window in the last `tail_frames` samples.
-                search_start = max(buf.size - tail_frames, window_100ms)
-                tail = buf[search_start:].astype(np.float32)
-                n_windows = tail.size // window_100ms
-                if n_windows >= 2:
-                    energies = np.mean(np.square(tail[: n_windows * window_100ms].reshape(n_windows, window_100ms)), axis=1)
-                    quietest_idx = int(np.argmin(energies))
-                    cut = search_start + (quietest_idx * window_100ms) + (window_100ms // 2)
-                else:
-                    cut = buf.size
+                cut, _ = _find_silence_pause_cut(buf, rate, max(tail_frames, extended))
 
             chunk_i16 = buf[:cut]
             carry = buf[cut:]
@@ -335,7 +377,6 @@ class FasterWhisperTranscriber:
                 chunk_end = offset_sec + (chunk_samples.size / 16_000.0)
                 on_progress(min(chunk_end / total_duration, 1.0))
 
-        _delete_transcribe_checkpoint(checkpoint_path)
         return Transcript(language=detected_language or "?", duration=total_duration, words=words)
 
 
