@@ -101,21 +101,24 @@ Get-ChildItem $outDir -Recurse -File -Include *.pri, *.xbf | ForEach-Object {
 if (-not (Test-Path (Join-Path $Publish 'SubtitleAdder.pri'))) { throw "SubtitleAdder.pri is missing from $Publish." }
 
 if (-not $SkipEngineBuild -or -not (Test-Path $EngineExe)) {
-    Log '2/5 Building engine (PyInstaller onedir)'
+    Log '2/5 Building engine (PyInstaller onedir — takes ~30-45s)'
     $uv = Find-Uv
     if (-not $uv) { throw 'uv not found; install it (https://docs.astral.sh/uv/) or add it to PATH.' }
     # A separate environment with only the runtime deps + PyInstaller: the dev engine\.venv (pytest, cuda group)
     # is left untouched and nothing from it leaks into the package.
+    $oldVirtualEnv = $env:VIRTUAL_ENV
+    Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
     $env:UV_PROJECT_ENVIRONMENT = Join-Path $Build 'engine-venv'
     Push-Location (Join-Path $Root 'engine')
     try {
         & $uv sync --locked --no-default-groups --group build --quiet
-        & $uv run --no-sync pyinstaller subtitle-engine.spec --noconfirm --log-level WARN `
+        & $uv run --no-sync pyinstaller subtitle-engine.spec --noconfirm --log-level ERROR `
             --distpath (Join-Path $Build 'engine-dist') --workpath (Join-Path $Build 'engine-work')
     }
     finally {
         Pop-Location
         Remove-Item Env:UV_PROJECT_ENVIRONMENT -ErrorAction SilentlyContinue
+        if ($oldVirtualEnv) { $env:VIRTUAL_ENV = $oldVirtualEnv }
     }
     if (-not (Test-Path $EngineExe)) { throw "PyInstaller produced no $EngineExe." }
 }
