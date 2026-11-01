@@ -3,6 +3,8 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>tr</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>tr</string><string>en</string></array>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleExecutable</key><string>SubtitleAdderApp</string>
     <key>CFBundleIdentifier</key><string>__BUNDLE_ID__</string>

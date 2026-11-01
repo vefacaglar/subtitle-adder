@@ -55,7 +55,7 @@ extension SubtitleViewModel {
         if undoManager?.isUndoing == true || undoManager?.isRedoing == true {
             sentences[index].text = text
         } else {
-            commit("Metni Değiştir") { $0.setText(text, at: index) }
+            commit(L("Metni Değiştir")) { $0.setText(text, at: index) }
         }
     }
 
@@ -63,13 +63,13 @@ extension SubtitleViewModel {
 
     func setText(_ text: String, for uid: UUID) {
         guard let index = sentences.index(ofUID: uid) else { return }
-        commit("Metni Değiştir") { $0.setText(text, at: index) }
+        commit(L("Metni Değiştir")) { $0.setText(text, at: index) }
     }
 
     func nudge(_ edge: TimingEdge, by delta: Double) {
         commitDraft()
         guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
-        commit("Zamanlamayı Değiştir") { list in
+        commit(L("Zamanlamayı Değiştir")) { list in
             edge == .start ? list.nudgeStart(at: index, by: delta) : list.nudgeEnd(at: index, by: delta)
         }
     }
@@ -77,7 +77,7 @@ extension SubtitleViewModel {
     func setSelected(_ edge: TimingEdge, to time: Double) {
         commitDraft()
         guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
-        commit("Zamanlamayı Değiştir") { list in
+        commit(L("Zamanlamayı Değiştir")) { list in
             edge == .start ? list.setStart(time, at: index) : list.setEnd(time, at: index)
         }
     }
@@ -88,14 +88,14 @@ extension SubtitleViewModel {
               index + 1 < sentences.count
         else { return }
         let affected: Set<UUID> = [sentences[index].uid, sentences[index + 1].uid]
-        commit("Satırları Birleştir", clearingTranslations: affected) { $0.mergeWithNext(at: index) }
+        commit(L("Satırları Birleştir"), clearingTranslations: affected) { $0.mergeWithNext(at: index) }
     }
 
     /// Sets a line's speaker (zero-based index); `nil` clears it.
     func setSpeaker(_ speaker: Int?, for uid: UUID) {
         commitDraft()
         guard let index = sentences.index(ofUID: uid) else { return }
-        commit("Konuşmacıyı Değiştir") { $0.setSpeaker(speaker, at: index) }
+        commit(L("Konuşmacıyı Değiştir")) { $0.setSpeaker(speaker, at: index) }
     }
 
     /// Assigns an unused speaker index to the line ("Yeni konuşmacı").
@@ -106,7 +106,7 @@ extension SubtitleViewModel {
     func deleteSelected() {
         commitDraft()
         guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
-        guard commit("Satırı Sil", { $0.deleteSentence(at: index) }) else { return }
+        guard commit(L("Satırı Sil"), { $0.deleteSentence(at: index) }) else { return }
         selection = sentences.isEmpty ? nil : sentences[min(index, sentences.count - 1)].uid
     }
 
@@ -119,7 +119,7 @@ extension SubtitleViewModel {
         commitDraft()
         guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }
         // The first part keeps its identity but its text changes; the translation of both parts is invalid.
-        commit("Satırı Böl", clearingTranslations: [uid]) { $0.splitSentence(at: index, at: time) }
+        commit(L("Satırı Böl"), clearingTranslations: [uid]) { $0.splitSentence(at: index, at: time) }
     }
 
     @discardableResult

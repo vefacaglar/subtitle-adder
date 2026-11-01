@@ -52,7 +52,8 @@ export UV_PYTHON_PREFERENCE=only-managed
 
 log "1/5 Building app (swift build -c release)"
 (cd "$ROOT/apps/macos" && swift build -c release)
-APP_BIN="$(cd "$ROOT/apps/macos" && swift build -c release --show-bin-path)/SubtitleAdderApp"
+APP_BIN_DIR="$(cd "$ROOT/apps/macos" && swift build -c release --show-bin-path)"
+APP_BIN="$APP_BIN_DIR/SubtitleAdderApp"
 
 if [ "${SKIP_ENGINE_BUILD:-0}" != "1" ] || [ ! -x "$ENGINE_DIST/subtitle-engine" ]; then
     log "2/5 Building engine (PyInstaller onedir)"
@@ -70,6 +71,17 @@ log "3/5 Assembling bundle"
 rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$APP_BIN" "$CONTENTS/MacOS/SubtitleAdderApp"
+# SwiftPM resource bundles (String Catalogs: SubtitleAdder_SubtitleAdderApp.bundle, SubtitleAdder_EngineKit.bundle).
+# Bundle.module looks for them in Contents/Resources; without them the UI falls back to Turkish keys.
+RESOURCE_BUNDLES=()
+for name in SubtitleAdder_SubtitleAdderApp.bundle SubtitleAdder_EngineKit.bundle; do
+    if [ ! -d "$APP_BIN_DIR/$name" ]; then
+        echo "Missing SwiftPM resource bundle $APP_BIN_DIR/$name (localization would be missing)." >&2
+        exit 1
+    fi
+    cp -R "$APP_BIN_DIR/$name" "$CONTENTS/Resources/"
+    RESOURCE_BUNDLES+=("$CONTENTS/Resources/$name")
+done
 # The engine lives under Contents/Resources/subtitle-engine: codesign rejects any non-Mach-O file
 # in places like Frameworks/MacOS/Helpers ("code object is not signed at all"),
 # while the PyInstaller folder contains many data files such as .py/.json/.onnx. The Mach-O files
@@ -106,6 +118,7 @@ done < <(find "$ENGINE_DIR" -type f -print0)
 ENGINE_ARGS=("${SIGN_ARGS[@]}")
 if [ "$SIGN_IDENTITY" != "-" ]; then ENGINE_ARGS+=(--entitlements "$ENTITLEMENTS"); fi
 codesign "${ENGINE_ARGS[@]}" --identifier "$BUNDLE_ID.engine" "$ENGINE_BIN"
+for b in "${RESOURCE_BUNDLES[@]}"; do codesign "${SIGN_ARGS[@]}" "$b"; done
 codesign "${SIGN_ARGS[@]}" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 # --deep doesn't verify Mach-O files under Resources as code; verify each one separately.

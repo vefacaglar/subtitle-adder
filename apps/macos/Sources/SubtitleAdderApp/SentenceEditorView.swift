@@ -14,9 +14,9 @@ struct SentenceEditorView: View {
         VStack(spacing: 0) {
             if vm.sentences.isEmpty {
                 ContentUnavailableView(
-                    vm.isWorking ? "Altyazı üretiliyor…" : "Henüz altyazı yok",
+                    vm.isWorking ? L("Altyazı üretiliyor…") : L("Henüz altyazı yok"),
                     systemImage: "captions.bubble",
-                    description: vm.isWorking ? nil : Text("Araç çubuğundan “Altyazı üret”e bas.")
+                    description: vm.isWorking ? nil : Text(L("Araç çubuğundan “Altyazı üret”e bas."))
                 )
             } else {
                 editBar
@@ -94,21 +94,21 @@ struct SentenceEditorView: View {
 
     private var editBar: some View {
         HStack(spacing: 16) {
-            timingControls("Başlangıç", edge: .start, value: vm.selectedSentence?.start)
-            timingControls("Bitiş", edge: .end, value: vm.selectedSentence?.end)
+            timingControls(L("Başlangıç"), edge: .start, value: vm.selectedSentence?.start)
+            timingControls(L("Bitiş"), edge: .end, value: vm.selectedSentence?.end)
             Spacer(minLength: 0)
-            Button("Böl", systemImage: "scissors") {
+            Button(L("Böl"), systemImage: "scissors") {
                 finishEditing()
                 vm.splitSelected(at: player.currentTime)
             }
             .disabled(!vm.canSplitSelected(at: player.currentTime))
-            .help("Satırı oynatma konumundan ikiye böl")
-            Button("Sonrakiyle birleştir", systemImage: "arrow.triangle.merge") {
+            .help(L("Satırı oynatma konumundan ikiye böl"))
+            Button(L("Sonrakiyle birleştir"), systemImage: "arrow.triangle.merge") {
                 finishEditing()
                 vm.mergeSelectedWithNext()
             }
             .disabled(!vm.canMergeSelected)
-            Button("Sil", systemImage: "trash") {
+            Button(L("Sil"), systemImage: "trash") {
                 finishEditing()
                 vm.deleteSelected()
             }
@@ -123,16 +123,16 @@ struct SentenceEditorView: View {
         let step = SentenceEditing.nudgeStep
         return HStack(spacing: 4) {
             Text(title).foregroundStyle(.secondary)
-            Button("\(title) 0,1 sn geri", systemImage: "minus") { vm.nudge(edge, by: -step) }
+            Button(L("%@ 0,1 sn geri", title), systemImage: "minus") { vm.nudge(edge, by: -step) }
                 .labelStyle(.iconOnly)
             Text(value.map(SubtitleTime.short) ?? "––:––.––")
                 .monospacedDigit()
                 .frame(minWidth: 52)
-            Button("\(title) 0,1 sn ileri", systemImage: "plus") { vm.nudge(edge, by: step) }
+            Button(L("%@ 0,1 sn ileri", title), systemImage: "plus") { vm.nudge(edge, by: step) }
                 .labelStyle(.iconOnly)
-            Button("Şimdiki an", systemImage: "scope") { vm.setSelected(edge, to: player.currentTime) }
+            Button(L("Şimdiki an"), systemImage: "scope") { vm.setSelected(edge, to: player.currentTime) }
                 .labelStyle(.iconOnly)
-                .help("\(title) zamanını oynatma konumuna ayarla")
+                .help(L("%@ zamanını oynatma konumuna ayarla", title))
         }
         .disabled(vm.selection == nil)
     }
@@ -170,7 +170,7 @@ private struct SentenceRow: View {
                     .frame(width: 124, alignment: .leading)
             }
             VStack(alignment: .leading, spacing: 3) {
-                TextField("Cümle", text: Binding(
+                TextField(L("Cümle"), text: Binding(
                     get: { vm.draftText(for: sentence) },
                     set: { vm.updateDraft($0, for: sentence.uid) }
                 ), axis: .vertical)
@@ -203,19 +203,19 @@ private struct SentenceRow: View {
                     Circle()
                         .fill(SpeakerPalette.color(for: speaker))
                         .frame(width: 8, height: 8)
-                    Text("Konuşmacı \(speaker + 1)")
+                    Text(L("Konuşmacı %lld", speaker + 1))
                         .font(.caption)
                 }
             } else {
-                Text("Konuşmacı yok")
+                Text(L("Konuşmacı yok"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Bu satırı söyleyen kişiyi değiştir")
-        .accessibilityHint("Konuşmacıyı değiştir")
+        .help(L("Bu satırı söyleyen kişiyi değiştir"))
+        .accessibilityHint(L("Konuşmacıyı değiştir"))
     }
 
     @ViewBuilder
@@ -225,17 +225,17 @@ private struct SentenceRow: View {
                 vm.setSpeaker(speaker, for: sentence.uid)
             } label: {
                 if speaker == sentence.speaker {
-                    Label("Konuşmacı \(speaker + 1)", systemImage: "checkmark")
+                    Label(L("Konuşmacı %lld", speaker + 1), systemImage: "checkmark")
                 } else {
-                    Text("Konuşmacı \(speaker + 1)")
+                    Text(L("Konuşmacı %lld", speaker + 1))
                 }
             }
         }
         Divider()
-        Button("Yeni konuşmacı") {
+        Button(L("Yeni konuşmacı")) {
             vm.assignNewSpeaker(for: sentence.uid)
         }
-        Button("Konuşmacıyı kaldır") {
+        Button(L("Konuşmacıyı kaldır")) {
             vm.setSpeaker(nil, for: sentence.uid)
         }
         .disabled(sentence.speaker == nil)
@@ -246,8 +246,8 @@ private struct SentenceRow: View {
             Image(systemName: "character.bubble")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .accessibilityLabel("Çeviri")
-            TextField("Çeviri", text: Binding(
+                .accessibilityLabel(L("Çeviri"))
+            TextField(L("Çeviri"), text: Binding(
                 get: { vm.translationDraftText(for: sentence) },
                 set: { vm.updateTranslationDraft($0, for: sentence.uid) }
             ), axis: .vertical)
@@ -260,8 +260,8 @@ private struct SentenceRow: View {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.caption2)
                     .foregroundStyle(.orange)
-                    .help("Orijinal metin değişti; çeviri eski olabilir. “Çevir…” ile yenile.")
-                    .accessibilityLabel("Çeviri eski")
+                    .help(L("Orijinal metin değişti; çeviri eski olabilir. “Çevir…” ile yenile."))
+                    .accessibilityLabel(L("Çeviri eski"))
             }
         }
     }

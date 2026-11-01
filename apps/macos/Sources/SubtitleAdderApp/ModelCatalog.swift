@@ -47,16 +47,16 @@ final class ModelCatalog {
 
     private(set) var models: [EngineModel] = fallbackModels
     private(set) var isLoading = false
-    private(set) var loadError: String?
+    private(set) var loadError: LocalizedMessage?
     private(set) var deleting: Set<String> = []
-    private(set) var deleteErrors: [String: String] = [:]
+    private(set) var deleteErrors: [String: LocalizedMessage] = [:]
 
     /// The models used by the running subtitle generation or translation (including the speaker model); those can't be deleted from Settings.
     var activeModels: Set<String> = []
 
     @ObservationIgnored let engine: EngineClient?
 
-    init(engine: EngineClient? = EngineCommand.locate().map(EngineClient.init)) {
+    init(engine: EngineClient? = EngineCommand.locate().map { EngineClient(command: $0) }) {
         self.engine = engine
     }
 
@@ -85,7 +85,7 @@ final class ModelCatalog {
     /// Refreshes the catalog from the engine; on error the current list and the error text are kept.
     func load() async {
         guard let engine else {
-            loadError = EngineError.notFound.localizedDescription
+            loadError = .error(EngineError.notFound)
             return
         }
         guard !isLoading else { return }
@@ -98,7 +98,7 @@ final class ModelCatalog {
         } catch is CancellationError {
             // The window closed; don't show an error, it will be retried on the next open.
         } catch {
-            loadError = error.localizedDescription
+            loadError = .error(error)
         }
     }
 
@@ -106,7 +106,7 @@ final class ModelCatalog {
     func delete(_ model: EngineModel) async {
         guard model.downloaded, !deleting.contains(model.id), !activeModels.contains(model.id) else { return }
         guard let engine else {
-            deleteErrors[model.id] = EngineError.notFound.localizedDescription
+            deleteErrors[model.id] = .error(EngineError.notFound)
             return
         }
         deleting.insert(model.id)
@@ -119,7 +119,7 @@ final class ModelCatalog {
                 models[index].diskMB = nil
             }
         } catch {
-            deleteErrors[model.id] = error.localizedDescription
+            deleteErrors[model.id] = .error(error)
         }
     }
 }

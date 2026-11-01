@@ -23,7 +23,7 @@ struct ModelPicker: View {
             Text(ModelLabel.name(for: selection))
                 .frame(minWidth: 110, alignment: .leading)
         }
-        .help("Daha doğru modeller daha yavaştır; ilk kullanımda indirilir.")
+        .help(L("Daha doğru modeller daha yavaştır; ilk kullanımda indirilir."))
     }
 
     private var whisperModels: [EngineModel] { models.filter(\.detectsLanguage) }

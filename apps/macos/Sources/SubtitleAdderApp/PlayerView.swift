@@ -8,6 +8,7 @@ struct PlayerView: View {
     let sentences: [Sentence]
     let translations: [UUID: TranslationEntry]
     @Binding var display: SubtitleDisplay
+    private let overlay = OverlayStyleStorage()
 
     var body: some View {
         GeometryReader { geometry in
@@ -15,7 +16,7 @@ struct PlayerView: View {
             ZStack {
                 Color.black
                 NativePlayerView(player: model.player)
-                SubtitleOverlay(text: activeText, videoHeight: rect.height)
+                SubtitleOverlay(text: activeText, style: overlay.style, videoHeight: rect.height)
                     .frame(width: rect.width, height: rect.height)
                     .allowsHitTesting(false)
                 VStack {
@@ -32,10 +33,10 @@ struct PlayerView: View {
 
     private var displayPicker: some View {
         HStack(spacing: 8) {
-            Text("Gösterilen")
+            Text(L("Gösterilen"))
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.85))
-            Picker("Gösterilen", selection: $display) {
+            Picker(L("Gösterilen"), selection: $display) {
                 ForEach(SubtitleDisplay.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
@@ -48,8 +49,8 @@ struct PlayerView: View {
         .padding(.vertical, 5)
         .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .help(translations.isEmpty
-            ? "Önce altyazıları çevir; sonra orijinali, çeviriyi ya da ikisini birden gösterebilirsin."
-            : "Video üstünde gösterilecek metin")
+            ? L("Önce altyazıları çevir; sonra orijinali, çeviriyi ya da ikisini birden gösterebilirsin.")
+            : L("Video üstünde gösterilecek metin"))
         .disabled(translations.isEmpty)
     }
 
@@ -93,20 +94,14 @@ private struct NativePlayerView: NSViewRepresentable {
 
 private struct SubtitleOverlay: View {
     let text: String?
+    let style: OverlayStyle
     let videoHeight: CGFloat
 
     var body: some View {
         VStack {
             Spacer(minLength: 0)
             if let text {
-                Text(text)
-                    .font(.system(size: max(12, videoHeight * 0.05), weight: .semibold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                SubtitleOverlayLabel(text: text, style: style, videoHeight: videoHeight)
                     .padding(.horizontal, 16)
             }
         }

@@ -54,7 +54,7 @@ public enum EngineError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .notFound: "Altyazı motoru bulunamadı (uv kurulu mu, ya da SUBTITLE_ENGINE ayarlı mı?)."
+        case .notFound: engineString("Altyazı motoru bulunamadı (uv kurulu mu, ya da SUBTITLE_ENGINE ayarlı mı?).")
         case .failed(let message): message
         }
     }
@@ -62,9 +62,31 @@ public enum EngineError: LocalizedError, Equatable {
 
 public struct EngineClient: Sendable {
     public var command: EngineCommand
+    /// Language passed to the engine as `SUBTITLE_ENGINE_LANG` (its error messages follow it).
+    /// `nil` follows the app's current UI language (`LanguageState.shared`) at each launch.
+    public var language: UILanguage?
 
     public init(command: EngineCommand) {
         self.command = command
+    }
+
+    public init(command: EngineCommand, language: UILanguage?) {
+        self.command = command
+        self.language = language
+    }
+
+    /// Environment for the engine process: the parent's plus `SUBTITLE_ENGINE_LANG`.
+    func processEnvironment(
+        language: UILanguage, base: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var env = base
+        env["SUBTITLE_ENGINE_LANG"] = language.rawValue
+        return env
+    }
+
+    /// The explicit language, or the app's current UI language (`current`) when none was set.
+    func resolvedLanguage(current: UILanguage = LanguageState.shared.language) -> UILanguage {
+        language ?? current
     }
 
     public struct TranscribeOptions: Sendable {
@@ -202,7 +224,7 @@ public struct EngineClient: Sendable {
             }
             guard status == 0 else { throw run.failure(status) }
             guard let payload, payload.event == "models", let models = payload.models else {
-                throw EngineError.failed("Motor model listesi yazmadı.")
+                throw EngineError.failed(engineString("Motor model listesi yazmadı.", language: language))
             }
             return models
         } onCancel: {
@@ -227,7 +249,7 @@ public struct EngineClient: Sendable {
             }
             guard status == 0 else { throw run.failure(status) }
             guard let payload, payload.event == "deleted", payload.id == id, let freed = payload.freedMB else {
-                throw EngineError.failed("Motor silme sonucunu yazmadı.")
+                throw EngineError.failed(engineString("Motor silme sonucunu yazmadı.", language: language))
             }
             return freed
         } onCancel: {
@@ -239,6 +261,8 @@ public struct EngineClient: Sendable {
         let process = Process()
         process.executableURL = command.executable
         process.arguments = command.arguments + args
+        let lang = resolvedLanguage()
+        process.environment = processEnvironment(language: lang)
         let stdout = Pipe()
         process.standardOutput = stdout
         // stderr goes to a file: so model download progress can't fill the pipe buffer and hang the process.
@@ -251,14 +275,19 @@ public struct EngineClient: Sendable {
             try process.run()
         } catch {
             try? FileManager.default.removeItem(at: log)
-            throw EngineError.failed("Motor başlatılamadı: \(error.localizedDescription)")
+            throw EngineError.failed(engineString("Motor başlatılamadı: %@", language: lang, error.localizedDescription))
         }
         if let input {
-            // If the engine exits early, writing fails (SIGPIPE is ignored); the exit code is reported anyway.
-            try? stdinPipe.fileHandleForWriting.write(contentsOf: input)
-            try? stdinPipe.fileHandleForWriting.close()
+            // Written off the caller's thread: a large payload can block until the engine reads it, and the
+            // caller (often the main actor) must not wait. If the engine exits early, writing fails
+            // (SIGPIPE is ignored); the exit code is reported anyway.
+            let writer = stdinPipe.fileHandleForWriting
+            DispatchQueue.global().async {
+                try? writer.write(contentsOf: input)
+                try? writer.close()
+            }
         }
-        return RunningEngine(process: process, stdout: stdout.fileHandleForReading, log: log)
+        return RunningEngine(process: process, stdout: stdout.fileHandleForReading, log: log, language: lang)
     }
 }
 
@@ -287,6 +316,7 @@ private struct RunningEngine: @unchecked Sendable {
     let process: Process
     let stdout: FileHandle
     let log: URL
+    let language: UILanguage
 
     func exitStatus() async -> Int32 {
         await withTaskCancellationHandler {
@@ -315,6 +345,6 @@ private struct RunningEngine: @unchecked Sendable {
     func failure(_ status: Int32) -> EngineError {
         let tail = (try? String(contentsOf: log, encoding: .utf8))?
             .split(separator: "\n").suffix(5).joined(separator: "\n") ?? ""
-        return .failed("Motor hata koduyla çıktı (\(status)). \(tail)")
+        return .failed(engineString("Motor hata koduyla çıktı (%lld). %@", language: language, Int(status), tail))
     }
 }

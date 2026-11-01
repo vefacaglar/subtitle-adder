@@ -1,0 +1,86 @@
+{
+  "sourceLanguage": "tr",
+  "strings": {
+    "Altyazı motoru bulunamadı (uv kurulu mu, ya da SUBTITLE_ENGINE ayarlı mı?).": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı motoru bulunamadı (uv kurulu mu, ya da SUBTITLE_ENGINE ayarlı mı?)."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtitle engine not found (is uv installed, or is SUBTITLE_ENGINE set?)."
+          }
+        }
+      }
+    },
+    "Motor başlatılamadı: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Motor başlatılamadı: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not start the engine: %@"
+          }
+        }
+      }
+    },
+    "Motor hata koduyla çıktı (%lld). %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Motor hata koduyla çıktı (%lld). %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The engine exited with an error code (%1$lld). %2$@"
+          }
+        }
+      }
+    },
+    "Motor model listesi yazmadı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Motor model listesi yazmadı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The engine did not output a model list."
+          }
+        }
+      }
+    },
+    "Motor silme sonucunu yazmadı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Motor silme sonucunu yazmadı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The engine did not output a deletion result."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

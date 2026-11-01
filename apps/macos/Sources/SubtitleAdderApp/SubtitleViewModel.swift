@@ -7,9 +7,9 @@ import Observation
 final class SubtitleViewModel {
     enum Status: Equatable {
         case idle
-        case working(String, fraction: Double?)
+        case working(LocalizedMessage, fraction: Double?)
         case finished
-        case failed(String)
+        case failed(LocalizedMessage)
     }
 
     /// An empty code means automatic detection; the choice is persisted in UserDefaults.
@@ -77,7 +77,7 @@ final class SubtitleViewModel {
     /// Uncommitted text of the line being edited (used while focused).
     var draft: TextDraft?
     /// Short notice when the selected model was changed automatically because it didn't match the language filter.
-    private(set) var modelNotice: String?
+    private(set) var modelNotice: LocalizedMessage?
     /// The window's undo manager (provided by the view).
     @ObservationIgnored weak var undoManager: UndoManager?
 
@@ -149,7 +149,11 @@ final class SubtitleViewModel {
         guard let best = available.max(by: { ($0.accuracy, $0.speed) < ($1.accuracy, $1.speed) }) else { return }
         model = best.id
         if let language = SubtitleLanguage(rawValue: language) {
-            modelNotice = "\(language.shortName) için \(ModelLabel.name(for: best.id)) seçildi."
+            let languageCode = language.rawValue
+            let modelID = best.id
+            modelNotice = LocalizedMessage("notice:\(languageCode):\(modelID)") {
+                L("%@ için %@ seçildi.", SubtitleLanguage(rawValue: languageCode)?.shortName ?? languageCode, ModelLabel.name(for: modelID))
+            }
         }
     }
 
@@ -189,7 +193,7 @@ final class SubtitleViewModel {
     func generate() {
         guard let video else { return }
         guard let engine = catalog.engine else {
-            status = .failed(EngineError.notFound.localizedDescription)
+            status = .failed(.error(EngineError.notFound))
             return
         }
         sentences = []
@@ -201,7 +205,7 @@ final class SubtitleViewModel {
         undoManager?.removeAllActions()
         detectedLanguage = nil
         modelNotice = nil
-        status = .working("Başlıyor…", fraction: nil)
+        status = .working(.key("Başlıyor…"), fraction: nil)
         let outDir = FileManager.default.temporaryDirectory.appending(path: "SubtitleAdder")
         let options = EngineClient.TranscribeOptions(
             language: language.isEmpty ? nil : language,
@@ -245,7 +249,7 @@ final class SubtitleViewModel {
                         break
                     case .error(let message):
                         failed = true
-                        status = .failed(message)
+                        status = .failed(.verbatim(message))
                     }
                 }
                 // On cancel the stream ends without an error; in that case the status doesn't change.
@@ -256,7 +260,7 @@ final class SubtitleViewModel {
             } catch is CancellationError {
                 if jobID == id { status = .idle }
             } catch {
-                if jobID == id { status = .failed(error.localizedDescription) }
+                if jobID == id { status = .failed(.error(error)) }
             }
         }
     }
@@ -274,7 +278,7 @@ final class SubtitleViewModel {
             let list = translated ? exportSentences(translated: true) : sentences
             return try await catalog.engine?.render(list, as: format)
         } catch {
-            status = .failed(error.localizedDescription)
+            status = .failed(.error(error))
             return nil
         }
     }
@@ -283,38 +287,44 @@ final class SubtitleViewModel {
         case transcription, translation, diarization
     }
 
-    static func label(for stage: EngineEvent.Stage, fraction: Double?, purpose: JobPurpose) -> String {
+    nonisolated static func label(for stage: EngineEvent.Stage, fraction: Double?, purpose: JobPurpose) -> LocalizedMessage {
+        let fractionText = fraction.map { String($0) } ?? "-"
+        let id = "stage:" + String(describing: stage) + ":" + fractionText + ":" + String(describing: purpose)
+        return LocalizedMessage(id) { SubtitleViewModel.labelText(for: stage, fraction: fraction, purpose: purpose) }
+    }
+
+    nonisolated fileprivate static func labelText(for stage: EngineEvent.Stage, fraction: Double?, purpose: JobPurpose) -> String {
         switch stage {
         case .extractingAudio:
-            return "Ses ayrılıyor…"
+            return L("Ses ayrılıyor…")
         case .downloadingModel:
             let prefix = switch purpose {
-            case .translation: "Çeviri modeli indiriliyor…"
-            case .diarization: "Konuşmacı ayırma modeli indiriliyor…"
-            case .transcription: "Model indiriliyor…"
+            case .translation: L("Çeviri modeli indiriliyor…")
+            case .diarization: L("Konuşmacı ayırma modeli indiriliyor…")
+            case .transcription: L("Model indiriliyor…")
             }
             if let fraction {
-                return "\(prefix) %\(Int((min(max(fraction, 0), 1) * 100).rounded()))"
+                return "\(prefix) \(L("%lld%%", Int((min(max(fraction, 0), 1) * 100).rounded())))"
             }
             return prefix
         case .loadingModel:
-            return purpose == .translation ? "Çeviri modeli yükleniyor…" : "Model yükleniyor…"
+            return purpose == .translation ? L("Çeviri modeli yükleniyor…") : L("Model yükleniyor…")
         case .transcribing:
-            return "Konuşma metne çevriliyor…"
+            return L("Konuşma metne çevriliyor…")
         case .diarizing:
             if let fraction {
-                return "Konuşmacılar ayrılıyor… %\(Int((min(max(fraction, 0), 1) * 100).rounded()))"
+                return L("Konuşmacılar ayrılıyor… %lld%%", Int((min(max(fraction, 0), 1) * 100).rounded()))
             }
-            return "Konuşmacılar ayrılıyor…"
+            return L("Konuşmacılar ayrılıyor…")
         case .segmenting:
-            return "Cümleler çıkarılıyor…"
+            return L("Cümleler çıkarılıyor…")
         case .translating:
             if let fraction {
-                return "Çevriliyor… %\(Int((min(max(fraction, 0), 1) * 100).rounded()))"
+                return L("Çevriliyor… %lld%%", Int((min(max(fraction, 0), 1) * 100).rounded()))
             }
-            return "Çevriliyor…"
+            return L("Çevriliyor…")
         case .unknown:
-            return "Çalışıyor…"
+            return L("Çalışıyor…")
         }
     }
 }

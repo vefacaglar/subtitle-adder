@@ -11,9 +11,9 @@ enum SubtitleDisplay: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .original: "Orijinal"
-        case .translation: "Çeviri"
-        case .both: "İkisi"
+        case .original: L("Orijinal")
+        case .translation: L("Çeviri")
+        case .both: L("İkisi")
         }
     }
 }

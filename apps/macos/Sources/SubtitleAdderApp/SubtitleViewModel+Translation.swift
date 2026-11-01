@@ -29,7 +29,7 @@ extension SubtitleViewModel {
     func translate() {
         guard !sentences.isEmpty else { return }
         guard let engine = catalog.engine else {
-            status = .failed(EngineError.notFound.localizedDescription)
+            status = .failed(.error(EngineError.notFound))
             return
         }
         commitDraft()
@@ -37,11 +37,11 @@ extension SubtitleViewModel {
         let source = translationSource
         let target = translationTarget
         guard source != target else {
-            status = .failed("Kaynak ve hedef dil aynı olamaz.")
+            status = .failed(.key("Kaynak ve hedef dil aynı olamaz."))
             return
         }
         if translationModel == "nllb-1.3b", source == nil {
-            status = .failed("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç.")
+            status = .failed(.key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç."))
             return
         }
         let request = sentences
@@ -50,7 +50,7 @@ extension SubtitleViewModel {
         let id = UUID()
         jobID = id
         catalog.activeModels = [model]
-        status = .working("Çeviri hazırlanıyor…", fraction: nil)
+        status = .working(.key("Çeviri hazırlanıyor…"), fraction: nil)
         job = Task {
             // However it ends, the model becomes deletable in Settings.
             defer { if jobID == id { catalog.activeModels = [] } }
@@ -70,7 +70,7 @@ extension SubtitleViewModel {
                         break
                     case .error(let message):
                         failed = true
-                        status = .failed(message)
+                        status = .failed(.verbatim(message))
                     }
                 }
                 // On cancel the stream ends without an error; in that case the status doesn't change.
@@ -81,7 +81,7 @@ extension SubtitleViewModel {
             } catch is CancellationError {
                 if jobID == id { status = .idle }
             } catch {
-                if jobID == id { status = .failed(error.localizedDescription) }
+                if jobID == id { status = .failed(.error(error)) }
             }
         }
     }
@@ -148,7 +148,7 @@ extension SubtitleViewModel {
         entry.text = text
         var updated = translations
         updated[uid] = entry
-        replaceTranslations(updated, actionName: "Çeviriyi Değiştir")
+        replaceTranslations(updated, actionName: L("Çeviriyi Değiştir"))
     }
 
     private func replaceTranslations(_ updated: [UUID: TranslationEntry], actionName: String) {

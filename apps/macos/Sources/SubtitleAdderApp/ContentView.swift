@@ -65,9 +65,9 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
-            Button("Video seç", systemImage: "film") { pickingVideo = true }
-                .help("Video dosyası seç")
-            Picker("Dil", selection: $vm.language) {
+            Button(L("Video seç"), systemImage: "film") { pickingVideo = true }
+                .help(L("Video dosyası seç"))
+            Picker(L("Dil"), selection: $vm.language) {
                 ForEach(SubtitleLanguage.allCases) { language in
                     Text(language.title).tag(language.rawValue)
                 }
@@ -75,11 +75,11 @@ struct ContentView: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .frame(width: 175)
-            .help("Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır.")
+            .help(L("Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır."))
             ModelPicker(selection: $vm.model, models: vm.availableModels)
             speakerMenu
             if !vm.sentences.isEmpty {
-                Picker("Çeviri dili", selection: $vm.translationTarget) {
+                Picker(L("Çeviri dili"), selection: $vm.translationTarget) {
                     ForEach(SubtitleLanguage.translationTargets) { language in
                         Text(language.targetName).tag(language.rawValue)
                             .disabled(language.rawValue == vm.translationSource)
@@ -90,26 +90,26 @@ struct ContentView: View {
                 .frame(width: 160)
                 .disabled(vm.isWorking)
                 .help(vm.translationSource == nil
-                    ? "Çeviri hedef dili. Kaynak dil bilinmiyor; NLLB için önce konuşma dilini seç."
-                    : "Çeviri hedef dili; kaynak dille aynı olan seçilemez.")
-                Button("Çevir…", systemImage: "translate") { vm.translate() }
+                    ? L("Çeviri hedef dili. Kaynak dil bilinmiyor; NLLB için önce konuşma dilini seç.")
+                    : L("Çeviri hedef dili; kaynak dille aynı olan seçilemez."))
+                Button(L("Çevir…"), systemImage: "translate") { vm.translate() }
                     .labelStyle(.titleAndIcon)
                     .disabled(vm.isWorking)
-                    .help("Tüm satırları seçili hedef dile yerel modelle çevir")
+                    .help(L("Tüm satırları seçili hedef dile yerel modelle çevir"))
             }
         }
         ToolbarItem(placement: .primaryAction) {
             if vm.isWorking {
-                Button("Durdur", systemImage: "stop.fill") { vm.cancel() }
+                Button(L("Durdur"), systemImage: "stop.fill") { vm.cancel() }
                     .labelStyle(.titleAndIcon)
-                    .help("Süren altyazı ya da çeviri işini durdur")
+                    .help(L("Süren altyazı ya da çeviri işini durdur"))
             } else {
-                Button("Altyazı üret", systemImage: "captions.bubble") { vm.generate() }
+                Button(L("Altyazı üret"), systemImage: "captions.bubble") { vm.generate() }
                     .labelStyle(.titleAndIcon)
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(vm.video == nil)
-                    .help("Videonun sesini metne çevirip altyazı çıkar (⌘↩)")
+                    .help(L("Videonun sesini metne çevirip altyazı çıkar (⌘↩)"))
             }
         }
     }
@@ -117,19 +117,19 @@ struct ContentView: View {
     /// Speaker separation options for the next "Altyazı üret" run.
     private var speakerMenu: some View {
         Menu {
-            Toggle("Konuşmacıları ayır", isOn: $vm.diarize)
-            Picker("Konuşmacı sayısı", selection: $vm.speakerCount) {
-                Text("Otomatik").tag(0)
+            Toggle(L("Konuşmacıları ayır"), isOn: $vm.diarize)
+            Picker(L("Konuşmacı sayısı"), selection: $vm.speakerCount) {
+                Text(L("Otomatik")).tag(0)
                 ForEach(2...6, id: \.self) { count in
                     Text("\(count)").tag(count)
                 }
             }
             .disabled(!vm.diarize)
         } label: {
-            Label("Konuşmacılar", systemImage: vm.diarize ? "person.2.fill" : "person.2")
+            Label(L("Konuşmacılar"), systemImage: vm.diarize ? "person.2.fill" : "person.2")
         }
         .disabled(vm.isWorking)
-        .help("Videoda birden çok kişi konuşuyorsa kimin ne dediğini ayır; ilk kullanımda küçük bir model indirilir.")
+        .help(L("Videoda birden çok kişi konuşuyorsa kimin ne dediğini ayır; ilk kullanımda küçük bir model indirilir."))
     }
 
     private var dropZone: some View {
@@ -137,9 +137,9 @@ struct ContentView: View {
             Image(systemName: "film.stack")
                 .font(.system(size: 44, weight: .light))
                 .foregroundStyle(.secondary)
-            Text("Videoyu buraya sürükle")
+            Text(L("Videoyu buraya sürükle"))
                 .font(.title3)
-            Text("ya da araç çubuğundan seç")
+            Text(L("ya da araç çubuğundan seç"))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -155,45 +155,45 @@ struct ContentView: View {
         HStack(spacing: 10) {
             switch vm.status {
             case .idle:
-                Text(vm.video == nil || !vm.sentences.isEmpty ? "Hazır" : "Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)").foregroundStyle(.secondary)
+                Text(vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
             case .working(let label, let fraction):
                 if let fraction {
                     ProgressView(value: fraction).frame(width: 120)
                 } else {
                     ProgressView().controlSize(.small)
                 }
-                Text(label)
+                Text(label.text)
             case .finished:
                 Label(finishedSummary, systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             case .failed(let message):
-                Label(message, systemImage: "exclamationmark.triangle.fill")
+                Label(message.text, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .lineLimit(2)
             }
             Spacer()
             if let notice = vm.modelNotice {
-                Label(notice, systemImage: "info.circle")
+                Label(notice.text, systemImage: "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .help("Seçili model bu dil için listede yoktu; en doğru uygun model seçildi.")
+                    .help(L("Seçili model bu dil için listede yoktu; en doğru uygun model seçildi."))
             }
-            Picker("Biçim", selection: $exportFormat) {
+            Picker(L("Biçim"), selection: $exportFormat) {
                 ForEach(SubtitleFormat.allCases) { Text($0.rawValue.uppercased()).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 150)
-            Picker("Dil", selection: $exportLanguage) {
-                Text("Orijinal").tag(ExportLanguage.original)
-                Text(vm.translationLanguage.map { "Çeviri (\($0))" } ?? "Çeviri").tag(ExportLanguage.translated)
+            Picker(L("Dil"), selection: $exportLanguage) {
+                Text(L("Orijinal")).tag(ExportLanguage.original)
+                Text(vm.translationLanguage.map { L("Çeviri (%@)", $0) } ?? L("Çeviri")).tag(ExportLanguage.translated)
                     .disabled(vm.translations.isEmpty)
             }
             .pickerStyle(.menu)
             .frame(width: 180)
-            .help("Dışa aktarılan altyazıda orijinal mi, çeviri mi kullanılsın")
-            Button("Dışa aktar…") {
+            .help(L("Dışa aktarılan altyazıda orijinal mi, çeviri mi kullanılsın"))
+            Button(L("Dışa aktar…")) {
                 Task {
                     let translated = exportLanguage == .translated && !vm.translations.isEmpty
                     if let text = await vm.render(as: exportFormat, translated: translated) {
@@ -207,9 +207,9 @@ struct ContentView: View {
     }
 
     private var finishedSummary: String {
-        var summary = "\(vm.sentences.count) satır · dil: \(vm.detectedLanguage ?? "?")"
+        var summary = L("%lld satır · dil: %@", vm.sentences.count, vm.detectedLanguage ?? "?")
         if let language = vm.translationLanguage {
-            summary += " · çeviri: \(language)"
+            summary += L(" · çeviri: %@", language)
         }
         return summary
     }

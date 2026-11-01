@@ -5,6 +5,9 @@
     <!-- The name shown in the menu bar and Dock when running without a bundle via `swift run`/VS Code.
          In the packaged .app, scripts/macos/Info.plist.in applies. CFBundleIdentifier is left out on purpose:
          adding it would change the UserDefaults domain in development and lose saved selections. -->
+    <key>CFBundleDevelopmentRegion</key><string>tr</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>tr</string><string>en</string></array>
     <key>CFBundleName</key><string>Subtitle Adder</string>
     <key>CFBundleDisplayName</key><string>Subtitle Adder</string>
 </dict>
