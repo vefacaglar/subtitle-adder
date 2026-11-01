@@ -73,3 +73,14 @@ def require_symlinks(directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     if not symlinks_supported(directory):
         pytest.skip("symlinks are not available on this machine (Windows without Developer Mode)")
+
+
+@pytest.fixture(autouse=True)
+def _restore_hub_offline_state(monkeypatch):
+    """`models.go_offline()` flips process-wide Hub flags; keep every test independent of the ones before it."""
+    import huggingface_hub.constants as hub_constants
+
+    for name in ("HF_HUB_OFFLINE", "HF_HUB_DISABLE_TELEMETRY", "SUBTITLE_ENGINE_OFFLINE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+    monkeypatch.setattr(hub_constants, "HF_HUB_DISABLE_TELEMETRY", hub_constants.HF_HUB_DISABLE_TELEMETRY)

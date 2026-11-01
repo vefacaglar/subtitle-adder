@@ -49,6 +49,12 @@ def run(
     if language and info is not None and info.languages is not None and language not in info.languages:
         raise ValueError(models.support_error(info, language))
 
+    # Strict offline mode: a missing model is reported before any work starts.
+    if model:
+        models.require_download(model)
+    if diarize:
+        models.require_download(diarization.MODEL_ID)
+
     on_stage("extracting_audio", None)
     audio = extract_audio(video, out_dir / f"{video.stem}.wav")
 
@@ -63,6 +69,10 @@ def run(
         models.ensure_model(
             diarization.MODEL_ID, on_progress=lambda fraction: on_stage("downloading_model", fraction)
         )
+
+    # Everything this run needs is on disk now; names outside the catalog may still be fetched by faster-whisper.
+    if info is not None or models.offline_requested():
+        models.go_offline()
 
     on_stage("loading_model", None)
     transcriber = transcriber_factory()

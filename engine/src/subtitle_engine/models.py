@@ -291,6 +291,34 @@ def _cached(repo: str, filename: str) -> bool:
     return isinstance(huggingface_hub.try_to_load_from_cache(repo, filename), str)
 
 
+OFFLINE_ENV_VAR = "SUBTITLE_ENGINE_OFFLINE"
+
+
+def offline_requested() -> bool:
+    """Strict offline mode (`--offline` or `SUBTITLE_ENGINE_OFFLINE=1`): the engine never uses the network."""
+    return os.environ.get(OFFLINE_ENV_VAR, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def go_offline() -> None:
+    """Locks the Hugging Face libraries out of the network for the rest of the process.
+
+    Called once the models a command needs are on disk (and at start in strict offline mode): every Hub
+    request (update checks, telemetry) then fails immediately instead of being attempted.
+    """
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    huggingface_hub.constants.HF_HUB_OFFLINE = True
+    huggingface_hub.constants.HF_HUB_DISABLE_TELEMETRY = True
+
+
+def require_download(model_id: str) -> bool:
+    """Like `needs_download`, but in strict offline mode a missing model is an error instead of a download."""
+    missing = needs_download(model_id)
+    if missing and offline_requested():
+        raise ValueError(t("offline_missing_model", model=display_name(model_id)))
+    return missing
+
+
 def needs_download(model_id: str) -> bool:
     """Should a download stage be published: a model that is in the catalog but not in the cache."""
     return find(model_id) is not None and not is_downloaded(model_id)

@@ -10,6 +10,7 @@ Events:
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -91,9 +92,10 @@ def _translate(args: argparse.Namespace) -> int:
     # A language/model problem must surface as a (localized) `error` event before any download starts.
     check_request(args.model, args.to, args.source)
     sentences = [Sentence.from_dict(d) for d in json.load(sys.stdin)]
-    if models.needs_download(args.model):
+    if models.require_download(args.model):
         on_stage("downloading_model", 0.0)
         models.ensure_model(args.model, on_progress=lambda f: on_stage("downloading_model", f))
+    models.go_offline()
 
     on_stage("loading_model", None)
     translator = create_translator(args.model)
@@ -167,6 +169,10 @@ _LANG_HELP = f"language of user-facing messages (overrides {i18n.ENV_VAR}; anyth
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="subtitle-engine")
     p.add_argument("--lang", default=None, metavar="tr|en", help=_LANG_HELP)
+    p.add_argument(
+        "--offline", action="store_true",
+        help="never use the network, not even to download models (also SUBTITLE_ENGINE_OFFLINE=1)",
+    )
     # Same option after the subcommand; separate dest so a missing sub-level value cannot clobber the global one.
     lang_parent = argparse.ArgumentParser(add_help=False)
     lang_parent.add_argument("--lang", dest="sub_lang", default=None, metavar="tr|en", help=_LANG_HELP)
@@ -225,6 +231,11 @@ def main(argv: list[str] | None = None) -> int:
     _force_utf8()
     args = build_parser().parse_args(argv)
     i18n.set_language(args.sub_lang or args.lang)  # None keeps the SUBTITLE_ENGINE_LANG environment variable in charge
+    if args.offline:
+        os.environ[models.OFFLINE_ENV_VAR] = "1"
+    # Only transcribe and translate may download; everything else is local from the start.
+    if models.offline_requested() or args.handler not in (_transcribe, _translate):
+        models.go_offline()
     try:
         return args.handler(args)
     except Exception as exc:  # the app receives every failure as a single kind of event
