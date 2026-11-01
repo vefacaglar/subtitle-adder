@@ -23,7 +23,7 @@
             <x:String x:Key="MonoFont">Segoe UI Variable Text, Segoe UI</x:String>
         </Grid.Resources>
         <Grid.RowDefinitions>
-            <RowDefinition Height="48" />
+            <RowDefinition x:Name="TitleBarRow" Height="48" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -223,11 +223,16 @@
                 <Grid x:Name="WorkArea" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition x:Name="PlayerRow" Height="5*" MinHeight="200" />
-                        <RowDefinition Height="12" />
+                        <RowDefinition x:Name="SplitterRow" Height="12" />
                         <RowDefinition x:Name="EditorRow" Height="4*" MinHeight="180" />
                     </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition x:Name="PlayerCol" Width="*" />
+                        <ColumnDefinition x:Name="SplitterCol" Width="0" />
+                        <ColumnDefinition x:Name="EditorCol" Width="0" />
+                    </Grid.ColumnDefinitions>
 
-                    <Border CornerRadius="8" Background="Black">
+                    <Border x:Name="PlayerBorder" Grid.ColumnSpan="3" CornerRadius="8" Background="Black">
                         <Grid x:Name="PlayerGrid" SizeChanged="PlayerGrid_SizeChanged">
                             <MediaPlayerElement x:Name="PlayerElement" AreTransportControlsEnabled="True" Stretch="Uniform" RequestedTheme="Dark"
                                                 loc:Localize.AutomationName="Video">
@@ -248,17 +253,33 @@
                                                   loc:Localize.Content="Çeviri" loc:Localize.AutomationName="Çeviri" />
                                     <ToggleButton x:Name="DisplayBothButton" Padding="10,4" MinWidth="56" Click="DisplayBoth_Click"
                                                   loc:Localize.Content="İkisi" loc:Localize.AutomationName="İkisi" />
+                                    <Border Width="1" Margin="4,4" Background="#40FFFFFF" />
+                                    <ToggleButton x:Name="SideBySideButton" Padding="8,4" Click="SideBySide_Click"
+                                                  loc:Localize.ToolTip="Altyazıları sağa / alta al"
+                                                  loc:Localize.AutomationName="Altyazıları sağa / alta al">
+                                        <FontIcon x:Name="SideBySideIcon" Glyph="&#xE89F;" FontSize="14" />
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="TheaterModeButton" Padding="8,4" Click="TheaterMode_Click"
+                                                  loc:Localize.ToolTip="Tiyatro modu — üst menüleri gizle"
+                                                  loc:Localize.AutomationName="Tiyatro modu">
+                                        <FontIcon Glyph="&#xE799;" FontSize="14" />
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="FullScreenButton" Padding="8,4" Click="FullScreen_Click"
+                                                  loc:Localize.ToolTip="Tam ekran (F11)"
+                                                  loc:Localize.AutomationName="Tam ekran">
+                                        <FontIcon x:Name="FullScreenIcon" Glyph="&#xE740;" FontSize="14" />
+                                    </ToggleButton>
                                 </StackPanel>
                             </Border>
                         </Grid>
                     </Border>
 
-                    <loc:SplitterHandle x:Name="Splitter" Grid.Row="1">
-                        <Border Width="40" Height="4" CornerRadius="2" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    <loc:SplitterHandle x:Name="Splitter" Grid.Row="1" Grid.ColumnSpan="3">
+                        <Border x:Name="SplitterPill" Width="40" Height="4" CornerRadius="2" HorizontalAlignment="Center" VerticalAlignment="Center"
                                 Background="{ThemeResource ControlStrongFillColorDisabledBrush}" />
                     </loc:SplitterHandle>
 
-                    <Border Grid.Row="2" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    <Border x:Name="EditorBorder" Grid.Row="2" Grid.ColumnSpan="3" SizeChanged="EditorBorder_SizeChanged" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                         <Grid>
                             <Grid.RowDefinitions>
@@ -276,33 +297,45 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <StackPanel x:Name="StartControls" Orientation="Horizontal" Spacing="2">
-                                    <TextBlock loc:Localize.Text="Başlangıç" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                    <TextBlock x:Name="StartLabel" loc:Localize.Text="Başlangıç" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
                                     <Button x:Name="StartMinus" Style="{StaticResource IconButtonStyle}" Click="StartMinus_Click"><FontIcon Glyph="&#xE738;" FontSize="12" /></Button>
                                     <TextBlock Text="{x:Bind Vm.SelectedStartText, Mode=OneWay}" FontFamily="{StaticResource MonoFont}" VerticalAlignment="Center" MinWidth="64" TextAlignment="Center" />
                                     <Button x:Name="StartPlus" Style="{StaticResource IconButtonStyle}" Click="StartPlus_Click"><FontIcon Glyph="&#xE710;" FontSize="12" /></Button>
                                     <Button x:Name="StartNow" Style="{StaticResource IconButtonStyle}" Click="StartNow_Click" loc:Localize.AutomationName="Şimdiki an"><FontIcon Glyph="&#xE81D;" FontSize="14" /></Button>
                                 </StackPanel>
                                 <StackPanel x:Name="EndControls" Grid.Column="1" Orientation="Horizontal" Spacing="2">
-                                    <TextBlock loc:Localize.Text="Bitiş" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                    <TextBlock x:Name="EndLabel" loc:Localize.Text="Bitiş" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
                                     <Button x:Name="EndMinus" Style="{StaticResource IconButtonStyle}" Click="EndMinus_Click"><FontIcon Glyph="&#xE738;" FontSize="12" /></Button>
                                     <TextBlock Text="{x:Bind Vm.SelectedEndText, Mode=OneWay}" FontFamily="{StaticResource MonoFont}" VerticalAlignment="Center" MinWidth="64" TextAlignment="Center" />
                                     <Button x:Name="EndPlus" Style="{StaticResource IconButtonStyle}" Click="EndPlus_Click"><FontIcon Glyph="&#xE710;" FontSize="12" /></Button>
                                     <Button x:Name="EndNow" Style="{StaticResource IconButtonStyle}" Click="EndNow_Click" loc:Localize.AutomationName="Şimdiki an"><FontIcon Glyph="&#xE81D;" FontSize="14" /></Button>
                                 </StackPanel>
+                                <Border Grid.Column="2" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                        Padding="10,4" CornerRadius="12"
+                                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
+                                        Visibility="{x:Bind Vm.IsTranslationInProgress, Mode=OneWay}">
+                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                        <ProgressRing Width="14" Height="14" IsActive="{x:Bind Vm.IsTranslationInProgress, Mode=OneWay}" />
+                                        <TextBlock Text="{x:Bind Vm.TranslationProgressBadgeText, Mode=OneWay}"
+                                                   FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"
+                                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                    </StackPanel>
+                                </Border>
                                 <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="4">
                                     <Button x:Name="UndoButton" Style="{StaticResource IconButtonStyle}" Click="Undo_Click"><FontIcon Glyph="&#xE7A7;" FontSize="14" /></Button>
                                     <Button x:Name="RedoButton" Style="{StaticResource IconButtonStyle}" Click="Redo_Click"><FontIcon Glyph="&#xE7A6;" FontSize="14" /></Button>
                                     <Border Width="1" Margin="4,6" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
                                     <Button x:Name="SplitButton" Style="{StaticResource IconButtonStyle}" Padding="9,5" Click="Split_Click"
                                             loc:Localize.ToolTip="Satırı oynatma konumundan ikiye böl">
-                                        <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8C6;" FontSize="14" /><TextBlock loc:Localize.Text="Böl" /></StackPanel>
+                                        <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8C6;" FontSize="14" /><TextBlock x:Name="SplitLabel" loc:Localize.Text="Böl" /></StackPanel>
                                     </Button>
                                     <Button x:Name="MergeButton" Style="{StaticResource IconButtonStyle}" Padding="9,5" Click="Merge_Click" IsEnabled="{x:Bind Vm.CanMergeSelected, Mode=OneWay}">
-                                        <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE71B;" FontSize="14" /><TextBlock loc:Localize.Text="Sonrakiyle birleştir" /></StackPanel>
+                                        <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE71B;" FontSize="14" /><TextBlock x:Name="MergeLabel" loc:Localize.Text="Sonrakiyle birleştir" /></StackPanel>
                                     </Button>
                                     <Button x:Name="DeleteButton" Style="{StaticResource IconButtonStyle}" Padding="9,5" Click="Delete_Click" IsEnabled="{x:Bind Vm.HasSelection, Mode=OneWay}"
                                             loc:Localize.ToolTip="Satırı Sil (Delete)">
-                                        <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE74D;" FontSize="14" /><TextBlock loc:Localize.Text="Sil" /></StackPanel>
+                                        <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE74D;" FontSize="14" /><TextBlock x:Name="DeleteLabel" loc:Localize.Text="Sil" /></StackPanel>
                                     </Button>
                                 </StackPanel>
                             </Grid>
@@ -548,11 +581,12 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <Grid VerticalAlignment="Center">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <ProgressRing x:Name="StatusSpinner" Width="16" Height="16" IsActive="False" Visibility="Collapsed" VerticalAlignment="Center" />
                 <ProgressBar x:Name="Progress" Width="120" Maximum="1" Visibility="Collapsed" VerticalAlignment="Center" />
                 <FontIcon x:Name="DoneIcon" Glyph="&#xE930;" FontSize="16" Foreground="{ThemeResource SystemFillColorSuccessBrush}" Visibility="Collapsed" />
                 <FontIcon x:Name="FailIcon" Glyph="&#xE783;" FontSize="16" Foreground="{ThemeResource SystemFillColorCriticalBrush}" Visibility="Collapsed" />
-            </Grid>
+            </StackPanel>
             <TextBlock x:Name="StatusLabel" Grid.Column="1" Text="{x:Bind Vm.StatusText, Mode=OneWay}" VerticalAlignment="Center"
                        TextTrimming="CharacterEllipsis" MaxLines="2" TextWrapping="Wrap" />
             <StackPanel x:Name="NoticePanel" Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"

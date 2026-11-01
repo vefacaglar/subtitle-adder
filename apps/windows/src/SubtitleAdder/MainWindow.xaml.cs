@@ -35,6 +35,9 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<(int Speaker, bool Dark), Brush> _speakerBrushes = [];
     private bool _syncing;
     private bool _isPlaylistTabActive;
+    private bool _isSideBySide;
+    private bool _isTheaterMode;
+    private bool _isFullScreen;
     private LocalizedMessage? _shownError;
     private Func<string>? _saveError;   // rebuilt on a language switch
 
@@ -53,6 +56,10 @@ public sealed partial class MainWindow : Window
         _player.Failed += message => ShowSaveError(() => L("Video oynatılamadı: %@", message));
         Splitter.Target = PlayerRow;
         Splitter.Other = EditorRow;
+        Splitter.TargetColumn = PlayerCol;
+        Splitter.OtherColumn = EditorCol;
+        _isSideBySide = App.Current.Settings.GetBool("sideBySideLayout") ?? false;
+        ApplyWorkspaceLayout();
 
         // Buttons follow the commands' CanExecute (wired here rather than through Command bindings).
         foreach (var (command, button) in new (CommunityToolkit.Mvvm.Input.IRelayCommand, Button)[]
@@ -135,6 +142,8 @@ public sealed partial class MainWindow : Window
                 SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
                 break;
             case nameof(SubtitleViewModel.Status):
+            case nameof(SubtitleViewModel.IsAsyncTranslating):
+            case nameof(SubtitleViewModel.AsyncTranslationFraction):
                 UpdateStatus();
                 break;
             case nameof(SubtitleViewModel.DisplayMode):
@@ -196,7 +205,10 @@ public sealed partial class MainWindow : Window
     {
         UpdateTabActionVisibility();
         var kind = Vm.StatusKind;
-        Progress.Visibility = kind == JobStatusKind.Working ? Visibility.Visible : Visibility.Collapsed;
+        var showWorking = kind == JobStatusKind.Working;
+        StatusSpinner.IsActive = showWorking;
+        StatusSpinner.Visibility = showWorking ? Visibility.Visible : Visibility.Collapsed;
+        Progress.Visibility = showWorking ? Visibility.Visible : Visibility.Collapsed;
         Progress.IsIndeterminate = Vm.IsIndeterminate;
         Progress.Value = Vm.StatusFraction ?? 0;
         DoneIcon.Visibility = kind == JobStatusKind.Finished ? Visibility.Visible : Visibility.Collapsed;
@@ -400,6 +412,141 @@ public sealed partial class MainWindow : Window
     {
         if (Vm.HasTranslations) Vm.DisplayMode = SubtitleDisplay.Both;
         UpdatePickers();
+    }
+
+    private void SideBySide_Click(object sender, RoutedEventArgs e)
+    {
+        _isSideBySide = SideBySideButton.IsChecked == true;
+        App.Current.Settings.SetBool("sideBySideLayout", _isSideBySide);
+        ApplyWorkspaceLayout();
+    }
+
+    private void TheaterMode_Click(object sender, RoutedEventArgs e)
+    {
+        _isTheaterMode = TheaterModeButton.IsChecked == true;
+        ApplyWorkspaceLayout();
+    }
+
+    private void FullScreen_Click(object sender, RoutedEventArgs e)
+    {
+        SetFullScreen(FullScreenButton.IsChecked == true);
+    }
+
+    private void SetFullScreen(bool fullScreen)
+    {
+        _isFullScreen = fullScreen;
+        try
+        {
+            AppWindow.SetPresenter(fullScreen
+                ? Microsoft.UI.Windowing.AppWindowPresenterKind.FullScreen
+                : Microsoft.UI.Windowing.AppWindowPresenterKind.Overlapped);
+        }
+        catch (Exception)
+        {
+            // Ignore presenter switch errors on unsupported shells.
+        }
+        ApplyWorkspaceLayout();
+    }
+
+    private void ApplyWorkspaceLayout()
+    {
+        SideBySideButton.IsChecked = _isSideBySide;
+        TheaterModeButton.IsChecked = _isTheaterMode;
+        FullScreenButton.IsChecked = _isFullScreen;
+        FullScreenIcon.Glyph = _isFullScreen ? "\uE73F" : "\uE740";
+
+        var hideTopChrome = _isTheaterMode || _isFullScreen;
+        CommandBar.Visibility = hideTopChrome ? Visibility.Collapsed : Visibility.Visible;
+        TitleBarRow.Height = new GridLength(_isFullScreen ? 0 : 48);
+        AppTitleBar.Visibility = _isFullScreen ? Visibility.Collapsed : Visibility.Visible;
+
+        if (_isSideBySide)
+        {
+            Grid.SetRow(PlayerBorder, 0);
+            Grid.SetRowSpan(PlayerBorder, 3);
+            Grid.SetColumn(PlayerBorder, 0);
+            Grid.SetColumnSpan(PlayerBorder, 1);
+
+            Grid.SetRow(Splitter, 0);
+            Grid.SetRowSpan(Splitter, 3);
+            Grid.SetColumn(Splitter, 1);
+            Grid.SetColumnSpan(Splitter, 1);
+
+            Grid.SetRow(EditorBorder, 0);
+            Grid.SetRowSpan(EditorBorder, 3);
+            Grid.SetColumn(EditorBorder, 2);
+            Grid.SetColumnSpan(EditorBorder, 1);
+
+            PlayerRow.MinHeight = 0;
+            PlayerRow.Height = new GridLength(1, GridUnitType.Star);
+            SplitterRow.Height = new GridLength(0);
+            EditorRow.MinHeight = 0;
+            EditorRow.Height = new GridLength(0);
+
+            PlayerCol.MinWidth = 260;
+            PlayerCol.Width = new GridLength(5, GridUnitType.Star);
+            SplitterCol.Width = new GridLength(12);
+            EditorCol.MinWidth = 320;
+            EditorCol.Width = new GridLength(4, GridUnitType.Star);
+
+            Splitter.IsSideBySide = true;
+            Splitter.Minimum = 260;
+            Splitter.OtherMinimum = 320;
+            SplitterPill.Width = 4;
+            SplitterPill.Height = 40;
+        }
+        else
+        {
+            Grid.SetRow(PlayerBorder, 0);
+            Grid.SetRowSpan(PlayerBorder, 1);
+            Grid.SetColumn(PlayerBorder, 0);
+            Grid.SetColumnSpan(PlayerBorder, 3);
+
+            Grid.SetRow(Splitter, 1);
+            Grid.SetRowSpan(Splitter, 1);
+            Grid.SetColumn(Splitter, 0);
+            Grid.SetColumnSpan(Splitter, 3);
+
+            Grid.SetRow(EditorBorder, 2);
+            Grid.SetRowSpan(EditorBorder, 1);
+            Grid.SetColumn(EditorBorder, 0);
+            Grid.SetColumnSpan(EditorBorder, 3);
+
+            PlayerCol.MinWidth = 0;
+            PlayerCol.Width = new GridLength(1, GridUnitType.Star);
+            SplitterCol.Width = new GridLength(0);
+            EditorCol.MinWidth = 0;
+            EditorCol.Width = new GridLength(0);
+
+            PlayerRow.MinHeight = 180;
+            PlayerRow.Height = new GridLength(5, GridUnitType.Star);
+            SplitterRow.Height = new GridLength(12);
+            EditorRow.MinHeight = 160;
+            EditorRow.Height = new GridLength(4, GridUnitType.Star);
+
+            Splitter.IsSideBySide = false;
+            Splitter.Minimum = 180;
+            Splitter.OtherMinimum = 160;
+            SplitterPill.Width = 40;
+            SplitterPill.Height = 4;
+        }
+
+        UpdateOverlay();
+    }
+
+    private void EditorBorder_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        var w = EditorBorder.ActualWidth;
+        if (w <= 0) return;
+        var compactEditBar = w < 720;
+        var labelVis = compactEditBar ? Visibility.Collapsed : Visibility.Visible;
+        SplitLabel.Visibility = labelVis;
+        MergeLabel.Visibility = labelVis;
+        DeleteLabel.Visibility = labelVis;
+        var veryCompact = w < 540;
+        var edgeVis = veryCompact ? Visibility.Collapsed : Visibility.Visible;
+        StartLabel.Visibility = edgeVis;
+        EndLabel.Visibility = edgeVis;
     }
 
     private void FormatBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1092,6 +1239,23 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async void Root_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (e.Key == VirtualKey.F11)
+        {
+            e.Handled = true;
+            SetFullScreen(!_isFullScreen);
+            return;
+        }
+        if (e.Key == VirtualKey.Escape && e.OriginalSource is not TextBox && (_isFullScreen || _isTheaterMode))
+        {
+            e.Handled = true;
+            if (_isFullScreen) SetFullScreen(false);
+            else
+            {
+                _isTheaterMode = false;
+                ApplyWorkspaceLayout();
+            }
+            return;
+        }
         if (!IsDown(VirtualKey.Control) || IsDown(VirtualKey.Menu)) return;
         var shift = IsDown(VirtualKey.Shift);
         switch (e.Key)

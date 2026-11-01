@@ -101,6 +101,8 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private string _externalLlmUrl;
     private string _externalLlmModel;
     private bool _externalLlmAsync;
+    private bool _isAsyncTranslating;
+    private double? _asyncTranslationFraction;
     /// <summary>The job a missing-model failure in offline mode can be retried with ("Çevrimdışı modu kapat ve indir").</summary>
     private Action? _offlineRetry;
     private JobStatus _status = JobStatus.IdleStatus;
@@ -606,11 +608,14 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             var wasWorking = IsWorking;
             var oldKind = StatusKind;
             var oldIndeterminate = IsIndeterminate;
+            var wasTranslating = IsTranslationInProgress;
             if (!SetProperty(ref _status, value)) return;
             if (value is not JobStatus.Failed) _offlineRetry = null;
             SyncActivePlaylistItemProgress();
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(StatusFraction));
+            OnPropertyChanged(nameof(TranslationProgressBadgeText));
+            if (wasTranslating != IsTranslationInProgress) OnPropertyChanged(nameof(IsTranslationInProgress));
             if (oldIndeterminate != IsIndeterminate) OnPropertyChanged(nameof(IsIndeterminate));
             if (oldKind != StatusKind)
             {
@@ -625,26 +630,96 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         }
     }
 
-    public bool IsWorking => _status is JobStatus.Working || _isPlaylistRunning;
+    public bool IsAsyncTranslating
+    {
+        get => _isAsyncTranslating;
+        private set
+        {
+            var wasWorking = IsWorking;
+            var wasTranslating = IsTranslationInProgress;
+            if (!SetProperty(ref _isAsyncTranslating, value)) return;
+            if (!value) _asyncTranslationFraction = null;
+            SyncActivePlaylistItemProgress();
+            OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(AsyncTranslationFraction));
+            OnPropertyChanged(nameof(TranslationProgressBadgeText));
+            if (wasTranslating != IsTranslationInProgress) OnPropertyChanged(nameof(IsTranslationInProgress));
+            if (wasWorking != IsWorking)
+            {
+                OnPropertyChanged(nameof(IsWorking));
+                RaiseCommands();
+            }
+        }
+    }
+
+    public double? AsyncTranslationFraction
+    {
+        get => _asyncTranslationFraction;
+        private set
+        {
+            if (!SetProperty(ref _asyncTranslationFraction, value)) return;
+            SyncActivePlaylistItemProgress();
+            OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(TranslationProgressBadgeText));
+        }
+    }
+
+    /// <summary>Whether translation is currently active (either in the background via external LLM or in the foreground).</summary>
+    public bool IsTranslationInProgress =>
+        _isAsyncTranslating ||
+        (_status is JobStatus.Working w &&
+         (w.Label.Id == "key:Çeviri hazırlanıyor…" ||
+          w.Label.Id.EndsWith($":{JobPurpose.Translation}", StringComparison.Ordinal)));
+
+    /// <summary>Live translation progress badge text (e.g. "Çevriliyor… 45%") shown in the editor and status bar.</summary>
+    public string TranslationProgressBadgeText
+    {
+        get
+        {
+            if (_status is JobStatus.Working w &&
+                (w.Label.Id == "key:Çeviri hazırlanıyor…" ||
+                 w.Label.Id.EndsWith($":{JobPurpose.Translation}", StringComparison.Ordinal)))
+            {
+                return w.Label.Text;
+            }
+            if (_isAsyncTranslating)
+            {
+                return LabelText(EngineStage.Translating, _asyncTranslationFraction, JobPurpose.Translation);
+            }
+            return "";
+        }
+    }
+
+    public bool IsWorking => _status is JobStatus.Working || _isPlaylistRunning || _isAsyncTranslating;
 
     public JobStatusKind StatusKind => _status switch
     {
         JobStatus.Working => JobStatusKind.Working,
+        _ when _isAsyncTranslating => JobStatusKind.Working,
         JobStatus.Finished => JobStatusKind.Finished,
         JobStatus.Failed => JobStatusKind.Failed,
         _ => JobStatusKind.Idle,
     };
 
     /// <summary>Progress 0…1 while working, when known.</summary>
-    public double? StatusFraction => _status is JobStatus.Working working ? working.Fraction : null;
+    public double? StatusFraction => _status is JobStatus.Working working
+        ? working.Fraction
+        : (_isAsyncTranslating ? _asyncTranslationFraction : null);
 
     /// <summary>Working without a known fraction (indeterminate progress ring).</summary>
-    public bool IsIndeterminate => _status is JobStatus.Working { Fraction: null };
+    public bool IsIndeterminate =>
+        (_status is JobStatus.Working { Fraction: null }) ||
+        (_status is not JobStatus.Working && _isAsyncTranslating && _asyncTranslationFraction is null);
 
     /// <summary>The status bar text in the current language.</summary>
     public string StatusText => _status switch
     {
-        JobStatus.Working working => working.Label.Text,
+        JobStatus.Working working => _isAsyncTranslating &&
+                                     working.Label.Id != "key:Çeviri hazırlanıyor…" &&
+                                     !working.Label.Id.EndsWith($":{JobPurpose.Translation}", StringComparison.Ordinal)
+            ? $"{working.Label.Text} · {LabelText(EngineStage.Translating, _asyncTranslationFraction, JobPurpose.Translation)}"
+            : working.Label.Text,
+        _ when _isAsyncTranslating => LabelText(EngineStage.Translating, _asyncTranslationFraction, JobPurpose.Translation),
         JobStatus.Finished => FinishedSummary,
         JobStatus.Failed failed => failed.Message.Text,
         _ => Video is null || Sentences.Count > 0
@@ -1099,17 +1174,23 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                         DetectedLanguage = lang;
                         ReconcileTranslationTarget();
                     }
-                    if (asyncPreTranslate && _sentences.Count > 1 && asyncTranslationTask.IsCompleted)
+                    if (asyncPreTranslate && _sentences.Count > 1)
                     {
-                        var finalized = _sentences
-                            .Take(_sentences.Count - 1)
-                            .Where(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text))
-                            .ToList();
-                        if (finalized.Count > 0)
+                        if (_translations.Count > 0)
                         {
-                            foreach (var s in finalized) queuedAsyncUids.Add(s.Uid);
-                            asyncTranslationTask = TranslatePartialBatchExternallyAsync(
-                                engine, finalized, _translationTarget, TranslationSource, _translationModel, currentJobToken);
+                            AsyncTranslationFraction = Math.Clamp((double)_translations.Count / _sentences.Count, 0.0, 0.99);
+                        }
+                        if (asyncTranslationTask.IsCompleted)
+                        {
+                            var hasUnqueued = _sentences
+                                .Take(_sentences.Count - 1)
+                                .Any(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text));
+                            if (hasUnqueued)
+                            {
+                                IsAsyncTranslating = true;
+                                asyncTranslationTask = PumpPartialTranslationsExternallyAsync(
+                                    engine, queuedAsyncUids, currentJobToken);
+                            }
                         }
                     }
                     break;
@@ -1117,6 +1198,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     Sentences = MergeSentencesPreservingUid(_sentences, result.Value.Sentences);
                     DetectedLanguage = result.Value.Language;
                     ReconcileTranslationTarget();
+                    if (_isAsyncTranslating && _sentences.Count > 0 && _translations.Count > 0)
+                    {
+                        AsyncTranslationFraction = Math.Clamp((double)_translations.Count / _sentences.Count, 0.0, 0.99);
+                    }
                     // Keep extracted WAV and temp files untouched during conversion; delete them only on app exit/startup.
                     if (result.Value.Audio is { Length: > 0 } audioPath) _sessionTempFiles.Add(audioPath);
                     if (result.Value.Outputs is { } outputs)
@@ -1128,11 +1213,24 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     }
                     break;
                 case EngineEvent.Error error:
+                    IsAsyncTranslating = false;
                     return new JobStatus.Failed(LocalizedMessage.Verbatim(error.Message));
             }
             return null;
         }, (chainTranslate || asyncPreTranslate) ? async () =>
         {
+            if (!asyncTranslationTask.IsCompleted)
+            {
+                await _ui.InvokeAsync(() =>
+                {
+                    if (!currentJobToken.IsCancellationRequested)
+                    {
+                        Status = new JobStatus.Working(
+                            Label(EngineStage.Translating, _asyncTranslationFraction, JobPurpose.Translation),
+                            _asyncTranslationFraction);
+                    }
+                }).ConfigureAwait(false);
+            }
             try
             {
                 await asyncTranslationTask.ConfigureAwait(false);
@@ -1141,18 +1239,34 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             {
                 // Any remaining untranslated lines will be handled by the final translation pass.
             }
-            if (!chainTranslate) return;
+            if (!chainTranslate)
+            {
+                await _ui.InvokeAsync(() =>
+                {
+                    IsAsyncTranslating = false;
+                    if (!currentJobToken.IsCancellationRequested && _status is not JobStatus.Failed)
+                    {
+                        Status = JobStatus.FinishedStatus;
+                    }
+                }).ConfigureAwait(false);
+                return;
+            }
             Task? nextJob = null;
             await _ui.InvokeAsync(() =>
             {
+                IsAsyncTranslating = false;
                 if (_sentences.Count > 0)
                 {
                     TranslateCore(reuseExistingTranslations: asyncPreTranslate);
                     nextJob = CurrentJob;
                 }
+                else if (_status is not JobStatus.Failed)
+                {
+                    Status = JobStatus.FinishedStatus;
+                }
             }).ConfigureAwait(false);
             if (nextJob is not null) await nextJob.ConfigureAwait(false);
-        } : null);
+        } : null, finishBeforeOnSuccess: !(chainTranslate || asyncPreTranslate));
     }
 
     /// <summary>Stops the running subtitle or translation job (and any batch playlist); the state goes back to idle.</summary>
@@ -1259,7 +1373,8 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         IReadOnlySet<string> running,
         Func<CancellationToken, IAsyncEnumerable<EngineEvent>> stream,
         Func<EngineEvent, JobStatus?> apply,
-        Func<Task>? onSuccessAsync = null)
+        Func<Task>? onSuccessAsync = null,
+        bool finishBeforeOnSuccess = true)
     {
         StopJob();
         var cancellation = new CancellationTokenSource();
@@ -1295,7 +1410,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                 await _ui.InvokeAsync(() =>
                 {
                     if (!(finished = IsCurrent())) return;
-                    if (failure is null) Status = JobStatus.FinishedStatus;
+                    if (failure is null && (finishBeforeOnSuccess || onSuccessAsync is null))
+                    {
+                        Status = JobStatus.FinishedStatus;
+                    }
                 }).ConfigureAwait(false);
                 if (finished)
                 {
@@ -1310,14 +1428,22 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             {
                 await _ui.InvokeAsync(() =>
                 {
-                    if (_jobId == id) Status = JobStatus.IdleStatus;
+                    if (_jobId == id)
+                    {
+                        IsAsyncTranslating = false;
+                        Status = JobStatus.IdleStatus;
+                    }
                 }).ConfigureAwait(false);
             }
             catch (Exception error)
             {
                 await _ui.InvokeAsync(() =>
                 {
-                    if (_jobId == id) Status = new JobStatus.Failed(LocalizedMessage.Error(error));
+                    if (_jobId == id)
+                    {
+                        IsAsyncTranslating = false;
+                        Status = new JobStatus.Failed(LocalizedMessage.Error(error));
+                    }
                 }).ConfigureAwait(false);
             }
             finally
@@ -1339,6 +1465,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         var job = _job;
         _job = null;
         _jobId = Guid.NewGuid();
+        IsAsyncTranslating = false;
         try
         {
             job?.Cancel();
