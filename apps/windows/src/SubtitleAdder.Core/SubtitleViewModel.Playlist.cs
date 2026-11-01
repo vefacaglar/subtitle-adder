@@ -255,6 +255,7 @@ public sealed partial class SubtitleViewModel
                 {
                     var itemSnapshot = nextItem;
                     var sentencesSnapshot = _sentences.ToList();
+                    var preTranslatedSnapshot = new Dictionary<Guid, TranslationEntry>(_translations);
                     var sourceSnapshot = TranslationSource;
                     var modelSnapshot = _translationModel;
                     var formatSnapshot = _exportFormat;
@@ -266,6 +267,7 @@ public sealed partial class SubtitleViewModel
                         itemSnapshot.Id,
                         itemSnapshot.VideoPath,
                         sentencesSnapshot,
+                        preTranslatedSnapshot,
                         batchTargetLanguage,
                         sourceSnapshot,
                         modelSnapshot,
@@ -333,6 +335,7 @@ public sealed partial class SubtitleViewModel
         Guid itemId,
         string videoPath,
         IReadOnlyList<Sentence> sentences,
+        IReadOnlyDictionary<Guid, TranslationEntry> preTranslated,
         string target,
         string? source,
         string model,
@@ -352,37 +355,57 @@ public sealed partial class SubtitleViewModel
 
         try
         {
-            IReadOnlyList<Sentence>? finalTranslated = null;
-            string? engineError = null;
-            await foreach (var engineEvent in engine.Translate(sentences, target, source, model, token).ConfigureAwait(false))
+            var mergedEntries = new Dictionary<Guid, TranslationEntry>();
+            foreach (var s in sentences)
             {
-                switch (engineEvent)
+                if (preTranslated.TryGetValue(s.Uid, out var entry) && !entry.IsStale(s) && entry.Language == target && entry.Text.Length > 0)
                 {
-                    case EngineEvent.Stage stage:
-                        await _ui.InvokeAsync(() =>
-                            UpdatePlaylistItem(
-                                itemId,
-                                PlaylistItemState.Working,
-                                Label(stage.Kind, stage.Fraction, JobPurpose.Translation),
-                                stage.Fraction)).ConfigureAwait(false);
-                        break;
-                    case EngineEvent.Translation translation:
-                        finalTranslated = translation.Sentences;
-                        await _ui.InvokeAsync(() =>
-                        {
-                            if (_video == videoPath)
-                            {
-                                ApplyTranslation(translation.Sentences, translation.Language, sentences);
-                            }
-                        }).ConfigureAwait(false);
-                        break;
-                    case EngineEvent.Error error:
-                        engineError = error.Message;
-                        break;
+                    mergedEntries[s.Uid] = entry;
                 }
             }
 
-            if (engineError is not null || finalTranslated is null || finalTranslated.Count == 0)
+            var remaining = sentences.Where(s => !mergedEntries.ContainsKey(s.Uid)).ToList();
+            string? engineError = null;
+            if (remaining.Count > 0)
+            {
+                await foreach (var engineEvent in engine.Translate(remaining, target, source, model, token).ConfigureAwait(false))
+                {
+                    switch (engineEvent)
+                    {
+                        case EngineEvent.Stage stage:
+                            await _ui.InvokeAsync(() =>
+                                UpdatePlaylistItem(
+                                    itemId,
+                                    PlaylistItemState.Working,
+                                    Label(stage.Kind, stage.Fraction, JobPurpose.Translation),
+                                    stage.Fraction)).ConfigureAwait(false);
+                            break;
+                        case EngineEvent.Translation translation:
+                            for (var i = 0; i < translation.Sentences.Count; i++)
+                            {
+                                var tr = translation.Sentences[i];
+                                var orig = remaining.FirstOrDefault(s => s.Id == tr.Id) ?? (i < remaining.Count ? remaining[i] : null);
+                                if (orig is not null)
+                                {
+                                    mergedEntries[orig.Uid] = new TranslationEntry(tr.Text, orig.Text, translation.Language);
+                                }
+                            }
+                            await _ui.InvokeAsync(() =>
+                            {
+                                if (_video == videoPath)
+                                {
+                                    ApplyTranslation(translation.Sentences, translation.Language, remaining, mergeIntoExisting: true);
+                                }
+                            }).ConfigureAwait(false);
+                            break;
+                        case EngineEvent.Error error:
+                            engineError = error.Message;
+                            break;
+                    }
+                }
+            }
+
+            if (engineError is not null || mergedEntries.Count == 0)
             {
                 var msg = engineError is not null
                     ? LocalizedMessage.Verbatim(engineError)
@@ -391,6 +414,12 @@ public sealed partial class SubtitleViewModel
                     UpdatePlaylistItem(itemId, PlaylistItemState.Failed, msg, null)).ConfigureAwait(false);
                 return;
             }
+
+            var finalTranslated = sentences
+                .Select(s => mergedEntries.TryGetValue(s.Uid, out var e) && e.Text.Length > 0
+                    ? s with { Text = e.Text, Words = [] }
+                    : s with { Words = [] })
+                .ToList();
 
             var rendered = await engine.RenderAsync(finalTranslated, format, token).ConfigureAwait(false);
             var outPath = Path.ChangeExtension(videoPath, format.RawValue());

@@ -901,7 +901,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             diarizationDownloaded: Catalog.DiarizationModels.FirstOrDefault()?.Downloaded ?? true);
         var running = new HashSet<string> { runningModel };
         if (_diarize) running.Add(DiarizationModelId);
-        var asyncPreTranslate = chainTranslate && IsExternalAsyncActive;
+        var asyncPreTranslate = (chainTranslate || _isPlaylistRunning) && IsExternalAsyncActive;
         var queuedAsyncUids = new HashSet<Guid>();
         var asyncTranslationTask = Task.CompletedTask;
         CancellationToken currentJobToken = CancellationToken.None;
@@ -957,7 +957,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     return new JobStatus.Failed(LocalizedMessage.Verbatim(error.Message));
             }
             return null;
-        }, chainTranslate ? async () =>
+        }, (chainTranslate || asyncPreTranslate) ? async () =>
         {
             try
             {
@@ -965,8 +965,9 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             }
             catch (Exception)
             {
-                // Any remaining untranslated lines will be handled by the final TranslateCore pass below.
+                // Any remaining untranslated lines will be handled by the final translation pass.
             }
+            if (!chainTranslate) return;
             Task? nextJob = null;
             await _ui.InvokeAsync(() =>
             {
