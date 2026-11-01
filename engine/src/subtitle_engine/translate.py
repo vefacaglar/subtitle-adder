@@ -14,6 +14,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -51,7 +52,7 @@ LLM_LANGUAGE_SPECS = {
 
 # Sentences are translated in batches of this size, not one by one; progress is reported after each batch.
 BATCH_SIZE = 16
-LLM_BATCH_SIZE = 10
+LLM_BATCH_SIZE = 15
 LLM_CONTEXT_LINES = 3
 BEAM_SIZE = 4
 MAX_DECODING_LENGTH = 256
@@ -358,6 +359,7 @@ class LlamaTranslator:
         self._device = device
         self._completion_fn = completion_fn
         self._process: subprocess.Popen | None = None
+        self._stderr_file = None
         self._port: int | None = None
         if completion_fn is None:
             self._model_path = models.model_file(model_id)
@@ -381,18 +383,22 @@ class LlamaTranslator:
             str(port),
             "-ngl",
             str(gpu_layers),
+            "-np",
+            "1",
             "-c",
             "4096",
+            "--reasoning-budget",
+            "0",
         ]
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
         try:
+            # Never use subprocess.PIPE for stderr without a reader thread: on Windows its 4 KB pipe
+            # buffer fills up after ~6-8 translation batches and deadlocks llama-server mid-run.
+            stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                stderr=stderr_file,
                 cwd=str(self._server_path.parent),
                 creationflags=creationflags,
             )
@@ -400,14 +406,17 @@ class LlamaTranslator:
             raise ModelError(t("llama_unavailable", error=str(exc))) from exc
 
         self._process = proc
+        self._stderr_file = stderr_file
         self._port = port
         health_url = f"http://127.0.0.1:{port}/health"
         deadline = time.monotonic() + 90.0
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 err_tail = ""
-                if proc.stderr is not None:
-                    err_tail = (proc.stderr.read() or "").strip()[-400:]
+                if self._stderr_file is not None:
+                    with contextlib.suppress(Exception):
+                        self._stderr_file.seek(0)
+                        err_tail = (self._stderr_file.read() or "").strip()[-400:]
                 self.close()
                 if gpu_layers > 0 and self._device == "auto":
                     print("llama-server GPU init failed, retrying on CPU...", file=sys.stderr)
@@ -426,21 +435,22 @@ class LlamaTranslator:
 
     def close(self) -> None:
         proc = self._process
+        stderr_file = self._stderr_file
         self._process = None
+        self._stderr_file = None
         self._port = None
-        if proc is None:
-            return
-        with contextlib.suppress(Exception):
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=3.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=2.0)
-        if proc.stderr is not None:
+        if proc is not None:
             with contextlib.suppress(Exception):
-                proc.stderr.close()
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3.0)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(timeout=2.0)
+        if stderr_file is not None:
+            with contextlib.suppress(Exception):
+                stderr_file.close()
 
     def __del__(self) -> None:
         with contextlib.suppress(Exception):
@@ -468,7 +478,7 @@ class LlamaTranslator:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=120.0) as resp:
+            with urllib.request.urlopen(req, timeout=300.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             raise ModelError(t("llama_unavailable", error=str(exc))) from exc
