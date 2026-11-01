@@ -559,4 +559,57 @@ public class ViewModelTranslationTests
         engine.Finish();
         await vm.CurrentJob;
     }
+
+    [Fact]
+    public async Task TranslationSwitchesDisplayModeAndSyncsWithExportLanguage()
+    {
+        var (vm, engine) = await Transcribed();
+        Assert.Equal(SubtitleDisplay.Original, vm.DisplayMode);
+        Assert.Equal(ExportLanguage.Original, vm.ExportLanguage);
+
+        await Translate(vm, engine, "es");
+        Assert.Equal(SubtitleDisplay.Translation, vm.DisplayMode);
+        Assert.Equal(ExportLanguage.Translated, vm.ExportLanguage);
+
+        // Switching export language back to Original also switches video display to Original.
+        vm.ExportLanguage = ExportLanguage.Original;
+        Assert.Equal(SubtitleDisplay.Original, vm.DisplayMode);
+
+        // Switching video display back to Translation also switches export language to Translated.
+        vm.DisplayMode = SubtitleDisplay.Translation;
+        Assert.Equal(ExportLanguage.Translated, vm.ExportLanguage);
+    }
+
+    [Fact]
+    public async Task SaveSubtitleToVideoFolderWritesNextToVideoWithSameName()
+    {
+        using var _ = new LanguageScope(UILanguage.Tr);
+        var dir = Path.Combine(Path.GetTempPath(), $"subtitle-adder-save-{Guid.NewGuid()}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var videoPath = Path.Combine(dir, "My Video.mp4");
+            var (vm, engine, _) = Make.ViewModel();
+            vm.OpenVideo(videoPath);
+            Assert.False(vm.CanSaveSubtitle);
+            vm.Generate();
+            engine.Finish(Make.Result("en", "", new Sentence(1, 0, 1, "Hello."), new Sentence(2, 1, 2, "World.")));
+            await vm.CurrentJob;
+            engine.Reset();
+
+            Assert.True(vm.CanSaveSubtitle);
+            Assert.Equal(Path.Combine(dir, "My Video.srt"), vm.VideoSubtitlePath);
+
+            // Even when translated, saving to video folder uses the exact video name ("My Video.srt").
+            await Translate(vm, engine, "tr");
+            var savedPath = await vm.SaveSubtitleToVideoFolderAsync();
+            Assert.Equal(Path.Combine(dir, "My Video.srt"), savedPath);
+            Assert.Equal("T1|T2", await File.ReadAllTextAsync(savedPath!));
+            Assert.Contains("kaydedildi: My Video.srt", vm.StatusText);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

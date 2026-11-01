@@ -280,9 +280,13 @@ public sealed partial class MainWindow : Window
             IndexOf(targets, l => l.Code == Vm.TranslationTarget), refill);
         ToolTipService.SetToolTip(TargetBox, Vm.TranslationTargetHelp);
 
-        Fill(DisplayBox, SubtitleDisplays.All.Select(d => (d.Title(), true)),
-            IndexOf(SubtitleDisplays.All, d => d == Vm.DisplayMode), refill);
-        DisplayBox.IsEnabled = Vm.HasTranslations;
+        var activeDisplay = Vm.HasTranslations ? Vm.DisplayMode : SubtitleDisplay.Original;
+        DisplayOriginalButton.IsChecked = activeDisplay == SubtitleDisplay.Original;
+        DisplayTranslationButton.IsChecked = activeDisplay == SubtitleDisplay.Translation;
+        DisplayBothButton.IsChecked = activeDisplay == SubtitleDisplay.Both;
+        DisplayTranslationButton.Content = Vm.ExportTranslatedTitle;
+        DisplayTranslationButton.IsEnabled = Vm.HasTranslations;
+        DisplayBothButton.IsEnabled = Vm.HasTranslations;
         ToolTipService.SetToolTip(DisplayPicker, Vm.HasTranslations
             ? L("Video üstünde gösterilecek metin")
             : L("Önce altyazıları çevir; sonra orijinali, çeviriyi ya da ikisini birden gösterebilirsin."));
@@ -338,10 +342,22 @@ public sealed partial class MainWindow : Window
         Vm.TranslationTarget = SubtitleLanguage.TranslationTargets[TargetBox.SelectedIndex].Code;
     }
 
-    private void DisplayBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void DisplayOriginal_Click(object sender, RoutedEventArgs e)
     {
-        if (_syncing || DisplayBox.SelectedIndex < 0) return;
-        Vm.DisplayMode = SubtitleDisplays.All[DisplayBox.SelectedIndex];
+        Vm.DisplayMode = SubtitleDisplay.Original;
+        UpdatePickers();
+    }
+
+    private void DisplayTranslation_Click(object sender, RoutedEventArgs e)
+    {
+        if (Vm.HasTranslations) Vm.DisplayMode = SubtitleDisplay.Translation;
+        UpdatePickers();
+    }
+
+    private void DisplayBoth_Click(object sender, RoutedEventArgs e)
+    {
+        if (Vm.HasTranslations) Vm.DisplayMode = SubtitleDisplay.Both;
+        UpdatePickers();
     }
 
     private void FormatBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -699,8 +715,22 @@ public sealed partial class MainWindow : Window
         if (result?.Path is { Length: > 0 } path) Vm.OpenVideo(path);
     }
 
+    private async void SaveSubtitle_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await Vm.SaveSubtitleToVideoFolderAsync();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            var reason = error.Message;
+            ShowSaveError(() => L("Dosya kaydedilemedi: %@", reason));
+        }
+    }
+
     private async void Export_Click(object sender, RoutedEventArgs e)
     {
+        Vm.FinishEditing();
         var format = Vm.ExportFormat;
         var name = Vm.ExportFileName;
         var text = await Vm.RenderExportAsync();

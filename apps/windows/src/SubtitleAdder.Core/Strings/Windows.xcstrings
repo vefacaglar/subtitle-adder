@@ -1,6 +1,22 @@
 {
   "sourceLanguage" : "tr",
   "strings" : {
+    " · kaydedildi: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " · saved: %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : " · kaydedildi: %@"
+          }
+        }
+      }
+    },
     "%@ boşaltıldı." : {
       "localizations" : {
         "en" : {
@@ -77,6 +93,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (Ctrl+Enter)"
+          }
+        }
+      }
+    },
+    "Altyazıyı kaydet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save Subtitles"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altyazıyı kaydet"
+          }
+        }
+      }
+    },
+    "Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save subtitles in the video's folder with the same name as the video"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet"
           }
         }
       }

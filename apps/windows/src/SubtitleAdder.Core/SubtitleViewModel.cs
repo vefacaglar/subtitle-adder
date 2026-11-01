@@ -103,6 +103,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private TextDraft? _draft;
     private LocalizedMessage? _modelNotice;
     private string? _video;
+    private string? _savedSubtitleName;
     private ExportLanguage _exportLanguage;
     private SubtitleFormat _exportFormat = SubtitleFormat.Srt;
 
@@ -231,6 +232,11 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         {
             if (!SetProperty(ref _displayMode, value)) return;
             _settings.SetString(DisplayModeDefaultsKey, value.RawValue());
+            if (HasTranslations)
+            {
+                if (value == SubtitleDisplay.Translation) ExportLanguage = ExportLanguage.Translated;
+                else if (value == SubtitleDisplay.Original) ExportLanguage = ExportLanguage.Original;
+            }
         }
     }
 
@@ -356,13 +362,14 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (Ctrl+Enter)"),
     };
 
-    /// <summary>"N satır · dil: xx" (plus " · çeviri: yy" after a translation).</summary>
+    /// <summary>"N satır · dil: xx" (plus " · çeviri: yy" after a translation and " · kaydedildi: zz" after saving).</summary>
     public string FinishedSummary
     {
         get
         {
             var summary = L("%lld satır · dil: %@", (long)Sentences.Count, DetectedLanguage ?? "?");
             if (TranslationLanguage is { } language) summary += L(" · çeviri: %@", language);
+            if (_savedSubtitleName is { } saved) summary += L(" · kaydedildi: %@", saved);
             return summary;
         }
     }
@@ -492,6 +499,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             if (!SetProperty(ref _video, value)) return;
             OnPropertyChanged(nameof(WindowTitle));
             OnPropertyChanged(nameof(ExportFileName));
+            OnPropertyChanged(nameof(VideoSubtitlePath));
             OnPropertyChanged(nameof(StatusText));
             RaiseCommands();
         }
@@ -524,7 +532,9 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         get => _exportFormat;
         set
         {
-            if (SetProperty(ref _exportFormat, value)) OnPropertyChanged(nameof(ExportFileName));
+            if (!SetProperty(ref _exportFormat, value)) return;
+            OnPropertyChanged(nameof(ExportFileName));
+            OnPropertyChanged(nameof(VideoSubtitlePath));
         }
     }
 
@@ -537,6 +547,13 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             if (!SetProperty(ref _exportLanguage, value)) return;
             OnPropertyChanged(nameof(ExportsTranslation));
             OnPropertyChanged(nameof(ExportFileName));
+            if (HasTranslations)
+            {
+                if (value == ExportLanguage.Translated && _displayMode == SubtitleDisplay.Original)
+                    DisplayMode = SubtitleDisplay.Translation;
+                else if (value == ExportLanguage.Original && _displayMode == SubtitleDisplay.Translation)
+                    DisplayMode = SubtitleDisplay.Original;
+            }
         }
     }
 
@@ -554,14 +571,37 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>Subtitle file path in the video's folder with the video's exact base name, e.g. "C:\videos\clip.srt".</summary>
+    public string? VideoSubtitlePath => _video is null ? null : Path.ChangeExtension(_video, _exportFormat.RawValue());
+
     /// <summary>Whether the export uses the translation (chosen and available).</summary>
     public bool ExportsTranslation => _exportLanguage == ExportLanguage.Translated && HasTranslations;
 
     /// <summary>Whether "Dışa aktar…" is enabled.</summary>
     public bool CanExport => HasSentences && !IsWorking;
 
+    /// <summary>Whether "Altyazıyı kaydet" is enabled (needs a video path and exportable lines).</summary>
+    public bool CanSaveSubtitle => CanExport && _video is not null;
+
     /// <summary>Renders the export with the chosen format and language; <c>null</c> on error (shown in the status).</summary>
     public Task<string?> RenderExportAsync() => RenderAsync(_exportFormat, ExportsTranslation);
+
+    /// <summary>
+    /// Renders and writes the subtitle file directly to the video's folder with the video's exact base name
+    /// (<see cref="VideoSubtitlePath"/>). Returns the written path, or <c>null</c> if nothing was written.
+    /// </summary>
+    public async Task<string?> SaveSubtitleToVideoFolderAsync()
+    {
+        if (VideoSubtitlePath is not { } path) return null;
+        FinishEditing();
+        var text = await RenderExportAsync();
+        if (text is null) return null;
+        await File.WriteAllTextAsync(path, text, new System.Text.UTF8Encoding(false));
+        _savedSubtitleName = Path.GetFileName(path);
+        if (_status is not JobStatus.Finished) Status = JobStatus.FinishedStatus;
+        else OnPropertyChanged(nameof(StatusText));
+        return path;
+    }
 
     // MARK: - Commands
 
@@ -635,6 +675,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         Selection = null;
         DetectedLanguage = null;
         Draft = null;
+        _savedSubtitleName = null;
         Status = JobStatus.IdleStatus;
         UndoStack.Clear();
         Video = path;
@@ -657,6 +698,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         TranslationLanguage = null;
         Selection = null;
         Draft = null;
+        _savedSubtitleName = null;
         UndoStack.Clear();
         DetectedLanguage = null;
         ModelNotice = null;
@@ -900,6 +942,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private void RaiseCommands()
     {
         OnPropertyChanged(nameof(CanExport));
+        OnPropertyChanged(nameof(CanSaveSubtitle));
         GenerateCommand?.NotifyCanExecuteChanged();
         CancelCommand?.NotifyCanExecuteChanged();
         TranslateCommand?.NotifyCanExecuteChanged();

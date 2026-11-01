@@ -44,6 +44,7 @@ public sealed partial class SubtitleViewModel
             return;
         }
         if (BlockedOffline([_translationModel], Translate)) return;
+        _savedSubtitleName = null;
         var request = _sentences;
         var model = _translationModel;
         Status = new JobStatus.Working(LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);
@@ -78,6 +79,11 @@ public sealed partial class SubtitleViewModel
         Translations = entries;
         TranslationLanguage = language;
         TranslationTarget = language;
+        if (entries.Count > 0)
+        {
+            if (DisplayMode == SubtitleDisplay.Original) DisplayMode = SubtitleDisplay.Translation;
+            ExportLanguage = ExportLanguage.Translated;
+        }
     }
 
     // MARK: - Editing the translation text
