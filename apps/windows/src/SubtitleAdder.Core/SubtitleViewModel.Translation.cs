@@ -49,7 +49,7 @@ public sealed partial class SubtitleViewModel
         _savedSubtitleName = null;
         var request = reuseExistingTranslations
             ? _sentences
-                .Where(s => !_translations.TryGetValue(s.Uid, out var existing) || existing.IsStale(s) || existing.Language != target)
+                .Where(s => !_translations.TryGetValue(s.Uid, out var existing) || !IsReusableTranslation(s, existing, target))
                 .ToList()
             : _sentences;
         if (request.Count == 0)
@@ -68,10 +68,11 @@ public sealed partial class SubtitleViewModel
         var alreadyDoneCount = reuseExistingTranslations ? Math.Max(0, _sentences.Count - request.Count) : 0;
         var initialFraction = alreadyDoneCount > 0 ? Math.Clamp((double)alreadyDoneCount / totalCount, 0.0, 0.99) : (double?)null;
         var model = _translationModel;
+        var contextualRequest = WithTranslationContext(_sentences, request);
         Status = initialFraction is { } initF
             ? new JobStatus.Working(Label(EngineStage.Translating, initF, JobPurpose.Translation), initF)
             : new JobStatus.Working(LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);
-        StartJob(new HashSet<string> { model }, token => engine.Translate(request, target, source, model, token), engineEvent =>
+        StartJob(new HashSet<string> { model }, token => engine.Translate(contextualRequest, target, source, model, token), engineEvent =>
         {
             switch (engineEvent)
             {
@@ -107,6 +108,35 @@ public sealed partial class SubtitleViewModel
         });
     }
 
+    private const int MinAsyncBatchSentences = 10;
+
+    /// <summary>Keep neighboring dialogue in resumed/async requests; only requested IDs are applied to the UI.</summary>
+    internal static IReadOnlyList<Sentence> WithTranslationContext(
+        IReadOnlyList<Sentence> all, IReadOnlyList<Sentence> requested)
+    {
+        var requestedUids = requested.Select(s => s.Uid).ToHashSet();
+        var indices = new SortedSet<int>();
+        for (var i = 0; i < all.Count; i++)
+        {
+            if (!requestedUids.Contains(all[i].Uid)) continue;
+            for (var j = Math.Max(0, i - 2); j <= Math.Min(all.Count - 1, i + 2); j++) indices.Add(j);
+        }
+        return indices.Select(i => all[i]).ToList();
+    }
+
+    internal static bool IsReusableTranslation(Sentence sentence, TranslationEntry existing, string target)
+    {
+        if (existing.IsStale(sentence) || existing.Language != target) return false;
+        var translated = existing.Text.Trim();
+        if (translated.Length == 0) return false;
+        var source = sentence.Text.Trim();
+        if (source.Length >= 4 && translated.Equals(source, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        return true;
+    }
+
     private async Task PumpPartialTranslationsExternallyAsync(
         IEngineClient engine,
         HashSet<Guid> queuedAsyncUids,
@@ -120,17 +150,18 @@ public sealed partial class SubtitleViewModel
             var model = "";
             await _ui.InvokeAsync(() =>
             {
-                if (token.IsCancellationRequested || _sentences.Count <= 1) return;
+                if (token.IsCancellationRequested || _sentences.Count <= 2) return;
                 target = _translationTarget;
                 source = TranslationSource;
                 model = _translationModel;
                 if (source == target) return;
-                batch = _sentences
-                    .Take(_sentences.Count - 1)
+                var candidates = _sentences
+                    .Take(_sentences.Count - 2)
                     .Where(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text))
                     .ToList();
-                if (batch.Count > 0)
+                if (candidates.Count >= MinAsyncBatchSentences)
                 {
+                    batch = candidates;
                     foreach (var s in batch) queuedAsyncUids.Add(s.Uid);
                 }
             }).ConfigureAwait(false);
@@ -150,9 +181,11 @@ public sealed partial class SubtitleViewModel
     {
         if (batch.Count == 0 || source == target) return;
         var alreadyTranslatedCount = 0;
+        IReadOnlyList<Sentence> contextualRequest = batch;
         await _ui.InvokeAsync(() =>
         {
             if (token.IsCancellationRequested) return;
+            contextualRequest = WithTranslationContext(_sentences, batch);
             alreadyTranslatedCount = _translations.Count;
             if (alreadyTranslatedCount > 0 && _sentences.Count > 0)
             {
@@ -163,7 +196,7 @@ public sealed partial class SubtitleViewModel
 
         try
         {
-            await foreach (var engineEvent in engine.Translate(batch, target, source, model, token).ConfigureAwait(false))
+            await foreach (var engineEvent in engine.Translate(contextualRequest, target, source, model, token).ConfigureAwait(false))
             {
                 if (token.IsCancellationRequested) return;
                 if (engineEvent is EngineEvent.Stage stage && stage.Kind == EngineStage.Translating && stage.Fraction is { } f)
@@ -224,7 +257,7 @@ public sealed partial class SubtitleViewModel
         for (var index = 0; index < translated.Count; index++)
         {
             var result = translated[index];
-            var original = source.FirstOrDefault(s => s.Id == result.Id) ?? (index < source.Count ? source[index] : null);
+            var original = source.FirstOrDefault(s => s.Id == result.Id);
             if (original is null) continue;
             entries[original.Uid] = new TranslationEntry(result.Text, original.Text, language);
         }

@@ -153,12 +153,11 @@ def test_language_tag_does_not_leak_into_text(make_translator):
     assert result[0].text == "hola"
 
 
-def test_empty_hypothesis_falls_back_to_source(make_translator):
+def test_empty_hypothesis_reports_incomplete_translation(make_translator):
     translator, _ = make_translator("madlad-3b", [""])
 
-    result = translator.translate([sentence(1, 0, 1, "Metin.")], "es")
-
-    assert result[0].text == "Metin."  # do not produce an empty subtitle
+    with pytest.raises(models.ModelError, match="Çeviri tamamlanmadı"):
+        translator.translate([sentence(1, 0, 1, "Metin.")], "es")
 
 
 def test_cli_json_event_order_and_translation_event(capsys, monkeypatch):
@@ -315,11 +314,11 @@ def test_llama_translator_builds_direct_prompt_with_dialect_and_context(monkeypa
     assert progress == [2 / 3, 1.0]
 
 
-def test_llama_translator_retries_missing_line_in_batch():
+def test_llama_translator_retries_missing_line_with_whole_batch():
     calls: list[list[dict[str, str]]] = []
     replies = [
         "[1] Birinci satır çevirisi",  # Line [2] omitted by the LLM in batch
-        "[1] İkinci satır tekil çevirisi",  # Single-line retry
+        "[1] Birinci satır çevirisi\n[2] İkinci satır çevirisi",
     ]
 
     def fake_complete(messages: list[dict[str, str]]) -> str:
@@ -334,7 +333,8 @@ def test_llama_translator_retries_missing_line_in_batch():
     result = translator.translate(sentences, target="tr", source="en")
 
     assert len(calls) == 2
-    assert [r.text for r in result] == ["Birinci satır çevirisi", "İkinci satır tekil çevirisi"]
+    assert "[1] Line one.\n[2] Line two." in calls[1][1]["content"]
+    assert [r.text for r in result] == ["Birinci satır çevirisi", "İkinci satır çevirisi"]
 
 
 def test_normalize_external_chat_url_handles_lm_studio_ollama_and_raw_ip():

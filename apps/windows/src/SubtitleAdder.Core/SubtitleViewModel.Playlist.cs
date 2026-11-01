@@ -372,7 +372,7 @@ public sealed partial class SubtitleViewModel
             var mergedEntries = new Dictionary<Guid, TranslationEntry>();
             foreach (var s in sentences)
             {
-                if (preTranslated.TryGetValue(s.Uid, out var entry) && !entry.IsStale(s) && entry.Language == target && entry.Text.Length > 0)
+                if (preTranslated.TryGetValue(s.Uid, out var entry) && IsReusableTranslation(s, entry, target))
                 {
                     mergedEntries[s.Uid] = entry;
                 }
@@ -384,7 +384,8 @@ public sealed partial class SubtitleViewModel
             string? engineError = null;
             if (remaining.Count > 0)
             {
-                await foreach (var engineEvent in engine.Translate(remaining, target, source, model, token).ConfigureAwait(false))
+                var contextualRequest = WithTranslationContext(sentences, remaining);
+                await foreach (var engineEvent in engine.Translate(contextualRequest, target, source, model, token).ConfigureAwait(false))
                 {
                     switch (engineEvent)
                     {
@@ -412,7 +413,7 @@ public sealed partial class SubtitleViewModel
                             for (var i = 0; i < translation.Sentences.Count; i++)
                             {
                                 var tr = translation.Sentences[i];
-                                var orig = remaining.FirstOrDefault(s => s.Id == tr.Id) ?? (i < remaining.Count ? remaining[i] : null);
+                                var orig = remaining.FirstOrDefault(s => s.Id == tr.Id);
                                 if (orig is not null)
                                 {
                                     mergedEntries[orig.Uid] = new TranslationEntry(tr.Text, orig.Text, translation.Language);

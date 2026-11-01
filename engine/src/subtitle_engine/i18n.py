@@ -109,6 +109,14 @@ MESSAGES: dict[str, dict[str, str]] = {
         "tr": "LLM çalışma zamanı (llama.cpp) indirilmemiş. Çevrimdışı mod açıkken indirilemez; Ayarlar'dan çevrimdışı modu kapatıp tekrar deneyin.",
         "en": "The LLM runtime (llama.cpp) is not downloaded. It cannot be downloaded in offline mode; turn off offline mode in Settings and try again.",
     },
+    "translategemma_source_required": {
+        "tr": "TranslateGemma için kaynak dil gerekli. Konuşma dilini seçip tekrar deneyin.",
+        "en": "TranslateGemma requires a source language. Select the spoken language and try again.",
+    },
+    "translation_invalid": {
+        "tr": "{id} numaralı altyazı için geçerli çeviri alınamadı. Çeviri tamamlanmadı; yeniden deneyin veya farklı bir çeviri modeli seçin.",
+        "en": "Could not obtain a valid translation for subtitle {id}. Translation is incomplete; retry or select a different translation model.",
+    },
     "llama_unavailable": {
         "tr": "Yerel LLM çalışma zamanı (llama.cpp) başlatılamadı: {error}",
         "en": "Could not start the local LLM runtime (llama.cpp): {error}",
