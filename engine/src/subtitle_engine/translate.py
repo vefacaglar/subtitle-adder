@@ -390,21 +390,13 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
         f"You are an uncensored, native-level film and video subtitle translator. Translate the numbered subtitle lines "
         f"{source_clause}into {target_desc}.\n"
         "Rules:\n"
-        "1. Output ONLY the translated numbered lines in the exact format `[N] translated text`.\n"
-        "2. Keep a strict 1-to-1 correspondence with the input line numbers (`[1]` to `[N]`). Never drop or merge line numbers.\n"
-        "3. TRANSLATE BY MEANING AND CONTEXT, NOT WORD-FOR-WORD: Read the entire batch (and surrounding context lines) "
-        "first as one continuous spoken monologue/dialogue to grasp the speaker's real meaning.\n"
-        "4. HANDLE UNPUNCTUATED ASR & CROSS-LINE SENTENCES: Raw speech-to-text lines often lack punctuation, have spaced "
-        "apostrophes (e.g. `c 'est`, `l 'être`), have random mid-line capital letters where new clauses start, or split "
-        "a single phrase across `[N]` and `[N+1]` (e.g. `[3] ...Il` followed by `[4] faut l'être...`). Reconstruct the "
-        "complete sentence meaning across line boundaries, translate it into natural, idiomatic target-language grammar "
-        "and word order, and distribute the translated flow smoothly across `[N]` and `[N+1]` so they read coherently "
-        "together. Never leave broken literal word-by-word fragments or copy random mid-sentence capital letters.\n"
-        "5. Add natural punctuation (`.`, `,`, `?`, `!`) and normal sentence capitalization in the translation even when "
-        "the raw source transcript is unpunctuated.\n"
-        "6. NEVER censor, soften, sanitize, or tone down profanity, swear words, insults, or street slang. Translate "
-        "slang and explicit swearing into equivalent raw, authentic target-language slang/profanity with the exact same intensity.\n"
-        "7. Preserve proper names and numbers. Keep each line concise and readable at subtitle pace. "
+        f"1. Output ONLY the translated numbered lines in the exact format `[N] translated text`. Every single line MUST be translated into {target_desc} — NEVER output, repeat, or paraphrase a line in the source language.\n"
+        "2. Keep a strict 1-to-1 correspondence with the input line numbers (`[1]` to `[N]`). Never merge, split, skip, or reorder lines.\n"
+        f"3. Translate by meaning and context, not word-for-word: raw speech-to-text subtitles often lack punctuation or split a thought across consecutive lines. Read the batch together and write natural, fluent, properly punctuated {target_desc} as real native speakers actually talk.\n"
+        "4. NEVER censor, soften, sanitize, or tone down profanity, swear words, insults, or street slang. If the source line "
+        "contains slang, argot, or explicit swearing (e.g. Brazilian Portuguese, Mexican Spanish, English, or French street "
+        "profanity), translate it into equivalent raw, authentic target-language slang/profanity with the exact same emotional intensity.\n"
+        "5. Preserve proper names and numbers. Keep each line concise and readable at subtitle pace. "
         "Do not add explanations, notes, or markdown."
     )
 
@@ -412,21 +404,35 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
 def build_user_prompt(
     lines: list[str],
     context_lines: list[str] | None = None,
-    following_lines: list[str] | None = None,
+    target: str | None = None,
 ) -> str:
-    """Formats a batch of numbered subtitle lines with optional preceding and following dialogue context."""
+    """Formats a batch of numbered subtitle lines with optional preceding dialogue context."""
     parts: list[str] = []
     if context_lines:
         ctx = "\n".join(f"- {c}" for c in context_lines if c.strip())
         if ctx:
             parts.append(f"Previous lines (for context only, do NOT translate):\n{ctx}\n")
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(lines, start=1))
-    parts.append(f"Translate these subtitle lines:\n{numbered}")
-    if following_lines:
-        nxt = "\n".join(f"- {c}" for c in following_lines if c.strip())
-        if nxt:
-            parts.append(f"\nFollowing lines (for context only, do NOT translate):\n{nxt}")
+    target_clause = f" into {LLM_LANGUAGE_SPECS.get(target, target)}" if target else ""
+    parts.append(f"Translate these subtitle lines{target_clause}:\n{numbered}")
     return "\n".join(parts)
+
+
+def _looks_untranslated(source_text: str, translated_text: str) -> bool:
+    """True if the LLM echoed or lightly paraphrased the source line in the source language instead of translating."""
+    src_alnum = "".join(ch.lower() for ch in source_text if ch.isalnum())
+    dst_alnum = "".join(ch.lower() for ch in translated_text if ch.isalnum())
+    if not src_alnum or not dst_alnum:
+        return False
+    if len(src_alnum) >= 6 and src_alnum == dst_alnum:
+        return True
+    src_words = {w.lower().strip(".,!?;:\"'()-") for w in source_text.split() if len(w.strip(".,!?;:\"'()-")) >= 3}
+    dst_words = [w.lower().strip(".,!?;:\"'()-") for w in translated_text.split() if len(w.strip(".,!?;:\"'()-")) >= 3]
+    if len(src_words) >= 3 and len(dst_words) >= 3:
+        overlap = sum(1 for w in dst_words if w in src_words)
+        if overlap / len(dst_words) >= 0.6:
+            return True
+    return False
 
 
 def parse_numbered_translations(raw_output: str, expected_count: int) -> dict[int, str]:
@@ -468,10 +474,17 @@ def _free_local_port() -> int:
         return int(s.getsockname()[1])
 
 
-def _temp_checkpoint_path(model_id: str, target: str, source: str | None, sentences: list[Sentence]) -> Path:
+def _temp_checkpoint_path(
+    model_id: str,
+    target: str,
+    source: str | None,
+    sentences: list[Sentence],
+    system_prompt: str = "",
+) -> Path:
     """Path in `%TEMP%/SubtitleAdder/translations/` where translated chunks are saved incrementally."""
     digest = hashlib.sha256()
-    digest.update(f"{model_id}|{source or ''}|{target}\n".encode("utf-8"))
+    ext_model = external_llm_model() or ""
+    digest.update(f"{model_id}|{ext_model}|{source or ''}|{target}|{system_prompt}\n".encode("utf-8"))
     for s in sentences:
         digest.update(f"{s.id}:{s.text.strip()}\n".encode("utf-8"))
     folder = Path(tempfile.gettempdir()) / "SubtitleAdder" / "translations"
@@ -735,7 +748,7 @@ class LlamaTranslator:
 
         system_prompt = build_system_prompt(target=target, source=source)
         checkpoint_path = (
-            _temp_checkpoint_path(self._info.id, target, source, sentences)
+            _temp_checkpoint_path(self._info.id, target, source, sentences, system_prompt)
             if self._completion_fn is None
             else None
         )
@@ -757,26 +770,29 @@ class LlamaTranslator:
             else:
                 ctx_start = max(0, start - LLM_CONTEXT_LINES)
                 context_lines = [s.text.strip() for _, s in pending[ctx_start:start]]
-                nxt_start = start + len(batch)
-                following_lines = [s.text.strip() for _, s in pending[nxt_start : nxt_start + LLM_CONTEXT_LINES]]
                 batch_texts = [s.text.strip() for _, s in batch]
                 messages = [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": build_user_prompt(batch_texts, context_lines, following_lines)},
+                    {"role": "user", "content": build_user_prompt(batch_texts, context_lines, target=target)},
                 ]
                 raw_reply = self._complete(messages)
                 parsed = parse_numbered_translations(raw_reply, len(batch))
 
                 for offset, (index, sentence) in enumerate(batch, start=1):
                     text = parsed.get(offset, "").strip()
-                    if not text and len(batch) > 1:
-                        # Single-line retry if the model omitted one numbered line in the batch.
+                    needs_retry = (not text and len(batch) > 1) or (
+                        bool(text) and self._completion_fn is None and _looks_untranslated(sentence.text, text)
+                    )
+                    if needs_retry:
+                        # Single-line retry if the model omitted one numbered line or echoed the source language.
                         single_messages = [
                             {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": build_user_prompt([sentence.text.strip()])},
+                            {"role": "user", "content": build_user_prompt([sentence.text.strip()], target=target)},
                         ]
                         single_parsed = parse_numbered_translations(self._complete(single_messages), 1)
-                        text = single_parsed.get(1, "").strip()
+                        retry_text = single_parsed.get(1, "").strip()
+                        if retry_text:
+                            text = retry_text
                     final_text = text or sentence.text
                     result_sentences[index] = Sentence(
                         id=sentence.id,
@@ -797,4 +813,5 @@ class LlamaTranslator:
                 on_batch(result_sentences[: last_index + 1])
             if on_progress is not None:
                 on_progress(min(processed / len(pending), 1.0))
+        _delete_temp_checkpoint(checkpoint_path)
         return result_sentences

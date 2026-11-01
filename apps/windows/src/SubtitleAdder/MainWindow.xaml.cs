@@ -126,6 +126,7 @@ public sealed partial class MainWindow : Window
                 _player.SetSentences(Vm.Sentences);
                 DropZone.Visibility = Vm.Video is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
                 WorkArea.Visibility = Vm.Video is not null || Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
+                UpdateTabActionVisibility();
                 SyncRows();
                 UpdateOverlay();
                 break;
