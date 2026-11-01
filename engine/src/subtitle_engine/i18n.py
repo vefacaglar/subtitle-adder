@@ -163,6 +163,9 @@ MESSAGES: dict[str, dict[str, str]] = {
     "lang_tr": {"tr": "Türkçe", "en": "Turkish"},
     "lang_en": {"tr": "İngilizce", "en": "English"},
     "lang_de": {"tr": "Almanca", "en": "German"},
+    "lang_fr": {"tr": "Fransızca", "en": "French"},
+    "lang_ja": {"tr": "Japonca", "en": "Japanese"},
+    "lang_zh": {"tr": "Çince", "en": "Chinese"},
 }
 
 

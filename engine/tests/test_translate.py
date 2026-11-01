@@ -111,7 +111,7 @@ def test_unsupported_language_is_turkish_error(make_translator):
     translator, fake = make_translator("madlad-3b")
 
     with pytest.raises(models.ModelError, match="desteklemiyor"):
-        translator.translate([sentence(1, 0, 1, "merhaba")], "ja")
+        translator.translate([sentence(1, 0, 1, "merhaba")], "ko")
     assert fake.calls == []
 
 
@@ -215,7 +215,7 @@ def test_cli_nllb_without_source_is_turkish_error(capsys, monkeypatch):
 def test_cli_unsupported_language_is_turkish_error(capsys, monkeypatch):
     monkeypatch.setattr(sys, "stdin", io.StringIO("[]"))
 
-    assert cli.main(["translate", "--to", "ja", "--json"]) == 1
+    assert cli.main(["translate", "--to", "ko", "--json"]) == 1
 
     event = json.loads(capsys.readouterr().out)
     assert event["event"] == "error" and "desteklemiyor" in event["message"]

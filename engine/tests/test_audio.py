@@ -112,3 +112,42 @@ def test_corrupt_packet_mid_stream_is_skipped_without_failing_or_drifting(tone_v
     rate, channels, seconds = read_wav(wav)
     assert (rate, channels) == (16_000, 1)
     assert abs(seconds - 2) < 0.15
+
+
+
+def test_wmv_avi_mov_mkv_mp4_containers_with_corrupt_midstream_bytes(tmp_path):
+    """Real .wmv, .avi, .mov, .mkv, and .mp4 containers extract cleanly even when mid-stream bytes are corrupted."""
+    import av
+    import numpy as np
+
+    cases = (
+        ("sample.wmv", "wmav2"),
+        ("sample.avi", "mp3"),
+        ("sample.mov", "aac"),
+        ("sample.mkv", "aac"),
+        ("sample.mp4", "aac"),
+    )
+    for filename, codec in cases:
+        path = tmp_path / filename
+        with av.open(str(path), "w") as out:
+            a = out.add_stream(codec, rate=44_100, layout="stereo")
+            a.bit_rate = 128_000
+            t = np.arange(1024, dtype=np.float32) / 44_100
+            tone = np.vstack([0.3 * np.sin(2 * np.pi * 440 * t), 0.3 * np.cos(2 * np.pi * 440 * t)])
+            for pts in range(0, 44_100 * 4, 1024):
+                f = av.AudioFrame.from_ndarray(tone, format="fltp", layout="stereo")
+                f.sample_rate = 44_100
+                f.pts = pts
+                out.mux(a.encode(f))
+            out.mux(a.encode())
+
+        # Corrupt a 64-byte slice inside the audio payload (avoiding the end-of-file moov atom in mov/mp4)
+        raw = bytearray(path.read_bytes())
+        payload_offset = len(raw) // 3
+        raw[payload_offset : payload_offset + 64] = b"\xff" * 64
+        path.write_bytes(raw)
+
+        wav = extract_audio(path, tmp_path / f"{filename}.wav")
+        rate, channels, seconds = read_wav(wav)
+        assert (rate, channels) == (16_000, 1)
+        assert seconds > 2.5

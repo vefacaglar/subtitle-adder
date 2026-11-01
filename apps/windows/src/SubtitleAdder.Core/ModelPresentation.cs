@@ -26,9 +26,12 @@ public sealed class SubtitleLanguage
     public static SubtitleLanguage Russian { get; } = new("ru", () => L("Rusça (ru)"), () => L("Rusça"), () => L("Rusça"));
     public static SubtitleLanguage English { get; } = new("en", () => L("İngilizce (en)"), () => L("İngilizce"), () => L("İngilizce"));
     public static SubtitleLanguage German { get; } = new("de", () => L("Almanca (de)"), () => L("Almanca"), () => L("Almanca"));
+    public static SubtitleLanguage French { get; } = new("fr", () => L("Fransızca (fr)"), () => L("Fransızca"), () => L("Fransızca"));
+    public static SubtitleLanguage Japanese { get; } = new("ja", () => L("Japonca (ja)"), () => L("Japonca"), () => L("Japonca"));
+    public static SubtitleLanguage Chinese { get; } = new("zh", () => L("Çince (zh)"), () => L("Çince"), () => L("Çince"));
 
     /// <summary>Menu order (same as macOS).</summary>
-    public static IReadOnlyList<SubtitleLanguage> All { get; } = [Automatic, Turkish, Portuguese, Spanish, Russian, English, German];
+    public static IReadOnlyList<SubtitleLanguage> All { get; } = [Automatic, Turkish, Portuguese, Spanish, Russian, English, German, French, Japanese, Chinese];
 
     /// <summary>Languages that can be a translation target; "Otomatik" can't be a target.</summary>
     public static IReadOnlyList<SubtitleLanguage> TranslationTargets { get; } = [.. All.Where(l => l != Automatic)];

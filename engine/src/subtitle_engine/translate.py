@@ -39,6 +39,9 @@ NLLB_LANGUAGE_CODES = {
     "ru": "rus_Cyrl",
     "en": "eng_Latn",
     "de": "deu_Latn",
+    "fr": "fra_Latn",
+    "ja": "jpn_Jpan",
+    "zh": "zho_Hans",
 }
 MADLAD_PREFIX = "<2{}>"
 
@@ -50,6 +53,9 @@ LLM_LANGUAGE_SPECS = {
     "en": "English (natural, idiomatic spoken English)",
     "ru": "Russian (natural, idiomatic spoken Russian)",
     "de": "German (natural, idiomatic spoken German)",
+    "fr": "French (natural, idiomatic contemporary spoken French)",
+    "ja": "Japanese (natural, idiomatic spoken Japanese with appropriate conversational register)",
+    "zh": "Simplified Chinese (natural, idiomatic spoken Mandarin Chinese)",
 }
 
 # Sentences are translated in batches of this size, not one by one; progress is reported after each batch.

@@ -81,7 +81,7 @@ MADLAD_FILES = (*TRANSLATION_FILES, "spiece.model")
 
 # Translation languages declared in the catalog (ISO 639-1). The models know more;
 # the UI and validation use this list.
-TRANSLATION_LANGUAGES = ("tr", "en", "pt", "es", "ru", "de")
+TRANSLATION_LANGUAGES = ("tr", "en", "pt", "es", "ru", "de", "fr", "ja", "zh")
 
 # onnx-asr models use int8: both faster and smaller files.
 VAD_REPO = "istupakov/silero-vad-onnx"
