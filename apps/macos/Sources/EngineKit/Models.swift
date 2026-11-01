@@ -26,10 +26,13 @@ public struct Sentence: Sendable, Hashable, Codable {
     public var words: [Word]
     /// Zero-based speaker index from diarization; `nil` when diarization is off.
     public var speaker: Int?
+    /// The engine could not translate this line: `text` is the source line. Only a translation or an imported JSON file
+    /// sets it; it is written back only when true.
+    public var needsReview: Bool
 
     public init(
         id: Int, uid: UUID = UUID(), start: Double, end: Double, text: String,
-        words: [Word] = [], speaker: Int? = nil
+        words: [Word] = [], speaker: Int? = nil, needsReview: Bool = false
     ) {
         self.id = id
         self.uid = uid
@@ -38,11 +41,13 @@ public struct Sentence: Sendable, Hashable, Codable {
         self.text = text
         self.words = words
         self.speaker = speaker
+        self.needsReview = needsReview
     }
 
     // `uid` is an app-internal identity only; it is not part of the engine protocol.
     private enum CodingKeys: String, CodingKey {
         case id, start, end, text, words, speaker
+        case needsReview = "needs_review"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -54,6 +59,8 @@ public struct Sentence: Sendable, Hashable, Codable {
         text = try container.decode(String.self, forKey: .text)
         words = try container.decodeIfPresent([Word].self, forKey: .words) ?? []
         speaker = try container.decodeIfPresent(Int.self, forKey: .speaker)
+        // Lenient: anything but a JSON `true` (absent, null, a string) reads as false and never fails the line.
+        needsReview = (try? container.decodeIfPresent(Bool.self, forKey: .needsReview)) ?? false
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -64,12 +71,14 @@ public struct Sentence: Sendable, Hashable, Codable {
         try container.encode(text, forKey: .text)
         try container.encode(words, forKey: .words)
         try container.encodeIfPresent(speaker, forKey: .speaker)
+        if needsReview { try container.encode(true, forKey: .needsReview) }
     }
 
     /// Content equality; the transient view identity (`uid`) is not part of the comparison.
     public static func == (lhs: Sentence, rhs: Sentence) -> Bool {
         lhs.id == rhs.id && lhs.start == rhs.start && lhs.end == rhs.end
             && lhs.text == rhs.text && lhs.words == rhs.words && lhs.speaker == rhs.speaker
+            && lhs.needsReview == rhs.needsReview
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -79,6 +88,7 @@ public struct Sentence: Sendable, Hashable, Codable {
         hasher.combine(text)
         hasher.combine(words)
         hasher.combine(speaker)
+        hasher.combine(needsReview)
     }
 }
 

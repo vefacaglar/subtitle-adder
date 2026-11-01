@@ -157,7 +157,6 @@ extension SubtitleViewModel {
             || clearedUIDs.contains(translationDraft.uid) {
             self.translationDraft = nil
         }
-        if let uid = selection, !validUIDs.contains(uid) { selection = nil }
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {

@@ -186,7 +186,10 @@ final class SubtitleViewModel {
     /// source language, which the restored toolbar language doesn't know. Cleared as soon as other lines or another
     /// toolbar language come in.
     var linesSourceLanguage: String?
-    var sentences: [Sentence] = []
+    var sentences: [Sentence] = [] {
+        // Removed lines (and snapshots from a running job) can't stay selected.
+        didSet { if !selectedUIDs.isEmpty || selection != nil { setSelectedLines(selectedUIDs, active: selection) } }
+    }
     /// Translations keyed by the line's stable `uid`; marked "eski" (stale) when the text is edited.
     var translations: [UUID: TranslationEntry] = [:] {
         didSet {
@@ -197,7 +200,18 @@ final class SubtitleViewModel {
     var translationLanguage: String?
     /// Uncommitted text of the translation being edited.
     var translationDraft: TextDraft?
-    var selection: UUID?         // `uid` of the selected line
+    /// `uid` of the active line: the one the player follows and the single-line edits (split, merge, delete, timing,
+    /// speaker) work on. Setting it selects just that line; `setSelectedLines` keeps a multi-selection.
+    var selection: UUID? {
+        didSet {
+            guard !isSettingSelection else { return }
+            let single: Set<UUID> = selection.map { [$0] } ?? []
+            if selectedUIDs != single { selectedUIDs = single }
+        }
+    }
+    /// All selected lines (⌘/⇧-click); `selection` is always one of them, or `nil` when the set is empty.
+    private(set) var selectedUIDs: Set<UUID> = []
+    @ObservationIgnored private var isSettingSelection = false
     /// Uncommitted text of the line being edited (used while focused).
     var draft: TextDraft?
     /// Short notice when the selected model was changed automatically because it didn't match the language filter.
@@ -321,6 +335,41 @@ final class SubtitleViewModel {
 
     /// The mode actually shown: without translations only the original exists, whatever was chosen last.
     var effectiveDisplayMode: SubtitleDisplay { hasTranslations ? displayMode : .original }
+
+    /// Selects `uids` (only those that exist). The active line is `active` if selected, else the previous active line
+    /// if still selected, else the first selected line in document order; `nil` when nothing is selected.
+    func setSelectedLines(_ uids: Set<UUID>, active: UUID?) {
+        let existing = Set(sentences.map(\.uid))
+        let valid = uids.intersection(existing)
+        let newActive: UUID?
+        if let active, valid.contains(active) {
+            newActive = active
+        } else if let selection, valid.contains(selection) {
+            newActive = selection
+        } else {
+            newActive = sentences.first { valid.contains($0.uid) }?.uid
+        }
+        isSettingSelection = true
+        defer { isSettingSelection = false }
+        if selectedUIDs != valid { selectedUIDs = valid }
+        if selection != newActive { selection = newActive }
+    }
+
+    /// The list's selection changed: the newly added line (the last one in document order if several) becomes active.
+    func updateSelection(to uids: Set<UUID>) {
+        let added = uids.subtracting(selectedUIDs)
+        setSelectedLines(uids, active: sentences.last { added.contains($0.uid) }?.uid)
+    }
+
+    /// A row was focused or opened its menu: inside the current multi-selection only the active line moves, anywhere
+    /// else just this line is selected.
+    func selectRow(_ uid: UUID) {
+        if selectedUIDs.contains(uid) {
+            setSelectedLines(selectedUIDs, active: uid)
+        } else {
+            setSelectedLines([uid], active: uid)
+        }
+    }
 
     /// Title of the translation choice in the display and export pickers, e.g. "Çeviri (es)".
     var translationTitle: String { SubtitleDisplay.translationTitle(language: translationLanguage) }

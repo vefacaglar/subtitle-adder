@@ -31,6 +31,7 @@ struct SentenceEditorView: View {
         .onChange(of: undoManager) { _, new in vm.undoManager = new }
         .onChange(of: focusedUID) { old, new in
             if let new, let sentence = vm.sentences.first(where: { $0.uid == new }) {
+                vm.selectRow(new)
                 vm.beginEditing(sentence)
             } else if old != nil {
                 vm.commitDraft()
@@ -38,6 +39,7 @@ struct SentenceEditorView: View {
         }
         .onChange(of: focusedTranslationUID) { old, new in
             if let new, let sentence = vm.sentences.first(where: { $0.uid == new }) {
+                vm.selectRow(new)
                 vm.beginTranslationEditing(sentence)
             } else if old != nil {
                 vm.commitTranslationDraft()
@@ -61,7 +63,8 @@ struct SentenceEditorView: View {
 
     private var list: some View {
         ScrollViewReader { proxy in
-            List(selection: $vm.selection) {
+            // ⌘-click toggles and ⇧-click extends; the model decides which selected line is the active one.
+            List(selection: Binding(get: { vm.selectedUIDs }, set: { vm.updateSelection(to: $0) })) {
                 ForEach(vm.sentences, id: \.uid) { sentence in
                     SentenceRow(
                         sentence: sentence,
@@ -96,7 +99,7 @@ struct SentenceEditorView: View {
     private var showsSpeakers: Bool { !vm.sentences.speakers.isEmpty }
 
     /// Below this width the Split/Merge/Delete buttons lose their titles, below the second one the timing captions go.
-    private static let compactBarWidth: CGFloat = 720
+    private static let compactBarWidth: CGFloat = 900
     private static let minimalBarWidth: CGFloat = 540
 
     /// The bar tries three layouts and takes the first that fits: everything in one row; one row without the
@@ -152,6 +155,12 @@ struct SentenceEditorView: View {
             }
             .disabled(!vm.canSplitSelected(at: player.currentTime))
             .help(L("Satırı oynatma konumundan ikiye böl"))
+            Button(L("Seçilenleri yeniden çevir"), systemImage: "arrow.triangle.2.circlepath") {
+                finishEditing()
+                vm.translateSelected()
+            }
+            .disabled(!vm.canTranslateSelected)
+            .help(L("⌘ veya ⇧ ile satırları seç, seçilenleri yeniden çevir"))
             Button(L("Sonrakiyle birleştir"), systemImage: "arrow.triangle.merge") {
                 finishEditing()
                 vm.mergeSelectedWithNext()
@@ -275,7 +284,16 @@ private struct SentenceRow: View {
         .padding(.horizontal, 4)
         .background(isActive ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
         .contextMenu {
+            Button(L("Seçilenleri yeniden çevir"), systemImage: "arrow.triangle.2.circlepath") {
+                // The row under the pointer joins the action: inside the selection the whole set is retranslated,
+                // outside it just this line.
+                vm.selectRow(sentence.uid)
+                vm.commitDraft()
+                vm.translateSelected()
+            }
+            .disabled(vm.isWorking)
             if showsSpeaker {
+                Divider()
                 speakerChoices
             }
         }
@@ -351,6 +369,13 @@ private struct SentenceRow: View {
                     .foregroundStyle(.orange)
                     .help(L("Orijinal metin değişti; çeviri eski olabilir. “Çevir…” ile yenile."))
                     .accessibilityLabel(L("Çeviri eski"))
+            }
+            if vm.translation(for: sentence)?.needsReview == true {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .help(L("Bu satır çevrilemedi. Seçip yeniden çevirebilir veya elle düzeltebilirsin."))
+                    .accessibilityLabel(L("Çeviriyi kontrol et"))
             }
         }
     }

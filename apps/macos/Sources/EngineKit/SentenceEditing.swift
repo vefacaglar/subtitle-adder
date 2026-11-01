@@ -56,7 +56,8 @@ extension [Sentence] {
             guard let uid else { return incoming }
             return Sentence(
                 id: incoming.id, uid: uid, start: incoming.start, end: incoming.end,
-                text: incoming.text, words: incoming.words, speaker: incoming.speaker
+                text: incoming.text, words: incoming.words, speaker: incoming.speaker,
+                needsReview: incoming.needsReview
             )
         }
     }

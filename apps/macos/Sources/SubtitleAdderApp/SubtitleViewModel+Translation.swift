@@ -19,6 +19,7 @@ extension SubtitleViewModel {
             var copy = sentence
             if let entry = translations[sentence.uid], !entry.text.isEmpty {
                 copy.text = entry.text
+                copy.needsReview = entry.needsReview
             }
             copy.words = []
             return copy
@@ -28,8 +29,12 @@ extension SubtitleViewModel {
     /// Translates all lines to the selected target language. While running, Stop cancels the same job.
     /// With `reuseExisting` (after background translation) only the lines that have no translation yet, whose
     /// translation is outdated or in another language are sent.
-    func translate(reuseExisting: Bool = false) {
+    /// With `only` (the selected lines, captured when the job starts) just those lines are sent again, translated or
+    /// not; their results merge into the other lines' translations, whatever language those are in.
+    func translate(reuseExisting: Bool = false, only selectedLines: Set<UUID>? = nil) {
         guard !sentences.isEmpty else { return }
+        let selectedRequest = selectedLines.map { wanted in sentences.filter { wanted.contains($0.uid) } }
+        if let selectedRequest, selectedRequest.isEmpty { return }
         guard let engine = catalog.engine else {
             status = .failed(.error(EngineError.notFound))
             return
@@ -48,19 +53,22 @@ extension SubtitleViewModel {
             return
         }
         let model = translationModel
-        if blockedOffline([model], retry: { [weak self] in self?.translate(reuseExisting: reuseExisting) }) { return }
+        if blockedOffline([model], retry: { [weak self] in
+            self?.translate(reuseExisting: reuseExisting, only: selectedLines)
+        }) { return }
         cancelAsyncTranslation()
-        let request = reuseExisting ? linesNeedingTranslation(into: target) : sentences
+        let request = selectedRequest ?? (reuseExisting ? linesNeedingTranslation(into: target) : sentences)
         // A partial request carries up to two neighbours per line so the model still sees the dialogue; only the
         // requested lines' results are applied.
         let contextualRequest = Self.withTranslationContext(sentences, requested: request)
         // Lines whose translation stays count as done in the progress; counted from the translations themselves.
-        let alreadyDone = reuseExisting
+        let alreadyDone = reuseExisting && selectedRequest == nil
             ? sentences.count { sentence in
                 translations[sentence.uid].map { Self.isReusableTranslation(sentence, entry: $0, target: target) } ?? false
             }
             : 0
-        let total = max(1, sentences.count)
+        // The progress of a selected retry is the share of the selection, not of the whole subtitle.
+        let total = max(1, selectedRequest?.count ?? sentences.count)
         savedSubtitleName = nil
         job?.cancel()
         let id = UUID()
@@ -104,7 +112,10 @@ extension SubtitleViewModel {
                         )
                     case .translation(let language, let translated):
                         // One event per batch (a growing prefix) plus a final one; each is applied as it arrives.
-                        applyTranslation(translated, language: language, source: request, merge: reuseExisting)
+                        applyTranslation(
+                            translated, language: language, source: request,
+                            merge: reuseExisting || selectedRequest != nil, preserveOtherLanguages: selectedRequest != nil
+                        )
                     case .result, .partial:
                         break
                     case .error(let message):
@@ -128,6 +139,16 @@ extension SubtitleViewModel {
         }
     }
 
+    /// Whether "Seçilenleri yeniden çevir" can start: at least one line is selected and nothing else is running.
+    var canTranslateSelected: Bool { !selectedUIDs.isEmpty && !isWorking }
+
+    /// Sends the selected lines (all of them, translated or not) to the engine again and merges the results into the
+    /// existing translations. Selection changes while the job runs don't change which lines it applies to.
+    func translateSelected() {
+        guard canTranslateSelected else { return }
+        translate(only: selectedUIDs)
+    }
+
     /// The lines whose translation into `target` can't be kept: none yet, outdated, in another language, empty or a
     /// copy of the original.
     func linesNeedingTranslation(into target: String) -> [Sentence] {
@@ -141,7 +162,7 @@ extension SubtitleViewModel {
     /// `target`, it has text, and it is not just the source repeated (a model that gave up returns its input).
     /// Sources shorter than four characters (names, "OK") may legitimately stay the same.
     nonisolated static func isReusableTranslation(_ sentence: Sentence, entry: TranslationEntry, target: String) -> Bool {
-        guard !entry.isStale(for: sentence), entry.language == target else { return false }
+        guard !entry.needsReview, !entry.isStale(for: sentence), entry.language == target else { return false }
         let translated = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !translated.isEmpty else { return false }
         let source = sentence.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -161,8 +182,15 @@ extension SubtitleViewModel {
 
     /// Maps translated lines by their stable `uid` values; the engine preserves order and ids. With `merge` the
     /// translations of other lines (same language) are kept and these are added to them.
-    func applyTranslation(_ translated: [Sentence], language: String, source: [Sentence], merge: Bool = false) {
-        storeTranslations(Self.pairs(translated, with: source), language: language, merge: merge)
+    /// With `preserveOtherLanguages` the kept translations stay even when they are in another language.
+    func applyTranslation(
+        _ translated: [Sentence], language: String, source: [Sentence], merge: Bool = false,
+        preserveOtherLanguages: Bool = false
+    ) {
+        storeTranslations(
+            Self.pairs(translated, with: source), language: language, merge: merge,
+            preserveOtherLanguages: preserveOtherLanguages
+        )
     }
 
     /// Each translated line with the line it translates, matched by id only. A result whose id isn't in `source` (a
@@ -173,16 +201,28 @@ extension SubtitleViewModel {
         return translated.compactMap { result in byID[result.id].map { (result, $0) } }
     }
 
-    func storeTranslations(_ pairs: [(result: Sentence, original: Sentence)], language: String, merge: Bool) {
+    func storeTranslations(
+        _ pairs: [(result: Sentence, original: Sentence)], language: String, merge: Bool,
+        preserveOtherLanguages: Bool = false
+    ) {
         let hadTranslations = hasTranslations
-        var entries: [UUID: TranslationEntry] = merge && (translationLanguage == language || translations.isEmpty)
+        let previous = translations
+        var entries: [UUID: TranslationEntry] = merge
+            && (preserveOtherLanguages || translationLanguage == language || translations.isEmpty)
             ? translations
             : [:]
         for (result, original) in pairs {
+            if result.needsReview, var existing = previous[original.uid] {
+                // A failed retry keeps what the line had (even if stale or in another language); only the marker is set.
+                existing.needsReview = true
+                entries[original.uid] = existing
+                continue
+            }
             entries[original.uid] = TranslationEntry(
                 text: result.text,
                 sourceText: original.text,
-                language: language
+                language: language,
+                needsReview: result.needsReview
             )
         }
         translations = entries
@@ -237,6 +277,8 @@ extension SubtitleViewModel {
     func setTranslationText(_ text: String, for uid: UUID) {
         guard var entry = translations[uid], entry.text != text else { return }
         entry.text = text
+        // An edited line is the user's own text now.
+        entry.needsReview = false
         var updated = translations
         updated[uid] = entry
         replaceTranslations(updated, actionName: L("Çeviriyi Değiştir"))

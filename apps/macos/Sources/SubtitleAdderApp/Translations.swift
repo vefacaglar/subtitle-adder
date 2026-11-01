@@ -38,6 +38,9 @@ struct TranslationEntry: Equatable, Sendable {
     var text: String
     var sourceText: String
     var language: String
+    /// The engine could not translate the line (`text` is the source or an older translation); it is shown with a
+    /// marker until the text is edited, and the line is sent again by any "reuse" path.
+    var needsReview = false
 
     func isStale(for sentence: Sentence) -> Bool {
         sourceText != sentence.text
