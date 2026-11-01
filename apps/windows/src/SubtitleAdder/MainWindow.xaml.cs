@@ -34,13 +34,14 @@ public sealed partial class MainWindow : Window
     private readonly PlayerController _player;
     private readonly Dictionary<(int Speaker, bool Dark), Brush> _speakerBrushes = [];
     private bool _syncing;
+    private bool _isPlaylistTabActive;
     private LocalizedMessage? _shownError;
     private Func<string>? _saveError;   // rebuilt on a language switch
 
     public MainWindow()
     {
         InitializeComponent();
-        WindowChrome.Setup(this, Root, AppTitleBar, minWidth: 960, minHeight: 640, defaultWidth: 1240, defaultHeight: 840, sizeKey: "mainWindow");
+        WindowChrome.Setup(this, Root, AppTitleBar, minWidth: 760, minHeight: 580, defaultWidth: 1240, defaultHeight: 840, sizeKey: "mainWindow");
 
         _player = new PlayerController(DispatcherQueue);
         PlayerElement.SetMediaPlayer(_player.Player);
@@ -57,6 +58,7 @@ public sealed partial class MainWindow : Window
         foreach (var (command, button) in new (CommunityToolkit.Mvvm.Input.IRelayCommand, Button)[]
                  {
                      (Vm.GenerateCommand, GenerateButton), (Vm.GenerateAndTranslateCommand, GenerateAndTranslateButton),
+                     (Vm.StartPlaylistCommand, StartPlaylistButton),
                      (Vm.CancelCommand, CancelButton), (Vm.TranslateCommand, TranslateButton),
                      (Vm.UndoCommand, UndoButton), (Vm.RedoCommand, RedoButton),
                  })
@@ -95,6 +97,9 @@ public sealed partial class MainWindow : Window
     /// <summary>The line list, kept per <see cref="Sentence.Uid"/> (see <see cref="SentenceRow"/>).</summary>
     public ObservableCollection<SentenceRow> Rows { get; } = [];
 
+    /// <summary>The batch playlist queue rows, kept per <see cref="PlaylistItem.Id"/>.</summary>
+    public ObservableCollection<PlaylistRow> PlaylistRows { get; } = [];
+
     // MARK: - View model -> controls
 
     private void OnViewModelChanged(object? sender, PropertyChangedEventArgs e)
@@ -103,6 +108,10 @@ public sealed partial class MainWindow : Window
         {
             case nameof(SubtitleViewModel.Video):
                 OnVideoChanged();
+                break;
+            case nameof(SubtitleViewModel.Playlist):
+            case nameof(SubtitleViewModel.IsPlaylistRunning):
+                SyncPlaylistRows();
                 break;
             case nameof(SubtitleViewModel.Sentences):
                 _player.SetSentences(Vm.Sentences);
@@ -166,13 +175,14 @@ public sealed partial class MainWindow : Window
         UpdateTimingTips();
         UpdateTimingEnabled();
         SyncRows();
+        SyncPlaylistRows();
         UpdateOverlay();
         UpdateCompactLabels();
     }
 
     private void OnVideoChanged()
     {
-        _player.Load(Vm.Video);
+        _player.Load(Vm.IsPlaylistRunning ? null : Vm.Video);
         Title = Vm.WindowTitle;
         TitleFile.Text = Vm.Video is null ? "" : "— " + Vm.WindowTitle;
         DropZone.Visibility = Vm.Video is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
@@ -263,15 +273,38 @@ public sealed partial class MainWindow : Window
         SpeakerIcon.Opacity = Vm.Diarize ? 1 : 0.6;
     }
 
-    /// <summary>Hides the text of secondary toolbar buttons when the window is narrow.</summary>
+    /// <summary>Adapts toolbar layout, combo box widths, and button labels when the window is narrowed.</summary>
     private void UpdateCompactLabels()
     {
-        var compact = Root.ActualWidth is > 0 and < 1280;
-        var visibility = compact ? Visibility.Collapsed : Visibility.Visible;
-        OpenLabel.Visibility = visibility;
-        ImportSubtitleLabel.Visibility = visibility;
-        SpeakerLabel.Visibility = visibility;
-        TranslateLabel.Visibility = Root.ActualWidth is > 0 and < 1080 ? Visibility.Collapsed : Visibility.Visible;
+        var width = Root.ActualWidth;
+        if (width <= 0) return;
+
+        // When narrower than 1380px, move the right-side action buttons into Row 1 opposite the tab bar
+        // so the top row has the full window width for language and model pickers.
+        var wrapActions = width < 1380;
+        Grid.SetRow(RightActionsPanel, wrapActions ? 1 : 0);
+        Grid.SetColumnSpan(LeftToolsPanel, wrapActions ? 2 : 1);
+
+        var compactTop = width < 1120;
+        var topLabelVis = compactTop ? Visibility.Collapsed : Visibility.Visible;
+        OpenLabel.Visibility = topLabelVis;
+        ImportSubtitleLabel.Visibility = topLabelVis;
+        SpeakerLabel.Visibility = topLabelVis;
+        TranslateLabel.Visibility = width < 1180 ? Visibility.Collapsed : Visibility.Visible;
+
+        var veryCompact = width < 920;
+        var actionLabelVis = veryCompact ? Visibility.Collapsed : Visibility.Visible;
+        GenerateLabel.Visibility = actionLabelVis;
+        GenerateAndTranslateLabel.Visibility = actionLabelVis;
+        SaveSubtitleLabel.Visibility = width < 980 ? Visibility.Collapsed : Visibility.Visible;
+        ExportLabel.Visibility = width < 980 ? Visibility.Collapsed : Visibility.Visible;
+        ClearPlaylistLabel.Visibility = width < 980 ? Visibility.Collapsed : Visibility.Visible;
+        BulkPlaylistLanguageLabel.Visibility = width < 920 ? Visibility.Collapsed : Visibility.Visible;
+
+        LanguageBox.Width = compactTop ? 132 : 165;
+        TargetBox.Width = compactTop ? 128 : 155;
+        ModelNameText.MinWidth = compactTop ? 74 : 95;
+        TranslationModelNameText.MinWidth = compactTop ? 74 : 95;
     }
 
     // MARK: - Pickers
@@ -827,6 +860,126 @@ public sealed partial class MainWindow : Window
 
     private void Redo_Click(object sender, RoutedEventArgs e) => Vm.Redo();
 
+    // MARK: - Playlist tab and batch queue
+
+    private void EditorTab_Click(object sender, RoutedEventArgs e) => SwitchTab(playlist: false);
+
+    private void PlaylistTab_Click(object sender, RoutedEventArgs e) => SwitchTab(playlist: true);
+
+    private void SwitchTab(bool playlist)
+    {
+        _isPlaylistTabActive = playlist;
+        EditorTabButton.IsChecked = !playlist;
+        PlaylistTabButton.IsChecked = playlist;
+        EditorView.Visibility = playlist ? Visibility.Collapsed : Visibility.Visible;
+        PlaylistPanel.Visibility = playlist ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void SyncPlaylistRows()
+    {
+        var list = Vm.Playlist;
+        var wanted = list.Select(i => i.Id).ToHashSet();
+        for (var i = PlaylistRows.Count - 1; i >= 0; i--)
+        {
+            if (!wanted.Contains(PlaylistRows[i].Id)) PlaylistRows.RemoveAt(i);
+        }
+        var byId = PlaylistRows.ToDictionary(r => r.Id);
+        for (var i = 0; i < list.Count; i++)
+        {
+            var item = list[i];
+            if (i < PlaylistRows.Count && PlaylistRows[i].Id == item.Id)
+            {
+                // In place.
+            }
+            else if (byId.TryGetValue(item.Id, out var existing))
+            {
+                PlaylistRows.Move(PlaylistRows.IndexOf(existing), i);
+            }
+            else
+            {
+                var created = new PlaylistRow(item.Id);
+                byId[item.Id] = created;
+                PlaylistRows.Insert(i, created);
+            }
+            var row = PlaylistRows[i];
+            row.FileName = item.FileName;
+            row.FolderPath = item.FolderPath;
+            row.SourceLanguageTitle = item.SelectedSourceLanguage.Title;
+            row.StatusText = item.StatusText;
+            row.IsPending = item.IsPending;
+            row.IsWorking = item.IsWorking;
+            row.IsCompleted = item.IsCompleted;
+            row.IsFailed = item.IsFailed;
+            row.CanEdit = item.CanEdit && !Vm.IsPlaylistRunning;
+        }
+    }
+
+    private async void AddPlaylistVideos_Click(object sender, RoutedEventArgs e) => await PickPlaylistVideosAsync();
+
+    private async Task PickPlaylistVideosAsync()
+    {
+        var picker = new FileOpenPicker(AppWindow.Id)
+        {
+            SuggestedStartLocation = PickerLocationId.VideosLibrary,
+            ViewMode = PickerViewMode.List,
+        };
+        foreach (var type in VideoTypes) picker.FileTypeFilter.Add(type);
+        var results = await picker.PickMultipleFilesAsync();
+        if (results is { Count: > 0 })
+        {
+            Vm.AddToPlaylist(results.Select(r => r.Path));
+            SwitchTab(playlist: true);
+        }
+    }
+
+    private void BulkPlaylistLanguageFlyout_Opening(object? sender, object e)
+    {
+        BulkPlaylistLanguageFlyout.Items.Clear();
+        foreach (var language in SubtitleLanguage.All)
+        {
+            var code = language.Code;
+            var item = new MenuFlyoutItem { Text = language.Title };
+            item.Click += (_, _) => Vm.SetAllPlaylistLanguages(code);
+            BulkPlaylistLanguageFlyout.Items.Add(item);
+        }
+    }
+
+    private void PlaylistItemLanguage_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not PlaylistRow row) return;
+        var currentCode = Vm.Playlist.FirstOrDefault(i => i.Id == row.Id)?.SourceLanguage ?? "";
+        var menu = new MenuFlyout { Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft };
+        foreach (var language in SubtitleLanguage.All)
+        {
+            var code = language.Code;
+            var item = new RadioMenuFlyoutItem
+            {
+                Text = language.Title,
+                GroupName = "playlistRowLang",
+                IsChecked = code == currentCode,
+            };
+            item.Click += (_, _) => Vm.SetPlaylistItemLanguage(row.Id, code);
+            menu.Items.Add(item);
+        }
+        menu.ShowAt((FrameworkElement)sender);
+    }
+
+    private void ClearPlaylist_Click(object sender, RoutedEventArgs e) => Vm.ClearPlaylist();
+
+    private void StartPlaylist_Click(object sender, RoutedEventArgs e)
+    {
+        Vm.FinishEditing();
+        Vm.StartPlaylist();
+    }
+
+    private void RemovePlaylistItem_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is PlaylistRow row)
+        {
+            Vm.RemoveFromPlaylist(row.Id);
+        }
+    }
+
     // MARK: - Drag and drop
 
     private void Root_DragOver(object sender, DragEventArgs e)
@@ -850,9 +1003,17 @@ public sealed partial class MainWindow : Window
             deferral.Complete();
         }
         var files = items.OfType<StorageFile>().ToList();
-        var videoFile = files.FirstOrDefault(f => !SubtitleParser.IsSubtitleFile(f.Path));
+        var videoFiles = files.Where(f => !SubtitleParser.IsSubtitleFile(f.Path)).ToList();
         var subtitleFile = files.FirstOrDefault(f => SubtitleParser.IsSubtitleFile(f.Path));
-        if (videoFile is not null) Vm.OpenVideo(videoFile.Path);
+
+        if (videoFiles.Count > 1 || (_isPlaylistTabActive && videoFiles.Count > 0))
+        {
+            Vm.AddToPlaylist(videoFiles.Select(f => f.Path));
+            SwitchTab(playlist: true);
+            return;
+        }
+
+        if (videoFiles.FirstOrDefault() is { } videoFile) Vm.OpenVideo(videoFile.Path);
         if (subtitleFile is not null) Vm.TryLoadSubtitleFile(subtitleFile.Path);
     }
 

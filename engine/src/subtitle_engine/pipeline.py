@@ -1,5 +1,7 @@
 """The whole pipeline: video -> audio -> transcript -> sentences -> subtitle files."""
 import gc
+import inspect
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +11,7 @@ from . import models, subtitles
 from .audio import extract_audio
 from .diarize import Diarizer
 from .i18n import t
-from .models import Sentence
+from .models import Sentence, Word
 from .sentences import SegmenterConfig, segment
 from .transcribe import Transcriber
 
@@ -17,6 +19,7 @@ DiarizerFactory = Callable[[], "Diarizer"]
 
 # (stage, progress in 0..1 or None)
 StageFn = Callable[[str, float | None], None]
+PartialFn = Callable[[list[Sentence], str], None]
 
 
 @dataclass
@@ -40,6 +43,7 @@ def run(
     diarize: bool = False,
     num_speakers: int | None = None,
     diarizer_factory: DiarizerFactory | None = None,
+    on_partial: PartialFn | None = None,
 ) -> PipelineResult:
     if num_speakers is not None and num_speakers < 1:
         raise ValueError(t("speakers_min"))
@@ -56,7 +60,10 @@ def run(
         models.require_download(diarization.MODEL_ID)
 
     on_stage("extracting_audio", None)
-    audio = extract_audio(video, out_dir / f"{video.stem}.wav")
+    extract_kwargs: dict = {}
+    if "on_progress" in inspect.signature(extract_audio).parameters:
+        extract_kwargs["on_progress"] = lambda f: on_stage("extracting_audio", f)
+    audio = extract_audio(video, out_dir / f"{video.stem}.wav", **extract_kwargs)
 
     # If a catalog model is not cached we download it here, so progress is reported
     # before transcription starts. Names outside the catalog are downloaded by faster-whisper.
@@ -82,9 +89,26 @@ def run(
     transcriber = transcriber_factory()
 
     on_stage("transcribing", 0.0)
-    transcript = transcriber.transcribe(
-        audio, language=language, on_progress=lambda f: on_stage("transcribing", f)
-    )
+    transcribe_kwargs: dict = {
+        "language": language,
+        "on_progress": lambda f: on_stage("transcribing", f),
+    }
+    if on_partial is not None and "on_words" in inspect.signature(transcriber.transcribe).parameters:
+        last_emit = 0.0
+
+        def handle_words(words: list[Word], detected_lang: str) -> None:
+            nonlocal last_emit
+            now = time.monotonic()
+            if now - last_emit < 0.5:
+                return
+            last_emit = now
+            partial_sentences = segment(words, config)
+            if partial_sentences:
+                on_partial(partial_sentences, detected_lang)
+
+        transcribe_kwargs["on_words"] = handle_words
+
+    transcript = transcriber.transcribe(audio, **transcribe_kwargs)
 
     speakers = None
     if diarize:
@@ -92,8 +116,6 @@ def run(
         gc.collect()
         on_stage("diarizing", 0.0)
         diarizer = (diarizer_factory or diarization.create_diarizer)()
-        import inspect
-
         diarize_kwargs: dict = {
             "num_speakers": num_speakers,
             "on_progress": lambda f: on_stage("diarizing", f),

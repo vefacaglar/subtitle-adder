@@ -736,6 +736,358 @@
           }
         }
       }
+    },
+    "Düzenleyici" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Editor"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Düzenleyici"
+          }
+        }
+      }
+    },
+    "Çalma listesi" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Playlist"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Çalma listesi"
+          }
+        }
+      }
+    },
+    "Videoları ekle…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add videos…"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videoları ekle…"
+          }
+        }
+      }
+    },
+    "Listeye birden fazla video dosyası ekle" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add multiple video files to the playlist"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listeye birden fazla video dosyası ekle"
+          }
+        }
+      }
+    },
+    "Tüm kaynak diller" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All source languages"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tüm kaynak diller"
+          }
+        }
+      }
+    },
+    "Tümünü ayarla" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set all"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tümünü ayarla"
+          }
+        }
+      }
+    },
+    "Listedeki tüm videoların konuşma (kaynak) dilini tek seferde ayarla" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set the spoken (source) language for all videos in the list at once"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listedeki tüm videoların konuşma (kaynak) dilini tek seferde ayarla"
+          }
+        }
+      }
+    },
+    "Listeyi temizle" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear list"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listeyi temizle"
+          }
+        }
+      }
+    },
+    "Tamamlanan ve bekleyen videoları listeden temizle" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clear completed and pending videos from the list"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tamamlanan ve bekleyen videoları listeden temizle"
+          }
+        }
+      }
+    },
+    "Tümünü Çevir ve Kaydet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Translate & Save All"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tümünü Çevir ve Kaydet"
+          }
+        }
+      }
+    },
+    "Listedeki tüm videoları sırayla metne çevir, seçili hedef dile çevir ve kendi klasörlerine kaydet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transcribe, translate into the selected target language, and save each video in the list to its own folder sequentially"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listedeki tüm videoları sırayla metne çevir, seçili hedef dile çevir ve kendi klasörlerine kaydet"
+          }
+        }
+      }
+    },
+    "Bu videonun konuşma (kaynak) dilini seç" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select the spoken (source) language for this video"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu videonun konuşma (kaynak) dilini seç"
+          }
+        }
+      }
+    },
+    "Listeden kaldır" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove from list"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listeden kaldır"
+          }
+        }
+      }
+    },
+    "Birden fazla videoyu buraya sürükle" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drag multiple videos here"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Birden fazla videoyu buraya sürükle"
+          }
+        }
+      }
+    },
+    "Listedeki tüm videolar sırayla seçili hedef dile çevrilip kendi klasörlerine kaydedilir." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All videos in the list are translated sequentially into the selected target language and saved to their own folders."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listedeki tüm videolar sırayla seçili hedef dile çevrilip kendi klasörlerine kaydedilir."
+          }
+        }
+      }
+    },
+    "Listede henüz video yok." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No videos in the list yet."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listede henüz video yok."
+          }
+        }
+      }
+    },
+    "%lld / %lld tamamlandı" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld / %2$lld completed"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld / %lld tamamlandı"
+          }
+        }
+      }
+    },
+    "Sırada" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Queued"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sırada"
+          }
+        }
+      }
+    },
+    "Kaydedildi: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved: %@"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kaydedildi: %@"
+          }
+        }
+      }
+    },
+    "Tamamlandı" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Completed"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tamamlandı"
+          }
+        }
+      }
+    },
+    "Ses ayrılıyor… %lld%%" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Extracting audio… %lld%%"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ses ayrılıyor… %lld%%"
+          }
+        }
+      }
+    },
+    "Konuşma metne çevriliyor… %lld%%" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transcribing speech… %lld%%"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konuşma metne çevriliyor… %lld%%"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

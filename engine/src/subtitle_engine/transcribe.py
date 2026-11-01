@@ -3,17 +3,24 @@
 Backends implement the `Transcriber` protocol; adding a new one (mlx-whisper, ...) leaves the
 pipeline and the apps unchanged.
 """
+import contextlib
+import hashlib
+import json
 import re
 import sys
+import tempfile
 import wave
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Protocol
+
+import numpy as np
 
 from . import models
 from .models import Transcript, Word
 
 ProgressFn = Callable[[float], None]
+WordsFn = Callable[[list[Word], str], None]
 
 # In onnx-asr tokens a word start comes with a '▁' marker; the library turns it into a space.
 WORD_MARKERS = (" ", "\u2581")
@@ -36,10 +43,134 @@ WHISPER_VAD_OPTIONS = {
     "speech_pad_ms": 200,
 }
 
+# Long audio files (> 3 minutes) are decoded in 3-minute windows split at a quiet boundary so
+# Silero VAD and Whisper never block on multi-hour WAVs before producing the first subtitle.
+TRANSCRIBE_CHUNK_SECONDS = 180.0
+CHUNK_SEARCH_TAIL_SECONDS = 12.0
+
+
+def _iter_wav_chunks(
+    audio: Path, chunk_seconds: float | None = None
+) -> Iterator[tuple[int, float, np.ndarray, float]]:
+    """Yields `(chunk_index, offset_seconds, float32_samples, total_duration)` windows from a 16-bit mono WAV file.
+
+    Splits near the end of each window at the quietest 100 ms frame so words are not cut mid-syllable.
+    """
+    effective_chunk = chunk_seconds if chunk_seconds is not None else TRANSCRIBE_CHUNK_SECONDS
+    with wave.open(str(audio), "rb") as wav:
+        rate = wav.getframerate()
+        total_frames = wav.getnframes()
+        total_duration = total_frames / rate if rate > 0 else 0.0
+        target_frames = int(effective_chunk * rate)
+        tail_frames = int(CHUNK_SEARCH_TAIL_SECONDS * rate)
+        window_100ms = max(int(0.1 * rate), 1)
+
+        cursor_frames = 0
+        chunk_idx = 0
+        carry = np.empty(0, dtype=np.int16)
+
+        while cursor_frames < total_frames or carry.size > 0:
+            needed = max(target_frames - carry.size, 0)
+            raw = wav.readframes(needed) if needed > 0 else b""
+            new_samples = np.frombuffer(raw, dtype="<i2") if raw else np.empty(0, dtype=np.int16)
+            buf = np.concatenate((carry, new_samples)) if carry.size > 0 else new_samples
+            if buf.size == 0:
+                break
+
+            at_eof = (wav.tell() >= total_frames) and (buf.size <= target_frames)
+            if at_eof or buf.size <= tail_frames + window_100ms * 2:
+                cut = buf.size
+            else:
+                # Find the lowest-energy 100 ms window in the last `tail_frames` samples.
+                search_start = max(buf.size - tail_frames, window_100ms)
+                tail = buf[search_start:].astype(np.float32)
+                n_windows = tail.size // window_100ms
+                if n_windows >= 2:
+                    energies = np.mean(np.square(tail[: n_windows * window_100ms].reshape(n_windows, window_100ms)), axis=1)
+                    quietest_idx = int(np.argmin(energies))
+                    cut = search_start + (quietest_idx * window_100ms) + (window_100ms // 2)
+                else:
+                    cut = buf.size
+
+            chunk_i16 = buf[:cut]
+            carry = buf[cut:]
+            offset_sec = cursor_frames / rate
+            cursor_frames += chunk_i16.size
+            yield chunk_idx, offset_sec, chunk_i16.astype(np.float32) / 32768.0, total_duration
+            chunk_idx += 1
+
+
+def _can_stream_wav_chunks(audio: Path, min_duration: float | None = None) -> bool:
+    threshold = min_duration if min_duration is not None else TRANSCRIBE_CHUNK_SECONDS
+    if not audio.is_file():
+        return False
+    try:
+        with wave.open(str(audio), "rb") as wav:
+            if wav.getnchannels() != 1 or wav.getsampwidth() != 2 or wav.getframerate() <= 0:
+                return False
+            return (wav.getnframes() / wav.getframerate()) > threshold
+    except Exception:
+        return False
+
+
+def _transcribe_checkpoint_path(audio: Path, model_size: str, language: str | None) -> Path | None:
+    try:
+        stat = audio.stat()
+        key = f"{audio.name}|{stat.st_size}|{model_size}|{language or ''}"
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
+        folder = Path(tempfile.gettempdir()) / "SubtitleAdder" / "transcriptions"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder / f"asr-{digest}.json"
+    except Exception:
+        return None
+
+
+def _load_transcribe_checkpoint(path: Path | None) -> tuple[str | None, dict[int, list[Word]]]:
+    if path is None or not path.is_file():
+        return None, {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        lang = raw.get("language")
+        chunks: dict[int, list[Word]] = {}
+        for k, word_list in (raw.get("chunks") or {}).items():
+            chunks[int(k)] = [Word(start=float(w["start"]), end=float(w["end"]), text=str(w["text"])) for w in word_list]
+        return lang, chunks
+    except Exception:
+        return None, {}
+
+
+def _save_transcribe_checkpoint(path: Path | None, language: str | None, chunks: dict[int, list[Word]]) -> None:
+    if path is None:
+        return
+    with contextlib.suppress(Exception):
+        payload = {
+            "language": language,
+            "chunks": {
+                str(k): [{"start": w.start, "end": w.end, "text": w.text} for w in v]
+                for k, v in chunks.items()
+            },
+        }
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
+
+def _delete_transcribe_checkpoint(path: Path | None) -> None:
+    if path is None:
+        return
+    with contextlib.suppress(Exception):
+        path.unlink(missing_ok=True)
+    with contextlib.suppress(Exception):
+        path.with_suffix(".json.tmp").unlink(missing_ok=True)
+
 
 class Transcriber(Protocol):
     def transcribe(
-        self, audio: Path, language: str | None = None, on_progress: ProgressFn | None = None
+        self,
+        audio: Path,
+        language: str | None = None,
+        on_progress: ProgressFn | None = None,
+        on_words: WordsFn | None = None,
     ) -> Transcript: ...
 
 
@@ -71,7 +202,11 @@ class FasterWhisperTranscriber:
         )
 
     def transcribe(
-        self, audio: Path, language: str | None = None, on_progress: ProgressFn | None = None
+        self,
+        audio: Path,
+        language: str | None = None,
+        on_progress: ProgressFn | None = None,
+        on_words: WordsFn | None = None,
     ) -> Transcript:
         from . import cuda
 
@@ -85,7 +220,7 @@ class FasterWhisperTranscriber:
                 on_progress(fraction)
 
         try:
-            return self._transcribe(audio, language, progress)
+            return self._transcribe(audio, language, progress, on_words)
         except RuntimeError as exc:
             # The GPU path usually fails on the first batch (a CUDA library is missing or the GPU is unsupported),
             # but a CUDA error (e.g. out of memory) can also come mid-run. Either way the run restarts on the CPU;
@@ -94,9 +229,18 @@ class FasterWhisperTranscriber:
                 raise
             print(f"CUDA unavailable, falling back to CPU: {exc}", file=sys.stderr)
             self._load("cpu")
-            return self._transcribe(audio, language, progress)
+            return self._transcribe(audio, language, progress, on_words)
 
-    def _transcribe(self, audio: Path, language: str | None, on_progress: ProgressFn | None) -> Transcript:
+    def _transcribe(
+        self,
+        audio: Path,
+        language: str | None,
+        on_progress: ProgressFn | None,
+        on_words: WordsFn | None = None,
+    ) -> Transcript:
+        if _can_stream_wav_chunks(audio):
+            return self._transcribe_chunked(audio, language, on_progress, on_words)
+
         segments, info = self._model.transcribe(
             str(audio),
             language=language,
@@ -109,15 +253,90 @@ class FasterWhisperTranscriber:
             hallucination_silence_threshold=1.5,
         )
         words: list[Word] = []
+        detected_language = info.language or language or "?"
         for seg in segments:
-            words.extend(
+            seg_words = [
                 Word(start=round(w.start, 3), end=round(w.end, 3), text=w.word.strip())
                 for w in seg.words or []
                 if w.word.strip()
-            )
+            ]
+            if seg_words:
+                words.extend(seg_words)
+                if on_words is not None:
+                    on_words(list(words), detected_language)
             if on_progress and info.duration:
                 on_progress(min(seg.end / info.duration, 1.0))
         return Transcript(language=info.language, duration=info.duration, words=words)
+
+    def _transcribe_chunked(
+        self,
+        audio: Path,
+        language: str | None,
+        on_progress: ProgressFn | None,
+        on_words: WordsFn | None = None,
+    ) -> Transcript:
+        checkpoint_path = _transcribe_checkpoint_path(audio, self._model_size, language)
+        cached_lang, cached_chunks = _load_transcribe_checkpoint(checkpoint_path)
+
+        words: list[Word] = []
+        detected_language: str | None = language or cached_lang
+        total_duration = 0.0
+
+        for chunk_idx, offset_sec, chunk_samples, wav_duration in _iter_wav_chunks(audio):
+            total_duration = wav_duration
+            if chunk_idx in cached_chunks:
+                chunk_words = cached_chunks[chunk_idx]
+                words.extend(chunk_words)
+                if on_words is not None and words:
+                    on_words(list(words), detected_language or "?")
+                if on_progress and total_duration > 0:
+                    chunk_end = offset_sec + (chunk_samples.size / 16_000.0)
+                    on_progress(min(chunk_end / total_duration, 1.0))
+                continue
+
+            segments, info = self._model.transcribe(
+                chunk_samples,
+                language=detected_language,
+                word_timestamps=True,
+                vad_filter=True,
+                vad_parameters=WHISPER_VAD_OPTIONS,
+                condition_on_previous_text=False,
+                no_speech_threshold=0.8,
+                log_prob_threshold=-1.2,
+                hallucination_silence_threshold=1.5,
+            )
+            if not detected_language and getattr(info, "language", None):
+                detected_language = info.language
+            lang_label = detected_language or getattr(info, "language", None) or "?"
+
+            chunk_words: list[Word] = []
+            for seg in segments:
+                seg_words = [
+                    Word(
+                        start=round(offset_sec + w.start, 3),
+                        end=round(offset_sec + w.end, 3),
+                        text=w.word.strip(),
+                    )
+                    for w in seg.words or []
+                    if w.word.strip()
+                ]
+                if seg_words:
+                    chunk_words.extend(seg_words)
+                    words.extend(seg_words)
+                    if on_words is not None:
+                        on_words(list(words), lang_label)
+                if on_progress and total_duration > 0:
+                    on_progress(min((offset_sec + seg.end) / total_duration, 1.0))
+
+            cached_chunks[chunk_idx] = chunk_words
+            _save_transcribe_checkpoint(checkpoint_path, detected_language, cached_chunks)
+
+            if on_progress and total_duration > 0:
+                chunk_end = offset_sec + (chunk_samples.size / 16_000.0)
+                on_progress(min(chunk_end / total_duration, 1.0))
+
+        _delete_transcribe_checkpoint(checkpoint_path)
+        return Transcript(language=detected_language or "?", duration=total_duration, words=words)
 
 
 class OnnxAsrTranscriber:
@@ -145,7 +364,11 @@ class OnnxAsrTranscriber:
         self._vad = onnx_asr.load_vad("silero", providers=provider_list)
 
     def transcribe(
-        self, audio: Path, language: str | None = None, on_progress: ProgressFn | None = None
+        self,
+        audio: Path,
+        language: str | None = None,
+        on_progress: ProgressFn | None = None,
+        on_words: WordsFn | None = None,
     ) -> Transcript:
         duration = _wav_duration(audio)
         language = language or self._default_language
@@ -157,11 +380,16 @@ class OnnxAsrTranscriber:
 
         adapter = self._model.with_vad(self._vad, **VAD_OPTIONS).with_timestamps()
         words: list[Word] = []
+        lang_label = language or "?"
         for segment in adapter.recognize(audio, **options):
-            words.extend(words_from_tokens(segment.tokens, segment.timestamps, segment.start, segment.end))
+            seg_words = words_from_tokens(segment.tokens, segment.timestamps, segment.start, segment.end)
+            if seg_words:
+                words.extend(seg_words)
+                if on_words is not None:
+                    on_words(list(words), lang_label)
             if on_progress is not None and duration > 0:
                 on_progress(min(segment.end / duration, 1.0))
-        return Transcript(language=language or "?", duration=duration, words=words)
+        return Transcript(language=lang_label, duration=duration, words=words)
 
 
 def words_from_tokens(

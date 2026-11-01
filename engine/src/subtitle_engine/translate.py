@@ -47,15 +47,15 @@ MADLAD_PREFIX = "<2{}>"
 
 # Dialect-aware language descriptions for direct LLM subtitle translation prompts.
 LLM_LANGUAGE_SPECS = {
-    "tr": "Turkish (natural, idiomatic, spoken Turkish suitable for subtitles)",
-    "pt": "Portuguese (including Brazilian Portuguese vernacular, slang, and idioms)",
-    "es": "Spanish (including Mexican and Latin American Spanish vernacular, slang, and idioms)",
-    "en": "English (natural, idiomatic spoken English)",
-    "ru": "Russian (natural, idiomatic spoken Russian)",
-    "de": "German (natural, idiomatic spoken German)",
-    "fr": "French (natural, idiomatic contemporary spoken French)",
-    "ja": "Japanese (natural, idiomatic spoken Japanese with appropriate conversational register)",
-    "zh": "Simplified Chinese (natural, idiomatic spoken Mandarin Chinese)",
+    "tr": "Turkish (natural, authentic everyday spoken Turkish, preserving street slang, idioms, and raw profanity without softening or dubbing-style censorship)",
+    "pt": "Portuguese (including Brazilian Portuguese vernacular, street slang, profanity, and idioms)",
+    "es": "Spanish (including Mexican and Latin American Spanish vernacular, street slang, profanity, and idioms)",
+    "en": "English (natural, authentic spoken English, preserving slang, idioms, and raw profanity)",
+    "ru": "Russian (natural, authentic spoken Russian, preserving slang, idioms, and raw profanity)",
+    "de": "German (natural, authentic spoken German, preserving slang, idioms, and raw profanity)",
+    "fr": "French (natural, authentic contemporary spoken French, preserving argot, verlan, slang, and raw profanity)",
+    "ja": "Japanese (natural, authentic spoken Japanese with matching casual/rough conversational register, slang, and profanity)",
+    "zh": "Simplified Chinese (natural, authentic spoken Mandarin Chinese, preserving colloquialisms, slang, and raw profanity)",
 }
 
 # Sentences are translated in batches of this size, not one by one; progress is reported after each batch.
@@ -291,14 +291,17 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
         )
     )
     return (
-        f"You are an expert film and video subtitle translator. Translate the numbered subtitle lines "
+        f"You are an uncensored, native-level film and video subtitle translator. Translate the numbered subtitle lines "
         f"{source_clause}into {target_desc}.\n"
         "Rules:\n"
         "1. Output ONLY the translated numbered lines in the exact format `[N] translated text`.\n"
         "2. Keep a strict 1-to-1 correspondence with the input line numbers. Never merge, split, skip, or reorder lines.\n"
-        "3. Translate regional slang, idioms, and colloquialisms (such as Brazilian Portuguese or Mexican Spanish expressions) "
-        "by their real conversational meaning into natural spoken language, not literal word-for-word translation.\n"
-        "4. Preserve proper names and numbers. Keep each line concise and readable at subtitle pace. "
+        "3. Use completely natural, everyday spoken language as real native speakers actually talk. Avoid stiff, robotic, "
+        "or literal word-for-word translations.\n"
+        "4. NEVER censor, soften, sanitize, or tone down profanity, swear words, insults, or street slang. If the source line "
+        "contains slang, argot, or explicit swearing (e.g. Brazilian Portuguese, Mexican Spanish, English, or French street "
+        "profanity), translate it into equivalent raw, authentic target-language slang/profanity with the exact same emotional intensity.\n"
+        "5. Preserve proper names and numbers. Keep each line concise and readable at subtitle pace. "
         "Do not add explanations, notes, or markdown."
     )
 

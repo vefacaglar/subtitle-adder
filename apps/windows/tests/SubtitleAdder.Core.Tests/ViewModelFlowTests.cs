@@ -156,7 +156,7 @@ public class ViewModelJobTests
         Assert.Equal(3, call.Options.Speakers);
 
         engine.Events.Writer.TryWrite(new EngineEvent.Stage(EngineStage.Transcribing, 0.5));
-        await Make.Eventually(() => vm.StatusText == "Konuşma metne çevriliyor…", "transcribing label");
+        await Make.Eventually(() => vm.StatusText == "Konuşma metne çevriliyor… 50%", "transcribing label");
         Assert.Equal(0.5, vm.StatusFraction);
 
         var wav = TempWav();
@@ -721,6 +721,72 @@ public class ViewModelTranslationTests
         finally
         {
             Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PlaylistProcessesMultipleVideosWithPerFileLanguagesAndSavesToEachFolder()
+    {
+        using var _ = new LanguageScope(UILanguage.Tr);
+        var rootDir = Path.Combine(Path.GetTempPath(), $"subtitle-adder-playlist-{Guid.NewGuid()}");
+        var dirA = Path.Combine(rootDir, "folderA");
+        var dirB = Path.Combine(rootDir, "folderB");
+        Directory.CreateDirectory(dirA);
+        Directory.CreateDirectory(dirB);
+        try
+        {
+            var videoA = Path.Combine(dirA, "ClipA.mp4");
+            var videoB = Path.Combine(dirB, "ClipB.mkv");
+            var (vm, engine, _) = Make.ViewModel();
+            vm.TranslationTarget = "tr";
+
+            vm.AddToPlaylist([videoA, videoB]);
+            Assert.Equal(2, vm.Playlist.Count);
+
+            // Set all to automatic first, then override videoA to "pt" and videoB to "ja".
+            vm.SetAllPlaylistLanguages("");
+            Assert.All(vm.Playlist, item => Assert.Equal("", item.SourceLanguage));
+            vm.SetPlaylistItemLanguage(vm.Playlist[0].Id, "pt");
+            vm.SetPlaylistItemLanguage(vm.Playlist[1].Id, "ja");
+            Assert.Equal("pt", vm.Playlist[0].SourceLanguage);
+            Assert.Equal("ja", vm.Playlist[1].SourceLanguage);
+
+            var runTask = vm.RunPlaylistAsync();
+
+            // Video A: transcribe (pt) -> translate (to tr)
+            await Make.Eventually(() => engine.TranscribeCalls.Count == 1, "video A transcribe");
+            Assert.Equal(videoA, engine.TranscribeCalls[0].Video);
+            Assert.Equal("pt", engine.TranscribeCalls[0].Options.Language);
+            engine.Finish(Make.Result("pt", "", new Sentence(1, 0, 1, "Caralho!")));
+
+            await Make.Eventually(() => engine.TranslateCalls.Count == 1, "video A translate");
+            Assert.Equal("tr", engine.TranslateCalls[0].To);
+            Assert.Equal("pt", engine.TranslateCalls[0].From);
+            var reqA = engine.TranslateCalls[0].Sentences;
+            engine.Finish(new EngineEvent.Translation("tr", [new Sentence(reqA[0].Id, reqA[0].Start, reqA[0].End, "Hassiktir!")]));
+
+            // Video B: transcribe (ja) -> translate (to tr)
+            await Make.Eventually(() => engine.TranscribeCalls.Count == 2, "video B transcribe");
+            Assert.Equal(videoB, engine.TranscribeCalls[1].Video);
+            Assert.Equal("ja", engine.TranscribeCalls[1].Options.Language);
+            engine.Finish(Make.Result("ja", "", new Sentence(1, 0, 1, "こんにちは")));
+
+            await Make.Eventually(() => engine.TranslateCalls.Count == 2, "video B translate");
+            Assert.Equal("tr", engine.TranslateCalls[1].To);
+            Assert.Equal("ja", engine.TranslateCalls[1].From);
+            var reqB = engine.TranslateCalls[1].Sentences;
+            engine.Finish(new EngineEvent.Translation("tr", [new Sentence(reqB[0].Id, reqB[0].Start, reqB[0].End, "Merhaba")]));
+
+            await runTask;
+
+            Assert.All(vm.Playlist, item => Assert.Equal(PlaylistItemState.Completed, item.State));
+            Assert.Equal("2 / 2 tamamlandı", vm.PlaylistSummaryText);
+            Assert.Equal("Hassiktir!", await File.ReadAllTextAsync(Path.Combine(dirA, "ClipA.srt")));
+            Assert.Equal("Merhaba", await File.ReadAllTextAsync(Path.Combine(dirB, "ClipB.srt")));
+        }
+        finally
+        {
+            Directory.Delete(rootDir, recursive: true);
         }
     }
 }

@@ -4,11 +4,14 @@ PyAV ships the ffmpeg libraries inside its wheel; no system ffmpeg is needed.
 """
 import contextlib
 import wave
+from collections.abc import Callable
 from pathlib import Path
 
 import av
 
 from .i18n import t
+
+ProgressFn = Callable[[float], None]
 
 SAMPLE_RATE = 16_000
 GAP_TOLERANCE = SAMPLE_RATE // 20  # drifts under 50 ms are not padded
@@ -77,10 +80,24 @@ def _iter_audio_frames(container, stream):
         raise first_error
 
 
-def _extract_stream_to_wav(container, stream, out_wav: Path) -> int:
+def _stream_duration_seconds(container, stream) -> float | None:
+    if stream.duration is not None and stream.time_base is not None:
+        dur = float(stream.duration * stream.time_base)
+        if dur > 0:
+            return dur
+    if container.duration is not None and container.duration > 0:
+        return float(container.duration / av.time_base)
+    return None
+
+
+def _extract_stream_to_wav(
+    container, stream, out_wav: Path, on_progress: ProgressFn | None = None
+) -> int:
     """Decodes `stream` into `out_wav` and returns the number of decoded frames."""
     raw_start = container.start_time
     origin = (raw_start / av.time_base) if (raw_start is not None and abs(raw_start) < 10**15) else 0.0
+    total_duration = _stream_duration_seconds(container, stream)
+    last_reported = -1.0
     cursor = 0.0  # input time covered so far, in exact 16 kHz samples (float avoids per-frame rounding drift)
     skip_samples = 0
     frame_count = 0
@@ -110,6 +127,11 @@ def _extract_stream_to_wav(container, stream, out_wav: Path) -> int:
                     cursor = target
             frame_count += 1
             cursor += frame.samples * SAMPLE_RATE / frame.sample_rate
+            if on_progress is not None and total_duration and total_duration > 0:
+                fraction = min(max(cursor / (total_duration * SAMPLE_RATE), 0.0), 1.0)
+                if fraction - last_reported >= 0.01 or fraction >= 1.0:
+                    last_reported = fraction
+                    on_progress(fraction)
             for chunk in resampler.resample(frame):
                 pcm = chunk.to_ndarray().tobytes()
                 if skip_samples > 0:
@@ -129,7 +151,7 @@ def _extract_stream_to_wav(container, stream, out_wav: Path) -> int:
     return frame_count
 
 
-def extract_audio(video: Path, out_wav: Path) -> Path:
+def extract_audio(video: Path, out_wav: Path, on_progress: ProgressFn | None = None) -> Path:
     if not video.is_file():
         raise AudioExtractionError(t("video_not_found", video=video))
     out_wav.parent.mkdir(parents=True, exist_ok=True)
@@ -144,7 +166,7 @@ def extract_audio(video: Path, out_wav: Path) -> Path:
                 try:
                     if idx > 0:
                         container.seek(0)
-                    count = _extract_stream_to_wav(container, stream, out_wav)
+                    count = _extract_stream_to_wav(container, stream, out_wav, on_progress=on_progress)
                     if count > 0 or idx == len(candidates) - 1:
                         break
                 except av.FFmpegError as exc:

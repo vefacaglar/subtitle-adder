@@ -30,3 +30,21 @@ public sealed class SentenceRow(Guid uid) : ObservableObject
     /// <summary>The list item's accessible name (ListViewItem reads the item's ToString).</summary>
     public override string ToString() => $"{Number}. {Text}";
 }
+
+/// <summary>One row of the batch playlist queue, updated in place by <see cref="PlaylistItem.Id"/>.</summary>
+public sealed class PlaylistRow(Guid id) : ObservableObject
+{
+    public Guid Id { get; } = id;
+
+    public string FileName { get => field; set => SetProperty(ref field, value); } = "";
+    public string FolderPath { get => field; set => SetProperty(ref field, value); } = "";
+    public string SourceLanguageTitle { get => field; set => SetProperty(ref field, value); } = "";
+    public string StatusText { get => field; set => SetProperty(ref field, value); } = "";
+    public bool IsPending { get => field; set => SetProperty(ref field, value); }
+    public bool IsWorking { get => field; set => SetProperty(ref field, value); }
+    public bool IsCompleted { get => field; set => SetProperty(ref field, value); }
+    public bool IsFailed { get => field; set => SetProperty(ref field, value); }
+    public bool CanEdit { get => field; set => SetProperty(ref field, value); } = true;
+
+    public override string ToString() => $"{FileName} ({SourceLanguageTitle}) — {StatusText}";
+}

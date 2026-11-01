@@ -41,17 +41,31 @@ def _transcribe(args: argparse.Namespace) -> int:
 
         return create_transcriber(args.model)
 
+    import inspect
+
+    run_kwargs: dict = {
+        "language": args.language,
+        "model": args.model,
+        "formats": tuple(args.format),
+        "config": SegmenterConfig(max_chars=args.max_chars, max_duration=args.max_duration),
+        "on_stage": on_stage,
+        "diarize": args.diarize,
+        "num_speakers": args.speakers,
+    }
+    if args.json and "on_partial" in inspect.signature(pipeline.run).parameters:
+        run_kwargs["on_partial"] = lambda partial, lang: _emit(
+            {
+                "event": "partial",
+                "language": lang,
+                "sentences": [s.to_dict() for s in partial],
+            }
+        )
+
     result = pipeline.run(
         args.video.resolve(),
         factory,
         args.out_dir.resolve(),
-        language=args.language,
-        model=args.model,
-        formats=tuple(args.format),
-        config=SegmenterConfig(max_chars=args.max_chars, max_duration=args.max_duration),
-        on_stage=on_stage,
-        diarize=args.diarize,
-        num_speakers=args.speakers,
+        **run_kwargs,
     )
     if args.json:
         _emit({

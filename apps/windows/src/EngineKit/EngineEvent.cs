@@ -51,6 +51,14 @@ public abstract record EngineEvent
 
     public sealed record Stage(EngineStage Kind, double? Fraction) : EngineEvent;
 
+    public sealed record Partial(string Language, IReadOnlyList<Sentence> Sentences) : EngineEvent
+    {
+        public bool Equals(Partial? other) =>
+            other is not null && Language == other.Language && Sentences.SequenceEqual(other.Sentences);
+
+        public override int GetHashCode() => HashCode.Combine(Language, Sentences.Count);
+    }
+
     public sealed record Result(EngineResult Value) : EngineEvent;
 
     public sealed record Translation(string Language, IReadOnlyList<Sentence> Sentences) : EngineEvent
@@ -81,6 +89,11 @@ public abstract record EngineEvent
             case "stage":
                 var stage = root.Deserialize<StagePayload>(options) ?? throw new JsonException("stage payload");
                 return new Stage(EngineStages.Parse(stage.Stage ?? throw new JsonException("stage missing")), stage.Fraction);
+            case "partial":
+                var partial = root.Deserialize<TranslationPayload>(options) ?? throw new JsonException("partial payload");
+                return new Partial(
+                    partial.Language ?? throw new JsonException("language missing"),
+                    partial.Sentences ?? throw new JsonException("sentences missing"));
             case "result":
                 return new Result(root.Deserialize<EngineResult>(options) ?? throw new JsonException("result payload"));
             case "translation":

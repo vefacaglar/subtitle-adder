@@ -337,3 +337,53 @@ def test_whisper_passes_fast_dialogue_vad_and_decoding_options(wav_file, monkeyp
     assert captured["condition_on_previous_text"] is False
     assert captured["no_speech_threshold"] == 0.8
     assert captured["log_prob_threshold"] == -1.2
+
+
+def test_whisper_streams_chunks_and_emits_partial_words_on_long_wav(tmp_path, monkeypatch):
+    import types
+    import wave
+
+    from subtitle_engine import cuda
+    from subtitle_engine import transcribe as transcribe_mod
+    from subtitle_engine.transcribe import FasterWhisperTranscriber
+
+    monkeypatch.setattr(transcribe_mod, "TRANSCRIBE_CHUNK_SECONDS", 1.0)
+    monkeypatch.setattr(transcribe_mod, "CHUNK_SEARCH_TAIL_SECONDS", 0.2)
+
+    long_wav = tmp_path / "long.wav"
+    with wave.open(str(long_wav), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(b"\x00\x00" * (16_000 * 3))  # 3 seconds -> 3 chunks of ~1s
+
+    chunk_calls: list[int] = []
+
+    class FakeWhisperModel:
+        def __init__(self, size, **kwargs):
+            pass
+
+        def transcribe(self, audio_input, **kwargs):
+            idx = len(chunk_calls) + 1
+            chunk_calls.append(idx)
+            word = types.SimpleNamespace(start=0.1, end=0.4, word=f" chunk{idx}")
+            seg = types.SimpleNamespace(end=0.4, words=[word])
+            return iter([seg]), types.SimpleNamespace(language="pt", duration=1.0)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeWhisperModel))
+    monkeypatch.setattr(cuda, "cuda_usable", lambda: False)
+
+    partial_batches: list[list[str]] = []
+    progress: list[float] = []
+    transcript = FasterWhisperTranscriber("base").transcribe(
+        long_wav,
+        on_progress=progress.append,
+        on_words=lambda words, lang: partial_batches.append([w.text for w in words]),
+    )
+
+    assert len(chunk_calls) >= 3
+    assert [w.text for w in transcript.words] == [f"chunk{i}" for i in range(1, len(chunk_calls) + 1)]
+    assert transcript.words[1].start > transcript.words[0].end
+    assert partial_batches[0] == ["chunk1"]
+    assert partial_batches[-1] == [f"chunk{i}" for i in range(1, len(chunk_calls) + 1)]
+    assert progress[-1] == 1.0

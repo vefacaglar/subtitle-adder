@@ -139,6 +139,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
 
         GenerateCommand = new RelayCommand(Generate, () => Video is not null && !IsWorking);
         GenerateAndTranslateCommand = new RelayCommand(GenerateAndTranslate, () => CanGenerateAndTranslate);
+        StartPlaylistCommand = new RelayCommand(StartPlaylist, () => CanStartPlaylist);
         CancelCommand = new RelayCommand(Cancel, () => IsWorking);
         TranslateCommand = new RelayCommand(Translate, () => Sentences.Count > 0 && !IsWorking);
         UndoCommand = new RelayCommand(Undo, () => CanUndo);
@@ -346,19 +347,29 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         get => _status;
         private set
         {
+            var wasWorking = IsWorking;
+            var oldKind = StatusKind;
+            var oldIndeterminate = IsIndeterminate;
             if (!SetProperty(ref _status, value)) return;
             if (value is not JobStatus.Failed) _offlineRetry = null;
-            OnPropertyChanged(nameof(CanGoOnlineAndRetry));
-            OnPropertyChanged(nameof(IsWorking));
-            OnPropertyChanged(nameof(StatusKind));
+            SyncActivePlaylistItemProgress();
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(StatusFraction));
-            OnPropertyChanged(nameof(IsIndeterminate));
-            RaiseCommands();
+            if (oldIndeterminate != IsIndeterminate) OnPropertyChanged(nameof(IsIndeterminate));
+            if (oldKind != StatusKind)
+            {
+                OnPropertyChanged(nameof(StatusKind));
+                OnPropertyChanged(nameof(CanGoOnlineAndRetry));
+            }
+            if (wasWorking != IsWorking || oldKind != StatusKind)
+            {
+                OnPropertyChanged(nameof(IsWorking));
+                RaiseCommands();
+            }
         }
     }
 
-    public bool IsWorking => _status is JobStatus.Working;
+    public bool IsWorking => _status is JobStatus.Working || _isPlaylistRunning;
 
     public JobStatusKind StatusKind => _status switch
     {
@@ -604,7 +615,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public bool ExportsTranslation => _exportLanguage == ExportLanguage.Translated && HasTranslations;
 
     /// <summary>Whether "Dışa aktar…" is enabled.</summary>
-    public bool CanExport => HasSentences && !IsWorking;
+    public bool CanExport => HasSentences && _status is not JobStatus.Working;
 
     /// <summary>Whether "Altyazıyı kaydet" is enabled (needs a video or subtitle path and exportable lines).</summary>
     public bool CanSaveSubtitle => CanExport && (_video is not null || _loadedSubtitlePath is not null);
@@ -633,6 +644,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
 
     public IRelayCommand GenerateCommand { get; }
     public IRelayCommand GenerateAndTranslateCommand { get; }
+    public IRelayCommand StartPlaylistCommand { get; }
     public IRelayCommand CancelCommand { get; }
     public IRelayCommand TranslateCommand { get; }
     public IRelayCommand UndoCommand { get; }
@@ -816,8 +828,16 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     var purpose = download == DownloadPhaseTracker.Kind.Diarization ? JobPurpose.Diarization : JobPurpose.Transcription;
                     Status = new JobStatus.Working(Label(stage.Kind, stage.Fraction, purpose), stage.Fraction);
                     break;
+                case EngineEvent.Partial partial:
+                    Sentences = MergeSentencesPreservingUid(_sentences, partial.Sentences);
+                    if (partial.Language is { Length: > 0 } lang && lang != "?")
+                    {
+                        DetectedLanguage = lang;
+                        ReconcileTranslationTarget();
+                    }
+                    break;
                 case EngineEvent.Result result:
-                    Sentences = [.. result.Value.Sentences];
+                    Sentences = MergeSentencesPreservingUid(_sentences, result.Value.Sentences);
                     DetectedLanguage = result.Value.Language;
                     ReconcileTranslationTarget();
                     // The app doesn't use the extracted WAV or temp CLI outputs; delete them immediately.
@@ -846,9 +866,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         } : null);
     }
 
-    /// <summary>Stops the running subtitle or translation job; the state goes back to idle.</summary>
+    /// <summary>Stops the running subtitle or translation job (and any batch playlist); the state goes back to idle.</summary>
     public void Cancel()
     {
+        _playlistCts?.Cancel();
         StopJob();
         Catalog.ActiveModels = new HashSet<string>();
         Status = JobStatus.IdleStatus;
@@ -882,7 +903,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         switch (stage)
         {
             case EngineStage.ExtractingAudio:
-                return L("Ses ayrılıyor…");
+                return fraction is { } a ? L("Ses ayrılıyor… %lld%%", Percent(a)) : L("Ses ayrılıyor…");
             case EngineStage.DownloadingModel:
                 var prefix = purpose switch
                 {
@@ -894,7 +915,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             case EngineStage.LoadingModel:
                 return purpose == JobPurpose.Translation ? L("Çeviri modeli yükleniyor…") : L("Model yükleniyor…");
             case EngineStage.Transcribing:
-                return L("Konuşma metne çevriliyor…");
+                return fraction is { } tr ? L("Konuşma metne çevriliyor… %lld%%", Percent(tr)) : L("Konuşma metne çevriliyor…");
             case EngineStage.Diarizing:
                 return fraction is { } d ? L("Konuşmacılar ayrılıyor… %lld%%", Percent(d)) : L("Konuşmacılar ayrılıyor…");
             case EngineStage.Segmenting:
@@ -904,6 +925,20 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             default:
                 return L("Çalışıyor…");
         }
+    }
+
+    private static IReadOnlyList<Sentence> MergeSentencesPreservingUid(
+        IReadOnlyList<Sentence> existing, IReadOnlyList<Sentence> incoming)
+    {
+        if (existing.Count == 0) return [.. incoming];
+        var uidById = new Dictionary<int, Guid>(existing.Count);
+        foreach (var s in existing) uidById.TryAdd(s.Id, s.Uid);
+        var merged = new List<Sentence>(incoming.Count);
+        foreach (var s in incoming)
+        {
+            merged.Add(uidById.TryGetValue(s.Id, out var uid) ? s with { Uid = uid } : s);
+        }
+        return merged;
     }
 
     /// <summary>
@@ -1056,8 +1091,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CanExport));
         OnPropertyChanged(nameof(CanSaveSubtitle));
         OnPropertyChanged(nameof(CanGenerateAndTranslate));
+        OnPropertyChanged(nameof(CanStartPlaylist));
         GenerateCommand?.NotifyCanExecuteChanged();
         GenerateAndTranslateCommand?.NotifyCanExecuteChanged();
+        StartPlaylistCommand?.NotifyCanExecuteChanged();
         CancelCommand?.NotifyCanExecuteChanged();
         TranslateCommand?.NotifyCanExecuteChanged();
         MergeSelectedCommand?.NotifyCanExecuteChanged();
