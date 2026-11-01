@@ -145,6 +145,54 @@
         }
       }
     },
+    "Altyazı aç" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Subtitles"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altyazı aç"
+          }
+        }
+      }
+    },
+    "Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a subtitle file (.srt, .vtt, .ass) — load without re-extracting audio"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle"
+          }
+        }
+      }
+    },
+    "Altyazı dosyasında geçerli satır bulunamadı." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No valid subtitle lines were found in the file."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altyazı dosyasında geçerli satır bulunamadı."
+          }
+        }
+      }
+    },
     "Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet" : {
       "localizations" : {
         "en" : {

@@ -56,6 +56,13 @@
                         <TextBlock x:Name="OpenLabel" loc:Localize.Text="Video seç" />
                     </StackPanel>
                 </Button>
+                <Button x:Name="ImportSubtitleButton" Style="{StaticResource ToolButtonStyle}" Click="ImportSubtitle_Click"
+                        loc:Localize.ToolTip="Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle" loc:Localize.AutomationName="Altyazı aç">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8A5;" FontSize="16" />
+                        <TextBlock x:Name="ImportSubtitleLabel" loc:Localize.Text="Altyazı aç" />
+                    </StackPanel>
+                </Button>
                 <Border Width="1" Margin="2,6" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
                 <ComboBox x:Name="LanguageBox" Width="190" VerticalAlignment="Center" SelectionChanged="LanguageBox_SelectionChanged"
                           loc:Localize.AutomationName="Konuşma dili"

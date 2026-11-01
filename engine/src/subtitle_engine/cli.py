@@ -110,12 +110,22 @@ def _translate(args: argparse.Namespace) -> int:
     translator = create_translator(args.model)
     try:
         on_stage("translating", 0.0)
-        translated = translator.translate(
-            sentences,
-            target=args.to,
-            source=args.source,
-            on_progress=lambda f: on_stage("translating", f),
-        )
+        import inspect
+
+        translate_kwargs: dict = {
+            "target": args.to,
+            "source": args.source,
+            "on_progress": lambda f: on_stage("translating", f),
+        }
+        if args.json and "on_batch" in inspect.signature(translator.translate).parameters:
+            translate_kwargs["on_batch"] = lambda partial: _emit(
+                {
+                    "event": "translation",
+                    "language": args.to,
+                    "sentences": [s.to_dict() for s in partial],
+                }
+            )
+        translated = translator.translate(sentences, **translate_kwargs)
     finally:
         close = getattr(translator, "close", None)
         if callable(close):

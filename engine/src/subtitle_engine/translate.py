@@ -9,6 +9,7 @@ The source text never leaves the machine; the network is only used to download m
 """
 import atexit
 import contextlib
+import hashlib
 import json
 import re
 import socket
@@ -27,6 +28,7 @@ from .i18n import t
 from .models import ModelError, Sentence
 
 ProgressFn = Callable[[float], None]
+BatchFn = Callable[[list[Sentence]], None]
 
 # NLLB source/target language codes use the FLORES-200 format; MADLAD turns the ISO 639-1 code
 # into a "<2xx>" token and needs no source language tag.
@@ -52,8 +54,8 @@ LLM_LANGUAGE_SPECS = {
 
 # Sentences are translated in batches of this size, not one by one; progress is reported after each batch.
 BATCH_SIZE = 16
-LLM_BATCH_SIZE = 15
-LLM_CONTEXT_LINES = 3
+LLM_BATCH_SIZE = 6
+LLM_CONTEXT_LINES = 2
 BEAM_SIZE = 4
 MAX_DECODING_LENGTH = 256
 # add_source_eos is off in CT2 models; we append it to the end of the source like HF tokenizers do.
@@ -71,6 +73,7 @@ class Translator(Protocol):
         target: str,
         source: str | None = None,
         on_progress: ProgressFn | None = None,
+        on_batch: BatchFn | None = None,
     ) -> list[Sentence]: ...
 
 
@@ -136,6 +139,7 @@ class Ct2Translator:
         target: str,
         source: str | None = None,
         on_progress: ProgressFn | None = None,
+        on_batch: BatchFn | None = None,
     ) -> list[Sentence]:
         from . import cuda
 
@@ -192,6 +196,9 @@ class Ct2Translator:
                     speaker=sentence.speaker,
                 )
             processed += len(batch)
+            if on_batch is not None:
+                last_index = batch[-1][0]
+                on_batch(result_sentences[: last_index + 1])
             if on_progress is not None:
                 on_progress(min(processed / len(pending), 1.0))
         return result_sentences
@@ -341,6 +348,34 @@ def _free_local_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _temp_checkpoint_path(model_id: str, target: str, source: str | None, sentences: list[Sentence]) -> Path:
+    """Path in `%TEMP%/SubtitleAdder/translations/` where translated chunks are saved incrementally."""
+    digest = hashlib.sha256()
+    digest.update(f"{model_id}|{source or ''}|{target}\n".encode("utf-8"))
+    for s in sentences:
+        digest.update(f"{s.id}:{s.text.strip()}\n".encode("utf-8"))
+    folder = Path(tempfile.gettempdir()) / "SubtitleAdder" / "translations"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"chunk-{digest.hexdigest()[:20]}.json"
+
+
+def _load_temp_checkpoint(path: Path) -> dict[int, str]:
+    try:
+        if not path.is_file():
+            return {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return {int(k): str(v) for k, v in raw.items() if str(v).strip()}
+    except Exception:
+        return {}
+
+
+def _save_temp_checkpoint(path: Path, cache: dict[int, str]) -> None:
+    with contextlib.suppress(Exception):
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
+
 class LlamaTranslator:
     """Runs GGUF instruction-tuned LLMs (Gemma 4, Qwen 3.5) locally via `llama-server`."""
 
@@ -383,10 +418,12 @@ class LlamaTranslator:
             str(port),
             "-ngl",
             str(gpu_layers),
+            "-fa",
+            "on",
             "-np",
             "1",
             "-c",
-            "4096",
+            "2048",
             "--reasoning-budget",
             "0",
         ]
@@ -467,7 +504,8 @@ class LlamaTranslator:
                 "messages": messages,
                 "temperature": 0.2,
                 "top_p": 0.9,
-                "max_tokens": 1024,
+                "max_tokens": 512,
+                "cache_prompt": False,
                 "chat_template_kwargs": {"enable_thinking": False},
             }
         ).encode("utf-8")
@@ -494,6 +532,7 @@ class LlamaTranslator:
         target: str,
         source: str | None = None,
         on_progress: ProgressFn | None = None,
+        on_batch: BatchFn | None = None,
     ) -> list[Sentence]:
         check_request(self._info.id, target, source)
         result_sentences = [
@@ -507,38 +546,65 @@ class LlamaTranslator:
             return result_sentences
 
         system_prompt = build_system_prompt(target=target, source=source)
+        checkpoint_path = (
+            _temp_checkpoint_path(self._info.id, target, source, sentences)
+            if self._completion_fn is None
+            else None
+        )
+        cached_chunks = _load_temp_checkpoint(checkpoint_path) if checkpoint_path is not None else {}
+
         processed = 0
         for start in range(0, len(pending), LLM_BATCH_SIZE):
             batch = pending[start : start + LLM_BATCH_SIZE]
-            ctx_start = max(0, start - LLM_CONTEXT_LINES)
-            context_lines = [s.text.strip() for _, s in pending[ctx_start:start]]
-            batch_texts = [s.text.strip() for _, s in batch]
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": build_user_prompt(batch_texts, context_lines)},
-            ]
-            raw_reply = self._complete(messages)
-            parsed = parse_numbered_translations(raw_reply, len(batch))
+            if cached_chunks and all(sentence.id in cached_chunks for _, sentence in batch):
+                for index, sentence in batch:
+                    result_sentences[index] = Sentence(
+                        id=sentence.id,
+                        start=sentence.start,
+                        end=sentence.end,
+                        text=cached_chunks[sentence.id],
+                        words=[],
+                        speaker=sentence.speaker,
+                    )
+            else:
+                ctx_start = max(0, start - LLM_CONTEXT_LINES)
+                context_lines = [s.text.strip() for _, s in pending[ctx_start:start]]
+                batch_texts = [s.text.strip() for _, s in batch]
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": build_user_prompt(batch_texts, context_lines)},
+                ]
+                raw_reply = self._complete(messages)
+                parsed = parse_numbered_translations(raw_reply, len(batch))
 
-            for offset, (index, sentence) in enumerate(batch, start=1):
-                text = parsed.get(offset, "").strip()
-                if not text and len(batch) > 1:
-                    # Single-line retry if the model omitted one numbered line in the batch.
-                    single_messages = [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": build_user_prompt([sentence.text.strip()])},
-                    ]
-                    single_parsed = parse_numbered_translations(self._complete(single_messages), 1)
-                    text = single_parsed.get(1, "").strip()
-                result_sentences[index] = Sentence(
-                    id=sentence.id,
-                    start=sentence.start,
-                    end=sentence.end,
-                    text=text or sentence.text,
-                    words=[],
-                    speaker=sentence.speaker,
-                )
+                for offset, (index, sentence) in enumerate(batch, start=1):
+                    text = parsed.get(offset, "").strip()
+                    if not text and len(batch) > 1:
+                        # Single-line retry if the model omitted one numbered line in the batch.
+                        single_messages = [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": build_user_prompt([sentence.text.strip()])},
+                        ]
+                        single_parsed = parse_numbered_translations(self._complete(single_messages), 1)
+                        text = single_parsed.get(1, "").strip()
+                    final_text = text or sentence.text
+                    result_sentences[index] = Sentence(
+                        id=sentence.id,
+                        start=sentence.start,
+                        end=sentence.end,
+                        text=final_text,
+                        words=[],
+                        speaker=sentence.speaker,
+                    )
+                    if text:
+                        cached_chunks[sentence.id] = final_text
+                if checkpoint_path is not None:
+                    _save_temp_checkpoint(checkpoint_path, cached_chunks)
+
             processed += len(batch)
+            if on_batch is not None:
+                last_index = batch[-1][0]
+                on_batch(result_sentences[: last_index + 1])
             if on_progress is not None:
                 on_progress(min(processed / len(pending), 1.0))
         return result_sentences

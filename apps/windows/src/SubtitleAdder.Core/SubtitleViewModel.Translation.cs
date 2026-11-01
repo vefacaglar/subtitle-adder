@@ -65,9 +65,10 @@ public sealed partial class SubtitleViewModel
         });
     }
 
-    /// <summary>Maps translated lines by their stable <c>Uid</c> values; the engine preserves order and ids.</summary>
+    /// <summary>Maps translated lines by their stable <c>Uid</c> values; supports both incremental batches and final results.</summary>
     private void ApplyTranslation(IReadOnlyList<Sentence> translated, string language, IReadOnlyList<Sentence> source)
     {
+        var hadTranslations = _translations.Count > 0;
         var entries = new Dictionary<Guid, TranslationEntry>();
         for (var index = 0; index < translated.Count; index++)
         {
@@ -79,7 +80,7 @@ public sealed partial class SubtitleViewModel
         Translations = entries;
         TranslationLanguage = language;
         TranslationTarget = language;
-        if (entries.Count > 0)
+        if (!hadTranslations && entries.Count > 0)
         {
             if (DisplayMode == SubtitleDisplay.Original) DisplayMode = SubtitleDisplay.Translation;
             ExportLanguage = ExportLanguage.Translated;

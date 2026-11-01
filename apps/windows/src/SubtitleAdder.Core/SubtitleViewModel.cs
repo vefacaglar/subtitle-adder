@@ -103,6 +103,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private TextDraft? _draft;
     private LocalizedMessage? _modelNotice;
     private string? _video;
+    private string? _loadedSubtitlePath;
     private string? _savedSubtitleName;
     private ExportLanguage _exportLanguage;
     private SubtitleFormat _exportFormat = SubtitleFormat.Srt;
@@ -569,14 +570,17 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     {
         get
         {
-            var name = _video is null ? "subtitles" : Path.GetFileNameWithoutExtension(_video);
+            var sourcePath = _video ?? _loadedSubtitlePath;
+            var name = sourcePath is null ? "subtitles" : Path.GetFileNameWithoutExtension(sourcePath);
             var suffix = ExportsTranslation ? "." + (_translationLanguage ?? "translated") : "";
             return $"{name}{suffix}.{_exportFormat.RawValue()}";
         }
     }
 
     /// <summary>Subtitle file path in the video's folder with the video's exact base name, e.g. "C:\videos\clip.srt".</summary>
-    public string? VideoSubtitlePath => _video is null ? null : Path.ChangeExtension(_video, _exportFormat.RawValue());
+    public string? VideoSubtitlePath => (_video ?? _loadedSubtitlePath) is { } basePath
+        ? Path.ChangeExtension(basePath, _exportFormat.RawValue())
+        : null;
 
     /// <summary>Whether the export uses the translation (chosen and available).</summary>
     public bool ExportsTranslation => _exportLanguage == ExportLanguage.Translated && HasTranslations;
@@ -584,8 +588,8 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     /// <summary>Whether "Dışa aktar…" is enabled.</summary>
     public bool CanExport => HasSentences && !IsWorking;
 
-    /// <summary>Whether "Altyazıyı kaydet" is enabled (needs a video path and exportable lines).</summary>
-    public bool CanSaveSubtitle => CanExport && _video is not null;
+    /// <summary>Whether "Altyazıyı kaydet" is enabled (needs a video or subtitle path and exportable lines).</summary>
+    public bool CanSaveSubtitle => CanExport && (_video is not null || _loadedSubtitlePath is not null);
 
     /// <summary>Renders the export with the chosen format and language; <c>null</c> on error (shown in the status).</summary>
     public Task<string?> RenderExportAsync() => RenderAsync(_exportFormat, ExportsTranslation);
@@ -666,7 +670,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
 
     // MARK: - Video and jobs
 
-    /// <summary>When a new video is chosen, clears the old video's job, subtitles and undo stack.</summary>
+    /// <summary>When a new video is chosen, clears the old video's job, subtitles and undo stack (and auto-loads a sidecar subtitle if present).</summary>
     public void OpenVideo(string? path)
     {
         if (path == _video) return;
@@ -679,11 +683,54 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         Selection = null;
         DetectedLanguage = null;
         Draft = null;
+        _loadedSubtitlePath = null;
         _savedSubtitleName = null;
         Status = JobStatus.IdleStatus;
         UndoStack.Clear();
         Video = path;
         ExportLanguage = ExportLanguage.Original;
+
+        if (SubtitleParser.FindSidecarSubtitle(path) is { } sidecar)
+        {
+            TryLoadSubtitleFile(sidecar);
+        }
+    }
+
+    /// <summary>Loads an existing subtitle file (<c>.srt</c>, <c>.vtt</c>, <c>.ass</c>, <c>.json</c>) directly without audio extraction.</summary>
+    public bool TryLoadSubtitleFile(string path)
+    {
+        try
+        {
+            var parsed = SubtitleParser.ParseFile(path);
+            if (parsed.Count == 0)
+            {
+                Status = new JobStatus.Failed(LocalizedMessage.Key("Altyazı dosyasında geçerli satır bulunamadı."));
+                return false;
+            }
+            StopJob();
+            Catalog.ActiveModels = new HashSet<string>();
+            _loadedSubtitlePath = path;
+            _savedSubtitleName = null;
+            Translations = new Dictionary<Guid, TranslationEntry>();
+            TranslationDraft = null;
+            TranslationLanguage = null;
+            Selection = null;
+            Draft = null;
+            UndoStack.Clear();
+            DisplayMode = SubtitleDisplay.Original;
+            ExportLanguage = ExportLanguage.Original;
+            Sentences = [.. parsed];
+            Status = JobStatus.FinishedStatus;
+            OnPropertyChanged(nameof(ExportFileName));
+            OnPropertyChanged(nameof(VideoSubtitlePath));
+            RaiseCommands();
+            return true;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            Status = new JobStatus.Failed(LocalizedMessage.Error(error));
+            return false;
+        }
     }
 
     public void Generate()

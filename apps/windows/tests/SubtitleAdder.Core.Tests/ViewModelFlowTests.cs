@@ -612,4 +612,74 @@ public class ViewModelTranslationTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task OpenVideoAutoLoadsSidecarSrtAndAllowsImmediateIncrementalTranslation()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"subtitle-adder-sidecar-{Guid.NewGuid()}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var videoPath = Path.Combine(dir, "Movie.mp4");
+            var srtPath = Path.Combine(dir, "Movie.srt");
+            await File.WriteAllTextAsync(
+                srtPath,
+                "1\n00:00:01,250 --> 00:00:03,500\n<i>Hello</i> world!\n\n2\n00:00:04,000 --> 00:00:06,000\nSecond line.\n");
+
+            var (vm, engine, _) = Make.ViewModel();
+            vm.OpenVideo(videoPath);
+
+            // Sidecar .srt is loaded immediately without running transcription or audio extraction.
+            Assert.Empty(engine.TranscribeCalls);
+            Assert.Equal(2, vm.Sentences.Count);
+            Assert.Equal("Hello world!", vm.Sentences[0].Text);
+            Assert.Equal(1.25, vm.Sentences[0].Start);
+            Assert.Equal(3.5, vm.Sentences[0].End);
+            Assert.Equal("Second line.", vm.Sentences[1].Text);
+            Assert.True(vm.TranslateCommand.CanExecute(null));
+
+            // Incremental translation updates lines live as batches arrive.
+            vm.Translate();
+            var request = Assert.Single(engine.TranslateCalls).Sentences;
+            engine.Events.Writer.TryWrite(new EngineEvent.Translation(
+                "en",
+                [new Sentence(request[0].Id, request[0].Start, request[0].End, "Chunk 1")]));
+            await Make.Eventually(() => vm.TranslationFor(vm.Sentences[0])?.Text == "Chunk 1", "first translation batch");
+            Assert.Null(vm.TranslationFor(vm.Sentences[1]));
+            Assert.Equal(SubtitleDisplay.Translation, vm.DisplayMode);
+
+            engine.Finish(new EngineEvent.Translation(
+                "en",
+                [
+                    new Sentence(request[0].Id, request[0].Start, request[0].End, "Chunk 1"),
+                    new Sentence(request[1].Id, request[1].Start, request[1].End, "Chunk 2"),
+                ]));
+            await vm.CurrentJob;
+            Assert.Equal("Chunk 2", vm.TranslationFor(vm.Sentences[1])?.Text);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void SubtitleParserHandlesVttAndAssFormats()
+    {
+        var vtt = SubtitleParser.Parse(
+            "WEBVTT\n\n00:01.000 --> 00:02.500 align:start\nFirst VTT cue\n",
+            ".vtt");
+        var singleVtt = Assert.Single(vtt);
+        Assert.Equal(1.0, singleVtt.Start);
+        Assert.Equal(2.5, singleVtt.End);
+        Assert.Equal("First VTT cue", singleVtt.Text);
+
+        var ass = SubtitleParser.Parse(
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:05.00,0:00:07.50,Default,,0,0,0,,{\\i1}Styled{\\i0}\\NASS line\n",
+            ".ass");
+        var singleAss = Assert.Single(ass);
+        Assert.Equal(5.0, singleAss.Start);
+        Assert.Equal(7.5, singleAss.End);
+        Assert.Equal("Styled ASS line", singleAss.Text);
+    }
 }

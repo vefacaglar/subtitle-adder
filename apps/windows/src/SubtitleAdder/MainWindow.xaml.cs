@@ -105,6 +105,8 @@ public sealed partial class MainWindow : Window
                 break;
             case nameof(SubtitleViewModel.Sentences):
                 _player.SetSentences(Vm.Sentences);
+                DropZone.Visibility = Vm.Video is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
+                WorkArea.Visibility = Vm.Video is not null || Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
                 SyncRows();
                 UpdateOverlay();
                 break;
@@ -153,8 +155,8 @@ public sealed partial class MainWindow : Window
     {
         Title = Vm.WindowTitle;
         TitleFile.Text = Vm.Video is null ? "" : "— " + Vm.WindowTitle;
-        DropZone.Visibility = Vm.Video is null ? Visibility.Visible : Visibility.Collapsed;
-        WorkArea.Visibility = Vm.Video is null ? Visibility.Collapsed : Visibility.Visible;
+        DropZone.Visibility = Vm.Video is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
+        WorkArea.Visibility = Vm.Video is not null || Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
         UpdatePickers(refill: true);
         UpdateSpeakerButton();
         UpdateStatus();
@@ -172,8 +174,8 @@ public sealed partial class MainWindow : Window
         _player.Load(Vm.Video);
         Title = Vm.WindowTitle;
         TitleFile.Text = Vm.Video is null ? "" : "— " + Vm.WindowTitle;
-        DropZone.Visibility = Vm.Video is null ? Visibility.Visible : Visibility.Collapsed;
-        WorkArea.Visibility = Vm.Video is null ? Visibility.Collapsed : Visibility.Visible;
+        DropZone.Visibility = Vm.Video is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
+        WorkArea.Visibility = Vm.Video is not null || Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
         UpdatePickers();
     }
 
@@ -263,9 +265,10 @@ public sealed partial class MainWindow : Window
     /// <summary>Hides the text of secondary toolbar buttons when the window is narrow.</summary>
     private void UpdateCompactLabels()
     {
-        var compact = Root.ActualWidth is > 0 and < 1220;
+        var compact = Root.ActualWidth is > 0 and < 1280;
         var visibility = compact ? Visibility.Collapsed : Visibility.Visible;
         OpenLabel.Visibility = visibility;
+        ImportSubtitleLabel.Visibility = visibility;
         SpeakerLabel.Visibility = visibility;
         TranslateLabel.Visibility = Root.ActualWidth is > 0 and < 1080 ? Visibility.Collapsed : Visibility.Visible;
     }
@@ -729,6 +732,8 @@ public sealed partial class MainWindow : Window
 
     private async void Open_Click(object sender, RoutedEventArgs e) => await PickVideoAsync();
 
+    private async void ImportSubtitle_Click(object sender, RoutedEventArgs e) => await PickSubtitleAsync();
+
     private async Task PickVideoAsync()
     {
         var picker = new FileOpenPicker(AppWindow.Id)
@@ -739,6 +744,18 @@ public sealed partial class MainWindow : Window
         foreach (var type in VideoTypes) picker.FileTypeFilter.Add(type);
         var result = await picker.PickSingleFileAsync();
         if (result?.Path is { Length: > 0 } path) Vm.OpenVideo(path);
+    }
+
+    private async Task PickSubtitleAsync()
+    {
+        var picker = new FileOpenPicker(AppWindow.Id)
+        {
+            SuggestedStartLocation = PickerLocationId.VideosLibrary,
+            ViewMode = PickerViewMode.List,
+        };
+        foreach (var ext in SubtitleParser.Extensions) picker.FileTypeFilter.Add(ext);
+        var result = await picker.PickSingleFileAsync();
+        if (result?.Path is { Length: > 0 } path) Vm.TryLoadSubtitleFile(path);
     }
 
     private async void SaveSubtitle_Click(object sender, RoutedEventArgs e)
@@ -825,7 +842,11 @@ public sealed partial class MainWindow : Window
         {
             deferral.Complete();
         }
-        if (items.OfType<StorageFile>().FirstOrDefault() is { } file) Vm.OpenVideo(file.Path);
+        var files = items.OfType<StorageFile>().ToList();
+        var videoFile = files.FirstOrDefault(f => !SubtitleParser.IsSubtitleFile(f.Path));
+        var subtitleFile = files.FirstOrDefault(f => SubtitleParser.IsSubtitleFile(f.Path));
+        if (videoFile is not null) Vm.OpenVideo(videoFile.Path);
+        if (subtitleFile is not null) Vm.TryLoadSubtitleFile(subtitleFile.Path);
     }
 
     // MARK: - Keyboard
