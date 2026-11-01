@@ -2768,6 +2768,214 @@
           }
         }
       }
+    },
+    "Altyazı aç": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı aç"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Subtitles"
+          }
+        }
+      }
+    },
+    "Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a subtitle file (.srt, .vtt, .ass) — load without re-extracting audio"
+          }
+        }
+      }
+    },
+    "Altyazı dosyasında geçerli satır bulunamadı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı dosyasında geçerli satır bulunamadı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No valid subtitle lines were found in the file."
+          }
+        }
+      }
+    },
+    "Altyazıyı kaydet": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazıyı kaydet"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save Subtitles"
+          }
+        }
+      }
+    },
+    "Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save subtitles in the video's folder with the same name as the video"
+          }
+        }
+      }
+    },
+    "Çeviriyi videonun bulunduğu klasöre videoyla aynı adla ve dil koduyla kaydet": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviriyi videonun bulunduğu klasöre videoyla aynı adla ve dil koduyla kaydet"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save the translation in the video's folder with the video's name and the language code"
+          }
+        }
+      }
+    },
+    " · kaydedildi: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " · kaydedildi: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": " · saved: %@"
+          }
+        }
+      }
+    },
+    "Dosya kaydedilemedi: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dosya kaydedilemedi: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not save the file: %@"
+          }
+        }
+      }
+    },
+    "Otomatik kaydet": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Otomatik kaydet"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto-save"
+          }
+        }
+      }
+    },
+    "Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatically save the translated subtitle to the video folder when translation finishes"
+          }
+        }
+      }
+    },
+    "Komple çevir": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Komple çevir"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full translate"
+          }
+        }
+      }
+    },
+    "Altyazıyı üret, seçili dile çevir ve otomatik kaydet": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazıyı üret, seçili dile çevir ve otomatik kaydet"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generate subtitles, translate to the selected language, and auto-save"
+          }
+        }
+      }
+    },
+    "%lld satır": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld satır"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lines: %lld"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

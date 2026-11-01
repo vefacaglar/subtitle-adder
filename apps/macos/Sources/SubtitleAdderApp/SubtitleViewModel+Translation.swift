@@ -47,6 +47,7 @@ extension SubtitleViewModel {
         let model = translationModel
         if blockedOffline([model], retry: { [weak self] in self?.translate() }) { return }
         let request = sentences
+        savedSubtitleName = nil
         job?.cancel()
         let id = UUID()
         jobID = id
@@ -77,7 +78,10 @@ extension SubtitleViewModel {
                 }
                 // On cancel the stream ends without an error; in that case the status doesn't change.
                 guard jobID == id, !Task.isCancelled else { return }
-                if !failed { status = .finished }
+                if !failed {
+                    status = .finished
+                    await autoSaveTranslationIfEnabled()
+                }
                 // Make the downloaded translation model show as "hazır" (ready) in Settings.
                 await catalog.load()
             } catch is CancellationError {

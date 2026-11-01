@@ -40,7 +40,7 @@ struct SubtitleAdderApp: App {
                 .frame(minWidth: 760, minHeight: 600)
                 // Opening with "Open With" from Finder / dropping on the Dock: don't open a new window, hand it to the open one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
-                .onOpenURL { vm.openVideo($0) }
+                .onOpenURL { vm.openFiles([$0]) }
                 .environment(\.locale, language.effective.locale)
         }
         Settings {

@@ -6,27 +6,8 @@ import Testing
 /// Languages, translation models, offline mode, display mode and live output in the view model.
 @MainActor
 @Suite struct AppFoundationTests {
-    /// A shell script standing in for the engine; `models`, `transcribe` and `translate` answer by subcommand.
     private func fakeEngine(models: String = "", transcribe: String = "", translate: String = "") throws -> EngineClient {
-        let url = FileManager.default.temporaryDirectory.appending(path: "fake-engine-\(UUID().uuidString).sh")
-        let script = """
-        #!/bin/sh
-        case "$1" in
-        models)
-        \(models.isEmpty ? ":" : models)
-        ;;
-        transcribe)
-        \(transcribe.isEmpty ? ":" : transcribe)
-        ;;
-        translate)
-        cat > /dev/null
-        \(translate.isEmpty ? ":" : translate)
-        ;;
-        esac
-        """
-        try script.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
-        return EngineClient(command: EngineCommand(executable: url), language: .tr)
+        try FakeEngine.make(models: models, transcribe: transcribe, translate: translate)
     }
 
     private static let modelsEvent = """

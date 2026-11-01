@@ -287,6 +287,10 @@ public struct EngineClient: Sendable {
         process.standardError = try FileHandle(forWritingTo: log)
         let stdinPipe = Pipe()
         process.standardInput = input == nil ? FileHandle.nullDevice : stdinPipe
+        // Waiting through the termination handler instead of `waitUntilExit`, which could miss the exit of a process
+        // that finished while many engines were launching at once.
+        let exit = ExitSignal()
+        process.terminationHandler = { exit.fire($0.terminationStatus) }
         do {
             try process.run()
         } catch {
@@ -305,7 +309,7 @@ public struct EngineClient: Sendable {
                 try? writer.close()
             }
         }
-        return RunningEngine(process: process, stdout: stdout.fileHandleForReading, log: log, language: lang)
+        return RunningEngine(process: process, stdout: stdout.fileHandleForReading, log: log, language: lang, exit: exit)
     }
 }
 
@@ -335,15 +339,11 @@ private struct RunningEngine: @unchecked Sendable {
     let stdout: FileHandle
     let log: URL
     let language: UILanguage
+    let exit: ExitSignal
 
     func exitStatus() async -> Int32 {
         await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                DispatchQueue.global().async {
-                    process.waitUntilExit()
-                    continuation.resume(returning: process.terminationStatus)
-                }
-            }
+            await exit.wait()
         } onCancel: {
             process.terminate()
         }
@@ -364,5 +364,34 @@ private struct RunningEngine: @unchecked Sendable {
         let tail = (try? String(contentsOf: log, encoding: .utf8))?
             .split(separator: "\n").suffix(5).joined(separator: "\n") ?? ""
         return .failed(engineString("Motor hata koduyla çıktı (%lld). %@", language: language, Int(status), tail))
+    }
+}
+
+/// Delivers a process's exit status to whoever waits for it, whether they ask before or after it exits.
+private final class ExitSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var status: Int32?
+    private var waiters: [CheckedContinuation<Int32, Never>] = []
+
+    func fire(_ status: Int32) {
+        lock.lock()
+        self.status = status
+        let pending = waiters
+        waiters = []
+        lock.unlock()
+        for waiter in pending { waiter.resume(returning: status) }
+    }
+
+    func wait() async -> Int32 {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let status {
+                lock.unlock()
+                continuation.resume(returning: status)
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
     }
 }

@@ -100,6 +100,15 @@ final class SubtitleViewModel {
             defaults.set(speakerCount, forKey: Self.speakerCountDefaultsKey)
         }
     }
+    /// Writes the translation next to the video as soon as a translation job finishes; persistent, on by default.
+    var autoSaveSubtitle: Bool {
+        didSet {
+            guard autoSaveSubtitle != oldValue else { return }
+            defaults.set(autoSaveSubtitle, forKey: Self.autoSaveDefaultsKey)
+        }
+    }
+    /// Format of "Altyazıyı kaydet", auto-save and the export panel.
+    var exportFormat: SubtitleFormat = .srt
     var status: Status = .idle {
         didSet {
             // The offline retry only makes sense for the failure that registered it.
@@ -139,6 +148,10 @@ final class SubtitleViewModel {
     var jobID = UUID()  // only the current job may change the state
 
     private(set) var video: URL?
+    /// The subtitle file the lines came from (import or sidecar); where "Altyazıyı kaydet" writes when there is no video.
+    var loadedSubtitle: URL?
+    /// File name of the last save, shown at the end of the finished status.
+    var savedSubtitleName: String?
 
     struct TextDraft: Equatable {
         var uid: UUID
@@ -156,6 +169,7 @@ final class SubtitleViewModel {
     private static let translationTargetDefaultsKey = "translationTarget"
     private static let displayModeDefaultsKey = "subtitleDisplayMode"
     static let offlineModeDefaultsKey = "offlineMode"
+    private static let autoSaveDefaultsKey = "autoSaveSubtitle"
     private static let diarizeDefaultsKey = "diarizeSpeakers"
     private static let speakerCountDefaultsKey = "speakerCount"
 
@@ -183,6 +197,7 @@ final class SubtitleViewModel {
         let savedCount = defaults.integer(forKey: Self.speakerCountDefaultsKey)
         speakerCount = savedCount >= 2 ? savedCount : 0
         offlineMode = defaults.object(forKey: Self.offlineModeDefaultsKey) as? Bool ?? true
+        autoSaveSubtitle = defaults.object(forKey: Self.autoSaveDefaultsKey) as? Bool ?? true
         reconcileModelSelection()
         reconcileTranslationTarget()
         publishLaunchSettings()
@@ -244,7 +259,8 @@ final class SubtitleViewModel {
         translationTarget = next.rawValue
     }
 
-    /// When a new video is chosen, clears the old video's job, subtitles and undo stack.
+    /// When a new video is chosen, clears the old video's job, subtitles and undo stack, then loads a subtitle file
+    /// with the video's name from the same folder if there is one (no transcription needed then).
     func openVideo(_ url: URL?) {
         guard url != video else { return }
         job?.cancel()
@@ -260,10 +276,17 @@ final class SubtitleViewModel {
         draft = nil
         status = .idle
         undoManager?.removeAllActions()
+        loadedSubtitle = nil
+        savedSubtitleName = nil
         video = url
+        if let url, let sidecar = SubtitleParser.findSidecar(for: url) {
+            loadSubtitleFile(sidecar)
+        }
     }
 
-    func generate() {
+    /// Transcribes the video; with `thenTranslate` ("Komple çevir") the translation starts right after the result
+    /// and, with auto-save on, the translated file is written when it finishes.
+    func generate(thenTranslate: Bool = false) {
         guard let video else { return }
         guard let engine = catalog.engine else {
             status = .failed(.error(EngineError.notFound))
@@ -271,13 +294,16 @@ final class SubtitleViewModel {
         }
         var needed = [model]
         if diarize { needed.append(Self.diarizationModelID) }
-        if blockedOffline(needed, retry: { [weak self] in self?.generate() }) { return }
+        if thenTranslate { needed.append(translationModel) }
+        let retry: @MainActor () -> Void = { [weak self] in self?.generate(thenTranslate: thenTranslate) }
+        if blockedOffline(needed, retry: retry) { return }
         sentences = []
         translations = [:]
         translationDraft = nil
         translationLanguage = nil
         selection = nil
         draft = nil
+        savedSubtitleName = nil
         undoManager?.removeAllActions()
         detectedLanguage = nil
         modelNotice = nil
@@ -334,6 +360,12 @@ final class SubtitleViewModel {
                 // On cancel the stream ends without an error; in that case the status doesn't change.
                 guard jobID == id, !Task.isCancelled else { return }
                 if !failed { status = .finished }
+                // Komple çevir: hand over to the translation job, which also auto-saves. Nothing to translate
+                // (no speech found) just stays finished.
+                if thenTranslate, !failed, !sentences.isEmpty {
+                    translate()
+                    return
+                }
                 // Make the downloaded model show as "hazır" (ready) in the menu.
                 await catalog.load()
             } catch is CancellationError {
@@ -362,9 +394,13 @@ final class SubtitleViewModel {
     }
 
     func render(as format: SubtitleFormat, translated: Bool = false) async -> String? {
+        guard let engine = catalog.engine else {
+            status = .failed(.error(EngineError.notFound))
+            return nil
+        }
         do {
             let list = translated ? exportSentences(translated: true) : sentences
-            return try await catalog.engine?.render(list, as: format)
+            return try await engine.render(list, as: format)
         } catch {
             status = .failed(.error(error))
             return nil

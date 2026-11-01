@@ -7,13 +7,18 @@ struct ContentView: View {
     let catalog: ModelCatalog
     @State private var player = PlayerModel()
     @State private var pickingVideo = false
-    @State private var exportFormat: SubtitleFormat = .srt
+    @State private var pickingSubtitle = false
+    /// "Komple çevir" asked for a video first; the pick starts the run.
+    @State private var runAfterPicking = false
     @State private var exportDocument: TextDocument?
 
     var body: some View {
         VStack(spacing: 0) {
-            if vm.video == nil {
+            if vm.video == nil, vm.sentences.isEmpty {
                 dropZone.padding(20)
+            } else if vm.video == nil {
+                // Only a subtitle file is open: edit and save it without a player.
+                SentenceEditorView(vm: vm, player: player)
             } else {
                 VSplitView {
                     PlayerView(
@@ -35,8 +40,8 @@ struct ContentView: View {
             statusBar.padding(.horizontal, 16).padding(.vertical, 10)
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first else { return false }
-            vm.openVideo(url)
+            guard !urls.isEmpty else { return false }
+            vm.openFiles(urls)
             return true
         }
         .toolbar { toolbar }
@@ -49,21 +54,37 @@ struct ContentView: View {
         .onChange(of: vm.video, initial: true) { _, url in player.load(url) }
         .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
         .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent]) { result in
-            if case .success(let url) = result { vm.openVideo(url) }
+            let run = runAfterPicking
+            runAfterPicking = false
+            guard case .success(let url) = result else { return }
+            vm.openVideo(url)
+            if run { vm.generateAndTranslate() }
+        }
+        // A second importer on the same view isn't presented reliably, so it hangs off a background.
+        .background {
+            Color.clear.fileImporter(isPresented: $pickingSubtitle, allowedContentTypes: Self.subtitleTypes) { result in
+                if case .success(let url) = result { vm.loadSubtitleFile(url) }
+            }
         }
         .fileExporter(
             isPresented: Binding(get: { exportDocument != nil }, set: { if !$0 { exportDocument = nil } }),
             document: exportDocument,
             contentType: .plainText,
-            defaultFilename: exportFilename
+            defaultFilename: vm.exportFilename
         ) { _ in }
     }
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
-            Button(L("Video seç"), systemImage: "film") { pickingVideo = true }
-                .help(L("Video dosyası seç"))
+            Button(L("Video seç"), systemImage: "film") {
+                runAfterPicking = false
+                pickingVideo = true
+            }
+            .help(L("Video dosyası seç"))
+            Button(L("Altyazı aç"), systemImage: "doc.text") { pickingSubtitle = true }
+                .disabled(vm.isWorking)
+                .help(L("Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle"))
             Picker(L("Dil"), selection: $vm.language) {
                 ForEach(SubtitleLanguage.allCases) { language in
                     Text(language.title).tag(language.rawValue)
@@ -96,21 +117,39 @@ struct ContentView: View {
                 translationModelMenu
             }
         }
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Toggle(L("Otomatik kaydet"), systemImage: "square.and.arrow.down", isOn: $vm.autoSaveSubtitle)
+                .help(L("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"))
             if vm.isWorking {
                 Button(L("Durdur"), systemImage: "stop.fill") { vm.cancel() }
                     .labelStyle(.titleAndIcon)
                     .help(L("Süren altyazı ya da çeviri işini durdur"))
             } else {
-                Button(L("Altyazı üret"), systemImage: "captions.bubble") { vm.generate() }
+                Button(L("Komple çevir"), systemImage: "wand.and.stars") { generateAndTranslate() }
                     .labelStyle(.titleAndIcon)
                     .buttonStyle(.borderedProminent)
+                    .disabled(!vm.canGenerateAndTranslate)
+                    .help(L("Altyazıyı üret, seçili dile çevir ve otomatik kaydet"))
+                Button(L("Altyazı üret"), systemImage: "captions.bubble") { vm.generate() }
+                    .labelStyle(.titleAndIcon)
                     .keyboardShortcut(.defaultAction)
                     .disabled(vm.video == nil)
                     .help(L("Videonun sesini metne çevirip altyazı çıkar (⌘↩)"))
             }
         }
     }
+
+    /// With neither a video nor lines there is nothing to run on, so "Komple çevir" asks for a video and runs on it.
+    private func generateAndTranslate() {
+        if vm.hasSourceForGenerateAndTranslate {
+            vm.generateAndTranslate()
+        } else {
+            runAfterPicking = true
+            pickingVideo = true
+        }
+    }
+
+    private static let subtitleTypes: [UTType] = SubtitleParser.extensions.compactMap { UTType(filenameExtension: $0) } + [.plainText]
 
     /// The model "Çevir…" uses: local LLMs first, then MADLAD and NLLB. The choice is the same one Settings shows.
     private var translationModelMenu: some View {
@@ -191,8 +230,10 @@ struct ContentView: View {
                 }
                 Text(label.text)
             case .finished:
-                Label(finishedSummary, systemImage: "checkmark.circle.fill")
+                Label(vm.finishedSummary, systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             case .failed(let message):
                 Label(message.text, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
@@ -209,7 +250,7 @@ struct ContentView: View {
                     .lineLimit(1)
                     .help(L("Seçili model bu dil için listede yoktu; en doğru uygun model seçildi."))
             }
-            Picker(L("Biçim"), selection: $exportFormat) {
+            Picker(L("Biçim"), selection: $vm.exportFormat) {
                 ForEach(SubtitleFormat.allCases) { Text($0.rawValue.uppercased()).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -223,31 +264,23 @@ struct ContentView: View {
             .pickerStyle(.menu)
             .frame(width: 180)
             .help(L("Dışa aktarılan altyazıda orijinal mi, çeviri mi kullanılsın"))
+            Button(L("Altyazıyı kaydet"), systemImage: "square.and.arrow.down") {
+                Task { await vm.saveSubtitle() }
+            }
+            .disabled(!vm.canSaveSubtitle)
+            .help(vm.exportsTranslation
+                ? L("Çeviriyi videonun bulunduğu klasöre videoyla aynı adla ve dil koduyla kaydet")
+                : L("Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet"))
             Button(L("Dışa aktar…")) {
                 Task {
-                    let translated = vm.exportLanguage == .translated && !vm.translations.isEmpty
-                    if let text = await vm.render(as: exportFormat, translated: translated) {
+                    if let text = await vm.render(as: vm.exportFormat, translated: vm.exportsTranslation) {
                         exportDocument = TextDocument(text: text)
                     }
                 }
             }
-            .disabled(vm.sentences.isEmpty || vm.isWorking)
+            .disabled(!vm.canExport)
         }
         .font(.callout)
-    }
-
-    private var finishedSummary: String {
-        var summary = L("%lld satır · dil: %@", vm.sentences.count, vm.detectedLanguage ?? "?")
-        if let language = vm.translationLanguage {
-            summary += L(" · çeviri: %@", language)
-        }
-        return summary
-    }
-
-    private var exportFilename: String {
-        let base = vm.video?.deletingPathExtension().lastPathComponent ?? "subtitles"
-        let suffix = vm.exportLanguage == .translated ? ".\(vm.translationLanguage ?? "translated")" : ""
-        return "\(base)\(suffix).\(exportFormat.rawValue)"
     }
 }
 
