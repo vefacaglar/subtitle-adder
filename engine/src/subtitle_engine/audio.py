@@ -11,6 +11,7 @@ from .i18n import t
 
 SAMPLE_RATE = 16_000
 GAP_TOLERANCE = SAMPLE_RATE // 20  # drifts under 50 ms are not padded
+MAX_CONSECUTIVE_PACKET_ERRORS = 64
 
 
 def _write_silence(wav, samples: int) -> None:
@@ -23,6 +24,45 @@ def _write_silence(wav, samples: int) -> None:
 
 class AudioExtractionError(RuntimeError):
     pass
+
+
+def _iter_audio_frames(container, stream):
+    """Demuxes and decodes audio frames while skipping isolated corrupt packets (common in long WMV/ASF/MKV files).
+
+    Raises the underlying `av.FFmpegError` only if no valid audio frames could be decoded at all.
+    """
+    decoded_any = False
+    first_error: av.FFmpegError | None = None
+    consecutive_errors = 0
+    demuxer = iter(container.demux(stream))
+    while True:
+        try:
+            packet = next(demuxer)
+        except StopIteration:
+            break
+        except av.FFmpegError as exc:
+            if first_error is None:
+                first_error = exc
+            consecutive_errors += 1
+            if consecutive_errors >= MAX_CONSECUTIVE_PACKET_ERRORS:
+                break
+            continue
+
+        try:
+            frames = packet.decode()
+        except av.FFmpegError as exc:
+            if first_error is None:
+                first_error = exc
+            consecutive_errors += 1
+            continue
+
+        consecutive_errors = 0
+        for frame in frames:
+            decoded_any = True
+            yield frame
+
+    if not decoded_any and first_error is not None:
+        raise first_error
 
 
 def extract_audio(video: Path, out_wav: Path) -> Path:
@@ -42,7 +82,7 @@ def extract_audio(video: Path, out_wav: Path) -> Path:
                 wav.setnchannels(1)
                 wav.setsampwidth(2)
                 wav.setframerate(SAMPLE_RATE)
-                for frame in container.decode(stream):
+                for frame in _iter_audio_frames(container, stream):
                     # If the audio stream starts late, has gaps, or overlaps, pad or trim so the WAV
                     # timeline stays aligned with the container timeline (no subtitle drift).
                     if frame.time is not None:

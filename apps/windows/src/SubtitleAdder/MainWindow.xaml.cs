@@ -56,7 +56,8 @@ public sealed partial class MainWindow : Window
         // Buttons follow the commands' CanExecute (wired here rather than through Command bindings).
         foreach (var (command, button) in new (CommunityToolkit.Mvvm.Input.IRelayCommand, Button)[]
                  {
-                     (Vm.GenerateCommand, GenerateButton), (Vm.CancelCommand, CancelButton), (Vm.TranslateCommand, TranslateButton),
+                     (Vm.GenerateCommand, GenerateButton), (Vm.GenerateAndTranslateCommand, GenerateAndTranslateButton),
+                     (Vm.CancelCommand, CancelButton), (Vm.TranslateCommand, TranslateButton),
                      (Vm.UndoCommand, UndoButton), (Vm.RedoCommand, RedoButton),
                  })
         {
@@ -806,6 +807,12 @@ public sealed partial class MainWindow : Window
     {
         Vm.FinishEditing();
         Vm.Generate();
+    }
+
+    private void GenerateAndTranslate_Click(object sender, RoutedEventArgs e)
+    {
+        Vm.FinishEditing();
+        Vm.GenerateAndTranslate();
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => Vm.Cancel();

@@ -48,6 +48,7 @@ internal sealed class FakeEngineClient : IEngineClient
     public IAsyncEnumerable<EngineEvent> Transcribe(
         string video, string outDir, TranscribeOptions? options = null, CancellationToken cancellationToken = default)
     {
+        if (Events.Reader.Completion.IsCompleted) Reset();
         TranscribeCalls.Add(new(video, outDir, options ?? new TranscribeOptions()));
         return Stream(Events, StreamCancelled, cancellationToken);
     }
@@ -56,6 +57,7 @@ internal sealed class FakeEngineClient : IEngineClient
         IReadOnlyList<Sentence> sentences, string to, string? from = null, string model = "madlad-3b",
         CancellationToken cancellationToken = default)
     {
+        if (Events.Reader.Completion.IsCompleted) Reset();
         TranslateCalls.Add(new(sentences, to, from, model));
         return Stream(Events, StreamCancelled, cancellationToken);
     }

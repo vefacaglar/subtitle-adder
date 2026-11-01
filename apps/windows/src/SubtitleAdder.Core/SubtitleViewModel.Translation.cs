@@ -62,6 +62,20 @@ public sealed partial class SubtitleViewModel
                     return new JobStatus.Failed(LocalizedMessage.Verbatim(error.Message));
             }
             return null;
+        }, async () =>
+        {
+            Task<string?>? saveTask = null;
+            await _ui.InvokeAsync(() =>
+            {
+                if (_autoSaveSubtitle && HasTranslations && CanSaveSubtitle &&
+                    VideoSubtitlePath is { } path &&
+                    Path.GetDirectoryName(path) is { Length: > 0 } dir &&
+                    Directory.Exists(dir))
+                {
+                    saveTask = SaveSubtitleToVideoFolderAsync();
+                }
+            }).ConfigureAwait(false);
+            if (saveTask is not null) await saveTask.ConfigureAwait(false);
         });
     }
 

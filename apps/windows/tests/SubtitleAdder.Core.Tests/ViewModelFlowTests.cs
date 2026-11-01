@@ -682,4 +682,45 @@ public class ViewModelTranslationTests
         Assert.Equal(7.5, singleAss.End);
         Assert.Equal("Styled ASS line", singleAss.Text);
     }
+
+    [Fact]
+    public async Task GenerateAndTranslateChainsTranscriptionTranslationAndAutoSave()
+    {
+        using var _ = new LanguageScope(UILanguage.Tr);
+        var dir = Path.Combine(Path.GetTempPath(), $"subtitle-adder-e2e-{Guid.NewGuid()}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var videoPath = Path.Combine(dir, "Episode.mp4");
+            var (vm, engine, _) = Make.ViewModel();
+            vm.OpenVideo(videoPath);
+            vm.TranslationTarget = "tr";
+            Assert.True(vm.AutoSaveSubtitle);
+
+            vm.GenerateAndTranslate();
+            Assert.Single(engine.TranscribeCalls);
+
+            // Finish transcription: ViewModel should automatically chain into Translate().
+            engine.Finish(Make.Result("pt", "", new Sentence(1, 0, 1, "Olá."), new Sentence(2, 1, 2, "Tudo bem?")));
+            await Make.Eventually(() => engine.TranslateCalls.Count == 1, "chained translation call");
+
+            var req = engine.TranslateCalls[0].Sentences;
+            engine.Finish(new EngineEvent.Translation(
+                "tr",
+                [
+                    new Sentence(req[0].Id, req[0].Start, req[0].End, "Merhaba."),
+                    new Sentence(req[1].Id, req[1].Start, req[1].End, "Nasılsın?"),
+                ]));
+            await vm.CurrentJob;
+
+            var expectedSrt = Path.Combine(dir, "Episode.srt");
+            Assert.True(File.Exists(expectedSrt));
+            Assert.Equal("Merhaba.|Nasılsın?", await File.ReadAllTextAsync(expectedSrt));
+            Assert.Contains("kaydedildi: Episode.srt", vm.StatusText);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

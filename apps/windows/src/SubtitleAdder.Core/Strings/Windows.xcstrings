@@ -576,6 +576,70 @@
           }
         }
       }
+    },
+    "Komple çevir" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Full translate"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Komple çevir"
+          }
+        }
+      }
+    },
+    "Altyazıyı üret, seçili dile çevir ve otomatik kaydet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Generate subtitles, translate to the selected language, and auto-save"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altyazıyı üret, seçili dile çevir ve otomatik kaydet"
+          }
+        }
+      }
+    },
+    "Otomatik kaydet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto-save"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otomatik kaydet"
+          }
+        }
+      }
+    },
+    "Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatically save the translated subtitle to the video folder when translation finishes"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

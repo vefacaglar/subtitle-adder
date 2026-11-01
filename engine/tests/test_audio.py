@@ -64,3 +64,51 @@ def test_48khz_aac_does_not_accumulate_rounding_drift(tmp_path):
     _, _, wav_sec = read_wav(extract_audio(path, tmp_path / "out.wav"))
     assert abs(wav_sec - expected_sec) < 0.05
 
+
+
+def test_corrupt_packet_mid_stream_is_skipped_without_failing_or_drifting(tone_video, tmp_path, monkeypatch):
+    """Long WMV/ASF files often contain isolated corrupt packets that raise InvalidDataError in packet.decode()."""
+    import av
+
+    real_open = av.open
+
+    class CorruptingPacket:
+        def __init__(self, inner, fail):
+            self._inner = inner
+            self._fail = fail
+
+        def decode(self):
+            if self._fail:
+                raise av.error.InvalidDataError(
+                    1094995529, "Invalid data found when processing input", "avcodec_send_packet()"
+                )
+            return self._inner.decode()
+
+    class WrappingContainer:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._inner.__exit__(*args)
+
+        @property
+        def streams(self):
+            return self._inner.streams
+
+        @property
+        def start_time(self):
+            return self._inner.start_time
+
+        def demux(self, stream):
+            for idx, pkt in enumerate(self._inner.demux(stream)):
+                yield CorruptingPacket(pkt, fail=(idx in (5, 6, 7)))
+
+    monkeypatch.setattr(av, "open", lambda *a, **kw: WrappingContainer(real_open(*a, **kw)))
+    wav = extract_audio(tone_video, tmp_path / "recovered.wav")
+    rate, channels, seconds = read_wav(wav)
+    assert (rate, channels) == (16_000, 1)
+    assert abs(seconds - 2) < 0.15

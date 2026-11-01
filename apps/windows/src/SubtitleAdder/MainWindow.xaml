@@ -64,13 +64,13 @@
                     </StackPanel>
                 </Button>
                 <Border Width="1" Margin="2,6" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                <ComboBox x:Name="LanguageBox" Width="190" VerticalAlignment="Center" SelectionChanged="LanguageBox_SelectionChanged"
+                <ComboBox x:Name="LanguageBox" Width="165" VerticalAlignment="Center" SelectionChanged="LanguageBox_SelectionChanged"
                           loc:Localize.AutomationName="Konuşma dili"
                           loc:Localize.ToolTip="Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır." />
                 <DropDownButton x:Name="ModelButton" VerticalAlignment="Center" HorizontalContentAlignment="Left"
                                 loc:Localize.AutomationName="Altyazı modeli"
                                 loc:Localize.ToolTip="Daha doğru modeller daha yavaştır; ilk kullanımda indirilir.">
-                    <TextBlock x:Name="ModelNameText" Text="{x:Bind Vm.ModelName, Mode=OneWay}" MinWidth="110" />
+                    <TextBlock x:Name="ModelNameText" Text="{x:Bind Vm.ModelName, Mode=OneWay}" MinWidth="95" />
                     <DropDownButton.Flyout>
                         <MenuFlyout x:Name="ModelFlyout" Placement="BottomEdgeAlignedLeft" Opening="ModelFlyout_Opening" />
                     </DropDownButton.Flyout>
@@ -86,20 +86,21 @@
                         <MenuFlyout x:Name="SpeakerFlyout" Placement="BottomEdgeAlignedLeft" Opening="SpeakerFlyout_Opening" />
                     </DropDownButton.Flyout>
                 </DropDownButton>
-                <StackPanel x:Name="TranslateGroup" Orientation="Horizontal" Spacing="8" Visibility="{x:Bind Vm.HasSentences, Mode=OneWay}">
+                <StackPanel x:Name="TranslateGroup" Orientation="Horizontal" Spacing="8">
                     <Border Width="1" Margin="2,6" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                    <ComboBox x:Name="TargetBox" Width="170" VerticalAlignment="Center" SelectionChanged="TargetBox_SelectionChanged"
+                    <ComboBox x:Name="TargetBox" Width="155" VerticalAlignment="Center" SelectionChanged="TargetBox_SelectionChanged"
                               IsEnabled="{x:Bind loc:Ui.Not(Vm.IsWorking), Mode=OneWay}" loc:Localize.AutomationName="Çeviri dili" />
                     <DropDownButton x:Name="TranslationModelButton" VerticalAlignment="Center" HorizontalContentAlignment="Left"
                                     IsEnabled="{x:Bind loc:Ui.Not(Vm.IsWorking), Mode=OneWay}"
                                     loc:Localize.AutomationName="Çeviri modeli"
                                     loc:Localize.ToolTip="Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir.">
-                        <TextBlock x:Name="TranslationModelNameText" Text="{x:Bind Vm.TranslationModelName, Mode=OneWay}" MinWidth="110" />
+                        <TextBlock x:Name="TranslationModelNameText" Text="{x:Bind Vm.TranslationModelName, Mode=OneWay}" MinWidth="95" />
                         <DropDownButton.Flyout>
                             <MenuFlyout x:Name="TranslationModelFlyout" Placement="BottomEdgeAlignedLeft" Opening="TranslationModelFlyout_Opening" />
                         </DropDownButton.Flyout>
                     </DropDownButton>
                     <Button x:Name="TranslateButton" Style="{StaticResource ToolButtonStyle}" Click="Translate_Click"
+                            Visibility="{x:Bind Vm.HasSentences, Mode=OneWay}"
                             loc:Localize.ToolTip="Tüm satırları seçili hedef dile yerel modelle çevir" loc:Localize.AutomationName="Çevir…">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <FontIcon Glyph="&#xF2B7;" FontSize="16" />
@@ -109,16 +110,29 @@
                 </StackPanel>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <CheckBox x:Name="AutoSaveCheckBox" IsChecked="{x:Bind Vm.AutoSaveSubtitle, Mode=TwoWay}"
+                          VerticalAlignment="Center" MinWidth="0" Margin="0,0,2,0"
+                          loc:Localize.Content="Otomatik kaydet"
+                          loc:Localize.ToolTip="Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"
+                          loc:Localize.AutomationName="Otomatik kaydet" />
                 <Button x:Name="SettingsButton" Style="{StaticResource IconButtonStyle}" Click="Settings_Click"
                         loc:Localize.ToolTip="Ayarlar (Ctrl+,)" loc:Localize.AutomationName="Ayarlar">
                     <FontIcon Glyph="&#xE713;" FontSize="16" />
                 </Button>
-                <Button x:Name="GenerateButton" Style="{StaticResource AccentButtonStyle}" Padding="14,5" Click="Generate_Click"
+                <Button x:Name="GenerateButton" Style="{StaticResource ToolButtonStyle}" Padding="12,5" Click="Generate_Click"
                         Visibility="{x:Bind loc:Ui.Collapsed(Vm.IsWorking), Mode=OneWay}"
                         loc:Localize.ToolTip="Videonun sesini metne çevirip altyazı çıkar (Ctrl+Enter)" loc:Localize.AutomationName="Altyazı üret">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <FontIcon Glyph="&#xE7F0;" FontSize="16" />
                         <TextBlock loc:Localize.Text="Altyazı üret" />
+                    </StackPanel>
+                </Button>
+                <Button x:Name="GenerateAndTranslateButton" Style="{StaticResource AccentButtonStyle}" Padding="14,5" Click="GenerateAndTranslate_Click"
+                        Visibility="{x:Bind loc:Ui.Collapsed(Vm.IsWorking), Mode=OneWay}"
+                        loc:Localize.ToolTip="Altyazıyı üret, seçili dile çevir ve otomatik kaydet" loc:Localize.AutomationName="Komple çevir">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xF2B7;" FontSize="16" />
+                        <TextBlock loc:Localize.Text="Komple çevir" />
                     </StackPanel>
                 </Button>
                 <Button x:Name="CancelButton" Style="{StaticResource ToolButtonStyle}" Click="Cancel_Click"

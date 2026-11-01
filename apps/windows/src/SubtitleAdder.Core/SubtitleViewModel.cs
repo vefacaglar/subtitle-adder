@@ -78,6 +78,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public const string DiarizeDefaultsKey = "diarizeSpeakers";
     public const string SpeakerCountDefaultsKey = "speakerCount";
     public const string OfflineModeDefaultsKey = "offlineMode";
+    public const string AutoSaveSubtitleDefaultsKey = "autoSaveSubtitle";
 
     private readonly ISettingsStore _settings;
     private readonly IUiDispatcher _ui;
@@ -91,6 +92,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private bool _diarize;
     private int _speakerCount;
     private bool _offlineMode;
+    private bool _autoSaveSubtitle;
     /// <summary>The job a missing-model failure in offline mode can be retried with ("Çevrimdışı modu kapat ve indir").</summary>
     private Action? _offlineRetry;
     private JobStatus _status = JobStatus.IdleStatus;
@@ -133,8 +135,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         _speakerCount = savedCount >= 2 ? savedCount : 0;
         _offlineMode = settings.GetBool(OfflineModeDefaultsKey) ?? true;
         OfflineState.Shared.Enabled = _offlineMode;
+        _autoSaveSubtitle = settings.GetBool(AutoSaveSubtitleDefaultsKey) ?? true;
 
         GenerateCommand = new RelayCommand(Generate, () => Video is not null && !IsWorking);
+        GenerateAndTranslateCommand = new RelayCommand(GenerateAndTranslate, () => CanGenerateAndTranslate);
         CancelCommand = new RelayCommand(Cancel, () => IsWorking);
         TranslateCommand = new RelayCommand(Translate, () => Sentences.Count > 0 && !IsWorking);
         UndoCommand = new RelayCommand(Undo, () => CanUndo);
@@ -284,6 +288,20 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             _settings.SetBool(OfflineModeDefaultsKey, value);
         }
     }
+
+    /// <summary>Automatically saves the translated subtitle to the video's folder when translation completes; persistent, on by default.</summary>
+    public bool AutoSaveSubtitle
+    {
+        get => _autoSaveSubtitle;
+        set
+        {
+            if (!SetProperty(ref _autoSaveSubtitle, value)) return;
+            _settings.SetBool(AutoSaveSubtitleDefaultsKey, value);
+        }
+    }
+
+    /// <summary>Whether "Komple çevir" is enabled (either a video is open or lines are already loaded, and no job is running).</summary>
+    public bool CanGenerateAndTranslate => !IsWorking && (_video is not null || _sentences.Count > 0);
 
     /// <summary>The current failure is a model offline mode kept from downloading; the error bar offers to go online.</summary>
     public bool CanGoOnlineAndRetry => _offlineRetry is not null && _status is JobStatus.Failed;
@@ -614,6 +632,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     // MARK: - Commands
 
     public IRelayCommand GenerateCommand { get; }
+    public IRelayCommand GenerateAndTranslateCommand { get; }
     public IRelayCommand CancelCommand { get; }
     public IRelayCommand TranslateCommand { get; }
     public IRelayCommand UndoCommand { get; }
@@ -733,7 +752,23 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         }
     }
 
-    public void Generate()
+    public void Generate() => GenerateCore(chainTranslate: false);
+
+    /// <summary>
+    /// End-to-end flow ("Komple çevir"): if lines are already loaded (e.g. from a sidecar .srt), translates them
+    /// immediately; otherwise runs speech recognition and automatically starts translation when it completes.
+    /// </summary>
+    public void GenerateAndTranslate()
+    {
+        if (_sentences.Count > 0)
+        {
+            Translate();
+            return;
+        }
+        GenerateCore(chainTranslate: true);
+    }
+
+    private void GenerateCore(bool chainTranslate)
     {
         if (_video is not { } video) return;
         if (Catalog.Engine is not { } engine)
@@ -741,8 +776,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             Status = new JobStatus.Failed(LocalizedMessage.Error(EngineException.NotFound()));
             return;
         }
-        string[] needed = _diarize ? [_model, DiarizationModelId] : [_model];
-        if (BlockedOffline(needed, Generate)) return;
+        var neededList = new List<string> { _model };
+        if (_diarize) neededList.Add(DiarizationModelId);
+        if (chainTranslate) neededList.Add(_translationModel);
+        if (BlockedOffline(neededList, chainTranslate ? GenerateAndTranslate : Generate)) return;
         Sentences = [];
         Translations = new Dictionary<Guid, TranslationEntry>();
         TranslationDraft = null;
@@ -794,7 +831,19 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     return new JobStatus.Failed(LocalizedMessage.Verbatim(error.Message));
             }
             return null;
-        });
+        }, chainTranslate ? async () =>
+        {
+            Task? nextJob = null;
+            await _ui.InvokeAsync(() =>
+            {
+                if (_sentences.Count > 0)
+                {
+                    Translate();
+                    nextJob = CurrentJob;
+                }
+            }).ConfigureAwait(false);
+            if (nextJob is not null) await nextJob.ConfigureAwait(false);
+        } : null);
     }
 
     /// <summary>Stops the running subtitle or translation job; the state goes back to idle.</summary>
@@ -866,7 +915,8 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private void StartJob(
         IReadOnlySet<string> running,
         Func<CancellationToken, IAsyncEnumerable<EngineEvent>> stream,
-        Func<EngineEvent, JobStatus?> apply)
+        Func<EngineEvent, JobStatus?> apply,
+        Func<Task>? onSuccessAsync = null)
     {
         StopJob();
         var cancellation = new CancellationTokenSource();
@@ -904,7 +954,14 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     if (!(finished = IsCurrent())) return;
                     if (failure is null) Status = JobStatus.FinishedStatus;
                 }).ConfigureAwait(false);
-                if (finished) await _ui.InvokeAsync(() => Catalog.LoadAsync()).ConfigureAwait(false);
+                if (finished)
+                {
+                    await _ui.InvokeAsync(() => Catalog.LoadAsync()).ConfigureAwait(false);
+                    if (failure is null && onSuccessAsync is not null)
+                    {
+                        await onSuccessAsync().ConfigureAwait(false);
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
@@ -998,7 +1055,9 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     {
         OnPropertyChanged(nameof(CanExport));
         OnPropertyChanged(nameof(CanSaveSubtitle));
+        OnPropertyChanged(nameof(CanGenerateAndTranslate));
         GenerateCommand?.NotifyCanExecuteChanged();
+        GenerateAndTranslateCommand?.NotifyCanExecuteChanged();
         CancelCommand?.NotifyCanExecuteChanged();
         TranslateCommand?.NotifyCanExecuteChanged();
         MergeSelectedCommand?.NotifyCanExecuteChanged();
