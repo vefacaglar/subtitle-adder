@@ -141,7 +141,7 @@ class SherpaDiarizer:
         if not num_speakers:
             raw = merge_similar_speakers(raw, lambda chunk: self._embed(chunk), samples,
                                          _slice_cache=slice_cache)
-        raw = normalize(raw, drop_noise=not num_speakers)
+        raw = normalize(raw, drop_noise=not num_speakers, words=words)
         report(0.9)
         if words and len({s.speaker for s in raw}) >= 2:
             raw = verify_short_turns(raw, words, samples, lambda chunk: self._embed(chunk),
@@ -271,8 +271,24 @@ def cluster_centroids(
     """Centroid embedding per speaker from a bounded sample: its longest segments, at most
     CENTROID_MAX_SEGMENTS and CENTROID_MAX_SECONDS of audio, each cropped to its middle part."""
     by_speaker: dict[int, list[SpeakerSegment]] = {}
+    index = _SegmentIndex(segments)
     for s in segments:
-        by_speaker.setdefault(s.speaker, []).append(s)
+        # A mixed-voice slice is not a reliable reference for either speaker. Subtract
+        # other speakers while retaining original segment boundaries for cache reuse.
+        hi = bisect_left(index.starts, s.end)
+        lo = bisect_right(index.max_end, s.start, 0, hi)
+        cursor = s.start
+        clean = by_speaker.setdefault(s.speaker, [])
+        for other in index.segments[lo:hi]:
+            if other.speaker == s.speaker or other.end <= cursor:
+                continue
+            if other.start > cursor:
+                clean.append(SpeakerSegment(cursor, min(other.start, s.end), s.speaker))
+            cursor = max(cursor, other.end)
+            if cursor >= s.end:
+                break
+        if cursor < s.end:
+            clean.append(SpeakerSegment(cursor, s.end, s.speaker))
     centroids: dict[int, list[float]] = {}
     for speaker, group in by_speaker.items():
         total = 0.0
@@ -284,7 +300,9 @@ def cluster_centroids(
                 continue
             middle = (s.start + s.end) / 2
             lo = max(int((middle - length / 2) * SAMPLE_RATE), 0)
-            hi = lo + int(length * SAMPLE_RATE)
+            hi = min(len(samples), lo + int(length * SAMPLE_RATE))
+            if hi - lo < int(0.3 * SAMPLE_RATE):
+                continue
             if _slice_cache is not None and (lo, hi) in _slice_cache:
                 unit_vec = _slice_cache[(lo, hi)]
             else:
@@ -300,6 +318,19 @@ def cluster_centroids(
                 [sum(w * v[i] for w, v in zip(weights, vectors)) for i in range(dim)]
             )
     return centroids
+
+
+def _simultaneous_speakers(segments: Sequence[SpeakerSegment]) -> set[tuple[int, int]]:
+    """Do not merge voices that coexist for >=100 ms; recomputed after each cluster merge."""
+    active: list[SpeakerSegment] = []
+    pairs: set[tuple[int, int]] = set()
+    for current in sorted(segments, key=lambda s: s.start):
+        active = [s for s in active if s.end > current.start]
+        for other in active:
+            if other.speaker != current.speaker and min(other.end, current.end) - current.start >= 0.1:
+                pairs.add(tuple(sorted((other.speaker, current.speaker))))
+        active.append(current)
+    return pairs
 
 
 def merge_similar_speakers(
@@ -322,10 +353,13 @@ def merge_similar_speakers(
     centroids = cluster_centroids(segments, samples, embed_samples, _slice_cache=slice_cache)
     while len(centroids) > 1:
         keys = sorted(centroids)
+        simultaneous = _simultaneous_speakers(segments)
         best = max(
-            ((_cosine(centroids[a], centroids[b]), a, b) for i, a in enumerate(keys) for b in keys[i + 1 :]),
+            ((_cosine(centroids[a], centroids[b]), a, b) for i, a in enumerate(keys) for b in keys[i + 1 :]
+             if (a, b) not in simultaneous),
+            default=None,
         )
-        if best[0] < threshold:
+        if best is None or best[0] < threshold:
             break
         _, keep, drop = best
         segments = [SpeakerSegment(s.start, s.end, keep if s.speaker == drop else s.speaker) for s in segments]
@@ -464,7 +498,38 @@ def read_wav(path: Path):
     return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
 
 
-def normalize(segments: Sequence[SpeakerSegment], drop_noise: bool = True) -> list[SpeakerSegment]:
+def _short_reply_speakers(words: Sequence[Word], segments: Sequence[SpeakerSegment]) -> set[int]:
+    """Protect a short, complete ASR reply substantially covered by one diarized speaker."""
+    if not words or not segments:
+        return set()
+    index = _SegmentIndex(segments)
+    protected: set[int] = set()
+    start = 0
+    for end, word in enumerate(words):
+        if not _final(word):
+            continue
+        phrase = words[start:end + 1]
+        start = end + 1
+        if not (1 <= len(phrase) <= 3 and 0.25 <= phrase[-1].end - phrase[0].start <= 1.8):
+            continue
+        speaker = index.speaker_for(phrase[0])
+        if any(index.speaker_for(w) != speaker for w in phrase):
+            continue
+        speech = sum(max(0, w.end - w.start) for w in phrase)
+        covered = 0.0
+        for w in phrase:
+            hi = bisect_left(index.starts, w.end)
+            lo = bisect_right(index.max_end, w.start, 0, hi)
+            covered += min(max(0, w.end - w.start), sum(
+                max(0, min(w.end, s.end) - max(w.start, s.start))
+                for s in index.segments[lo:hi] if s.speaker == speaker))
+        if speech >= 0.25 and covered >= speech * 0.75:
+            protected.add(speaker)
+    return protected
+
+
+def normalize(segments: Sequence[SpeakerSegment], drop_noise: bool = True,
+              *, words: Sequence[Word] | None = None) -> list[SpeakerSegment]:
     """Sorts by time, drops speakers with very little speech and renumbers by first appearance.
 
     The first person to speak becomes 0. With `drop_noise` off (explicit speaker count) nobody is dropped.
@@ -476,6 +541,7 @@ def normalize(segments: Sequence[SpeakerSegment], drop_noise: bool = True) -> li
             totals[s.speaker] = totals.get(s.speaker, 0.0) + (s.end - s.start)
         if len(totals) > 1:
             keep = {k for k, v in totals.items() if v >= MIN_SPEAKER_SECONDS}
+            keep.update(_short_reply_speakers(words or [], ordered))
             if keep:  # if everyone is short, leave them alone
                 ordered = [s for s in ordered if s.speaker in keep]
     order: dict[int, int] = {}
@@ -579,11 +645,10 @@ def _smooth(words: Sequence[Word], speakers: list[int | None]) -> list[int | Non
             continue
         if _final(words[start - 1]) or any(_final(words[ idx]) for idx in range(start, end)):
             continue
-        if island_len == 2:
-            if words[end - 1].end - words[start].start > 0.9:
-                continue
-            if words[start].start - words[start - 1].end > 0.25 or words[end].start - words[end - 1].end > 0.25:
-                continue
+        if words[end - 1].end - words[start].start > 0.9:
+            continue
+        if words[start].start - words[start - 1].end > 0.25 or words[end].start - words[end - 1].end > 0.25:
+            continue
         for idx in range(start, end):
             result[idx] = speakers[before[0]]
     return result
@@ -595,9 +660,8 @@ def _snap(words: Sequence[Word], speakers: list[int | None]) -> list[int | None]
 
     Forward: the new speaker's first words finish the previous speaker's sentence ("... hazır olur |
     dersin?", Turkish example) -> they go back to the previous speaker. Backward: the previous speaker's last words
-    after a sentence end start the new speaker's sentence -> they go to the new speaker. Pauses are
-    not used (Whisper glues word timestamps). A change right after sentence-final punctuation is
-    a real turn and is never touched.
+    after a sentence end start the new speaker's sentence -> they go to the new speaker. A visible
+    pause or a change right after sentence-final punctuation is preserved as a possible real turn.
     """
     result = list(speakers)
     n = len(words)
@@ -607,9 +671,14 @@ def _snap(words: Sequence[Word], speakers: list[int | None]) -> list[int | None]
         if before is None or after is None or before == after or _final(words[i - 1]):
             i += 1
             continue
+        if words[i].start - words[i - 1].end > 0.25:
+            i += 1
+            continue
         forward = None
         for j in range(i, min(i + SNAP_MAX_WORDS, n)):
             if result[j] != after:
+                break
+            if j > i and words[j].start - words[j - 1].end > 0.25:
                 break
             if _final(words[j]):
                 if words[j].end - words[i].start <= SNAP_MAX_SECONDS:
@@ -618,6 +687,8 @@ def _snap(words: Sequence[Word], speakers: list[int | None]) -> list[int | None]
         backward = None
         for m in range(i - 2, max(i - 2 - SNAP_MAX_WORDS, -1), -1):
             if result[m + 1] != before:
+                break
+            if words[m + 2].start - words[m + 1].end > 0.25:
                 break
             if _final(words[m]):
                 if words[i - 1].end - words[m + 1].start <= SNAP_MAX_SECONDS:

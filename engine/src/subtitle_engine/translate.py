@@ -451,6 +451,16 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
 
 
 _REFERENCE_PAIR_RE = re.compile(r"=>|->|→|⇒")
+_INLINE_MARKUP_RE = re.compile(r"(?<!\w)(\*{1,2}|_{1,2}|`)(?=\S)(.+?)(?<=\S)\1(?!\w)")
+
+
+def _has_unrequested_markup(source_text: str, translated_text: str) -> bool:
+    """New emphasis/code formatting is a malformed subtitle, not evidence of a good translation.
+
+    Preserve formatting already present in imported subtitles, mathematical operators,
+    censored words and literal underscores within identifiers.
+    """
+    return bool(_INLINE_MARKUP_RE.search(translated_text) and not _INLINE_MARKUP_RE.search(source_text))
 
 
 def _clean_translation_pair(source_text: str, translated_text: str) -> str:
@@ -603,7 +613,7 @@ def _temp_checkpoint_path(
     """Path in `%TEMP%/SubtitleAdder/translations/` where translated chunks are saved incrementally."""
     digest = hashlib.sha256()
     ext_model = external_llm_model() or ""
-    digest.update(f"quality-v5|{model_id}|{external_llm_url() or ''}|{ext_model}|{source or ''}|{target}|{system_prompt}\n".encode("utf-8"))
+    digest.update(f"quality-v6|{model_id}|{external_llm_url() or ''}|{ext_model}|{source or ''}|{target}|{system_prompt}\n".encode("utf-8"))
     for s in sentences:
         digest.update(f"{s.id}:{s.start}:{s.end}:{s.speaker}:{s.text.strip()}\n".encode("utf-8"))
     folder = Path(tempfile.gettempdir()) / "SubtitleAdder" / "translations"
@@ -885,6 +895,7 @@ class LlamaTranslator:
             if cached_chunks and all(
                 sentence.id in cached_chunks
                 and not _looks_untranslated(sentence.text, cached_chunks[sentence.id], source, target)
+                and not _has_unrequested_markup(sentence.text, cached_chunks[sentence.id])
                 for _, sentence in batch
             ):
                 for index, sentence in batch:
@@ -941,6 +952,7 @@ class LlamaTranslator:
                         offset for offset, (_, sentence) in enumerate(batch, start=1)
                         if not parsed.get(offset, "").strip()
                         or _looks_untranslated(sentence.text, parsed[offset], source, target)
+                        or _has_unrequested_markup(sentence.text, parsed[offset])
                         or any(_has_source_translation_pair(reference, parsed[offset])
                                for reference in context_lines + following_lines)
                     ]
@@ -955,26 +967,33 @@ class LlamaTranslator:
                     messages = profile.chat_messages(system_prompt, user_prompt + (
                         "\n\nThe previous attempt was incomplete, malformed, truncated, or copied source text. "
                         "Do not include the original text alongside its translation or copy reference formatting. "
+                        "Use natural plain-text dialogue, not word-by-word glosses, asterisks, or markdown emphasis. "
                         f"Return ALL {len(batch)} translations in {LLM_LANGUAGE_SPECS.get(target, target)}, "
                         "one numbered line per input, with no commentary. Keep names and numbers intact."
                     ))
 
-                # Recover only remaining lines with an isolated request. One bad line must not
+                # Recover only remaining lines with a focused request. One bad line must not
                 # discard its successfully translated neighbors or abort a long video.
                 for offset, (_, sentence) in enumerate(batch, 1):
                     if offset in accepted:
                         continue
+                    before = (context_lines + batch_texts[:offset - 1])[-LLM_CONTEXT_LINES:]
+                    after = (batch_texts[offset:] + following_lines)[:LLM_CONTEXT_LINES]
                     if profile.name == "translategemma":
                         single_messages = [{"role": "user", "content": build_translategemma_prompt(
                             [sentence.text], target, source)}]
                     elif profile.name in {"hunyuan-mt", "hy-mt1.5"}:
                         single_messages = [{"role": "user", "content": build_hy_mt_prompt(
-                            [sentence.text], target, source, legacy=profile.name == "hunyuan-mt")}]
+                            [sentence.text], target, source, legacy=profile.name == "hunyuan-mt",
+                            context=before + after if profile.name == "hy-mt1.5" else None)}]
                     else:
-                        single_messages = profile.chat_messages(system_prompt, build_user_prompt([sentence.text], target=target))
+                        single_messages = profile.chat_messages(system_prompt, build_user_prompt(
+                            [sentence.text], context_lines=before, following_lines=after, target=target))
                     single = parse_numbered_translations(self._complete(single_messages), 1).get(1, "")
                     single = _clean_translation_pair(sentence.text, single)
-                    if single and not _looks_untranslated(sentence.text, single, source, target) and not any(
+                    if single and not _looks_untranslated(sentence.text, single, source, target) and not _has_unrequested_markup(
+                        sentence.text, single
+                    ) and not any(
                         _has_source_translation_pair(reference, single) for reference in context_lines + following_lines
                     ):
                         accepted[offset] = single
