@@ -80,6 +80,8 @@ public sealed partial class MainWindow : Window
             Vm.PropertyChanged -= OnViewModelChanged;
             Vm.Catalog.PropertyChanged -= OnCatalogChanged;
             App.Current.Appearance.PropertyChanged -= OnAppearanceChanged;
+            // Detach the XAML surface first so window destruction never waits on Media Foundation teardown.
+            PlayerElement.SetMediaPlayer(null);
             _player.Dispose();
         };
 

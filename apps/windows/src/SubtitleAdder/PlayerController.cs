@@ -17,6 +17,7 @@ public sealed class PlayerController : IDisposable
     private IReadOnlyList<Sentence> _sentences = [];
     private int _loadGeneration;
     private MediaSource? _source;   // disposed when replaced so the old file is not kept open
+    private bool _disposed;
 
     public PlayerController(DispatcherQueue queue)
     {
@@ -35,7 +36,7 @@ public sealed class PlayerController : IDisposable
 
     public double CurrentTime { get; private set; }
     public bool IsPlaying { get; private set; }
-    public bool HasMedia => Player.Source is not null;
+    public bool HasMedia => !_disposed && Player.Source is not null;
 
     /// <summary>Natural video size; 16:9 until the real size is known.</summary>
     public (double Width, double Height) VideoSize { get; private set; } = (16, 9);
@@ -69,9 +70,9 @@ public sealed class PlayerController : IDisposable
         {
             source = MediaSource.CreateFromUri(new Uri(path));
         }
-        if (generation != _loadGeneration)
+        if (_disposed || generation != _loadGeneration)
         {
-            source.Dispose();
+            _ = Task.Run(source.Dispose);
             return;
         }
         _source = source;
@@ -80,9 +81,12 @@ public sealed class PlayerController : IDisposable
 
     private void ReleaseSource()
     {
-        Player.Source = null;
-        _source?.Dispose();
-        _source = null;
+        if (!_disposed) Player.Source = null;
+        if (_source is { } oldSource)
+        {
+            _source = null;
+            _ = Task.Run(oldSource.Dispose);
+        }
     }
 
     public void SetSentences(IReadOnlyList<Sentence> sentences)
@@ -119,7 +123,7 @@ public sealed class PlayerController : IDisposable
 
     private void Tick()
     {
-        if (!HasMedia) return;
+        if (_disposed || !HasMedia) return;
         var session = Player.PlaybackSession;
         var playing = session.PlaybackState == MediaPlaybackState.Playing;
         // Also follows scrubbing with the transport controls while paused.
@@ -132,6 +136,7 @@ public sealed class PlayerController : IDisposable
 
     private void UpdateVideoSize()
     {
+        if (_disposed) return;
         var session = Player.PlaybackSession;
         if (session.NaturalVideoWidth > 1 && session.NaturalVideoHeight > 1)
         {
@@ -150,8 +155,28 @@ public sealed class PlayerController : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+        _loadGeneration++;
         _timer.Stop();
-        ReleaseSource();
-        Player.Dispose();
+        var source = _source;
+        _source = null;
+        var player = Player;
+        // Media Foundation pipeline/decoder teardown can block for up to a second on the UI thread;
+        // dispose the agile WinRT MediaPlayer and MediaSource on the thread pool after detaching from XAML.
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                player.Pause();
+                player.Source = null;
+                source?.Dispose();
+                player.Dispose();
+            }
+            catch
+            {
+                // Ignore teardown errors during window shutdown.
+            }
+        });
     }
 }
