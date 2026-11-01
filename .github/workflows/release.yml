@@ -1,0 +1,44 @@
+name: Release
+
+# Pushing a tag like v0.2.0 builds the macOS app and attaches the .dmg to a draft GitHub release.
+# The build is ad-hoc signed (no Apple Developer ID yet), so macOS Gatekeeper warns on first open.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+      - name: Version from tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0-dev"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+      - name: Package
+        run: MAKE_DMG=1 scripts/package-macos.sh
+      - name: Rename dmg
+        run: mv "build/Subtitle Adder.dmg" "build/Subtitle-Adder-$VERSION-macos-arm64.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Subtitle-Adder-${{ env.VERSION }}-macos-arm64
+          path: build/Subtitle-Adder-*.dmg
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: build/Subtitle-Adder-*.dmg
+          body: |
+            macOS (Apple Silicon) build. It is ad-hoc signed, so on first launch right-click the app and choose Open,
+            or run `xattr -dr com.apple.quarantine "/Applications/Subtitle Adder.app"`.
+            Models are downloaded on first use.
