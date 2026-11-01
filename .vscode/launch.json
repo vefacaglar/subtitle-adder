@@ -16,7 +16,20 @@
             "type": "debugpy",
             "request": "launch",
             "module": "subtitle_engine.cli",
-            "args": ["transcribe", "${workspaceFolder}/samples/demo.mp4", "-m", "base", "-l", "tr", "-o", "${workspaceFolder}/output", "-f", "srt", "vtt", "json"],
+            "args": [
+                "transcribe",
+                "${workspaceFolder}/samples/demo.mp4",
+                "-m",
+                "base",
+                "-l",
+                "tr",
+                "-o",
+                "${workspaceFolder}/output",
+                "-f",
+                "srt",
+                "vtt",
+                "json"
+            ],
             "cwd": "${workspaceFolder}/engine",
             "python": "${workspaceFolder}/engine/.venv/bin/python",
             "justMyCode": true,
@@ -28,11 +41,33 @@
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
-            "args": ["-q"],
+            "args": [
+                "-q"
+            ],
             "cwd": "${workspaceFolder}/engine",
             "python": "${workspaceFolder}/engine/.venv/bin/python",
             "console": "integratedTerminal",
             "preLaunchTask": "engine: uv sync"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:subtitle-adder}/apps/macos",
+            "name": "Debug SubtitleAdderApp (apps/macos)",
+            "target": "SubtitleAdderApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug SubtitleAdderApp (apps/macos)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:subtitle-adder}/apps/macos",
+            "name": "Release SubtitleAdderApp (apps/macos)",
+            "target": "SubtitleAdderApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release SubtitleAdderApp (apps/macos)"
         }
     ]
 }
