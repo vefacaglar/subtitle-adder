@@ -52,7 +52,12 @@ public sealed partial class MainWindow : Window
         PlayerElement.TransportControls.IsZoomButtonVisible = false;
         _player.ActiveChanged += OnActiveChanged;
         _player.VideoSizeChanged += UpdateOverlay;
-        _player.Ticked += () => SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
+        _player.Ticked += () =>
+        {
+            SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
+            PreviewControls.Synchronize(_player.CurrentTime, _player.Duration);
+        };
+        PreviewControls.SeekRequested += _player.Seek;
         _player.Failed += message => ShowSaveError(() => L("Video oynatılamadı: %@", message));
         Splitter.Target = PlayerRow;
         Splitter.Other = EditorRow;
@@ -961,8 +966,8 @@ public sealed partial class MainWindow : Window
         }
         OverlayArea.Width = width;
         OverlayArea.Height = height;
-        // Stay above the compact transport controls.
-        Overlay.Margin = new Thickness(16, 0, 16, Math.Max(64, height * 0.1));
+        // Leave room for the timeline, time readout and native playback buttons.
+        Overlay.Margin = new Thickness(16, 0, 16, Math.Max(112, height * 0.1));
         var text = _player.ActiveId is { } id
             ? OverlayText.Compose(Vm.Sentences, Vm.Translations, Vm.DisplayMode, id)
             : null;
