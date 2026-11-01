@@ -126,8 +126,8 @@ def test_support_error_explains_unsupported_language_in_turkish():
     assert models.support_error(models.find("gigaam-v3"), "tr") == "GigaAM yalnız Rusça destekler."
     message = models.support_error(models.find("parakeet-v3"), "tr")
     assert message.startswith("Parakeet tr dilini desteklemiyor") and "pt" in message
-    message = models.support_error(models.find("madlad-3b"), "de")
-    assert message.startswith("MADLAD de dilini desteklemiyor") and "es" in message
+    message = models.support_error(models.find("madlad-3b"), "ja")
+    assert message.startswith("MADLAD ja dilini desteklemiyor") and "es" in message
 
 
 def test_is_downloaded_looks_at_local_cache_only(monkeypatch):

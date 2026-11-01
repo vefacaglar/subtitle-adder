@@ -97,6 +97,38 @@
         }
       }
     },
+    "Almanca" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "German"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Almanca"
+          }
+        }
+      }
+    },
+    "Almanca (de)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "German (de)"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Almanca (de)"
+          }
+        }
+      }
+    },
     "Altyazıyı kaydet" : {
       "localizations" : {
         "en" : {

@@ -40,3 +40,27 @@ def test_late_audio_start_is_padded_to_container_timeline(tmp_path):
         out.mux(a.encode())
     _, _, seconds = read_wav(extract_audio(path, tmp_path / "out.wav"))
     assert abs(seconds - 4) < 0.15
+
+
+def test_48khz_aac_does_not_accumulate_rounding_drift(tmp_path):
+    """48 kHz 1024-sample AAC frames (341.333... samples at 16 kHz) must not drift over long durations."""
+    import av
+    import numpy as np
+
+    path = tmp_path / "long_48k.mp4"
+    rate = 48_000
+    duration_sec = 180  # 3 minutes (> 3x the old 51.2s false-silence threshold)
+    with av.open(str(path), "w") as out:
+        a = out.add_stream("aac", rate=rate, layout="mono")
+        total_samples = rate * duration_sec
+        for pts in range(0, total_samples, 1024):
+            f = av.AudioFrame.from_ndarray(np.zeros((1, 1024), dtype=np.float32), format="fltp", layout="mono")
+            f.sample_rate = rate
+            f.pts = pts
+            out.mux(a.encode(f))
+        out.mux(a.encode())
+
+    expected_sec = ((rate * duration_sec + 1023) // 1024) * 1024 / rate
+    _, _, wav_sec = read_wav(extract_audio(path, tmp_path / "out.wav"))
+    assert abs(wav_sec - expected_sec) < 0.05
+

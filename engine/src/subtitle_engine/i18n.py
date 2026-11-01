@@ -162,6 +162,7 @@ MESSAGES: dict[str, dict[str, str]] = {
     "lang_es": {"tr": "İspanyolca", "en": "Spanish"},
     "lang_tr": {"tr": "Türkçe", "en": "Turkish"},
     "lang_en": {"tr": "İngilizce", "en": "English"},
+    "lang_de": {"tr": "Almanca", "en": "German"},
 }
 
 

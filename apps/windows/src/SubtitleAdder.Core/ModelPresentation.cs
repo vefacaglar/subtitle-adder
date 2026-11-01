@@ -25,9 +25,10 @@ public sealed class SubtitleLanguage
     public static SubtitleLanguage Spanish { get; } = new("es", () => L("İspanyolca (es)"), () => L("İspanyolca"), () => L("İspanyolca"));
     public static SubtitleLanguage Russian { get; } = new("ru", () => L("Rusça (ru)"), () => L("Rusça"), () => L("Rusça"));
     public static SubtitleLanguage English { get; } = new("en", () => L("İngilizce (en)"), () => L("İngilizce"), () => L("İngilizce"));
+    public static SubtitleLanguage German { get; } = new("de", () => L("Almanca (de)"), () => L("Almanca"), () => L("Almanca"));
 
     /// <summary>Menu order (same as macOS).</summary>
-    public static IReadOnlyList<SubtitleLanguage> All { get; } = [Automatic, Turkish, Portuguese, Spanish, Russian, English];
+    public static IReadOnlyList<SubtitleLanguage> All { get; } = [Automatic, Turkish, Portuguese, Spanish, Russian, English, German];
 
     /// <summary>Languages that can be a translation target; "Otomatik" can't be a target.</summary>
     public static IReadOnlyList<SubtitleLanguage> TranslationTargets { get; } = [.. All.Where(l => l != Automatic)];

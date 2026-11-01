@@ -324,9 +324,10 @@ public class PresentationTests
     public void SubtitleLanguages()
     {
         using var _ = new LanguageScope(UILanguage.En);
-        Assert.Equal(["", "tr", "pt", "es", "ru", "en"], SubtitleLanguage.All.Select(l => l.Code));
-        Assert.Equal(["tr", "pt", "es", "ru", "en"], SubtitleLanguage.TranslationTargets.Select(l => l.Code));
-        Assert.Null(SubtitleLanguage.FromCode("de"));
+        Assert.Equal(["", "tr", "pt", "es", "ru", "en", "de"], SubtitleLanguage.All.Select(l => l.Code));
+        Assert.Equal(["tr", "pt", "es", "ru", "en", "de"], SubtitleLanguage.TranslationTargets.Select(l => l.Code));
+        Assert.Equal(SubtitleLanguage.German, SubtitleLanguage.FromCode("de"));
+        Assert.Null(SubtitleLanguage.FromCode("ja"));
         Assert.Equal("Turkish", SubtitleLanguage.Turkish.ShortName);
         LanguageState.Shared.Language = UILanguage.Tr;
         Assert.Equal("Türkçe (tr)", SubtitleLanguage.Turkish.Title);

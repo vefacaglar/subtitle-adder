@@ -76,6 +76,7 @@ def test_madlad_uses_target_prefix_and_keeps_timing(make_translator):
         ("tr", "ru", "tur_Latn", "rus_Cyrl"),
         ("pt", "es", "por_Latn", "spa_Latn"),
         ("en", "tr", "eng_Latn", "tur_Latn"),
+        ("de", "tr", "deu_Latn", "tur_Latn"),
     ],
 )
 def test_nllb_uses_flores_codes(
@@ -110,7 +111,7 @@ def test_unsupported_language_is_turkish_error(make_translator):
     translator, fake = make_translator("madlad-3b")
 
     with pytest.raises(models.ModelError, match="desteklemiyor"):
-        translator.translate([sentence(1, 0, 1, "merhaba")], "de")
+        translator.translate([sentence(1, 0, 1, "merhaba")], "ja")
     assert fake.calls == []
 
 
@@ -214,7 +215,7 @@ def test_cli_nllb_without_source_is_turkish_error(capsys, monkeypatch):
 def test_cli_unsupported_language_is_turkish_error(capsys, monkeypatch):
     monkeypatch.setattr(sys, "stdin", io.StringIO("[]"))
 
-    assert cli.main(["translate", "--to", "de", "--json"]) == 1
+    assert cli.main(["translate", "--to", "ja", "--json"]) == 1
 
     event = json.loads(capsys.readouterr().out)
     assert event["event"] == "error" and "desteklemiyor" in event["message"]

@@ -35,6 +35,7 @@ NLLB_LANGUAGE_CODES = {
     "es": "spa_Latn",
     "ru": "rus_Cyrl",
     "en": "eng_Latn",
+    "de": "deu_Latn",
 }
 MADLAD_PREFIX = "<2{}>"
 
@@ -45,6 +46,7 @@ LLM_LANGUAGE_SPECS = {
     "es": "Spanish (including Mexican and Latin American Spanish vernacular, slang, and idioms)",
     "en": "English (natural, idiomatic spoken English)",
     "ru": "Russian (natural, idiomatic spoken Russian)",
+    "de": "German (natural, idiomatic spoken German)",
 }
 
 # Sentences are translated in batches of this size, not one by one; progress is reported after each batch.

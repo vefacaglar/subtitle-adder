@@ -10,7 +10,7 @@ namespace SubtitleAdder.Core;
 /// </summary>
 public sealed class ModelCatalog : ObservableObject
 {
-    private static readonly string[] TranslationLanguages = ["tr", "en", "pt", "es", "ru"];
+    private static readonly string[] TranslationLanguages = ["tr", "en", "pt", "es", "ru", "de"];
 
     private static readonly string[] EuropeanLanguages =
     [
