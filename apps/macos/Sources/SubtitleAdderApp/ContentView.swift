@@ -147,8 +147,10 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItemGroup {
-            if vm.workspace == .editor {
+        // Items that come and go are toolbar items of their own: shown or hidden inside a group, they leave AppKit's
+        // toolbar layout stale and the group's remaining items are drawn on top of each other.
+        if vm.workspace == .editor {
+            ToolbarItemGroup {
                 Button(L("Video seç"), systemImage: "film") { chooseVideo() }
                     .disabled(!vm.canPickVideo)
                     .help(L("Video dosyası seç (⌘O)"))
@@ -156,6 +158,8 @@ struct ContentView: View {
                     .disabled(vm.isWorking)
                     .help(L("Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle"))
             }
+        }
+        ToolbarItemGroup {
             Picker(L("Dil"), selection: $vm.language) {
                 ForEach(SubtitleLanguage.allCases) { language in
                     Text(language.title).tag(language.rawValue)
@@ -184,12 +188,16 @@ struct ContentView: View {
             .help(vm.translationSource == nil
                 ? L("Çeviri hedef dili. Kaynak dil bilinmiyor; NLLB için önce konuşma dilini seç.")
                 : L("Çeviri hedef dili; kaynak dille aynı olan seçilemez."))
-            if vm.workspace == .editor, !vm.sentences.isEmpty {
+        }
+        if vm.workspace == .editor, !vm.sentences.isEmpty {
+            ToolbarItem {
                 Button(L("Çevir…"), systemImage: "translate") { vm.translate() }
                     .labelStyle(.titleAndIcon)
                     .disabled(vm.isWorking)
                     .help(L("Tüm satırları seçili hedef dile yerel modelle çevir"))
             }
+        }
+        ToolbarItem {
             translationModelMenu
         }
         ToolbarItemGroup(placement: .primaryAction) {

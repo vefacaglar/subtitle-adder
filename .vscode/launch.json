@@ -2,6 +2,13 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Publish (macOS)",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "MAKE_DMG=1 \"${workspaceFolder}/scripts/package-macos.sh\"",
+            "cwd": "${workspaceFolder}"
+        },
+        {
             "name": "Publish (Windows)",
             "type": "node-terminal",
             "request": "launch",
@@ -24,8 +31,7 @@
             "name": "Subtitle Adder (macOS)",
             "type": "swift",
             "request": "launch",
-            "target": "SubtitleAdderApp",
-            "configuration": "debug",
+            "program": "${workspaceFolder}/apps/macos/.build/debug/SubtitleAdderApp",
             "cwd": "${workspaceFolder}/apps/macos",
             "args": [],
             "preLaunchTask": "Prepare (engine + app)"
@@ -78,8 +84,7 @@
             "name": "Subtitle Adder (macOS, release)",
             "type": "swift",
             "request": "launch",
-            "target": "SubtitleAdderApp",
-            "configuration": "release",
+            "program": "${workspaceFolder}/apps/macos/.build/release/SubtitleAdderApp",
             "cwd": "${workspaceFolder}/apps/macos",
             "args": [],
             "preLaunchTask": "Prepare release (engine + app)"
