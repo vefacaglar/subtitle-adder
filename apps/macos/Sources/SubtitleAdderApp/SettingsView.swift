@@ -25,11 +25,11 @@ struct SettingsView: View {
             }
 
             Section {
-                ForEach(catalog.models.filter { !$0.isTranslation }) { model in
+                ForEach(catalog.models.filter(\.isTranscription)) { model in
                     ModelSettingsRow(
                         model: model,
                         isDeleting: catalog.deleting.contains(model.id),
-                        isActive: catalog.activeModel == model.id,
+                        isActive: catalog.activeModels.contains(model.id),
                         error: catalog.deleteErrors[model.id],
                         onDelete: { pendingDeletion = model }
                     )
@@ -38,12 +38,28 @@ struct SettingsView: View {
                 Text("Altyazı modelleri")
             }
 
+            if !catalog.diarizationModels.isEmpty {
+                Section {
+                    ForEach(catalog.diarizationModels) { model in
+                        ModelSettingsRow(
+                            model: model,
+                            isDeleting: catalog.deleting.contains(model.id),
+                            isActive: catalog.activeModels.contains(model.id),
+                            error: catalog.deleteErrors[model.id],
+                            onDelete: { pendingDeletion = model }
+                        )
+                    }
+                } header: {
+                    Text("Konuşmacılar")
+                }
+            }
+
             Section {
                 ForEach(catalog.translationModels) { model in
                     ModelSettingsRow(
                         model: model,
                         isDeleting: catalog.deleting.contains(model.id),
-                        isActive: catalog.activeModel == model.id,
+                        isActive: catalog.activeModels.contains(model.id),
                         error: catalog.deleteErrors[model.id],
                         onDelete: { pendingDeletion = model }
                     )

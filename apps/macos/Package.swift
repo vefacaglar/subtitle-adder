@@ -20,5 +20,7 @@ let package = Package(
             linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", infoPlist])]
         ),
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"]),
+        // View model behavior (undo of edits), via @testable import of the executable target.
+        .testTarget(name: "SubtitleAdderAppTests", dependencies: ["SubtitleAdderApp", "EngineKit"]),
     ]
 )

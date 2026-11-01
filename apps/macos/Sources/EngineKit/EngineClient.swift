@@ -71,8 +71,17 @@ public struct EngineClient: Sendable {
         public var language: String?
         public var model: String
         public var formats: [SubtitleFormat]
+        /// Separate speakers (`--diarize`).
+        public var diarize: Bool
+        /// Known speaker count (`--speakers`); `nil` means automatic. Only used with `diarize`.
+        public var speakers: Int?
 
-        public init(language: String? = nil, model: String = "small", formats: [SubtitleFormat] = [.srt]) {
+        public init(
+            language: String? = nil, model: String = "small", formats: [SubtitleFormat] = [.srt],
+            diarize: Bool = false, speakers: Int? = nil
+        ) {
+            self.diarize = diarize
+            self.speakers = speakers
             self.language = language
             self.model = model
             self.formats = formats
@@ -81,10 +90,20 @@ public struct EngineClient: Sendable {
 
     /// Processes the video; emits stage events and finally `.result` or an error. If the stream is cancelled, the engine is stopped.
     public func transcribe(video: URL, outDir: URL, options: TranscribeOptions = .init()) -> AsyncThrowingStream<EngineEvent, Error> {
+        let args = Self.transcribeArguments(video: video, outDir: outDir, options: options)
+        return stream(args, stdin: nil)
+    }
+
+    /// Arguments `transcribe` would pass; exposed for tests.
+    static func transcribeArguments(video: URL, outDir: URL, options: TranscribeOptions) -> [String] {
         var args = ["transcribe", video.path, "--out-dir", outDir.path, "--model", options.model, "--json", "--format"]
         args += options.formats.map(\.rawValue)
         if let language = options.language { args += ["--language", language] }
-        return stream(args, stdin: nil)
+        if options.diarize {
+            args.append("--diarize")
+            if let speakers = options.speakers { args += ["--speakers", String(speakers)] }
+        }
+        return args
     }
 
     /// Translates the sentences to the target language with a local translation model; emits stage events and finally

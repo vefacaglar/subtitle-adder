@@ -50,6 +50,20 @@ final class SubtitleViewModel {
             UserDefaults.standard.set(displayMode.rawValue, forKey: Self.displayModeDefaultsKey)
         }
     }
+    /// Separate speakers while transcribing (`--diarize`); persistent, on by default.
+    var diarize: Bool {
+        didSet {
+            guard diarize != oldValue else { return }
+            UserDefaults.standard.set(diarize, forKey: Self.diarizeDefaultsKey)
+        }
+    }
+    /// Known speaker count; 0 means automatic. Persistent.
+    var speakerCount: Int {
+        didSet {
+            guard speakerCount != oldValue else { return }
+            UserDefaults.standard.set(speakerCount, forKey: Self.speakerCountDefaultsKey)
+        }
+    }
     var status: Status = .idle
     var detectedLanguage: String?
     var sentences: [Sentence] = []
@@ -80,6 +94,7 @@ final class SubtitleViewModel {
         var text: String
     }
 
+    static let diarizationModelID = "speaker-diarization"
     static let defaultModel = "large-v3"
     static let defaultTranslationModel = "madlad-3b"
     static let defaultTranslationTarget = SubtitleLanguage.english.rawValue
@@ -89,6 +104,8 @@ final class SubtitleViewModel {
     private static let translationModelDefaultsKey = "translationModel"
     private static let translationTargetDefaultsKey = "translationTarget"
     private static let displayModeDefaultsKey = "subtitleDisplayMode"
+    private static let diarizeDefaultsKey = "diarizeSpeakers"
+    private static let speakerCountDefaultsKey = "speakerCount"
 
     init(catalog: ModelCatalog) {
         self.catalog = catalog
@@ -104,6 +121,9 @@ final class SubtitleViewModel {
             ?? Self.defaultTranslationModel
         let savedDisplay = UserDefaults.standard.string(forKey: Self.displayModeDefaultsKey) ?? ""
         displayMode = SubtitleDisplay(rawValue: savedDisplay) ?? .original
+        diarize = UserDefaults.standard.object(forKey: Self.diarizeDefaultsKey) as? Bool ?? true
+        let savedCount = UserDefaults.standard.integer(forKey: Self.speakerCountDefaultsKey)
+        speakerCount = savedCount >= 2 ? savedCount : 0
         reconcileModelSelection()
         reconcileTranslationTarget()
     }
@@ -153,7 +173,7 @@ final class SubtitleViewModel {
         job?.cancel()
         job = nil
         jobID = UUID()
-        catalog.activeModel = nil
+        catalog.activeModels = []
         sentences = []
         translations = [:]
         translationDraft = nil
@@ -183,22 +203,38 @@ final class SubtitleViewModel {
         modelNotice = nil
         status = .working("Başlıyor…", fraction: nil)
         let outDir = FileManager.default.temporaryDirectory.appending(path: "SubtitleAdder")
-        let options = EngineClient.TranscribeOptions(language: language.isEmpty ? nil : language, model: model)
+        let options = EngineClient.TranscribeOptions(
+            language: language.isEmpty ? nil : language,
+            model: model,
+            diarize: diarize,
+            speakers: speakerCount >= 2 ? speakerCount : nil
+        )
         let runningModel = model
+        let tracker = DownloadPhaseTracker(
+            transcriptionDownloaded: catalog.models.first { $0.id == runningModel }?.downloaded ?? true,
+            diarize: diarize,
+            diarizationDownloaded: catalog.diarizationModels.first?.downloaded ?? true
+        )
         job?.cancel()
         let id = UUID()
         jobID = id
-        catalog.activeModel = runningModel
+        var running: Set<String> = [runningModel]
+        if diarize { running.insert(Self.diarizationModelID) }
+        catalog.activeModels = running
         job = Task {
             // However it ends (result, error, cancel), the model becomes deletable in Settings.
-            defer { if jobID == id { catalog.activeModel = nil } }
+            defer { if jobID == id { catalog.activeModels = [] } }
             var failed = false
+            // With diarization, `downloading_model` can run twice back to back; the tracker tells which model it is.
+            var downloadPhases = tracker
             do {
                 for try await event in engine.transcribe(video: video, outDir: outDir, options: options) {
                     guard jobID == id, !Task.isCancelled else { return }
                     switch event {
                     case .stage(let stage, let fraction):
-                        status = .working(Self.label(for: stage, fraction: fraction, purpose: .transcription), fraction: fraction)
+                        let download = downloadPhases.update(stage: stage, fraction: fraction)
+                        let purpose: JobPurpose = download == .diarization ? .diarization : .transcription
+                        status = .working(Self.label(for: stage, fraction: fraction, purpose: purpose), fraction: fraction)
                     case .result(let result):
                         sentences = result.sentences
                         detectedLanguage = result.language
@@ -229,7 +265,7 @@ final class SubtitleViewModel {
         job?.cancel()
         job = nil
         jobID = UUID()
-        catalog.activeModel = nil
+        catalog.activeModels = []
         status = .idle
     }
 
@@ -244,7 +280,7 @@ final class SubtitleViewModel {
     }
 
     enum JobPurpose {
-        case transcription, translation
+        case transcription, translation, diarization
     }
 
     static func label(for stage: EngineEvent.Stage, fraction: Double?, purpose: JobPurpose) -> String {
@@ -252,7 +288,11 @@ final class SubtitleViewModel {
         case .extractingAudio:
             return "Ses ayrılıyor…"
         case .downloadingModel:
-            let prefix = purpose == .translation ? "Çeviri modeli indiriliyor…" : "Model indiriliyor…"
+            let prefix = switch purpose {
+            case .translation: "Çeviri modeli indiriliyor…"
+            case .diarization: "Konuşmacı ayırma modeli indiriliyor…"
+            case .transcription: "Model indiriliyor…"
+            }
             if let fraction {
                 return "\(prefix) %\(Int((min(max(fraction, 0), 1) * 100).rounded()))"
             }
@@ -261,6 +301,11 @@ final class SubtitleViewModel {
             return purpose == .translation ? "Çeviri modeli yükleniyor…" : "Model yükleniyor…"
         case .transcribing:
             return "Konuşma metne çevriliyor…"
+        case .diarizing:
+            if let fraction {
+                return "Konuşmacılar ayrılıyor… %\(Int((min(max(fraction, 0), 1) * 100).rounded()))"
+            }
+            return "Konuşmacılar ayrılıyor…"
         case .segmenting:
             return "Cümleler çıkarılıyor…"
         case .translating:

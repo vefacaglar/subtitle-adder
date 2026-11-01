@@ -54,24 +54,8 @@ struct PlayerView: View {
     }
 
     private var activeText: String? {
-        guard let id = model.activeID,
-              let sentence = sentences.first(where: { $0.uid == id })
-        else { return nil }
-        let original = sentence.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let translated = translations[id]?.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text: String
-        switch display {
-        case .original:
-            text = original
-        case .translation:
-            text = translated?.isEmpty == false ? translated ?? "" : original
-        case .both:
-            text = [original, translated]
-                .compactMap { $0 }
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n")
-        }
-        return text.isEmpty ? nil : text
+        guard let id = model.activeID else { return nil }
+        return OverlayText.compose(sentences: sentences, translations: translations, display: display, uid: id)
     }
 
     /// The size the video takes inside its container (aspect-fit).

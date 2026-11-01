@@ -65,6 +65,7 @@ struct SentenceEditorView: View {
                         isActive: sentence.uid == player.activeID,
                         focus: $focusedUID,
                         translationFocus: $focusedTranslationUID,
+                        showsSpeaker: showsSpeakers,
                         vm: vm
                     )
                 }
@@ -86,6 +87,10 @@ struct SentenceEditorView: View {
             }
         }
     }
+
+    /// Speaker controls appear as soon as any line has a speaker (even if diarization found only one),
+    /// so more speakers can be added; the dash rule separately needs two.
+    private var showsSpeakers: Bool { !vm.sentences.speakers.isEmpty }
 
     private var editBar: some View {
         HStack(spacing: 16) {
@@ -146,6 +151,7 @@ private struct SentenceRow: View {
     let isActive: Bool
     var focus: FocusState<UUID?>.Binding
     var translationFocus: FocusState<UUID?>.Binding
+    let showsSpeaker: Bool
     let vm: SubtitleViewModel
 
     var body: some View {
@@ -159,6 +165,10 @@ private struct SentenceRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(width: 124, alignment: .leading)
+            if showsSpeaker {
+                speakerMenu
+                    .frame(width: 124, alignment: .leading)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 TextField("Cümle", text: Binding(
                     get: { vm.draftText(for: sentence) },
@@ -176,6 +186,59 @@ private struct SentenceRow: View {
         .padding(.vertical, 3)
         .padding(.horizontal, 4)
         .background(isActive ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+        .contextMenu {
+            if showsSpeaker {
+                speakerChoices
+            }
+        }
+    }
+
+    /// Compact indicator: color dot and "Konuşmacı N"; clicking opens the speaker choices.
+    private var speakerMenu: some View {
+        Menu {
+            speakerChoices
+        } label: {
+            if let speaker = sentence.speaker {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(SpeakerPalette.color(for: speaker))
+                        .frame(width: 8, height: 8)
+                    Text("Konuşmacı \(speaker + 1)")
+                        .font(.caption)
+                }
+            } else {
+                Text("Konuşmacı yok")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Bu satırı söyleyen kişiyi değiştir")
+        .accessibilityHint("Konuşmacıyı değiştir")
+    }
+
+    @ViewBuilder
+    private var speakerChoices: some View {
+        ForEach(vm.sentences.speakers, id: \.self) { speaker in
+            Button {
+                vm.setSpeaker(speaker, for: sentence.uid)
+            } label: {
+                if speaker == sentence.speaker {
+                    Label("Konuşmacı \(speaker + 1)", systemImage: "checkmark")
+                } else {
+                    Text("Konuşmacı \(speaker + 1)")
+                }
+            }
+        }
+        Divider()
+        Button("Yeni konuşmacı") {
+            vm.assignNewSpeaker(for: sentence.uid)
+        }
+        Button("Konuşmacıyı kaldır") {
+            vm.setSpeaker(nil, for: sentence.uid)
+        }
+        .disabled(sentence.speaker == nil)
     }
 
     private var translationField: some View {

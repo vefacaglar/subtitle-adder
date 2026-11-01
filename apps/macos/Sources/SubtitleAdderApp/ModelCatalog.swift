@@ -23,6 +23,10 @@ final class ModelCatalog {
         EngineModel(id: "large-v3-turbo", sizeMB: 1600, speed: 2, accuracy: 4, license: "MIT", downloaded: false),
         EngineModel(id: "large-v3", sizeMB: 3000, speed: 1, accuracy: 5, license: "MIT", downloaded: false),
         EngineModel(
+            id: "speaker-diarization", kind: "diarization", backend: "sherpa",
+            sizeMB: 29, speed: 4, accuracy: 3, license: "MIT AND Apache-2.0", downloaded: false
+        ),
+        EngineModel(
             id: "nllb-1.3b", kind: "translation", backend: "ctranslate2",
             languages: translationLanguages, sizeMB: 1336, speed: 3, accuracy: 4,
             license: "CC-BY-NC-4.0", downloaded: false
@@ -47,8 +51,8 @@ final class ModelCatalog {
     private(set) var deleting: Set<String> = []
     private(set) var deleteErrors: [String: String] = [:]
 
-    /// The model used by the running subtitle generation or translation; that model can't be deleted from Settings.
-    var activeModel: String?
+    /// The models used by the running subtitle generation or translation (including the speaker model); those can't be deleted from Settings.
+    var activeModels: Set<String> = []
 
     @ObservationIgnored let engine: EngineClient?
 
@@ -63,7 +67,7 @@ final class ModelCatalog {
 
     /// Subtitle models the toolbar picker sees (translation models excluded).
     func models(for language: String) -> [EngineModel] {
-        let transcription = models.filter { !$0.isTranslation }
+        let transcription = models.filter(\.isTranscription)
         if language.isEmpty { return transcription.filter(\.detectsLanguage) }
         return transcription.filter { $0.supports(language: language) }
     }
@@ -71,6 +75,11 @@ final class ModelCatalog {
     /// The "Çeviri modelleri" section in Settings and the default translation model picker.
     var translationModels: [EngineModel] {
         models.filter(\.isTranslation)
+    }
+
+    /// Speaker separation models; shown in their own Settings section, never in the transcription picker.
+    var diarizationModels: [EngineModel] {
+        models.filter(\.isDiarization)
     }
 
     /// Refreshes the catalog from the engine; on error the current list and the error text are kept.
@@ -95,7 +104,7 @@ final class ModelCatalog {
 
     /// Deletes the model; on success sets the row to the "yüklü değil" state.
     func delete(_ model: EngineModel) async {
-        guard model.downloaded, !deleting.contains(model.id), activeModel != model.id else { return }
+        guard model.downloaded, !deleting.contains(model.id), !activeModels.contains(model.id) else { return }
         guard let engine else {
             deleteErrors[model.id] = EngineError.notFound.localizedDescription
             return

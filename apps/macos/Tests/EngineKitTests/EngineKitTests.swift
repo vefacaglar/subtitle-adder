@@ -92,7 +92,7 @@ import Testing
 }
 
 /// Exercises process management (event stream, error event, render stdin) end to end with a fake engine script.
-private func fakeEngine(_ script: String) throws -> EngineClient {
+func fakeEngine(_ script: String) throws -> EngineClient {
     let url = FileManager.default.temporaryDirectory.appending(path: "fake-engine-\(UUID().uuidString).sh")
     try ("#!/bin/sh\n" + script).write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
@@ -279,7 +279,7 @@ func realEngineOnDemoVideo() async throws {
         if case .result(let r) = event { result = r }
     }
     #expect(result?.language == "tr")
-    #expect(result?.sentences.count == 3)
+    #expect(result?.sentences.count == 2)  // "Merhaba, bu bir altyazı testidir." + "Sen ne yapacaksın?"
     let srt = try await engine.render(try #require(result?.sentences), as: .srt)
     #expect(srt.hasPrefix("1\n00:00:00,000 --> "))
 }

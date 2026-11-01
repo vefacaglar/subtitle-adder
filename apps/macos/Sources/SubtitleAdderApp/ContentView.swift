@@ -77,6 +77,7 @@ struct ContentView: View {
             .frame(width: 175)
             .help("Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır.")
             ModelPicker(selection: $vm.model, models: vm.availableModels)
+            speakerMenu
             if !vm.sentences.isEmpty {
                 Picker("Çeviri dili", selection: $vm.translationTarget) {
                     ForEach(SubtitleLanguage.translationTargets) { language in
@@ -111,6 +112,24 @@ struct ContentView: View {
                     .help("Videonun sesini metne çevirip altyazı çıkar (⌘↩)")
             }
         }
+    }
+
+    /// Speaker separation options for the next "Altyazı üret" run.
+    private var speakerMenu: some View {
+        Menu {
+            Toggle("Konuşmacıları ayır", isOn: $vm.diarize)
+            Picker("Konuşmacı sayısı", selection: $vm.speakerCount) {
+                Text("Otomatik").tag(0)
+                ForEach(2...6, id: \.self) { count in
+                    Text("\(count)").tag(count)
+                }
+            }
+            .disabled(!vm.diarize)
+        } label: {
+            Label("Konuşmacılar", systemImage: vm.diarize ? "person.2.fill" : "person.2")
+        }
+        .disabled(vm.isWorking)
+        .help("Videoda birden çok kişi konuşuyorsa kimin ne dediğini ayır; ilk kullanımda küçük bir model indirilir.")
     }
 
     private var dropZone: some View {

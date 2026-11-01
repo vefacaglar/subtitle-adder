@@ -49,11 +49,11 @@ extension SubtitleViewModel {
         job?.cancel()
         let id = UUID()
         jobID = id
-        catalog.activeModel = model
+        catalog.activeModels = [model]
         status = .working("Çeviri hazırlanıyor…", fraction: nil)
         job = Task {
             // However it ends, the model becomes deletable in Settings.
-            defer { if jobID == id { catalog.activeModel = nil } }
+            defer { if jobID == id { catalog.activeModels = [] } }
             var failed = false
             do {
                 for try await event in engine.translate(request, to: target, from: source, model: model) {

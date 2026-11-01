@@ -24,19 +24,25 @@ public struct Sentence: Sendable, Hashable, Codable {
     public var end: Double
     public var text: String
     public var words: [Word]
+    /// Zero-based speaker index from diarization; `nil` when diarization is off.
+    public var speaker: Int?
 
-    public init(id: Int, uid: UUID = UUID(), start: Double, end: Double, text: String, words: [Word] = []) {
+    public init(
+        id: Int, uid: UUID = UUID(), start: Double, end: Double, text: String,
+        words: [Word] = [], speaker: Int? = nil
+    ) {
         self.id = id
         self.uid = uid
         self.start = start
         self.end = end
         self.text = text
         self.words = words
+        self.speaker = speaker
     }
 
     // `uid` is an app-internal identity only; it is not part of the engine protocol.
     private enum CodingKeys: String, CodingKey {
-        case id, start, end, text, words
+        case id, start, end, text, words, speaker
     }
 
     public init(from decoder: any Decoder) throws {
@@ -47,6 +53,7 @@ public struct Sentence: Sendable, Hashable, Codable {
         end = try container.decode(Double.self, forKey: .end)
         text = try container.decode(String.self, forKey: .text)
         words = try container.decodeIfPresent([Word].self, forKey: .words) ?? []
+        speaker = try container.decodeIfPresent(Int.self, forKey: .speaker)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -56,12 +63,13 @@ public struct Sentence: Sendable, Hashable, Codable {
         try container.encode(end, forKey: .end)
         try container.encode(text, forKey: .text)
         try container.encode(words, forKey: .words)
+        try container.encodeIfPresent(speaker, forKey: .speaker)
     }
 
     /// Content equality; the transient view identity (`uid`) is not part of the comparison.
     public static func == (lhs: Sentence, rhs: Sentence) -> Bool {
         lhs.id == rhs.id && lhs.start == rhs.start && lhs.end == rhs.end
-            && lhs.text == rhs.text && lhs.words == rhs.words
+            && lhs.text == rhs.text && lhs.words == rhs.words && lhs.speaker == rhs.speaker
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -70,6 +78,7 @@ public struct Sentence: Sendable, Hashable, Codable {
         hasher.combine(end)
         hasher.combine(text)
         hasher.combine(words)
+        hasher.combine(speaker)
     }
 }
 
@@ -81,7 +90,7 @@ public enum SubtitleFormat: String, CaseIterable, Sendable, Identifiable {
 /// A catalog row from the engine's `models --json` output.
 public struct EngineModel: Sendable, Equatable, Decodable, Identifiable {
     public var id: String
-    /// "transcription" (speech recognition) or "translation".
+    /// "transcription" (speech recognition), "translation" or "diarization" (speaker separation).
     public var kind: String
     /// "whisper" (supports all languages, detects language) or "onnx" (fixed language list).
     public var backend: String
@@ -121,6 +130,8 @@ public struct EngineModel: Sendable, Equatable, Decodable, Identifiable {
     }
 
     public var isTranslation: Bool { kind == "translation" }
+    public var isDiarization: Bool { kind == "diarization" }
+    public var isTranscription: Bool { kind == "transcription" }
 
     /// Licenses that forbid commercial use ("NC" appears in the SPDX name).
     public var hasNonCommercialLicense: Bool {

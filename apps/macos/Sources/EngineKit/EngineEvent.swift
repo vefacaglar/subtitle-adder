@@ -12,6 +12,7 @@ public enum EngineEvent: Sendable, Equatable {
         case downloadingModel = "downloading_model"
         case loadingModel = "loading_model"
         case transcribing
+        case diarizing
         case segmenting
         case translating
         case unknown

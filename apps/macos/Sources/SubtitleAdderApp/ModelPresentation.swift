@@ -69,6 +69,7 @@ enum ModelLabel {
         case "gigaam-v3": "GigaAM (Rusça)"
         case "nllb-1.3b": "NLLB-200 1.3B"
         case "madlad-3b": "MADLAD-400 3B"
+        case "speaker-diarization": "Konuşmacı ayırma"
         default: id
         }
     }
@@ -83,6 +84,7 @@ enum ModelLabel {
 
     /// Short language summary: "Tüm diller" or "bg, hr, cs…".
     static func languageSummary(for model: EngineModel) -> String {
+        if model.isDiarization { return "Dilden bağımsız" }
         guard let languages = model.languages else { return "Tüm diller" }
         let shown = languages.prefix(3).joined(separator: ", ")
         return languages.count > 3 ? "\(shown)…" : shown

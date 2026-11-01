@@ -91,6 +91,18 @@ extension SubtitleViewModel {
         commit("Satırları Birleştir", clearingTranslations: affected) { $0.mergeWithNext(at: index) }
     }
 
+    /// Sets a line's speaker (zero-based index); `nil` clears it.
+    func setSpeaker(_ speaker: Int?, for uid: UUID) {
+        commitDraft()
+        guard let index = sentences.index(ofUID: uid) else { return }
+        commit("Konuşmacıyı Değiştir") { $0.setSpeaker(speaker, at: index) }
+    }
+
+    /// Assigns an unused speaker index to the line ("Yeni konuşmacı").
+    func assignNewSpeaker(for uid: UUID) {
+        setSpeaker(sentences.nextNewSpeaker, for: uid)
+    }
+
     func deleteSelected() {
         commitDraft()
         guard let uid = selection, let index = sentences.index(ofUID: uid) else { return }

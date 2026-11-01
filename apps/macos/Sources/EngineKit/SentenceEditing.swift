@@ -74,17 +74,58 @@ extension [Sentence] {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+        // Merging keeps the first line's speaker.
         self[index] = Sentence(
             id: first.id,
             uid: first.uid,
             start: first.start,
             end: next.end,
             text: text,
-            words: first.words + next.words
+            words: first.words + next.words,
+            speaker: first.speaker
         )
         remove(at: index + 1)
         renumber()
         return true
+    }
+
+    /// Assigns a speaker (zero-based) to the line. Returns `true` if something changed.
+    @discardableResult
+    public mutating func setSpeaker(_ speaker: Int?, at index: Int) -> Bool {
+        guard indices.contains(index), self[index].speaker != speaker else { return false }
+        self[index].speaker = speaker
+        return true
+    }
+
+    /// Distinct non-nil speakers, sorted.
+    public var speakers: [Int] {
+        Swift.Array(Set(compactMap(\.speaker))).sorted()
+    }
+
+    /// An unused speaker index (one past the highest in use).
+    public var nextNewSpeaker: Int { (speakers.last ?? -1) + 1 }
+
+    /// Which lines get the "- " dialogue prefix; mirrors the engine's `speaker_dashes`: needs at least two
+    /// distinct non-nil speakers, and a line gets one when it has a speaker that differs from the last
+    /// known one (lines without a speaker do not reset it).
+    public func dialogueDashes() -> [Bool] {
+        guard speakers.count >= 2 else { return map { _ in false } }
+        var previous: Int?
+        return map { sentence in
+            defer { if let speaker = sentence.speaker { previous = speaker } }
+            return sentence.speaker != nil && sentence.speaker != previous
+        }
+    }
+
+    /// Whether the line at `index` starts a speaker turn (gets the dash).
+    public func startsDialogueTurn(at index: Int) -> Bool {
+        guard indices.contains(index) else { return false }
+        return dialogueDashes()[index]
+    }
+
+    /// Text as displayed: with the dialogue dash when the rule applies and the text has none yet.
+    public func displayText(at index: Int) -> String {
+        DialogueDash.apply(startsDialogueTurn(at: index), to: self[index].text)
     }
 
     @discardableResult
@@ -155,7 +196,8 @@ extension [Sentence] {
             start: boundary,
             end: sentence.end,
             text: secondText,
-            words: secondWords
+            words: secondWords,
+            speaker: sentence.speaker
         )
         self[index] = first
         insert(second, at: index + 1)
@@ -220,5 +262,17 @@ extension [Sentence] {
 
     private static func rounded(_ value: Double) -> Double {
         (value * 1000).rounded() / 1000
+    }
+}
+
+/// The dialogue dash applied to displayed text; same check as the engine's `_has_dash`.
+public enum DialogueDash {
+    /// Does the text already start with a dialogue dash ("- " or "\u{2013} ")?
+    public static func hasDash(_ text: String) -> Bool {
+        text.hasPrefix("- ") || text.hasPrefix("\u{2013} ")
+    }
+
+    public static func apply(_ dash: Bool, to text: String) -> String {
+        dash && !hasDash(text) ? "- " + text : text
     }
 }
