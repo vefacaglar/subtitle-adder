@@ -2273,6 +2273,22 @@
         }
       }
     },
+    "Video aç…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video aç…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Video…"
+          }
+        }
+      }
+    },
     "Video seç": {
       "localizations": {
         "tr": {

@@ -65,12 +65,6 @@ extension SubtitleViewModel {
     /// Whether a video can be picked (toolbar button and ⌘O): in the editor, and not while a playlist run owns the video.
     var canPickVideo: Bool { workspace == .editor && !isPlaylistRunning }
 
-    /// ⌘O: asks the window to show its video picker. The view resets the flag once it has opened the picker.
-    func requestVideoPicker() {
-        guard canPickVideo else { return }
-        videoPickerRequested = true
-    }
-
     /// Whether the lines can be exported: there are some and no job is rewriting them.
     var canExport: Bool { !sentences.isEmpty && !isWorking }
 
@@ -142,9 +136,17 @@ extension SubtitleViewModel {
     }
 
     /// Result of the export panel: a write error is reported, a cancelled panel is not an error.
+    /// A successful export clears an earlier "Dosya kaydedilemedi" so it doesn't look like this one failed too.
     func exportFinished(_ result: Result<URL, any Error>) {
-        guard case .failure(let error) = result, !Self.isUserCancellation(error) else { return }
-        reportSaveFailure(error)
+        switch result {
+        case .success:
+            if !isWorking, case .failed(let message) = status, message.id.hasPrefix("save-failed:") {
+                status = .finished
+            }
+        case .failure(let error):
+            guard !Self.isUserCancellation(error) else { return }
+            reportSaveFailure(error)
+        }
     }
 
     nonisolated static func isUserCancellation(_ error: any Error) -> Bool {
@@ -186,8 +188,9 @@ extension SubtitleViewModel {
 
     // MARK: - Status text
 
-    /// The playback problem to show in place of the status line, or `nil`. It only replaces a calm status (ready or
-    /// finished) in the editor: a running job's progress and any real error stay visible, and generation is never blocked.
+    /// The playback problem to show next to the status line, or `nil`. It never replaces the status (the ready hint and
+    /// the finished summary stay visible); it is only hidden while a job's progress or a real error owns the bar, and
+    /// outside the editor. Generation is never blocked.
     func playbackNotice(_ failure: LocalizedMessage?) -> LocalizedMessage? {
         guard let failure, workspace == .editor, !isAsyncTranslating else { return nil }
         switch status {

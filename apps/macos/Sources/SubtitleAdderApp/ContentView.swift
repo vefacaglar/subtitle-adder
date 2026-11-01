@@ -34,12 +34,9 @@ struct ContentView: View {
         .toolbar(vm.isTheaterMode ? .hidden : .automatic, for: .windowToolbar)
         // Lets the menu commands act on this window's view model only while it is the key window (not Settings).
         .focusedSceneValue(\.subtitleVM, vm)
-        // ⌘O (File menu) asks the view model, which only accepts while a video can be picked; the same picker opens.
-        .onChange(of: vm.videoPickerRequested) { _, requested in
-            guard requested else { return }
-            vm.videoPickerRequested = false
-            chooseVideo()
-        }
+        // ⌘O (File menu) runs this window's own picker action, offered only while a video can be picked. It is a
+        // per-window action (not state on the shared view model), so it never reaches another open window.
+        .focusedSceneValue(\.chooseVideo, chooseVideoAction)
         .background { WindowReader { chrome.attach($0) } }
         .onAppear {
             chrome.onEscape = {
@@ -79,7 +76,7 @@ struct ContentView: View {
             }
         }
         .fileExporter(
-            isPresented: Binding(get: { exportDocument != nil }, set: { if !$0 { exportDocument = nil } }),
+            isPresented: exportPresented,
             document: exportDocument,
             contentType: .plainText,
             defaultFilename: vm.exportFilename
@@ -219,6 +216,14 @@ struct ContentView: View {
         }
     }
 
+    private var chooseVideoAction: ChooseVideoAction? {
+        vm.canPickVideo ? ChooseVideoAction { chooseVideo() } : nil
+    }
+
+    private var exportPresented: Binding<Bool> {
+        Binding(get: { exportDocument != nil }, set: { if !$0 { exportDocument = nil } })
+    }
+
     private func chooseVideo() {
         runAfterPicking = false
         pickingVideo = true
@@ -338,48 +343,62 @@ struct ContentView: View {
         )
     }
 
+    private func playbackNoticeView(_ notice: LocalizedMessage) -> some View {
+        HStack(spacing: 4) {
+            Label(notice.text, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(notice.text)
+            Button(L("Kapat"), systemImage: "xmark.circle.fill") { player.dismissFailure() }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help(L("Kapat"))
+        }
+    }
+
     private var statusBar: some View {
         HStack(spacing: 10) {
-            if let notice = vm.playbackNotice(player.failureMessage) {
-                // Playback only; generating subtitles still works (the engine decodes the audio itself).
-                Label(notice.text, systemImage: "exclamationmark.triangle.fill")
+            switch vm.status {
+            case .idle where vm.isAsyncTranslating:
+                // Background translation with nothing else running.
+                if let fraction = vm.asyncTranslationFraction {
+                    ProgressView(value: fraction).frame(width: 120)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(vm.asyncStatusText)
+            case .idle:
+                Text(vm.workspace == .playlist || vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
+            case .working(let label, let fraction):
+                if let fraction {
+                    ProgressView(value: fraction).frame(width: 120)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(label.text)
+                if let detail = vm.asyncStatusDetail {
+                    Text("· " + detail).foregroundStyle(.secondary)
+                }
+            case .finished:
+                Label(vm.finishedSummary, systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            case .failed(let message):
+                Label(message.text, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .lineLimit(2)
-            } else {
-                switch vm.status {
-                case .idle where vm.isAsyncTranslating:
-                    // Background translation with nothing else running.
-                    if let fraction = vm.asyncTranslationFraction {
-                        ProgressView(value: fraction).frame(width: 120)
-                    } else {
-                        ProgressView().controlSize(.small)
-                    }
-                    Text(vm.asyncStatusText)
-                case .idle:
-                    Text(vm.workspace == .playlist || vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
-                case .working(let label, let fraction):
-                    if let fraction {
-                        ProgressView(value: fraction).frame(width: 120)
-                    } else {
-                        ProgressView().controlSize(.small)
-                    }
-                    Text(label.text)
-                    if let detail = vm.asyncStatusDetail {
-                        Text("· " + detail).foregroundStyle(.secondary)
-                    }
-                case .finished:
-                    Label(vm.finishedSummary, systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                case .failed(let message):
-                    Label(message.text, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                    if vm.canGoOnlineAndRetry {
-                        Button(L("Çevrimdışı modu kapat ve indir")) { vm.goOnlineAndRetry() }
-                    }
+                if vm.canGoOnlineAndRetry {
+                    Button(L("Çevrimdışı modu kapat ve indir")) { vm.goOnlineAndRetry() }
                 }
+            }
+            if let notice = vm.playbackNotice(player.failureMessage) {
+                // Playback only; generating subtitles still works (the engine decodes the audio itself). Shown next to
+                // the status, never instead of it, and can be dismissed.
+                playbackNoticeView(notice)
             }
             Spacer()
             if let notice = vm.modelNotice {

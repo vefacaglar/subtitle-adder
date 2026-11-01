@@ -54,6 +54,14 @@ struct SubtitleAdderApp: App {
 extension FocusedValues {
     /// The view model of the focused main window; `nil` while another window (Settings) is key.
     @Entry var subtitleVM: SubtitleViewModel?
+    /// Opens the video picker of the focused main window; `nil` while none can pick (or Settings is key). Each window
+    /// publishes its own action, so ⌘O only ever reaches the key window.
+    @Entry var chooseVideo: ChooseVideoAction?
+}
+
+/// A window's "open the video picker" action (see `FocusedValues.chooseVideo`).
+struct ChooseVideoAction {
+    let perform: @MainActor () -> Void
 }
 
 /// Menu commands for open video (⌘O), generate (⌘↩) and stop (⌘.), so they keep working while theater mode hides the toolbar. They act
@@ -62,12 +70,13 @@ extension FocusedValues {
 private struct LayoutCommands: Commands {
     @Bindable var vm: SubtitleViewModel
     @FocusedValue(\.subtitleVM) private var focused
+    @FocusedValue(\.chooseVideo) private var chooseVideo
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button(L("Video seç"), systemImage: "film") { focused?.requestVideoPicker() }
+            Button(L("Video aç…"), systemImage: "film") { chooseVideo?.perform() }
                 .keyboardShortcut("o", modifiers: .command)
-                .disabled(focused?.canPickVideo != true)
+                .disabled(chooseVideo == nil)
             Button(L("Altyazı üret"), systemImage: "captions.bubble") { focused?.generate() }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(focused.map { $0.video == nil || $0.isWorking || $0.workspace != .editor } ?? true)

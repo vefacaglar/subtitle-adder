@@ -25,22 +25,50 @@ import Testing
         let player = PlayerModel()
         #expect(player.failureMessage == nil)
         player.reportFailure(Boom(), generation: 99)
-        #expect(player.failureReason == nil)
+        #expect(player.failure == nil)
         player.reportFailure(Boom())
-        #expect(player.failureReason == "disk dolu")
+        #expect(player.failure == .system("disk dolu"))
         #expect(player.failureMessage?.text.contains("disk dolu") == true)
         // The first failure of a load wins; a later one doesn't replace it.
         player.reportFailure(nil)
-        #expect(player.failureReason == "disk dolu")
+        #expect(player.failure == .system("disk dolu"))
         player.load(nil)
-        #expect(player.failureReason == nil)
+        #expect(player.failure == nil)
     }
 
     @Test func notPlayableAssetGetsAGenericReason() {
         let player = PlayerModel()
         player.reportFailure(nil)
-        #expect(player.failureReason == UILanguage.tr.string("Bu biçim oynatılamıyor.", in: .module)
-            || player.failureReason == UILanguage.en.string("Bu biçim oynatılamıyor.", in: .module))
+        #expect(player.failure == .notPlayable)
+    }
+
+    @Test func genericPlaybackReasonFollowsTheUILanguage() {
+        let original = LanguageState.shared.language
+        defer { LanguageState.shared.language = original }
+        let player = PlayerModel()
+        player.reportFailure(nil)
+        LanguageState.shared.language = .tr
+        let turkish = player.failureMessage
+        #expect(turkish?.text.contains("Bu biçim oynatılamıyor.") == true)
+        LanguageState.shared.language = .en
+        let english = player.failureMessage
+        #expect(english?.text.contains("Bu biçim") == false)
+        #expect(english?.text.contains("Couldn't play the video") == true)
+        // The identity doesn't depend on the language.
+        #expect(turkish?.id == english?.id)
+    }
+
+    @Test func dismissingTheFailureHidesItForTheRestOfTheLoad() {
+        let player = PlayerModel()
+        player.reportFailure(Boom())
+        player.dismissFailure()
+        #expect(player.failureMessage == nil)
+        player.reportFailure(Boom())
+        #expect(player.failureMessage == nil)
+        // A new load can fail (and be shown) again.
+        player.load(nil)
+        player.reportFailure(Boom())
+        #expect(player.failureMessage != nil)
     }
 
     @Test func unreadableVideoSurfacesAFailure() async throws {
@@ -49,22 +77,26 @@ import Testing
         defer { try? FileManager.default.removeItem(at: url) }
         let player = PlayerModel()
         player.load(url)
-        for _ in 0..<100 where player.failureReason == nil {
+        for _ in 0..<100 where player.failure == nil {
             try await Task.sleep(for: .milliseconds(50))
         }
-        #expect(player.failureReason != nil)
+        #expect(player.failure != nil)
         // Loading something else starts clean.
         player.load(nil)
-        #expect(player.failureReason == nil)
+        #expect(player.failure == nil)
     }
 
-    @Test func playbackNoticeOnlyReplacesACalmEditorStatus() {
+    @Test func playbackNoticeSitsNextToACalmEditorStatus() {
         let vm = makeModel()
         let failure = LocalizedMessage.verbatim("oynatılamadı")
         #expect(vm.playbackNotice(nil) == nil)
         #expect(vm.playbackNotice(failure) == failure)
+        vm.sentences = [line(1, 0, 1, "a"), line(2, 1, 2, "b")]
         vm.status = .finished
         #expect(vm.playbackNotice(failure) == failure)
+        // The notice is separate: the status and its summary are untouched, so the bar can show both.
+        #expect(vm.status == .finished)
+        #expect(vm.finishedSummary.contains("2"))
         vm.status = .failed(.verbatim("başka hata"))
         #expect(vm.playbackNotice(failure) == nil)
         vm.status = .working(.verbatim("çalışıyor"), fraction: 0.5)
@@ -93,6 +125,17 @@ import Testing
         #expect(vm.status == .idle)
         vm.exportFinished(.success(URL(filePath: "/tmp/x.srt")))
         #expect(vm.status == .idle)
+    }
+
+    @Test func successfulExportClearsAnEarlierSaveFailureOnly() {
+        let vm = makeModel()
+        vm.exportFinished(.failure(Boom()))
+        vm.exportFinished(.success(URL(filePath: "/tmp/x.srt")))
+        #expect(vm.status == .finished)
+        // Another kind of error stays visible.
+        vm.status = .failed(.verbatim("motor hatası"))
+        vm.exportFinished(.success(URL(filePath: "/tmp/x.srt")))
+        #expect(vm.status == .failed(.verbatim("motor hatası")))
     }
 
     // MARK: - Stage labels
@@ -127,16 +170,18 @@ import Testing
 
     // MARK: - ⌘O
 
-    @Test func videoPickerRequestFollowsAvailability() {
+    // The picker action is published per window (`FocusedValues.chooseVideo`), so ⌘O reaches only the key window; the
+    // view model keeps no shared request flag. It is offered only while a video can be picked.
+    @Test func videoPickerIsAvailableOnlyInTheEditor() {
         let vm = makeModel()
         #expect(vm.canPickVideo)
-        vm.requestVideoPicker()
-        #expect(vm.videoPickerRequested)
-        vm.videoPickerRequested = false
         vm.workspace = .playlist
         #expect(!vm.canPickVideo)
-        vm.requestVideoPicker()
-        #expect(!vm.videoPickerRequested)
+    }
+
+    @Test func openVideoMenuTitleHasEllipsisInBothLanguages() {
+        #expect(UILanguage.tr.string("Video aç…", in: .module) == "Video aç…")
+        #expect(UILanguage.en.string("Video aç…", in: .module) == "Open Video…")
     }
 
     // MARK: - Delete notice

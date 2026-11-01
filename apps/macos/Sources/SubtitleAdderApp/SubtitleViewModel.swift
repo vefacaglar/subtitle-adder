@@ -144,8 +144,6 @@ final class SubtitleViewModel {
             defaults.set(sideBySideLayout, forKey: Self.sideBySideLayoutDefaultsKey)
         }
     }
-    /// Set by the ⌘O menu command; the main window opens its video picker and clears it.
-    var videoPickerRequested = false
     /// Hides the window toolbar so the player and the lines get the room; not persisted.
     var isTheaterMode = false
     /// Separate speakers while transcribing (`--diarize`); persistent, on by default.

@@ -14,22 +14,56 @@ final class PlayerModel {
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
     @ObservationIgnored private var failureObserver: (any NSObjectProtocol)?
+    /// Whether the current load has already reported a failure (even if the user dismissed it), so a later failure of
+    /// the same load doesn't bring the notice back.
+    @ObservationIgnored private var failureReported = false
 
     private(set) var currentTime: Double = 0
     private(set) var isPlaying = false
     private(set) var videoSize = CGSize(width: 16, height: 9)
     /// Stable identity of the line currently playing; updated only when it changes (to avoid needless redraws).
     private(set) var activeID: UUID?
-    /// Why the current video can't be played, `nil` while it can. Playback only; subtitle generation doesn't depend on
-    /// it (the engine decodes the audio itself). Cleared on every `load`.
-    private(set) var failureReason: String?
+    /// Why the current video can't be played, `nil` while it can (or after the user dismissed the notice). Playback
+    /// only; subtitle generation doesn't depend on it (the engine decodes the audio itself). Cleared on every `load`.
+    /// Kept as a cause, not as text, so the message follows a UI language switch.
+    private(set) var failure: PlaybackFailure?
     private var sentences: [Sentence] = []
+
+    /// Why playback failed. The generic causes are localized when displayed; a system error keeps its own text.
+    enum PlaybackFailure: Equatable, Sendable {
+        case notPlayable
+        case unknown
+        case system(String)
+
+        /// Stable identity, independent of the UI language.
+        var id: String {
+            switch self {
+            case .notPlayable: "not-playable"
+            case .unknown: "unknown"
+            case .system(let text): "system:\(text)"
+            }
+        }
+
+        /// Readable cause in the current UI language.
+        var text: String {
+            switch self {
+            case .notPlayable: L("Bu biçim oynatılamıyor.")
+            case .unknown: L("Bilinmeyen hata")
+            case .system(let text): text
+            }
+        }
+    }
 
     /// "Video oynatılamadı: …" for the status bar; `nil` while playback works.
     var failureMessage: LocalizedMessage? {
-        failureReason.map { reason in
-            LocalizedMessage("playback-failed:\(reason)") { L("Video oynatılamadı: %@", reason) }
+        failure.map { cause in
+            LocalizedMessage("playback-failed:\(cause.id)") { L("Video oynatılamadı: %@", cause.text) }
         }
+    }
+
+    // `isolated` so the main-actor observer token can be removed when a closed window drops its player.
+    isolated deinit {
+        stopObservingItem()
     }
 
     init() {
@@ -46,7 +80,8 @@ final class PlayerModel {
         loadGeneration += 1
         let generation = loadGeneration
         stopObservingItem()
-        failureReason = nil
+        failure = nil
+        failureReported = false
         player.pause()
         isPlaying = false
         currentTime = 0
@@ -87,17 +122,24 @@ final class PlayerModel {
     /// Records that playback of the item loaded as `generation` failed; a stale generation is ignored. A missing error
     /// (an asset that is simply not playable) gets a generic reason. The first failure of a load wins.
     func reportFailure(_ error: (any Error)?, generation: Int? = nil) {
-        guard generation == nil || generation == loadGeneration, failureReason == nil else { return }
-        failureReason = Self.reason(for: error)
+        guard generation == nil || generation == loadGeneration, !failureReported else { return }
+        failureReported = true
+        failure = Self.cause(for: error)
         player.pause()
         isPlaying = false
     }
 
-    /// Readable cause of a playback failure.
-    static func reason(for error: (any Error)?) -> String {
-        guard let error else { return L("Bu biçim oynatılamıyor.") }
+    /// Hides the playback notice for the current video; a later failure of the same load doesn't bring it back.
+    func dismissFailure() {
+        failure = nil
+        failureReported = true
+    }
+
+    /// Cause of a playback failure; no error means the asset is simply not playable.
+    static func cause(for error: (any Error)?) -> PlaybackFailure {
+        guard let error else { return .notPlayable }
         let text = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? L("Bilinmeyen hata") : text
+        return text.isEmpty ? .unknown : .system(text)
     }
 
     /// Watches the item for a failed status and for failing to play to the end.
