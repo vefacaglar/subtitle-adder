@@ -22,6 +22,21 @@ import Testing
         return (vm, defaults)
     }
 
+    private func makeModelWithLaunchState(engine: EngineClient) -> (SubtitleViewModel, EngineLaunchState) {
+        let state = EngineLaunchState()
+        let vm = SubtitleViewModel(
+            catalog: ModelCatalog(engine: engine),
+            defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!,
+            launchState: state
+        )
+        vm.offlineMode = false
+        return (vm, state)
+    }
+
+    private func sentenceJSON(_ id: Int, _ text: String) -> String {
+        #"{"id": \#(id), "start": \#(id), "end": \#(id + 1), "text": "\#(text)", "words": []}"#
+    }
+
     private func finished(_ text: String) -> String {
         """
         echo '{"event": "result", "language": "xx", "duration": 1, "audio": "/nonexistent.wav", "outputs": [], "sentences": [{"id": 1, "start": 0, "end": 1, "text": "\(text)", "words": []}]}'
@@ -187,7 +202,7 @@ import Testing
     @Test func cancelPutsTheCurrentItemBackToQueuedAndRestoresTheToolbar() async throws {
         let folder = try makeFolder()
         let started = folder.appending(path: "started")
-        let engine = try FakeEngine.make(transcribe: "touch \"\(started.path)\"\nsleep 20")
+        let engine = try FakeEngine.make(transcribe: "touch \"\(started.path)\"\nexec sleep 20")
         let (vm, defaults) = makeModel(engine: engine)
         vm.translationTarget = "tr"
         vm.addToPlaylist([folder.appending(path: "a.mp4"), folder.appending(path: "b.mp4")], sourceLanguage: "ja")
@@ -384,7 +399,7 @@ import Testing
         let folder = try makeFolder()
         let started = folder.appending(path: "translating")
         let engine = try FakeEngine.make(
-            transcribe: finished("Merhaba"), translate: "touch \"\(started.path)\"\nsleep 20"
+            transcribe: finished("Merhaba"), translate: "touch \"\(started.path)\"\nexec sleep 20"
         )
         let (vm, _) = makeModel(engine: engine)
         vm.externalLlmEnabled = true
@@ -400,5 +415,149 @@ import Testing
         #expect(vm.playlist[0].state == .pending)
         #expect(!vm.isWorking)
         #expect(!FileManager.default.fileExists(atPath: folder.appending(path: savedName("a", "en")).path))
+    }
+
+    @Test func cancelDuringTheSaveRenderPutsTheItemBackToQueued() async throws {
+        let folder = try makeFolder()
+        let started = folder.appending(path: "rendering")
+        let engine = try FakeEngine.make(
+            transcribe: finished("Merhaba"), translate: translated("Hello"),
+            render: "touch \"\(started.path)\"\nexec sleep 20"
+        )
+        let (vm, _) = makeModel(engine: engine)
+        vm.autoSaveSubtitle = false
+        vm.translationTarget = "en"
+        vm.addToPlaylist([folder.appending(path: "a.mp4")], sourceLanguage: "tr")
+        vm.startPlaylist()
+        let task = vm.playlistTask
+        #expect(await eventually { FileManager.default.fileExists(atPath: started.path) })
+
+        vm.cancel()
+        await task?.value
+
+        #expect(vm.playlist[0].state == .pending)
+        #expect(vm.playlist[0].statusMessage.text == "Sırada")
+        #expect(vm.status == .idle)
+        #expect(!vm.isWorking)
+    }
+
+    @Test func theEditorKeepsTheLastItemsLanguageAfterTheRun() async throws {
+        let folder = try makeFolder()
+        let engine = try FakeEngine.make(transcribe: finished("Hello"), translate: translated("Hola"))
+        let (vm, _) = makeModel(engine: engine)
+        vm.language = "tr"
+        vm.translationTarget = "es"
+        vm.addToPlaylist([folder.appending(path: "a.mp4")], sourceLanguage: "en")
+        await run(vm)
+
+        // The toolbar is the user's again, but the lines left in the editor are English.
+        #expect(vm.language == "tr" && vm.translationTarget == "es")
+        #expect(!vm.sentences.isEmpty)
+        #expect(vm.translationSource == "en")
+        // Other lines, or a language picked by hand, are the toolbar's business again.
+        vm.openVideo(folder.appending(path: "other.mp4"))
+        #expect(vm.translationSource == "tr")
+    }
+
+    // MARK: - Pinned settings
+
+    @Test func backgroundTranslationsLaunchWithTheServerChosenAtHandOff() async throws {
+        let folder = try makeFolder()
+        let log = folder.appending(path: "urls.log")
+        let engine = try FakeEngine.make(
+            transcribe: finished("Merhaba"),
+            translate: """
+            echo "url ${SUBTITLE_ENGINE_EXTERNAL_LLM_URL:-none}" >> "\(log.path)"
+            \(translated("Hello"))
+            """
+        )
+        // The view model's own launch state is not the process-wide one the client reads when nothing is pinned, so
+        // "none" would show up here if the hand-off didn't carry the settings along.
+        let (vm, _) = makeModelWithLaunchState(engine: engine)
+        vm.externalLlmEnabled = true
+        vm.externalLlmUrl = "10.0.0.2:1234"
+        vm.externalLlmAsync = true
+        vm.translationTarget = "en"
+        vm.addToPlaylist([folder.appending(path: "a.mp4"), folder.appending(path: "b.mp4")], sourceLanguage: "tr")
+        await run(vm)
+
+        #expect(logLines(log) == ["url http://10.0.0.2:1234", "url http://10.0.0.2:1234"])
+        #expect(vm.playlist.allSatisfy { $0.state == .completed })
+    }
+
+    @Test func aPinnedClientIgnoresLaterSettingsChanges() throws {
+        let engine = try FakeEngine.make()
+        let (vm, state) = makeModelWithLaunchState(engine: engine)
+        vm.externalLlmEnabled = true
+        vm.externalLlmUrl = "10.0.0.2:1234"
+        vm.externalLlmModel = "gemma4:e4b"
+        let pinned = vm.pinningLaunchSettings(engine)
+
+        vm.externalLlmEnabled = false
+        vm.offlineMode = true
+        let now = state.settings
+        #expect(now.externalLLM == nil && now.offline)
+        #expect(pinned.launchSettings == EngineLaunchSettings(
+            offline: false, externalLLM: ExternalLLM(url: "10.0.0.2:1234", model: "gemma4:e4b")
+        ))
+        // An unpinned client follows the settings.
+        #expect(engine.launchSettings == nil)
+    }
+
+    // MARK: - Pre-translation and the editor in async mode
+
+    @Test func asyncModeTranslatesWhileTranscribingAndOnlySendsTheRestAtHandOff() async throws {
+        let folder = try makeFolder()
+        let log = try makeFolder()
+        let dir = log.path
+        let engine = try FakeEngine.make(
+            transcribe: """
+            echo '{"event": "partial", "language": "tr", "sentences": [\(sentenceJSON(1, "Bir.")), \(sentenceJSON(2, "İki."))]}'
+            i=0; while [ ! -e '\(dir)/req-0' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+            echo '{"event": "result", "language": "tr", "duration": 4, "audio": "/nonexistent.wav", "outputs": [], "sentences": [\(sentenceJSON(1, "Bir.")), \(sentenceJSON(2, "İki.")), \(sentenceJSON(3, "Üç."))]}'
+            """,
+            // Each answer is tagged with the number of the request, so it shows which request a line came from.
+            translate: #"printf '{"event": "translation", "language": "en", "sentences": %s}\n' "$(sed "s/\"text\":\"\([^\"]*\)\"/\"text\":\"T$n-\1\"/g" "\#(dir)/req-$n")""#,
+            translateInput: "n=$(ls '\(dir)' | wc -l | tr -d ' '); cat > '\(dir)/req-'$n"
+        )
+        let (vm, _) = makeModel(engine: engine)
+        vm.externalLlmEnabled = true
+        vm.externalLlmUrl = "10.0.0.2:1234"
+        vm.externalLlmAsync = true
+        vm.diarize = false
+        vm.translationTarget = "en"
+        let video = folder.appending(path: "clip.mp4")
+        vm.addToPlaylist([video], sourceLanguage: "tr")
+        await run(vm)
+
+        // "Bir." went out while transcribing; at hand-off only the other two lines were requested, with "Bir." as context.
+        let requests = try FileManager.default.contentsOfDirectory(atPath: dir).sorted().map { name -> [String] in
+            try JSONDecoder().decode([Sentence].self, from: Data(contentsOf: log.appending(path: name))).map(\.text)
+        }
+        #expect(requests == [["Bir."], ["Bir.", "İki.", "Üç."]])
+        #expect(vm.playlist[0].state == .completed)
+        let saved = try String(contentsOf: folder.appending(path: savedName("clip", "en")), encoding: .utf8)
+        #expect(saved.contains("T0-Bir.") && saved.contains("T1-İki.") && saved.contains("T1-Üç."))
+        #expect(!saved.contains("T1-Bir."))
+
+        // The editor still shows this video, now with its translation and the saved name.
+        #expect(vm.video == video)
+        #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == ["T0-Bir.", "T1-İki.", "T1-Üç."])
+        #expect(vm.effectiveDisplayMode == .translation)
+        #expect(vm.savedSubtitleName == savedName("clip", "en"))
+        #expect(vm.status == .finished)
+    }
+
+    @Test func contextKeepsTwoNeighboursOnEachSideInOrder() {
+        let all = (1...8).map { Sentence(id: $0, start: Double($0), end: Double($0) + 1, text: "L\($0)") }
+        func ids(_ requested: [Int]) -> [Int] {
+            let wanted = all.filter { requested.contains($0.id) }
+            return SubtitleViewModel.withTranslationContext(all, requested: wanted).map(\.id)
+        }
+        #expect(ids([4]) == [2, 3, 4, 5, 6])
+        #expect(ids([1]) == [1, 2, 3])
+        #expect(ids([8]) == [6, 7, 8])
+        #expect(ids([2, 8]) == [1, 2, 3, 4, 6, 7, 8])
+        #expect(ids([]).isEmpty)
     }
 }

@@ -317,9 +317,28 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
     }
 
-    @Test func fullTranslateOnlyTranslatesWhenLinesAlreadyExist() async throws {
+    @Test func fullTranslateWithAVideoTranscribesAgainEvenWhenASidecarIsLoaded() async throws {
         let folder = try makeFolder()
-        try write(Self.srt, to: folder.appending(path: "Film.srt"))
+        // The sidecar can be an earlier translation; with a video open the audio is the source.
+        try write(Self.srt.replacingOccurrences(of: "Merhaba.", with: "Old sidecar."), to: folder.appending(path: "Film.srt"))
+        let vm = makeModel(engine: try FakeEngine.make(transcribe: Self.transcribeScript, translate: Self.translateScript))
+        vm.diarize = false
+        vm.language = "tr"
+        vm.translationTarget = "en"
+        vm.openVideo(folder.appending(path: "Film.mp4"))
+        #expect(vm.sentences.first?.text == "Old sidecar.")
+        vm.generateAndTranslate()
+        await settle(vm)
+        #expect(vm.status == .finished)
+        #expect(vm.sentences.map(\.text) == ["Merhaba.", "Dünya."])
+        #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == ["Hello.", "World."])
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
+    }
+
+    @Test func fullTranslateWithoutAVideoOnlyTranslatesTheImportedLines() async throws {
+        let folder = try makeFolder()
+        let subtitle = folder.appending(path: "Talk.srt")
+        try write(Self.srt, to: subtitle)
         // A transcribe call would fail the test: the fake engine's `transcribe` answers with an error event.
         let vm = makeModel(engine: try FakeEngine.make(
             transcribe: #"echo '{"event": "error", "message": "transcribed"}'"#,
@@ -327,15 +346,14 @@ import Testing
         ))
         vm.language = "tr"
         vm.translationTarget = "en"
-        vm.openVideo(folder.appending(path: "Film.mp4"))
-        #expect(vm.sentences.count == 2)
+        #expect(vm.loadSubtitleFile(subtitle))
         vm.generateAndTranslate()
         await settle(vm)
         #expect(vm.status == .finished)
         #expect(vm.hasTranslations)
-        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
-        // The sidecar is still the source subtitle, untouched.
-        #expect(try String(contentsOf: folder.appending(path: "Film.srt"), encoding: .utf8) == Self.srt)
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Talk.en.srt").path))
+        // The imported file is still the source subtitle, untouched.
+        #expect(try String(contentsOf: subtitle, encoding: .utf8) == Self.srt)
     }
 
     @Test func fullTranslateCheckedOfflineIncludesTheTranslationModel() async throws {
@@ -362,6 +380,46 @@ import Testing
         #expect(vm.status == .finished)
         #expect(vm.hasTranslations)
         #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
+    }
+
+    // MARK: - A cancelled render is not a failure
+
+    @Test func openingAnotherVideoDuringTheAutoSaveRenderLeavesTheNewVideoIdle() async throws {
+        let folder = try makeFolder()
+        let started = folder.appending(path: "rendering")
+        let vm = makeModel(engine: try FakeEngine.make(
+            translate: Self.translateScript, render: "touch '\(started.path)'\nexec sleep 20"
+        ))
+        vm.language = "tr"
+        vm.translationTarget = "en"
+        vm.openVideo(folder.appending(path: "Film.mp4"))
+        vm.sentences = [Sentence(id: 1, start: 0, end: 1, text: "Merhaba."), Sentence(id: 2, start: 1, end: 2, text: "Dünya.")]
+        vm.translate()
+        let job = vm.job
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: started.path) {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(FileManager.default.fileExists(atPath: started.path))
+        // The translation is done (Durdur is hidden); only the auto-save render is still going.
+        #expect(vm.status == .finished)
+
+        vm.openVideo(folder.appending(path: "Other.mp4"))
+        await job?.value
+        #expect(vm.status == .idle)
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
+    }
+
+    @Test func aStoppedRenderLeavesTheStatusAlone() async throws {
+        let started = try makeFolder().appending(path: "rendering")
+        let vm = makeModel(engine: try FakeEngine.make(render: "touch '\(started.path)'\nexec sleep 20"))
+        vm.sentences = [Sentence(id: 1, start: 0, end: 1, text: "Merhaba.")]
+        let task = Task { await vm.render(as: .srt) }
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: started.path) {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        task.cancel()
+        #expect(await task.value == nil)
+        #expect(vm.status == .idle)
     }
 
     @Test func fullTranslateAvailabilityFollowsTheWorkingState() {

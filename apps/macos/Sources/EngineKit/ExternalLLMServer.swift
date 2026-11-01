@@ -64,6 +64,8 @@ public enum ExternalLLMServer {
         case unreachable(reason: String)
         /// At least one endpoint answered. `models` can be empty (the server is up but lists nothing suitable).
         case reachable(host: String, latencyMS: Int, models: [String])
+        /// The probe was cancelled (for example the Settings window closed); says nothing about the server.
+        case cancelled
 
         public var models: [String] {
             if case .reachable(_, _, let models) = self { models } else { [] }
@@ -94,7 +96,8 @@ public enum ExternalLLMServer {
                 lastError = error.localizedDescription
             }
         }
-        guard reachable else { return .unreachable(reason: lastError ?? "timeout") }
+        if Task.isCancelled { return .cancelled }
+        guard reachable else { return .unreachable(reason: lastError ?? engineString("Zaman aşımı")) }
         let elapsed = clock.now - started
         let ms = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
         return .reachable(host: host, latencyMS: max(1, ms), models: models)

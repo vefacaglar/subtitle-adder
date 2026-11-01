@@ -17,6 +17,8 @@ final class SubtitleViewModel {
         didSet {
             guard language != oldValue, !isPlaylistRunning else { return }
             defaults.set(language, forKey: Self.languageDefaultsKey)
+            // Picking a language is the user's word on what the lines are in.
+            linesSourceLanguage = nil
             modelNotice = nil
             reconcileModelSelection()
             reconcileTranslationTarget()
@@ -156,6 +158,10 @@ final class SubtitleViewModel {
         }
     }
     var detectedLanguage: String?
+    /// What the lines in the editor are spoken in when a playlist run left them there: the run's item had its own
+    /// source language, which the restored toolbar language doesn't know. Cleared as soon as other lines or another
+    /// toolbar language come in.
+    var linesSourceLanguage: String?
     var sentences: [Sentence] = []
     /// Translations keyed by the line's stable `uid`; marked "eski" (stale) when the text is edited.
     var translations: [UUID: TranslationEntry] = [:] {
@@ -191,6 +197,9 @@ final class SubtitleViewModel {
     @ObservationIgnored var asyncRunID = UUID()
     /// Set once transcription is over: the running batch finishes, no new one starts.
     @ObservationIgnored var asyncDraining = false
+    /// A batch failed (server unreachable, error event): no further batch starts in this run, so a dead server
+    /// isn't retried on every snapshot. The final translation pass picks up the lines and reports the error.
+    @ObservationIgnored var asyncFailed = false
     @ObservationIgnored var connectionTestID = UUID()
 
     var job: Task<Void, Never>?
@@ -301,6 +310,7 @@ final class SubtitleViewModel {
     /// Source language that changes with the language code (automatic if empty); passed to the translate command as `--from`.
     /// With automatic selection, the language detected by the engine is used.
     var translationSource: String? {
+        if let linesSourceLanguage { return linesSourceLanguage }
         if !language.isEmpty { return language }
         return detectedLanguage
     }
@@ -350,6 +360,7 @@ final class SubtitleViewModel {
         translationLanguage = nil
         selection = nil
         detectedLanguage = nil
+        linesSourceLanguage = nil
         draft = nil
         status = .idle
         undoManager?.removeAllActions()
@@ -375,8 +386,11 @@ final class SubtitleViewModel {
         let retry: @MainActor () -> Void = { [weak self] in self?.generate(thenTranslate: thenTranslate) }
         if blockedOffline(needed, retry: retry) { return }
         cancelAsyncTranslation()
-        // Komple çevir with an external LLM in async mode: the server translates while the Mac is still transcribing.
-        let asyncTranslate = thenTranslate && isExternalAsyncActive
+        // Komple çevir and playlist items with an external LLM in async mode: the server translates while the Mac is
+        // still transcribing. (A playlist item doesn't chain into `translate`; the run hands it off afterwards.)
+        let asyncTranslate = (thenTranslate || isPlaylistRunning) && isExternalAsyncActive
+        // Every batch of this run goes to the server it started with, even if Settings changes meanwhile.
+        let asyncEngine = pinningLaunchSettings(engine)
         sentences = []
         translations = [:]
         translationDraft = nil
@@ -386,6 +400,7 @@ final class SubtitleViewModel {
         savedSubtitleName = nil
         undoManager?.removeAllActions()
         detectedLanguage = nil
+        linesSourceLanguage = nil
         modelNotice = nil
         status = .working(.key("Başlıyor…"), fraction: nil)
         let outDir = WorkingDirectory.ensureExists()
@@ -423,7 +438,7 @@ final class SubtitleViewModel {
                         status = .working(Self.label(for: stage, fraction: fraction, purpose: purpose), fraction: fraction)
                     case .partial(let language, let snapshot):
                         applyPartial(language: language, sentences: snapshot)
-                        if asyncTranslate { startAsyncTranslation(engine: engine) }
+                        if asyncTranslate { startAsyncTranslation(engine: asyncEngine) }
                     case .result(let result):
                         // The last line is final now, but the closing pass takes it from here.
                         asyncDraining = true
@@ -493,11 +508,16 @@ final class SubtitleViewModel {
             status = .failed(.error(EngineError.notFound))
             return nil
         }
+        // Jobs (auto-save, the playlist's save) render too, and a cancel ends the render with a CancellationError that
+        // is not a failure; a render that outlives its job must not touch the status of whatever came next.
+        let id = jobID
         do {
             let list = translated ? exportSentences(translated: true) : sentences
             return try await engine.render(list, as: format)
+        } catch is CancellationError {
+            return nil
         } catch {
-            status = .failed(.error(error))
+            if jobID == id, !Task.isCancelled { status = .failed(.error(error)) }
             return nil
         }
     }

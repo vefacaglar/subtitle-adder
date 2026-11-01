@@ -35,6 +35,7 @@ extension SubtitleViewModel {
         draft = nil
         // A subtitle file doesn't say which language it is in; a previous video's detection would be wrong.
         detectedLanguage = nil
+        linesSourceLanguage = nil
         undoManager?.removeAllActions()
         displayMode = .original
         exportLanguage = .original
@@ -143,11 +144,13 @@ extension SubtitleViewModel {
     /// Whether there is anything to run on yet (otherwise the view asks for a video first).
     var hasSourceForGenerateAndTranslate: Bool { video != nil || !sentences.isEmpty }
 
-    /// Generate, translate and auto-save in one step: lines that already exist (sidecar or imported file) are only
-    /// translated, otherwise the video is transcribed first.
+    /// Generate, translate and auto-save in one step. With a video open the audio is always transcribed from scratch,
+    /// replacing any sidecar or imported lines: what sits next to the video can be an earlier translation (saved as
+    /// `<video>.srt`), which must not be translated again as if it were the source. Lines without a video (an
+    /// imported subtitle file) are only translated.
     func generateAndTranslate() {
         commitDraft()
-        if !sentences.isEmpty {
+        if video == nil, !sentences.isEmpty {
             translate()
         } else {
             generate(thenTranslate: true)

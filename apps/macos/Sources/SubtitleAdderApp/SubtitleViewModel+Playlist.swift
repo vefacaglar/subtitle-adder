@@ -174,10 +174,13 @@ extension SubtitleViewModel {
         if !Task.isCancelled, case .working = status { status = .finished }
         // A model that was missing for some item offers to go online and run the list again.
         if offlineRetry != nil { offlineRetry = { [weak self] in self?.startPlaylist() } }
+        // The editor keeps the last item's lines, which are in that item's language, not the one the toolbar returns to.
+        let linesLanguage = sentences.isEmpty ? nil : translationSource
         // Put the toolbar back while the run's flag still keeps these from being saved as the user's choice.
         language = savedLanguage
         model = savedModel
         translationTarget = target
+        linesSourceLanguage = linesLanguage
         playlistBackground = []
         playlistTask = nil
         isPlaylistRunning = false
@@ -190,8 +193,10 @@ extension SubtitleViewModel {
         // Reopening also makes a sidecar written by an earlier run count.
         openVideo(nil)
         openVideo(item.videoURL)
-        // A sidecar next to the video is used as it is, no transcription.
+        // A sidecar next to the video is used as it is, no transcription (as on Windows). Once translations are saved as
+        // `<video>.<fmt>` a sidecar may be an earlier translation; the list can't tell, so that run translates it again.
         if sentences.isEmpty {
+            // With an external LLM in async mode `generate` translates the finished lines while it transcribes.
             generate()
             await finishJob()
             if Task.isCancelled { return .cancelled }
@@ -213,6 +218,8 @@ extension SubtitleViewModel {
 
         // Always the translation, whatever the auto-save toggle says.
         guard let url = await saveSubtitle(translated: true) else {
+            // A stop during the render isn't a failure.
+            if Task.isCancelled { return .cancelled }
             return .failed(failureMessage() ?? .key("Çeviri tamamlanamadı."))
         }
         return .completed(Self.savedMessage(url.lastPathComponent))
@@ -262,25 +269,36 @@ extension SubtitleViewModel {
     // MARK: - Async mode (external LLM)
 
     /// Translates and saves the item in the background, one at a time, while the next video transcribes. Everything the
-    /// task needs is captured now: the editor moves on to the next video.
+    /// task needs is captured now: the editor moves on to the next video. Lines the server already translated while the
+    /// video was transcribing (`translations`) are not sent again.
     private func handOffToBackground(_ item: PlaylistItem, engine: EngineClient, target: String) {
         let lines = sentences
+        let preTranslated = translations
         let source = translationSource
         let model = translationModel
         let format = exportFormat
+        // The task may wait minutes for the earlier ones; it must still go to the server chosen now.
+        let engine = pinningLaunchSettings(engine)
         updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
         let previous = playlistBackground.last
         playlistBackground.append(Task {
-            // One external translation at a time.
+            // One external translation at a time. (The live translation while a video transcribes is not held back
+            // by this, as on Windows: the server queues the requests.)
             await previous?.value
             await translateAndSaveInBackground(
-                item, lines: lines, engine: engine, source: source, target: target, model: model, format: format
+                item, lines: lines, preTranslated: preTranslated, engine: engine,
+                source: source, target: target, model: model, format: format
             )
         })
     }
 
+    /// Whether the editor currently shows the item's video, so what happens to the item is mirrored there.
+    private func editorShows(_ item: PlaylistItem) -> Bool {
+        video?.standardizedFileURL == item.videoURL.standardizedFileURL
+    }
+
     private func translateAndSaveInBackground(
-        _ item: PlaylistItem, lines: [Sentence], engine: EngineClient,
+        _ item: PlaylistItem, lines: [Sentence], preTranslated: [UUID: TranslationEntry], engine: EngineClient,
         source: String?, target: String, model: String, format: SubtitleFormat
     ) async {
         guard !Task.isCancelled else {
@@ -292,29 +310,48 @@ extension SubtitleViewModel {
             return
         }
         updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
+        // What was translated during transcription stays; only the rest goes to the server, with its neighbours as context.
         var translated: [UUID: String] = [:]
+        for line in lines where !Self.needsTranslation(line, entry: preTranslated[line.uid], into: target) {
+            translated[line.uid] = preTranslated[line.uid]?.text
+        }
+        let preDone = translated.count
+        let total = max(1, lines.count)
+        let remaining = lines.filter { translated[$0.uid] == nil }
+        let remainingUIDs = Set(remaining.map(\.uid))
+        let request = Self.withTranslationContext(lines, requested: remaining)
         var engineError: String?
-        do {
-            for try await event in engine.translate(lines, to: target, from: source, model: model) {
-                guard !Task.isCancelled else { break }
-                switch event {
-                case .stage(let stage, let fraction):
-                    updatePlaylistItem(
-                        item.id, .working, Self.label(for: stage, fraction: fraction, purpose: .translation), fraction
-                    )
-                case .translation(_, let batch):
-                    // A growing prefix per batch plus a final complete one.
-                    for pair in Self.pairs(batch, with: lines) where !pair.result.text.isEmpty {
-                        translated[pair.original.uid] = pair.result.text
+        if !remaining.isEmpty {
+            do {
+                for try await event in engine.translate(request, to: target, from: source, model: model) {
+                    guard !Task.isCancelled else { break }
+                    switch event {
+                    case .stage(let stage, var fraction):
+                        if preDone > 0, stage == .translating, let part = fraction {
+                            fraction = (Double(preDone) + Double(remaining.count) * min(max(part, 0), 1)) / Double(total)
+                        }
+                        let label = Self.label(for: stage, fraction: fraction, purpose: .translation)
+                        updatePlaylistItem(item.id, .working, label, fraction)
+                        if editorShows(item), case .working(let current, _) = status,
+                           current.id.hasPrefix("stage:translating:") {
+                            status = .working(label, fraction: fraction)
+                        }
+                    case .translation(let language, let batch):
+                        // A growing prefix per batch plus a final complete one; context lines are not applied.
+                        let pairs = Self.pairs(batch, with: request).filter {
+                            remainingUIDs.contains($0.original.uid) && !$0.result.text.isEmpty
+                        }
+                        for pair in pairs { translated[pair.original.uid] = pair.result.text }
+                        if editorShows(item) { storeTranslations(pairs, language: language, merge: true) }
+                    case .error(let message):
+                        engineError = message
+                    case .result, .partial:
+                        break
                     }
-                case .error(let message):
-                    engineError = message
-                case .result, .partial:
-                    break
                 }
+            } catch {
+                if !Task.isCancelled { engineError = error.localizedDescription }
             }
-        } catch {
-            if !Task.isCancelled { engineError = error.localizedDescription }
         }
         if Task.isCancelled {
             updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
@@ -358,6 +395,7 @@ extension SubtitleViewModel {
             )
             return
         }
+        if editorShows(item) { savedSubtitleName = name }
         updatePlaylistItem(item.id, .completed, Self.savedMessage(name), 1)
     }
 }

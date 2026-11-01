@@ -132,6 +132,45 @@ import Testing
         #expect(vm.externalConnection?.message.text == "Lütfen geçerli bir sunucu adresi girin.")
     }
 
+    @Test func aCancelledConnectionTestChangesNothing() async throws {
+        let (vm, _, _) = makeModel(fetch: { _, _ in
+            try await Task.sleep(for: .seconds(30))
+            return Data()
+        })
+        vm.externalLlmUrl = "10.0.0.2:11434"
+        let test = Task { await vm.testExternalConnection() }
+        for _ in 0..<100 where !vm.isTestingExternalConnection { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(vm.isTestingExternalConnection)
+        test.cancel()
+        await test.value
+        #expect(!vm.isTestingExternalConnection)
+        #expect(vm.externalConnection == nil && vm.externalModels.isEmpty)
+    }
+
+    @Test func theToolbarListIsFilledAheadOfTimeOnlyWhenAServerIsInUseAndNothingIsKnown() async {
+        final class Counter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = 0
+            func hit() { lock.lock(); value += 1; lock.unlock() }
+            var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+        }
+        let counter = Counter()
+        let (vm, _, _) = makeModel(fetch: { _, _ in
+            counter.hit()
+            return Self.tagsBody(["gemma4:e4b"])
+        })
+        vm.externalLlmUrl = "10.0.0.2:11434"
+        await vm.refreshExternalModelsIfNeeded()
+        #expect(counter.count == 0 && vm.externalModels.isEmpty)
+
+        vm.externalLlmEnabled = true
+        await vm.refreshExternalModelsIfNeeded()
+        #expect(counter.count == 1 && vm.externalModels == ["gemma4:e4b"])
+        // Known now: opening the menu again doesn't ask the server again.
+        await vm.refreshExternalModelsIfNeeded()
+        #expect(counter.count == 1)
+    }
+
     @Test func editingTheAddressClearsTheOldResult() async {
         let (vm, _, _) = makeModel(fetch: { _, _ in Self.tagsBody(["a"]) })
         vm.externalLlmUrl = "10.0.0.2:11434"
@@ -314,5 +353,37 @@ import Testing
         // Whatever the cancelled batch would have delivered is not applied.
         try await Task.sleep(for: .milliseconds(100))
         #expect(vm.translations.isEmpty)
+    }
+
+    @Test func aFailedBatchStopsBackgroundTranslationForTheRestOfTheRun() async throws {
+        let log = try makeFolder()
+        let dir = log.path
+        // The server is down: every request is recorded and answered with an error.
+        let engine = try FakeEngine.make(
+            translate: #"echo '{"event": "error", "message": "down"}'; exit 1"#,
+            translateInput: "n=$(ls '\(dir)' | wc -l | tr -d ' '); cat > '\(dir)/req-'$n"
+        )
+        let (vm, _, _) = makeModel()
+        vm.language = "tr"
+        vm.translationTarget = "en"
+        vm.sentences = [line(1, "Bir."), line(2, "İki."), line(3, "Üç.")]
+        vm.startAsyncTranslation(engine: engine)
+        let task = vm.asyncTask
+        await task?.value
+        #expect(try requests(in: log) == [["Bir.", "İki."]])
+        #expect(vm.asyncFailed && vm.asyncTask == nil)
+
+        // Every later snapshot brings new finished lines, but none starts another engine process.
+        vm.sentences.append(line(4, "Dört."))
+        vm.sentences.append(line(5, "Beş."))
+        #expect(vm.nextAsyncBatch().isEmpty)
+        vm.startAsyncTranslation(engine: engine)
+        #expect(vm.asyncTask == nil)
+        #expect(try requests(in: log).count == 1)
+
+        // The next run starts clean.
+        vm.cancelAsyncTranslation()
+        #expect(!vm.asyncFailed)
+        #expect(vm.nextAsyncBatch().map(\.text) == ["Bir.", "İki.", "Üç.", "Dört."])
     }
 }

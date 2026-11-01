@@ -100,7 +100,7 @@ private struct GeneralSettingsTab: View {
             externalLLMSection
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 800)
+        .frame(width: 560, height: 620)
         // The server's models may have changed since the last visit.
         .task {
             if vm.isExternalLLMActive, !vm.isTestingExternalConnection { await vm.testExternalConnection() }

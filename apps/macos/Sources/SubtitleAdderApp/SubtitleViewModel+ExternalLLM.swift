@@ -30,10 +30,19 @@ extension SubtitleViewModel {
         return isExternalAsyncActive ? L("Harici: %@ (Asenkron)", shown) : L("Harici: %@", shown)
     }
 
+    /// The client with the launch settings as they are right now. Translation that starts later (a queued background
+    /// task, the next batch) keeps the settings its decision was made under instead of whatever Settings says by then.
+    func pinningLaunchSettings(_ engine: EngineClient) -> EngineClient {
+        var pinned = engine
+        pinned.launchSettings = launchState.settings
+        return pinned
+    }
+
     // MARK: - Connection test
 
     /// Asks the server for its models (`/api/tags`, then `/v1/models`), keeps the suitable ones and reports the
     /// result. An empty model field takes the first one found. Also what "Uzaktaki modelleri listele" runs.
+    /// A cancelled probe changes nothing.
     func testExternalConnection() async {
         let address = externalLlmUrl
         let testID = UUID()
@@ -45,6 +54,9 @@ extension SubtitleViewModel {
         isTestingExternalConnection = false
         guard address == externalLlmUrl else { return }
         switch result {
+        case .cancelled:
+            // The window that asked went away; the server wasn't heard from, so the earlier notice and list stand.
+            return
         case .invalidAddress:
             externalModels = []
             externalConnection = ExternalConnectionNotice(
@@ -70,6 +82,13 @@ extension SubtitleViewModel {
         }
     }
 
+    /// Fills the list of the server's models once an external server is in use and nothing is known about it yet; the
+    /// toolbar menu shows what is there when opened, so this runs ahead of time (launch, switching the server on).
+    func refreshExternalModelsIfNeeded() async {
+        guard isExternalLLMActive, externalModels.isEmpty, !isTestingExternalConnection else { return }
+        await testExternalConnection()
+    }
+
     // MARK: - Background translation
 
     /// Status bar addition while the server translates in the background, e.g. "Çevriliyor… 40%".
@@ -84,13 +103,14 @@ extension SubtitleViewModel {
         asyncRunID = UUID()
         asyncQueued = []
         asyncDraining = false
+        asyncFailed = false
         asyncTranslationFraction = nil
     }
 
     /// Called with every transcription snapshot: when lines are ready and no batch is on its way, sends them. The
     /// last line of a snapshot is still being transcribed, so it waits for the next one.
     func startAsyncTranslation(engine: EngineClient) {
-        guard asyncTask == nil, !asyncDraining, !nextAsyncBatch().isEmpty else { return }
+        guard asyncTask == nil, !asyncDraining, !asyncFailed, !nextAsyncBatch().isEmpty else { return }
         let run = UUID()
         asyncRunID = run
         asyncTask = Task { await pumpAsyncTranslation(engine: engine, run: run) }
@@ -111,14 +131,14 @@ extension SubtitleViewModel {
 
     /// Lines ready for the server: everything but the last line, not handed over before, with text.
     func nextAsyncBatch() -> [Sentence] {
-        guard !asyncDraining, sentences.count > 1 else { return [] }
+        guard !asyncDraining, !asyncFailed, sentences.count > 1 else { return [] }
         return sentences.dropLast().filter {
             !asyncQueued.contains($0.uid) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
-    /// One batch at a time until nothing is left to send. A failure just stops: the final pass translates
-    /// the lines that are missing and reports the error if the server is really gone.
+    /// One batch at a time until nothing is left to send. A failure stops it for the rest of the run (`asyncFailed`):
+    /// the final pass translates the lines that are missing and reports the error if the server is really gone.
     private func pumpAsyncTranslation(engine: EngineClient, run: UUID) async {
         while !Task.isCancelled, asyncRunID == run {
             let batch = nextAsyncBatch()
@@ -128,7 +148,10 @@ extension SubtitleViewModel {
             guard !batch.isEmpty, source != target else { break }
             asyncQueued.formUnion(batch.map(\.uid))
             updateAsyncFraction()
-            guard await translateAsyncBatch(batch, engine: engine, target: target, source: source, run: run) else { break }
+            guard await translateAsyncBatch(batch, engine: engine, target: target, source: source, run: run) else {
+                if !Task.isCancelled, asyncRunID == run { asyncFailed = true }
+                break
+            }
         }
         // Nothing suspends between the last check and here, so a snapshot can't slip in unnoticed.
         guard asyncRunID == run else { return }

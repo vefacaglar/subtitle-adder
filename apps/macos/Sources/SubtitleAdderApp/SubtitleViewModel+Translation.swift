@@ -118,10 +118,25 @@ extension SubtitleViewModel {
 
     /// The lines that have no translation into `target`, or whose translation is outdated (the original was edited).
     func linesNeedingTranslation(into target: String) -> [Sentence] {
-        sentences.filter { sentence in
-            guard let entry = translations[sentence.uid] else { return true }
-            return entry.isStale(for: sentence) || entry.language != target
+        sentences.filter { Self.needsTranslation($0, entry: translations[$0.uid], into: target) }
+    }
+
+    /// A line needs the server when it has no translation, or the translation is outdated (the original was edited) or
+    /// in another language.
+    nonisolated static func needsTranslation(_ sentence: Sentence, entry: TranslationEntry?, into target: String) -> Bool {
+        guard let entry else { return true }
+        return entry.isStale(for: sentence) || entry.language != target
+    }
+
+    /// The requested lines with up to two neighbours on each side, in order: a resumed or partial request keeps the
+    /// dialogue around a line so the model translates it in context. Only the requested lines' results are used.
+    nonisolated static func withTranslationContext(_ all: [Sentence], requested: [Sentence]) -> [Sentence] {
+        let wanted = Set(requested.map(\.uid))
+        var keep = Set<Int>()
+        for (index, sentence) in all.enumerated() where wanted.contains(sentence.uid) {
+            keep.formUnion(max(0, index - 2)...min(all.count - 1, index + 2))
         }
+        return all.indices.filter(keep.contains).map { all[$0] }
     }
 
     /// Maps translated lines by their stable `uid` values; the engine preserves order and ids. With `merge` the

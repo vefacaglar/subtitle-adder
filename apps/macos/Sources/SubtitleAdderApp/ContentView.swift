@@ -31,6 +31,13 @@ struct ContentView: View {
         .toolbar { toolbar }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
         .task { await catalog.load() }
+        // The toolbar's model menu lists what the server offers; a menu can't fetch when it opens, so the list is
+        // filled ahead of time. Typing an address changes it on every key, hence the pause.
+        .task(id: vm.externalLLM?.normalizedURL) {
+            try? await Task.sleep(for: .milliseconds(800))
+            guard !Task.isCancelled else { return }
+            await vm.refreshExternalModelsIfNeeded()
+        }
         .onChange(of: catalog.models, initial: true) { _, _ in
             vm.reconcileModelSelection()
             vm.reconcileTranslationModelSelection()
@@ -125,29 +132,28 @@ struct ContentView: View {
             ModelPicker(selection: $vm.model, models: vm.availableModels)
                 .disabled(vm.isPlaylistRunning)
             speakerMenu
-            // The playlist translates everything, so its target is chosen before there are any lines.
-            if !vm.sentences.isEmpty || vm.workspace == .playlist {
-                Picker(L("Çeviri dili"), selection: $vm.translationTarget) {
-                    ForEach(SubtitleLanguage.translationTargets) { language in
-                        Text(language.targetName).tag(language.rawValue)
-                            .disabled(language.rawValue == vm.translationSource)
-                    }
+            // Always there: "Komple çevir" and the playlist translate before any line exists, so the target and the
+            // translation model must be visible and changeable up front. Only "Çevir…" needs lines.
+            Picker(L("Çeviri dili"), selection: $vm.translationTarget) {
+                ForEach(SubtitleLanguage.translationTargets) { language in
+                    Text(language.targetName).tag(language.rawValue)
+                        .disabled(language.rawValue == vm.translationSource)
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(width: 160)
-                .disabled(vm.isWorking)
-                .help(vm.translationSource == nil
-                    ? L("Çeviri hedef dili. Kaynak dil bilinmiyor; NLLB için önce konuşma dilini seç.")
-                    : L("Çeviri hedef dili; kaynak dille aynı olan seçilemez."))
-                if vm.workspace == .editor {
-                    Button(L("Çevir…"), systemImage: "translate") { vm.translate() }
-                        .labelStyle(.titleAndIcon)
-                        .disabled(vm.isWorking)
-                        .help(L("Tüm satırları seçili hedef dile yerel modelle çevir"))
-                }
-                translationModelMenu
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(width: 160)
+            .disabled(vm.isWorking)
+            .help(vm.translationSource == nil
+                ? L("Çeviri hedef dili. Kaynak dil bilinmiyor; NLLB için önce konuşma dilini seç.")
+                : L("Çeviri hedef dili; kaynak dille aynı olan seçilemez."))
+            if vm.workspace == .editor, !vm.sentences.isEmpty {
+                Button(L("Çevir…"), systemImage: "translate") { vm.translate() }
+                    .labelStyle(.titleAndIcon)
+                    .disabled(vm.isWorking)
+                    .help(L("Tüm satırları seçili hedef dile yerel modelle çevir"))
+            }
+            translationModelMenu
         }
         ToolbarItemGroup(placement: .primaryAction) {
             // The playlist always saves what it translates, so the toggle only belongs to the editor.
@@ -167,7 +173,7 @@ struct ContentView: View {
                     .help(L("Altyazıyı üret, seçili dile çevir ve otomatik kaydet"))
                 Button(L("Altyazı üret"), systemImage: "captions.bubble") { vm.generate() }
                     .labelStyle(.titleAndIcon)
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.return, modifiers: .command)
                     .disabled(vm.video == nil)
                     .help(L("Videonun sesini metne çevirip altyazı çıkar (⌘↩)"))
             }

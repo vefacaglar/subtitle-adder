@@ -96,6 +96,18 @@ import Testing
         #expect(recorder.requests.count == 2)
     }
 
+    @Test func aCancelledProbeIsNotReportedAsUnreachable() async throws {
+        let probe = Task {
+            await ExternalLLMServer.testConnection(rawURL: "host:1", fetch: { _, _ in
+                try await Task.sleep(for: .seconds(30))
+                return Data()
+            })
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        probe.cancel()
+        #expect(await probe.value == .cancelled)
+    }
+
     // MARK: URLSession-backed fetch
 
     private final class StubProtocol: URLProtocol, @unchecked Sendable {

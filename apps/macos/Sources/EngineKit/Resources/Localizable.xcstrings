@@ -80,6 +80,22 @@
           }
         }
       }
+    },
+    "Zaman aşımı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zaman aşımı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Timed out"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
