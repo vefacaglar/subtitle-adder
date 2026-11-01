@@ -14,17 +14,28 @@ public sealed class PlayerController : IDisposable
 {
     private readonly DispatcherQueue _queue;
     private readonly DispatcherQueueTimer _timer;
+    private readonly SemaphoreSlim _sourceGate = new(1, 1);
     private IReadOnlyList<Sentence> _sentences = [];
     private int _loadGeneration;
     private MediaSource? _source;   // disposed when replaced so the old file is not kept open
-    private bool _disposed;
+    private volatile bool _mediaReady;
+    private volatile bool _disposed;
 
     public PlayerController(DispatcherQueue queue)
     {
         _queue = queue;
         Player.AutoPlay = false;
-        Player.MediaOpened += (_, _) => _queue.TryEnqueue(UpdateVideoSize);
-        Player.MediaFailed += (_, e) => _queue.TryEnqueue(() => Failed?.Invoke(e.ErrorMessage));
+        Player.MediaOpened += (_, _) => _queue.TryEnqueue(() =>
+        {
+            if (_disposed) return;
+            _mediaReady = true;
+            UpdateVideoSize();
+        });
+        Player.MediaFailed += (_, e) => _queue.TryEnqueue(() =>
+        {
+            _mediaReady = false;
+            Failed?.Invoke(e.ErrorMessage);
+        });
         Player.PlaybackSession.NaturalVideoSizeChanged += (_, _) => _queue.TryEnqueue(UpdateVideoSize);
         _timer = queue.CreateTimer();
         _timer.Interval = TimeSpan.FromMilliseconds(100);
@@ -36,7 +47,7 @@ public sealed class PlayerController : IDisposable
 
     public double CurrentTime { get; private set; }
     public bool IsPlaying { get; private set; }
-    public bool HasMedia => !_disposed && Player.Source is not null;
+    public bool HasMedia => !_disposed && _mediaReady;
 
     /// <summary>Natural video size; 16:9 until the real size is known.</summary>
     public (double Width, double Height) VideoSize { get; private set; } = (16, 9);
@@ -49,43 +60,74 @@ public sealed class PlayerController : IDisposable
     public event Action? Ticked;
     public event Action<string>? Failed;
 
-    public async void Load(string? path)
+    public void Load(string? path)
     {
-        var generation = ++_loadGeneration;
-        Player.Pause();
+        var generation = Interlocked.Increment(ref _loadGeneration);
+        _mediaReady = false;
         IsPlaying = false;
         CurrentTime = 0;
         // Don't use the old video's aspect ratio until the new size arrives.
         VideoSize = (16, 9);
         VideoSizeChanged?.Invoke();
         UpdateActive();
-        ReleaseSource();
-        if (path is null) return;
-        MediaSource source;
-        try
-        {
-            source = MediaSource.CreateFromStorageFile(await StorageFile.GetFileFromPathAsync(path));
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
-        {
-            source = MediaSource.CreateFromUri(new Uri(path));
-        }
-        if (_disposed || generation != _loadGeneration)
-        {
-            _ = Task.Run(source.Dispose);
-            return;
-        }
-        _source = source;
-        Player.Source = source;
+
+        // Run Media Foundation pause, old-source teardown, and new-source creation off the UI thread
+        // so switching videos or closing never blocks window responsiveness.
+        _ = Task.Run(() => SwitchSourceAsync(path, generation));
     }
 
-    private void ReleaseSource()
+    private async Task SwitchSourceAsync(string? path, int generation)
     {
-        if (!_disposed) Player.Source = null;
-        if (_source is { } oldSource)
+        await _sourceGate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            _source = null;
-            _ = Task.Run(oldSource.Dispose);
+            if (_disposed) return;
+            try
+            {
+                Player.Pause();
+                Player.Source = null;
+            }
+            catch
+            {
+                // Ignore if player is already shutting down.
+            }
+            if (_source is { } oldSource)
+            {
+                _source = null;
+                try { oldSource.Dispose(); } catch { }
+            }
+            if (path is null || _disposed || generation != Volatile.Read(ref _loadGeneration)) return;
+
+            MediaSource source;
+            try
+            {
+                var file = await StorageFile.GetFileFromPathAsync(path);
+                source = MediaSource.CreateFromStorageFile(file);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
+            {
+                source = MediaSource.CreateFromUri(new Uri(path));
+            }
+
+            if (_disposed || generation != Volatile.Read(ref _loadGeneration))
+            {
+                try { source.Dispose(); } catch { }
+                return;
+            }
+            _source = source;
+            Player.Source = source;
+        }
+        catch (Exception error)
+        {
+            if (!_disposed && generation == Volatile.Read(ref _loadGeneration))
+            {
+                var message = error.Message;
+                _queue.TryEnqueue(() => Failed?.Invoke(message));
+            }
+        }
+        finally
+        {
+            _sourceGate.Release();
         }
     }
 
@@ -157,17 +199,19 @@ public sealed class PlayerController : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _loadGeneration++;
+        _mediaReady = false;
+        Interlocked.Increment(ref _loadGeneration);
         _timer.Stop();
-        var source = _source;
-        _source = null;
         var player = Player;
         // Media Foundation pipeline/decoder teardown can block for up to a second on the UI thread;
         // dispose the agile WinRT MediaPlayer and MediaSource on the thread pool after detaching from XAML.
-        _ = Task.Run(() =>
+        _ = Task.Run(async () =>
         {
+            await _sourceGate.WaitAsync().ConfigureAwait(false);
             try
             {
+                var source = _source;
+                _source = null;
                 player.Pause();
                 player.Source = null;
                 source?.Dispose();
@@ -176,6 +220,10 @@ public sealed class PlayerController : IDisposable
             catch
             {
                 // Ignore teardown errors during window shutdown.
+            }
+            finally
+            {
+                _sourceGate.Release();
             }
         });
     }
