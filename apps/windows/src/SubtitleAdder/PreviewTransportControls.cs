@@ -19,12 +19,22 @@ public sealed class PreviewTransportControls : MediaTransportControls
     private double _position;
     private double _duration;
     private string? _readout;
+    private FlyoutBase? _volumeFlyout;
+    private bool _volumeOpen;
 
     public PreviewTransportControls() => DefaultStyleKey = typeof(MediaTransportControls);
     public event Action<double>? SeekRequested;
+    public event Action? InteractionChanged;
+    public bool IsInteracting => _volumeOpen || _scrubbing;
 
     protected override void OnApplyTemplate()
     {
+        if (_volumeFlyout is not null)
+        {
+            _volumeFlyout.Opening -= VolumeFlyout_Opening;
+            _volumeFlyout.Closed -= VolumeFlyout_Closed;
+        }
+        _volumeOpen = false;
         base.OnApplyTemplate();
         _seek = null;
         _time = null;
@@ -68,23 +78,84 @@ public sealed class PreviewTransportControls : MediaTransportControls
             Grid.SetRow(_seek, Grid.GetRow(native));
             Grid.SetColumn(_seek, Grid.GetColumn(native));
             _seek.ValueChanged += Seek_ValueChanged;
-            _seek.AddHandler(PointerPressedEvent, new PointerEventHandler((_, _) => _scrubbing = true), true);
-            _seek.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, _) => _scrubbing = false), true);
-            _seek.AddHandler(PointerCaptureLostEvent, new PointerEventHandler((_, _) => _scrubbing = false), true);
+            _seek.AddHandler(PointerPressedEvent, new PointerEventHandler((_, _) => SetScrubbing(true)), true);
+            _seek.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, _) => SetScrubbing(false)), true);
+            _seek.AddHandler(PointerCaptureLostEvent, new PointerEventHandler((_, _) => SetScrubbing(false)), true);
             timeline.Children.Add(_seek);
-            // Keep time beside the slider: CompactMode collapses the native time row.
-            timeline.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        }
+        // Remove the native elapsed/remaining row entirely; there is one readout at the right.
+        if (GetTemplateChild("TimeTextGrid") is Grid nativeTimes)
+        {
+            nativeTimes.Children.Clear();
+            nativeTimes.Height = 0;
+            nativeTimes.Visibility = Visibility.Collapsed;
+        }
+        if (GetTemplateChild("ControlPanelGrid") is Grid controls
+            && GetTemplateChild("LeftSidePlayBorder") is Border play
+            && GetTemplateChild("MediaTransportControls_Timeline_Border") is Border timelineBorder
+            && GetTemplateChild("MediaTransportControls_Command_Border") is Border commands)
+        {
+            // Equal side columns keep play at the geometric center, regardless of button widths.
+            controls.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
+            controls.ColumnDefinitions[1].Width = GridLength.Auto;
+            controls.ColumnDefinitions[2].Width = new GridLength(1, GridUnitType.Star);
+            Grid.SetColumn(timelineBorder, 0);
+            Grid.SetColumn(play, 1);
+            play.HorizontalAlignment = HorizontalAlignment.Center;
+
+            var right = new Grid();
+            // CompactMode assigns the native command border to row 1 / column 2.
+            right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(0) });
+            right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            right.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0) });
+            right.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0) });
+            right.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            right.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            Grid.SetRow(right, 1);
+            Grid.SetColumn(right, 2);
+            controls.Children.Remove(commands);
+            Grid.SetRow(commands, 1);
+            Grid.SetColumn(commands, 2);
+            right.Children.Add(commands);
             _time = new TextBlock
             {
                 FontFamily = new FontFamily("Consolas"), FontSize = 12,
                 Margin = new Thickness(8, 0, 10, 0),
+                HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
             };
-            Grid.SetColumn(_time, timeline.ColumnDefinitions.Count - 1);
-            Grid.SetRow(_time, Grid.GetRow(native));
-            timeline.Children.Add(_time);
+            Grid.SetColumn(_time, 3);
+            Grid.SetRow(_time, 1);
+            right.Children.Add(_time);
+            controls.Children.Add(right);
+        }
+        _volumeFlyout = (GetTemplateChild("VolumeMuteButton") as AppBarButton)?.Flyout;
+        if (_volumeFlyout is not null)
+        {
+            _volumeFlyout.Opening += VolumeFlyout_Opening;
+            _volumeFlyout.Closed += VolumeFlyout_Closed;
         }
         Synchronize(_position, _duration);
+        InteractionChanged?.Invoke();
+    }
+
+    private void VolumeFlyout_Opening(object? sender, object e)
+    {
+        _volumeOpen = true;
+        InteractionChanged?.Invoke();
+    }
+
+    private void VolumeFlyout_Closed(object? sender, object e)
+    {
+        _volumeOpen = false;
+        InteractionChanged?.Invoke();
+    }
+
+    private void SetScrubbing(bool value)
+    {
+        _scrubbing = value;
+        InteractionChanged?.Invoke();
     }
 
     public void Synchronize(double position, double duration)
@@ -103,7 +174,7 @@ public sealed class PreviewTransportControls : MediaTransportControls
             }
             if (_time is not null)
             {
-                _time.FontSize = ActualWidth is > 0 and < 360 ? 10 : 12;
+                _time.FontSize = ActualWidth is > 0 and < 520 ? 10 : 12;
                 var hours = _duration >= 3600;
                 var elapsed = PlaybackTimeline.FormatTime(_scrubbing ? _seek?.Value ?? _position : _position, hours);
                 var total = _duration > 0 ? PlaybackTimeline.FormatTime(_duration, hours) : "--:--";
@@ -111,6 +182,7 @@ public sealed class PreviewTransportControls : MediaTransportControls
                 if (_readout != text)
                 {
                     _readout = text;
+                    ToolTipService.SetToolTip(_time, text);
                     _time.Inlines.Clear();
                     _time.Inlines.Add(new Run { Text = elapsed });
                     _time.Inlines.Add(new Run { Text = $" / {total}", Foreground = new SolidColorBrush(Microsoft.UI.Colors.White) { Opacity = 0.65 } });

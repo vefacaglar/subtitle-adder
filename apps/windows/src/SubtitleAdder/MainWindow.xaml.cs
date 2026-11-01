@@ -38,6 +38,7 @@ public sealed partial class MainWindow : Window
     private bool _isSideBySide;
     private bool _isTheaterMode;
     private bool _isFullScreen;
+    private bool _pointerOverPlayer;
     private LocalizedMessage? _shownError;
     private Func<string>? _saveError;   // rebuilt on a language switch
 
@@ -58,6 +59,7 @@ public sealed partial class MainWindow : Window
             PreviewControls.Synchronize(_player.CurrentTime, _player.Duration);
         };
         PreviewControls.SeekRequested += _player.Seek;
+        PreviewControls.InteractionChanged += UpdatePreviewControlVisibility;
         _player.Failed += message => ShowSaveError(() => L("Video oynatılamadı: %@", message));
         Splitter.Target = PlayerRow;
         Splitter.Other = EditorRow;
@@ -956,14 +958,21 @@ public sealed partial class MainWindow : Window
 
     private void PlayerGrid_PointerEntered(object sender, PointerRoutedEventArgs e)
     {
-        PreviewControls.Opacity = 1;
-        PreviewControls.IsHitTestVisible = true;
+        _pointerOverPlayer = true;
+        UpdatePreviewControlVisibility();
     }
 
     private void PlayerGrid_PointerExited(object sender, PointerRoutedEventArgs e)
     {
-        PreviewControls.Opacity = 0;
-        PreviewControls.IsHitTestVisible = false;
+        _pointerOverPlayer = false;
+        UpdatePreviewControlVisibility();
+    }
+
+    private void UpdatePreviewControlVisibility()
+    {
+        var visible = _pointerOverPlayer || PreviewControls.IsInteracting;
+        PreviewControls.Opacity = visible ? 1 : 0;
+        PreviewControls.IsHitTestVisible = visible;
     }
 
     private void UpdateOverlay()
