@@ -5,7 +5,8 @@ Supports two local backends:
 2. Prompt-driven GGUF LLMs (Gemma 4, Qwen 3.5) executed locally via `llama-server` (llama.cpp) with
    context-aware, dialect-aware subtitle translation prompts.
 
-The source text never leaves the machine; the network is only used to download models/runtimes.
+Local models keep source text on-device. Optional external mode sends text only
+to the server configured by the user.
 """
 import atexit
 import contextlib
@@ -27,6 +28,7 @@ from typing import Protocol
 from . import models
 from .i18n import t
 from .models import ModelError, Sentence
+from .translation_profiles import LANGUAGE_NAMES, build_hy_mt_prompt, profile_for_model
 
 ProgressFn = Callable[[float], None]
 BatchFn = Callable[[list[Sentence]], None]
@@ -165,6 +167,7 @@ EOS_TOKEN = "</s>"
 
 _THINK_BLOCK_RE = re.compile(r"<(?:think|thought|\|thought\|)>.*?</(?:think|thought|\|thought\|)>", re.DOTALL | re.IGNORECASE)
 _UNCLOSED_THINK_RE = re.compile(r"<(?:think|thought|\|thought\|)>", re.IGNORECASE)
+_GEMMA_THOUGHT_RE = re.compile(r"\A\s*<\|channel>thought\b.*?<channel\|>", re.DOTALL)
 _NUMBERED_LINE_RE = re.compile(r"^\s*(?:\[(\d+)\]|(\d+)[\.\)\:])\s*(.*)$")
 
 
@@ -491,11 +494,9 @@ def build_translategemma_prompt(lines: list[str], target: str, source: str | Non
     Template: https://ollama.com/library/translategemma
     Context is included as ordinary numbered source text, then discarded after parsing.
     """
-    names = {"en": "English", "tr": "Turkish", "pt": "Portuguese", "es": "Spanish",
-             "ru": "Russian", "de": "German", "fr": "French", "ja": "Japanese", "zh": "Chinese"}
-    if not source or source not in names:
+    if not source or source not in LANGUAGE_NAMES:
         raise ModelError(t("translategemma_source_required"))
-    source_name, target_name = names[source], names[target]
+    source_name, target_name = LANGUAGE_NAMES[source], LANGUAGE_NAMES[target]
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(lines, start=1))
     return (
         f"You are a professional {source_name} ({source}) to {target_name} ({target}) translator. "
@@ -509,7 +510,8 @@ def build_translategemma_prompt(lines: list[str], target: str, source: str | Non
 def parse_numbered_translations(raw_output: str, expected_count: int) -> dict[int, str]:
     """Accept only unambiguous numbered lines; prose must never become subtitle text."""
     cleaned = _THINK_BLOCK_RE.sub("", raw_output)
-    if _UNCLOSED_THINK_RE.search(cleaned):
+    cleaned = _GEMMA_THOUGHT_RE.sub("", cleaned)
+    if _UNCLOSED_THINK_RE.search(cleaned) or "<|channel>" in cleaned:
         return {}  # An unfinished reasoning response is not a translation.
 
     parsed: dict[int, str] = {}
@@ -547,7 +549,7 @@ def _temp_checkpoint_path(
     """Path in `%TEMP%/SubtitleAdder/translations/` where translated chunks are saved incrementally."""
     digest = hashlib.sha256()
     ext_model = external_llm_model() or ""
-    digest.update(f"quality-v2|{model_id}|{external_llm_url() or ''}|{ext_model}|{source or ''}|{target}|{system_prompt}\n".encode("utf-8"))
+    digest.update(f"quality-v3|{model_id}|{external_llm_url() or ''}|{ext_model}|{source or ''}|{target}|{system_prompt}\n".encode("utf-8"))
     for s in sentences:
         digest.update(f"{s.id}:{s.start}:{s.end}:{s.speaker}:{s.text.strip()}\n".encode("utf-8"))
     folder = Path(tempfile.gettempdir()) / "SubtitleAdder" / "translations"
@@ -740,23 +742,16 @@ class LlamaTranslator:
         if self._external_chat_url is not None:
             self._external_chat_url = _resolve_lan_url(self._external_chat_url)
             url = self._external_chat_url
-            # On Ollama (:11434), /api/chat honors `think: false` natively (20x faster than /v1/chat/completions for Gemma 4 / Qwen 3).
+            # Use Ollama's native API on its conventional port; custom ports can specify /api/chat explicitly.
             if ":11434/v1/chat/completions" in url.lower():
                 url = url[: -len("/v1/chat/completions")] + "/api/chat"
+            model = self._discover_external_model()
+            profile = profile_for_model(model)
             body: dict = {
-                "model": self._discover_external_model(),
+                "model": model,
                 "messages": messages,
-                "temperature": 0.2,
-                "top_p": 0.9,
-                "max_tokens": 1536,
                 "stream": False,
-                "think": False,
-                "options": {
-                    "temperature": 0.2,
-                    "top_p": 0.9,
-                    "num_predict": 1536,
-                },
-                "chat_template_kwargs": {"enable_thinking": False},
+                **profile.generation_options(ollama=url.lower().endswith("/api/chat")),
             }
         else:
             if self._process is None or self._process.poll() is not None:
@@ -764,11 +759,8 @@ class LlamaTranslator:
             url = f"http://127.0.0.1:{self._port}/v1/chat/completions"
             body = {
                 "messages": messages,
-                "temperature": 0.2,
-                "top_p": 0.9,
-                "max_tokens": 1536,
                 "cache_prompt": False,
-                "chat_template_kwargs": {"enable_thinking": False},
+                **profile_for_model(self._info.id).generation_options(ollama=False),
             }
         payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
@@ -814,13 +806,17 @@ class LlamaTranslator:
             return result_sentences
 
         remote_model = self._discover_external_model() if self._external_chat_url else ""
-        translation_template = "translategemma" in remote_model.lower().replace("-", "")
-        system_prompt = (
-            build_translategemma_prompt([], target, source)
-            if translation_template else build_system_prompt(target=target, source=source)
-        )
+        profile = profile_for_model(remote_model or self._info.id)
+        window_translation = profile.name in {"translategemma", "hunyuan-mt"}
+        specialized = window_translation or profile.name == "hy-mt1.5"
+        if profile.name == "translategemma":
+            system_prompt = build_translategemma_prompt([], target, source)
+        elif profile.name in {"hunyuan-mt", "hy-mt1.5"}:
+            system_prompt = build_hy_mt_prompt([], target, source, legacy=profile.name == "hunyuan-mt")
+        else:
+            system_prompt = build_system_prompt(target=target, source=source)
         # Include the resolved server/model even when auto-discovery or explicit constructor options are used.
-        checkpoint_identity = f"{system_prompt}\n{self._external_chat_url or ''}\n{remote_model}"
+        checkpoint_identity = f"{profile}\n{system_prompt}\n{self._external_chat_url or ''}\n{remote_model}"
         checkpoint_path = (
             _temp_checkpoint_path(self._info.id, target, source, sentences, checkpoint_identity)
             if self._completion_fn is None
@@ -851,25 +847,27 @@ class LlamaTranslator:
                 nxt_end = min(len(pending), start + len(batch) + LLM_CONTEXT_LINES)
                 following_lines = [s.text.strip() for _, s in pending[start + len(batch) : nxt_end]]
                 batch_texts = [s.text.strip() for _, s in batch]
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": build_user_prompt(
-                            batch_texts,
-                            context_lines,
-                            target=target,
-                            following_lines=following_lines,
-                            previous_translations=previous_translations,
-                        ),
-                    },
-                ]
-                if translation_template:
+                user_prompt = build_user_prompt(
+                    batch_texts, context_lines, target=target, following_lines=following_lines,
+                    previous_translations=previous_translations,
+                )
+                messages = profile.chat_messages(system_prompt, user_prompt)
+                if window_translation:
                     window = context_lines + batch_texts + following_lines
-                    messages = [{"role": "user", "content": build_translategemma_prompt(window, target, source)}]
+                    window_prompt = (
+                        build_translategemma_prompt(window, target, source) if profile.name == "translategemma"
+                        else build_hy_mt_prompt(window, target, source, legacy=True)
+                    )
+                    messages = [{"role": "user", "content": window_prompt}]
+                elif profile.name == "hy-mt1.5":
+                    reference = [f"{src} => {dst}" for src, dst in zip(context_lines, previous_translations)]
+                    reference += following_lines
+                    messages = [{"role": "user", "content": build_hy_mt_prompt(
+                        batch_texts, target, source, context=reference,
+                    )}]
                 for attempt in range(2):
                     raw_reply = self._complete(messages)
-                    if translation_template:
+                    if window_translation:
                         window_parsed = parse_numbered_translations(raw_reply, len(window))
                         parsed = {i: window_parsed.get(i + len(context_lines), "")
                                   for i in range(1, len(batch) + 1)}
@@ -884,17 +882,14 @@ class LlamaTranslator:
                         break
                     if attempt == 1:
                         raise ModelError(t("translation_invalid", id=batch[invalid[0] - 1][1].id))
-                    if translation_template:
+                    if specialized:
                         continue  # Keep the model's supported single-turn translation template on retry.
                     # Retry the whole thought, not an isolated fragment with a different interpretation.
-                    messages = [messages[0], {
-                        "role": "user",
-                        "content": messages[1]["content"] + (
-                            "\n\nThe previous attempt was incomplete, malformed, truncated, or copied source text. "
-                            f"Return ALL {len(batch)} translations in {LLM_LANGUAGE_SPECS.get(target, target)}, "
-                            "one numbered line per input, with no commentary. Keep names and numbers intact."
-                        ),
-                    }]
+                    messages = profile.chat_messages(system_prompt, user_prompt + (
+                        "\n\nThe previous attempt was incomplete, malformed, truncated, or copied source text. "
+                        f"Return ALL {len(batch)} translations in {LLM_LANGUAGE_SPECS.get(target, target)}, "
+                        "one numbered line per input, with no commentary. Keep names and numbers intact."
+                    ))
 
                 for offset, (index, sentence) in enumerate(batch, start=1):
                     final_text = parsed[offset].strip()
