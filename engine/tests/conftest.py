@@ -21,6 +21,17 @@ def _default_language(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_temp_dir(tmp_path, monkeypatch):
+    """Transcription/translation checkpoints live under `tempfile.gettempdir()`; a checkpoint left by an earlier
+    run (same file name and size) would otherwise be reused and skip the code under test."""
+    import tempfile
+
+    temp_root = tmp_path / "_tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+
+
+@pytest.fixture(autouse=True)
 def _no_implicit_cuda_download(monkeypatch):
     """Unit tests must not trigger a real CUDA wheel download unless testing `cuda` explicitly."""
     monkeypatch.setattr(cuda, "needs_cuda_download", lambda: False)
