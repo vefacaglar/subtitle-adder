@@ -2,6 +2,15 @@
 
 ## RESUME POINT
 
+2026-11-01 (Windows): native Windows app in `apps/windows` (WinUI 3, unpackaged, self-contained Windows App SDK; .NET 10). Layers: `EngineKit` (.NET port of the macOS EngineKit), `SubtitleAdder.Core` (UI-free view models, settings in `%LOCALAPPDATA%\SubtitleAdder\settings.json`), `SubtitleAdder` (WinUI). Feature parity with macOS was checked by running the app (UI Automation + screenshots); translation was not run (no translation model downloaded on the dev machine). `scripts/package-windows.ps1` → `build\Subtitle Adder\` (+ `-Zip`), engine as PyInstaller onedir next to `SubtitleAdder.exe`; CI/release have Windows jobs (not yet run on GitHub). Engine on Windows: no-symlink HF cache layout handled; NVIDIA GPU via the optional `cuda` dependency group (`uv sync --group cuda`) with CPU fallback; no network once models are cached; strict offline mode (`SUBTITLE_ENGINE_OFFLINE` / `--offline`), on by default in the Windows app (Settings > General > Privacy; the error bar offers to go online and download).
+
+Windows known gaps / next:
+- Localization: the user wants key-based `en.json` / `tr.json` files with translation codes in the code, instead of Turkish source strings as keys (both apps currently use the macOS String Catalogs with Turkish keys). Not started.
+- macOS app has no offline-mode switch yet (engine supports it).
+- Packaged Windows build is CPU only (the cuda group is not bundled); unsigned zip (SmartScreen warns).
+- dotnet publish drops SubtitleAdder.pri / *.xbf for unpackaged WinUI; the packaging script copies them from the build output.
+
+
 2026-11-01: macOS packaging is ready. `scripts/package-macos.sh` → `build/Subtitle Adder.app` (~194 MB, engine as a PyInstaller onedir in `Contents/Resources/subtitle-engine/`), ~87 MB dmg with `MAKE_DMG=1`. The app finds the engine in the bundle without uv/the repo; "Open With" from Finder / dropping on the Dock goes to the open window.
 
 Done:
