@@ -51,6 +51,9 @@ extension SubtitleViewModel {
         if blockedOffline([model], retry: { [weak self] in self?.translate(reuseExisting: reuseExisting) }) { return }
         cancelAsyncTranslation()
         let request = reuseExisting ? linesNeedingTranslation(into: target) : sentences
+        // A partial request carries up to two neighbours per line so the model still sees the dialogue; only the
+        // requested lines' results are applied.
+        let contextualRequest = Self.withTranslationContext(sentences, requested: request)
         // Lines that already have a translation count as done in the progress.
         let alreadyDone = sentences.count - request.count
         let total = max(1, sentences.count)
@@ -79,7 +82,7 @@ extension SubtitleViewModel {
             defer { if jobID == id { catalog.activeModels = [] } }
             var failed = false
             do {
-                for try await event in engine.translate(request, to: target, from: source, model: model) {
+                for try await event in engine.translate(contextualRequest, to: target, from: source, model: model) {
                     guard jobID == id, !Task.isCancelled else { return }
                     switch event {
                     case .stage(let stage, var fraction):
@@ -116,16 +119,24 @@ extension SubtitleViewModel {
         }
     }
 
-    /// The lines that have no translation into `target`, or whose translation is outdated (the original was edited).
+    /// The lines whose translation into `target` can't be kept: none yet, outdated, in another language, empty or a
+    /// copy of the original.
     func linesNeedingTranslation(into target: String) -> [Sentence] {
-        sentences.filter { Self.needsTranslation($0, entry: translations[$0.uid], into: target) }
+        sentences.filter { sentence in
+            guard let entry = translations[sentence.uid] else { return true }
+            return !Self.isReusableTranslation(sentence, entry: entry, target: target)
+        }
     }
 
-    /// A line needs the server when it has no translation, or the translation is outdated (the original was edited) or
-    /// in another language.
-    nonisolated static func needsTranslation(_ sentence: Sentence, entry: TranslationEntry?, into target: String) -> Bool {
-        guard let entry else { return true }
-        return entry.isStale(for: sentence) || entry.language != target
+    /// Whether an existing translation can stay instead of being sent again: the original wasn't edited since, it is in
+    /// `target`, it has text, and it is not just the source repeated (a model that gave up returns its input).
+    /// Sources shorter than four characters (names, "OK") may legitimately stay the same.
+    nonisolated static func isReusableTranslation(_ sentence: Sentence, entry: TranslationEntry, target: String) -> Bool {
+        guard !entry.isStale(for: sentence), entry.language == target else { return false }
+        let translated = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !translated.isEmpty else { return false }
+        let source = sentence.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(source.count >= 4 && translated.caseInsensitiveCompare(source) == .orderedSame)
     }
 
     /// The requested lines with up to two neighbours on each side, in order: a resumed or partial request keeps the
@@ -145,13 +156,12 @@ extension SubtitleViewModel {
         storeTranslations(Self.pairs(translated, with: source), language: language, merge: merge)
     }
 
-    /// Each translated line with the line it translates: matched by id, else by position.
+    /// Each translated line with the line it translates, matched by id only. A result whose id isn't in `source` (a
+    /// context neighbour, or something the engine invented) is dropped; it must never land on a line by position.
     static func pairs(_ translated: [Sentence], with source: [Sentence]) -> [(result: Sentence, original: Sentence)] {
-        translated.enumerated().compactMap { index, result in
-            let original = source.first(where: { $0.id == result.id })
-                ?? (source.indices.contains(index) ? source[index] : nil)
-            return original.map { (result, $0) }
-        }
+        var byID: [Int: Sentence] = [:]
+        for sentence in source where byID[sentence.id] == nil { byID[sentence.id] = sentence }
+        return translated.compactMap { result in byID[result.id].map { (result, $0) } }
     }
 
     func storeTranslations(_ pairs: [(result: Sentence, original: Sentence)], language: String, merge: Bool) {

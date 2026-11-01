@@ -358,9 +358,7 @@ struct ContentView: View {
                 Task { await vm.saveSubtitle() }
             }
             .disabled(!vm.canSaveSubtitle)
-            .help(vm.exportsTranslation
-                ? L("Çeviriyi videonun bulunduğu klasöre videoyla aynı adla ve dil koduyla kaydet")
-                : L("Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet"))
+            .help(L("Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet"))
             Button(L("Dışa aktar…")) {
                 Task {
                     if let text = await vm.render(as: vm.exportFormat, translated: vm.exportsTranslation) {

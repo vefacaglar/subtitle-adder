@@ -72,46 +72,48 @@ extension SubtitleViewModel {
     /// Whether the export carries the translation: chosen, and there is one.
     var exportsTranslation: Bool { exportLanguage == .translated && hasTranslations }
 
-    /// `<name>.<fmt>` for the original, `<name>.<lang>.<fmt>` for a translation, so a translation never overwrites the
-    /// source subtitle. `<name>` is the video's, or the loaded subtitle's when there is no video.
-    func subtitleFileName(translated: Bool) -> String? {
+    /// `<name>.<fmt>` next to the video (or the loaded subtitle when there is no video), for the original and for a
+    /// translation alike, exactly like the Windows app. Saving overwrites; there is no language suffix.
+    func subtitleFileName() -> String? {
         guard let base = video ?? loadedSubtitle else { return nil }
-        return Self.subtitleFileName(
-            stem: base.deletingPathExtension().lastPathComponent,
-            language: translated ? translationLanguage ?? translationTarget : nil,
-            format: exportFormat
-        )
+        return Self.subtitleFileName(stem: base.deletingPathExtension().lastPathComponent, format: exportFormat)
     }
 
-    nonisolated static func subtitleFileName(stem: String, language: String?, format: SubtitleFormat) -> String {
+    nonisolated static func subtitleFileName(stem: String, format: SubtitleFormat) -> String {
+        "\(stem).\(format.rawValue)"
+    }
+
+    /// `<name>[.<lang>].<fmt>`, the export panel's suggestion: a translation carries its language so it doesn't
+    /// replace the original by accident.
+    nonisolated static func exportFileName(stem: String, language: String?, format: SubtitleFormat) -> String {
         let suffix = language.map { "." + $0 } ?? ""
         return "\(stem)\(suffix).\(format.rawValue)"
     }
 
     /// Where "Altyazıyı kaydet" writes: next to the video (or the loaded subtitle).
-    func subtitleSaveURL(translated: Bool) -> URL? {
-        guard let base = video ?? loadedSubtitle, let name = subtitleFileName(translated: translated) else { return nil }
+    func subtitleSaveURL() -> URL? {
+        guard let base = video ?? loadedSubtitle, let name = subtitleFileName() else { return nil }
         return base.deletingLastPathComponent().appendingPathComponent(name, isDirectory: false)
     }
 
     /// Default name in the export panel.
     var exportFilename: String {
-        subtitleFileName(translated: exportsTranslation)
-            ?? Self.subtitleFileName(
-                stem: "subtitles",
-                language: exportsTranslation ? translationLanguage ?? "translated" : nil,
-                format: exportFormat
-            )
+        let stem = (video ?? loadedSubtitle)?.deletingPathExtension().lastPathComponent ?? "subtitles"
+        return Self.exportFileName(
+            stem: stem,
+            language: exportsTranslation ? translationLanguage ?? "translated" : nil,
+            format: exportFormat
+        )
     }
 
-    /// Renders with the engine and writes the file next to the video as UTF-8 without a BOM. `translated` overrides
-    /// the export language choice. On failure the status says why and nothing is returned.
+    /// Renders with the engine and writes the file next to the video as UTF-8 without a BOM, replacing a file of the
+    /// same name. `translated` overrides the export language choice. On failure the status says why and nothing is returned.
     @discardableResult
     func saveSubtitle(translated: Bool? = nil) async -> URL? {
         commitDraft()
         commitTranslationDraft()
         let useTranslation = (translated ?? (exportLanguage == .translated)) && hasTranslations
-        guard let url = subtitleSaveURL(translated: useTranslation) else { return nil }
+        guard let url = subtitleSaveURL() else { return nil }
         guard let text = await render(as: exportFormat, translated: useTranslation) else { return nil }
         do {
             try Data(text.utf8).write(to: url, options: .atomic)
@@ -129,7 +131,7 @@ extension SubtitleViewModel {
     /// Called when a translation job finishes; transcription alone and the export panel never save by themselves.
     func autoSaveTranslationIfEnabled(fileManager: FileManager = .default) async {
         guard autoSaveSubtitle, hasTranslations, canSaveSubtitle,
-              let folder = subtitleSaveURL(translated: true)?.deletingLastPathComponent()
+              let folder = subtitleSaveURL()?.deletingLastPathComponent()
         else { return }
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }

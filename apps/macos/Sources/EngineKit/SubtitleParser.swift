@@ -13,8 +13,8 @@ public enum SubtitleParser {
         extensions.contains(url.pathExtension.lowercased())
     }
 
-    /// `<stem>.srt/.vtt/.ass/.ssa/.json` next to the video, if one exists. Language-suffixed files such as
-    /// `Film.es.srt` are not matches, so a saved translation is never loaded as the source subtitle.
+    /// `<stem>.srt/.vtt/.ass/.ssa/.json` next to the video, if one exists. Only the exact stem matches: files with
+    /// another suffix, such as an exported `Film.es.srt`, are not sidecars.
     public static func findSidecar(for video: URL, fileManager: FileManager = .default) -> URL? {
         let folder = video.deletingLastPathComponent()
         let stem = video.deletingPathExtension().lastPathComponent

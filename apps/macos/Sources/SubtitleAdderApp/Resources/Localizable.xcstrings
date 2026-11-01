@@ -3201,22 +3201,6 @@
         }
       }
     },
-    "Çeviriyi videonun bulunduğu klasöre videoyla aynı adla ve dil koduyla kaydet": {
-      "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Çeviriyi videonun bulunduğu klasöre videoyla aynı adla ve dil koduyla kaydet"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save the translation in the video's folder with the video's name and the language code"
-          }
-        }
-      }
-    },
     " · kaydedildi: %@": {
       "localizations": {
         "tr": {

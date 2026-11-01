@@ -158,7 +158,7 @@ import Testing
         try Data().write(to: video)
         #expect(SubtitleParser.findSidecar(for: video) == nil)
 
-        // A saved translation must never count as the source subtitle.
+        // An exported translation (language-suffixed) never counts as the source subtitle.
         try Data().write(to: folder.appending(path: "Film.es.srt"))
         try Data().write(to: folder.appending(path: "Other.srt"))
         #expect(SubtitleParser.findSidecar(for: video) == nil)

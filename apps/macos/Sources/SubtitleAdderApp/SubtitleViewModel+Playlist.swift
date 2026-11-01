@@ -312,13 +312,14 @@ extension SubtitleViewModel {
         updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
         // What was translated during transcription stays; only the rest goes to the server, with its neighbours as context.
         var translated: [UUID: String] = [:]
-        for line in lines where !Self.needsTranslation(line, entry: preTranslated[line.uid], into: target) {
-            translated[line.uid] = preTranslated[line.uid]?.text
+        for line in lines {
+            if let entry = preTranslated[line.uid], Self.isReusableTranslation(line, entry: entry, target: target) {
+                translated[line.uid] = entry.text
+            }
         }
         let preDone = translated.count
         let total = max(1, lines.count)
         let remaining = lines.filter { translated[$0.uid] == nil }
-        let remainingUIDs = Set(remaining.map(\.uid))
         let request = Self.withTranslationContext(lines, requested: remaining)
         var engineError: String?
         if !remaining.isEmpty {
@@ -338,9 +339,7 @@ extension SubtitleViewModel {
                         }
                     case .translation(let language, let batch):
                         // A growing prefix per batch plus a final complete one; context lines are not applied.
-                        let pairs = Self.pairs(batch, with: request).filter {
-                            remainingUIDs.contains($0.original.uid) && !$0.result.text.isEmpty
-                        }
+                        let pairs = Self.pairs(batch, with: remaining).filter { !$0.result.text.isEmpty }
                         for pair in pairs { translated[pair.original.uid] = pair.result.text }
                         if editorShows(item) { storeTranslations(pairs, language: language, merge: true) }
                     case .error(let message):
@@ -381,9 +380,7 @@ extension SubtitleViewModel {
             updatePlaylistItem(item.id, .failed, .error(error), nil)
             return
         }
-        let name = Self.subtitleFileName(
-            stem: item.videoURL.deletingPathExtension().lastPathComponent, language: target, format: format
-        )
+        let name = Self.subtitleFileName(stem: item.videoURL.deletingPathExtension().lastPathComponent, format: format)
         let url = item.videoURL.deletingLastPathComponent().appendingPathComponent(name, isDirectory: false)
         do {
             // A folder that is gone makes the write throw: the item fails instead of reporting a save that didn't happen.

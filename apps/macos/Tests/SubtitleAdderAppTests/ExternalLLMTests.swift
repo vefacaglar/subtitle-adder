@@ -243,6 +243,15 @@ import Testing
         )
     }
 
+    /// `count` engine-format lines "Satır 1.", "Satır 2.", ….
+    private func sentenceList(_ count: Int) -> String {
+        (1...count).map { sentenceJSON($0, "Satır \($0).") }.joined(separator: ", ")
+    }
+
+    private func lineTexts(_ range: ClosedRange<Int>) -> [String] {
+        range.map { "Satır \($0)." }
+    }
+
     private func requests(in log: URL) throws -> [[String]] {
         try FileManager.default.contentsOfDirectory(atPath: log.path).sorted().map { name in
             let data = try Data(contentsOf: log.appending(path: name))
@@ -254,9 +263,9 @@ import Testing
         let folder = try makeFolder()
         let log = try makeFolder()
         let transcribe = """
-        echo '{"event": "partial", "language": "tr", "sentences": [\(sentenceJSON(1, "Bir.")), \(sentenceJSON(2, "İki."))]}'
+        echo '{"event": "partial", "language": "tr", "sentences": [\(sentenceList(12))]}'
         i=0; while [ ! -e '\(log.path)/req-0' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
-        echo '{"event": "result", "language": "tr", "duration": 4, "audio": "/nonexistent.wav", "outputs": [], "sentences": [\(sentenceJSON(1, "Bir.")), \(sentenceJSON(2, "İki.")), \(sentenceJSON(3, "Üç."))]}'
+        echo '{"event": "result", "language": "tr", "duration": 14, "audio": "/nonexistent.wav", "outputs": [], "sentences": [\(sentenceList(13))]}'
         """
         let (vm, _, _) = makeModel(engine: try recordingEngine(log: log, transcribe: transcribe))
         vm.externalLlmEnabled = true
@@ -269,11 +278,11 @@ import Testing
         vm.generateAndTranslate()
         await settle(vm)
 
-        // The first line went out during transcription (the last line of a snapshot is still changing); the final
-        // pass sent the other two.
-        #expect(try requests(in: log) == [["Bir."], ["İki.", "Üç."]])
-        #expect(vm.sentences.map(\.text) == ["Bir.", "İki.", "Üç."])
-        #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == ["T-Bir.", "T-İki.", "T-Üç."])
+        // The first ten lines went out during transcription (the last two of a snapshot are still changing, and they
+        // ride along as context); the final pass sent the other three with two lines of context before them.
+        #expect(try requests(in: log) == [lineTexts(1...12), lineTexts(9...13)])
+        #expect(vm.sentences.map(\.text) == lineTexts(1...13))
+        #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == lineTexts(1...13).map { "T-" + $0 })
         #expect(vm.translationLanguage == "en")
         #expect(vm.status == .finished)
         #expect(vm.asyncTranslationFraction == nil && vm.asyncTask == nil)
@@ -331,7 +340,7 @@ import Testing
 
     @Test func stoppingCancelsTheBackgroundTranslation() async throws {
         let transcribe = """
-        echo '{"event": "partial", "language": "tr", "sentences": [\(sentenceJSON(1, "Bir.")), \(sentenceJSON(2, "İki."))]}'
+        echo '{"event": "partial", "language": "tr", "sentences": [\(sentenceList(12))]}'
         exec sleep 5
         """
         let engine = try FakeEngine.make(transcribe: transcribe, translate: "exec sleep 5")
@@ -366,16 +375,17 @@ import Testing
         let (vm, _, _) = makeModel()
         vm.language = "tr"
         vm.translationTarget = "en"
-        vm.sentences = [line(1, "Bir."), line(2, "İki."), line(3, "Üç.")]
+        vm.sentences = (1...12).map { line($0, "Satır \($0).") }
         vm.startAsyncTranslation(engine: engine)
         let task = vm.asyncTask
         await task?.value
-        #expect(try requests(in: log) == [["Bir.", "İki."]])
+        // Ten lines, with the two held-back ones as context.
+        #expect(try requests(in: log) == [lineTexts(1...12)])
         #expect(vm.asyncFailed && vm.asyncTask == nil)
 
         // Every later snapshot brings new finished lines, but none starts another engine process.
-        vm.sentences.append(line(4, "Dört."))
-        vm.sentences.append(line(5, "Beş."))
+        vm.sentences.append(line(13, "Satır 13."))
+        vm.sentences.append(line(14, "Satır 14."))
         #expect(vm.nextAsyncBatch().isEmpty)
         vm.startAsyncTranslation(engine: engine)
         #expect(vm.asyncTask == nil)
@@ -384,6 +394,45 @@ import Testing
         // The next run starts clean.
         vm.cancelAsyncTranslation()
         #expect(!vm.asyncFailed)
-        #expect(vm.nextAsyncBatch().map(\.text) == ["Bir.", "İki.", "Üç.", "Dört."])
+        #expect(vm.nextAsyncBatch().map(\.text) == lineTexts(1...12))
+    }
+
+    // MARK: - What the pump sends
+
+    @Test func theAsyncPumpHoldsBackTheLastTwoLinesAndWaitsForTenOthers() {
+        let (vm, _, _) = makeModel()
+        #expect(SubtitleViewModel.minAsyncBatchSentences == 10)
+        vm.sentences = (1...11).map { line($0, "Satır \($0).") }
+        // Nine lines are ready: not worth a request yet.
+        #expect(vm.nextAsyncBatch().isEmpty)
+        vm.sentences.append(line(12, "Satır 12."))
+        #expect(vm.nextAsyncBatch().map(\.text) == lineTexts(1...10))
+        // Lines already handed over don't count towards the ten.
+        vm.asyncQueued = Set(vm.sentences.prefix(10).map(\.uid))
+        vm.sentences.append(contentsOf: (13...20).map { line($0, "Satır \($0).") })
+        #expect(vm.nextAsyncBatch().isEmpty)
+        vm.sentences.append(contentsOf: (21...22).map { line($0, "Satır \($0).") })
+        #expect(vm.nextAsyncBatch().map(\.text) == lineTexts(11...20))
+    }
+
+    @Test func emptyLinesDontCountTowardsTheBatch() {
+        let (vm, _, _) = makeModel()
+        vm.sentences = (1...12).map { line($0, $0 == 3 ? "  " : "Satır \($0).") }
+        #expect(vm.nextAsyncBatch().isEmpty)
+    }
+
+    @Test func aCopyOfTheSourceIsNotReusedButShortOnesAre() {
+        let (vm, _, _) = makeModel()
+        vm.sentences = [line(1, "Hello world"), line(2, "OK"), line(3, "Bir."), line(4, "Merhaba."), line(5, "Dünya.")]
+        let uids = vm.sentences.map(\.uid)
+        vm.translations = [
+            // The model returned its input (case differs only): translate again.
+            uids[0]: TranslationEntry(text: "HELLO WORLD", sourceText: "Hello world", language: "en"),
+            // Under four characters the same text can be right (names, interjections).
+            uids[1]: TranslationEntry(text: "OK", sourceText: "OK", language: "en"),
+            uids[2]: TranslationEntry(text: "   ", sourceText: "Bir.", language: "en"),
+            uids[3]: TranslationEntry(text: "Hello.", sourceText: "Merhaba.", language: "en"),
+        ]
+        #expect(vm.linesNeedingTranslation(into: "en").map(\.text) == ["Hello world", "Bir.", "Dünya."])
     }
 }

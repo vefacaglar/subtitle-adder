@@ -107,8 +107,8 @@ extension SubtitleViewModel {
         asyncTranslationFraction = nil
     }
 
-    /// Called with every transcription snapshot: when lines are ready and no batch is on its way, sends them. The
-    /// last line of a snapshot is still being transcribed, so it waits for the next one.
+    /// Called with every transcription snapshot: when enough lines are ready and no batch is on its way, sends them.
+    /// The last two lines of a snapshot are still being transcribed, so they wait for the next one.
     func startAsyncTranslation(engine: EngineClient) {
         guard asyncTask == nil, !asyncDraining, !asyncFailed, !nextAsyncBatch().isEmpty else { return }
         let run = UUID()
@@ -129,12 +129,17 @@ extension SubtitleViewModel {
         asyncTranslationFraction = nil
     }
 
-    /// Lines ready for the server: everything but the last line, not handed over before, with text.
+    /// Fewest new lines worth a request: smaller batches lose the context a model translates well with.
+    nonisolated static var minAsyncBatchSentences: Int { 10 }
+
+    /// Lines ready for the server: everything but the last two (the live end of the transcript still changes), not
+    /// handed over before, with text. Empty until at least `minAsyncBatchSentences` of them have piled up.
     func nextAsyncBatch() -> [Sentence] {
-        guard !asyncDraining, !asyncFailed, sentences.count > 1 else { return [] }
-        return sentences.dropLast().filter {
+        guard !asyncDraining, !asyncFailed, sentences.count > 2 else { return [] }
+        let candidates = sentences.dropLast(2).filter {
             !asyncQueued.contains($0.uid) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
+        return candidates.count >= Self.minAsyncBatchSentences ? Array(candidates) : []
     }
 
     /// One batch at a time until nothing is left to send. A failure stops it for the rest of the run (`asyncFailed`):
@@ -162,8 +167,10 @@ extension SubtitleViewModel {
     private func translateAsyncBatch(
         _ batch: [Sentence], engine: EngineClient, target: String, source: String?, run: UUID
     ) async -> Bool {
+        // The neighbours of the batch's lines go along as context; only the batch's own lines are applied.
+        let request = Self.withTranslationContext(sentences, requested: batch)
         do {
-            for try await event in engine.translate(batch, to: target, from: source, model: translationModel) {
+            for try await event in engine.translate(request, to: target, from: source, model: translationModel) {
                 guard !Task.isCancelled, asyncRunID == run else { return false }
                 switch event {
                 case .translation(let language, let translated):

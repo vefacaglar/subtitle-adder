@@ -22,25 +22,35 @@ private struct SentenceSpan: Hashable {
 }
 
 extension [Sentence] {
+    /// Longest start-time difference (seconds) at which a line with identical text still counts as the same line.
+    private static var nearMatchWindow: Double { 1.5 }
+
     /// Returns `snapshot` (a full list from the engine) with the `uid` of each line that matches a line of `self`,
     /// so the list view, selection and translations keep their identities while live snapshots replace the lines.
-    /// A line matches first by identical times and text, then (among the rest) by its number (`id`); each `uid` is used once.
+    /// Pass 1 matches identical times and text; identical duplicates each take their own identity, in order. Pass 2
+    /// matches what is left to an unused line with the same text that starts at most 1.5 s away. The line number
+    /// (`id`) is never used: it shifts when a speaker split inserts lines, and would hand a line another's identity.
+    /// Each `uid` is used once; an unmatched line keeps its own.
     public func mergedWithSnapshot(_ snapshot: [Sentence]) -> [Sentence] {
         guard !isEmpty else { return snapshot }
-        var uidBySpan: [SentenceSpan: UUID] = [:]
-        var uidByID: [Int: UUID] = [:]
-        for sentence in self {
-            uidBySpan[SentenceSpan(sentence)] = uidBySpan[SentenceSpan(sentence)] ?? sentence.uid
-            uidByID[sentence.id] = uidByID[sentence.id] ?? sentence.uid
-        }
-        // Two passes, so a line that kept its times and text is never robbed of its identity by a number match.
+        var queues: [SentenceSpan: [UUID]] = [:]
+        for sentence in self { queues[SentenceSpan(sentence), default: []].append(sentence.uid) }
         var used: Set<UUID> = []
         var uids: [UUID?] = snapshot.map { incoming in
-            guard let uid = uidBySpan[SentenceSpan(incoming)], used.insert(uid).inserted else { return nil }
+            let key = SentenceSpan(incoming)
+            guard var queue = queues[key], !queue.isEmpty else { return nil }
+            let uid = queue.removeFirst()
+            queues[key] = queue
+            used.insert(uid)
             return uid
         }
         for (index, incoming) in snapshot.enumerated() where uids[index] == nil {
-            if let uid = uidByID[incoming.id], used.insert(uid).inserted { uids[index] = uid }
+            guard let near = first(where: {
+                !used.contains($0.uid) && $0.text == incoming.text
+                    && abs($0.start - incoming.start) <= Self.nearMatchWindow
+            }) else { continue }
+            used.insert(near.uid)
+            uids[index] = near.uid
         }
         return zip(snapshot, uids).map { incoming, uid in
             guard let uid else { return incoming }

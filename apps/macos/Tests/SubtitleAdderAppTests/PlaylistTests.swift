@@ -37,6 +37,15 @@ import Testing
         #"{"id": \#(id), "start": \#(id), "end": \#(id + 1), "text": "\#(text)", "words": []}"#
     }
 
+    /// `count` engine-format lines "Satır 1.", "Satır 2.", ….
+    private func sentenceList(_ count: Int) -> String {
+        (1...count).map { sentenceJSON($0, "Satır \($0).") }.joined(separator: ", ")
+    }
+
+    private func lineTexts(_ range: ClosedRange<Int>) -> [String] {
+        range.map { "Satır \($0)." }
+    }
+
     private func finished(_ text: String) -> String {
         """
         echo '{"event": "result", "language": "xx", "duration": 1, "audio": "/nonexistent.wav", "outputs": [], "sentences": [{"id": 1, "start": 0, "end": 1, "text": "\(text)", "words": []}]}'
@@ -67,8 +76,9 @@ import Testing
         await vm.playlistTask?.value
     }
 
-    private func savedName(_ stem: String, _ language: String, _ format: SubtitleFormat = .srt) -> String {
-        SubtitleViewModel.subtitleFileName(stem: stem, language: language, format: format)
+    /// Playlist results are always `<stem>.<fmt>`, with no language suffix.
+    private func savedName(_ stem: String, _ format: SubtitleFormat = .srt) -> String {
+        SubtitleViewModel.subtitleFileName(stem: stem, format: format)
     }
 
     // MARK: - The Windows flow
@@ -126,11 +136,11 @@ import Testing
         #expect(lines[2].contains(videoB.path) && lines[2].contains("--language ja"))
         #expect(lines[3].contains("--to tr") && lines[3].contains("--from ja"))
 
-        let savedA = try String(contentsOf: dirA.appending(path: savedName("ClipA", "tr")), encoding: .utf8)
-        let savedB = try String(contentsOf: dirB.appending(path: savedName("ClipB", "tr")), encoding: .utf8)
+        let savedA = try String(contentsOf: dirA.appending(path: savedName("ClipA")), encoding: .utf8)
+        let savedB = try String(contentsOf: dirB.appending(path: savedName("ClipB")), encoding: .utf8)
         #expect(savedA.contains("Hassiktir!") && !savedA.contains("Caralho"))
         #expect(savedB.contains("Merhaba"))
-        #expect(vm.playlist[0].statusMessage.text == "Kaydedildi: \(savedName("ClipA", "tr"))")
+        #expect(vm.playlist[0].statusMessage.text == "Kaydedildi: \(savedName("ClipA"))")
 
         // The per-item languages were the run's, not the user's.
         #expect(vm.language.isEmpty && vm.translationTarget == "tr")
@@ -155,7 +165,9 @@ import Testing
         #expect(vm.playlist[0].state == .completed)
         #expect(logLines(log) == ["translate"])
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
-        #expect(names == ["calls.log", "clip.srt", savedName("clip", "tr")].sorted())
+        // The translation replaced the sidecar: one file, `<stem>.srt`, like on Windows.
+        #expect(names == ["calls.log", "clip.srt"])
+        #expect(try String(contentsOf: folder.appending(path: "clip.srt"), encoding: .utf8).contains("Merhaba"))
     }
 
     // MARK: - Failure, retry, cancel
@@ -375,7 +387,7 @@ import Testing
         let firstEnd = try #require(lines.firstIndex(of: "translate-end"))
         #expect(secondTranscription < firstEnd)
         for stem in ["a", "b"] {
-            let text = try String(contentsOf: folder.appending(path: savedName(stem, "en")), encoding: .utf8)
+            let text = try String(contentsOf: folder.appending(path: savedName(stem)), encoding: .utf8)
             #expect(text.contains("Hello"))
         }
         #expect(vm.status == .finished)
@@ -414,7 +426,7 @@ import Testing
         await task?.value
         #expect(vm.playlist[0].state == .pending)
         #expect(!vm.isWorking)
-        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: savedName("a", "en")).path))
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: savedName("a")).path))
     }
 
     @Test func cancelDuringTheSaveRenderPutsTheItemBackToQueued() async throws {
@@ -512,9 +524,9 @@ import Testing
         let dir = log.path
         let engine = try FakeEngine.make(
             transcribe: """
-            echo '{"event": "partial", "language": "tr", "sentences": [\(sentenceJSON(1, "Bir.")), \(sentenceJSON(2, "İki."))]}'
+            echo '{"event": "partial", "language": "tr", "sentences": [\(sentenceList(12))]}'
             i=0; while [ ! -e '\(dir)/req-0' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
-            echo '{"event": "result", "language": "tr", "duration": 4, "audio": "/nonexistent.wav", "outputs": [], "sentences": [\(sentenceJSON(1, "Bir.")), \(sentenceJSON(2, "İki.")), \(sentenceJSON(3, "Üç."))]}'
+            echo '{"event": "result", "language": "tr", "duration": 14, "audio": "/nonexistent.wav", "outputs": [], "sentences": [\(sentenceList(13))]}'
             """,
             // Each answer is tagged with the number of the request, so it shows which request a line came from.
             translate: #"printf '{"event": "translation", "language": "en", "sentences": %s}\n' "$(sed "s/\"text\":\"\([^\"]*\)\"/\"text\":\"T$n-\1\"/g" "\#(dir)/req-$n")""#,
@@ -530,34 +542,24 @@ import Testing
         vm.addToPlaylist([video], sourceLanguage: "tr")
         await run(vm)
 
-        // "Bir." went out while transcribing; at hand-off only the other two lines were requested, with "Bir." as context.
+        // Ten lines went out while transcribing (the held-back two ride along as context); at hand-off only the other
+        // three were requested, with two lines of context before them.
         let requests = try FileManager.default.contentsOfDirectory(atPath: dir).sorted().map { name -> [String] in
             try JSONDecoder().decode([Sentence].self, from: Data(contentsOf: log.appending(path: name))).map(\.text)
         }
-        #expect(requests == [["Bir."], ["Bir.", "İki.", "Üç."]])
+        #expect(requests == [lineTexts(1...12), lineTexts(9...13)])
         #expect(vm.playlist[0].state == .completed)
-        let saved = try String(contentsOf: folder.appending(path: savedName("clip", "en")), encoding: .utf8)
-        #expect(saved.contains("T0-Bir.") && saved.contains("T1-İki.") && saved.contains("T1-Üç."))
-        #expect(!saved.contains("T1-Bir."))
+        let saved = try String(contentsOf: folder.appending(path: savedName("clip")), encoding: .utf8)
+        #expect(lineTexts(1...10).allSatisfy { saved.contains("T0-" + $0) })
+        #expect(lineTexts(11...13).allSatisfy { saved.contains("T1-" + $0) })
+        #expect(!saved.contains("T1-Satır 9.") && !saved.contains("T1-Satır 10."))
 
         // The editor still shows this video, now with its translation and the saved name.
         #expect(vm.video == video)
-        #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == ["T0-Bir.", "T1-İki.", "T1-Üç."])
+        let expected = lineTexts(1...10).map { "T0-" + $0 } + lineTexts(11...13).map { "T1-" + $0 }
+        #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == expected)
         #expect(vm.effectiveDisplayMode == .translation)
-        #expect(vm.savedSubtitleName == savedName("clip", "en"))
+        #expect(vm.savedSubtitleName == savedName("clip"))
         #expect(vm.status == .finished)
-    }
-
-    @Test func contextKeepsTwoNeighboursOnEachSideInOrder() {
-        let all = (1...8).map { Sentence(id: $0, start: Double($0), end: Double($0) + 1, text: "L\($0)") }
-        func ids(_ requested: [Int]) -> [Int] {
-            let wanted = all.filter { requested.contains($0.id) }
-            return SubtitleViewModel.withTranslationContext(all, requested: wanted).map(\.id)
-        }
-        #expect(ids([4]) == [2, 3, 4, 5, 6])
-        #expect(ids([1]) == [1, 2, 3])
-        #expect(ids([8]) == [6, 7, 8])
-        #expect(ids([2, 8]) == [1, 2, 3, 4, 6, 7, 8])
-        #expect(ids([]).isEmpty)
     }
 }

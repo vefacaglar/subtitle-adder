@@ -162,12 +162,14 @@ import Testing
 
     // MARK: - Saving
 
-    @Test func fileNamesFollowTheOriginalAndTranslationRule() {
-        #expect(SubtitleViewModel.subtitleFileName(stem: "Film", language: nil, format: .srt) == "Film.srt")
-        #expect(SubtitleViewModel.subtitleFileName(stem: "Film", language: "es", format: .vtt) == "Film.es.vtt")
+    @Test func savedFilesNeverCarryALanguageSuffixButExportSuggestionsDo() {
+        #expect(SubtitleViewModel.subtitleFileName(stem: "Film", format: .srt) == "Film.srt")
+        #expect(SubtitleViewModel.subtitleFileName(stem: "Film", format: .vtt) == "Film.vtt")
+        #expect(SubtitleViewModel.exportFileName(stem: "Film", language: nil, format: .srt) == "Film.srt")
+        #expect(SubtitleViewModel.exportFileName(stem: "Film", language: "es", format: .vtt) == "Film.es.vtt")
     }
 
-    @Test func saveWritesOriginalAndTranslationNextToTheVideo() async throws {
+    @Test func saveWritesOriginalAndTranslationUnderTheVideosNameAndOverwrites() async throws {
         let folder = try makeFolder()
         let vm = makeModel(engine: try FakeEngine.make())
         let video = folder.appending(path: "Film.mp4")
@@ -186,11 +188,16 @@ import Testing
         vm.applyTranslation([Sentence(id: 1, start: 0, end: 1, text: "Hola.")], language: "es", source: vm.sentences)
         vm.exportFormat = .vtt
         let translated = await vm.saveSubtitle()
-        #expect(translated == folder.appending(path: "Film.es.vtt"))
-        #expect(String(decoding: try Data(contentsOf: folder.appending(path: "Film.es.vtt")), as: UTF8.self).contains("Hola."))
-        // The original file was left alone.
-        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.srt").path))
-        #expect(vm.finishedSummary.hasSuffix(" · kaydedildi: Film.es.vtt"))
+        #expect(translated == folder.appending(path: "Film.vtt"))
+        #expect(String(decoding: try Data(contentsOf: folder.appending(path: "Film.vtt")), as: UTF8.self).contains("Hola."))
+        #expect(vm.finishedSummary.hasSuffix(" · kaydedildi: Film.vtt"))
+
+        // Same format again: the translation replaces the original's file without asking.
+        vm.exportFormat = .srt
+        let replaced = await vm.saveSubtitle()
+        #expect(replaced == folder.appending(path: "Film.srt"))
+        let text = String(decoding: try Data(contentsOf: folder.appending(path: "Film.srt")), as: UTF8.self)
+        #expect(text.contains("Hola.") && !text.contains("Merhaba."))
     }
 
     @Test func saveWithoutVideoUsesTheLoadedSubtitleName() async throws {
@@ -202,9 +209,10 @@ import Testing
         #expect(vm.canSaveSubtitle)
         #expect(vm.exportFilename == "Dizi.srt")
         vm.applyTranslation([Sentence(id: 1, start: 0, end: 1, text: "Hola.")], language: "es", source: vm.sentences)
+        // Export… suggests a language-suffixed name; "Altyazıyı kaydet" writes the plain one.
         #expect(vm.exportFilename == "Dizi.es.srt")
         let url = await vm.saveSubtitle()
-        #expect(url == folder.appending(path: "Dizi.es.srt"))
+        #expect(url == folder.appending(path: "Dizi.srt"))
     }
 
     @Test func saveIsUnavailableWithoutAPlaceToWrite() {
@@ -246,10 +254,10 @@ import Testing
         vm.translate()
         await settle(vm)
         #expect(vm.status == .finished)
-        let saved = try String(contentsOf: folder.appending(path: "Film.en.srt"), encoding: .utf8)
+        let saved = try String(contentsOf: folder.appending(path: "Film.srt"), encoding: .utf8)
         #expect(saved.contains("Hello.") && saved.contains("World."))
-        #expect(vm.finishedSummary.hasSuffix(" · çeviri: en · kaydedildi: Film.en.srt"))
-        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Film.srt").path))
+        #expect(vm.finishedSummary.hasSuffix(" · çeviri: en · kaydedildi: Film.srt"))
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
     }
 
     @Test func autoSaveSavesTheTranslationEvenWhenTheExportShowsTheOriginal() async throws {
@@ -265,8 +273,8 @@ import Testing
         vm.translate()
         await settle(vm)
         #expect(vm.exportLanguage == .original)
-        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
-        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Film.srt").path))
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.srt").path))
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
     }
 
     @Test func autoSaveOffWritesNothing() async throws {
@@ -314,7 +322,7 @@ import Testing
         #expect(vm.status == .finished)
         #expect(vm.detectedLanguage == "tr")
         #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == ["Hello.", "World."])
-        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.srt").path))
     }
 
     @Test func fullTranslateWithAVideoTranscribesAgainEvenWhenASidecarIsLoaded() async throws {
@@ -332,7 +340,7 @@ import Testing
         #expect(vm.status == .finished)
         #expect(vm.sentences.map(\.text) == ["Merhaba.", "Dünya."])
         #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == ["Hello.", "World."])
-        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.srt").path))
     }
 
     @Test func fullTranslateWithoutAVideoOnlyTranslatesTheImportedLines() async throws {
@@ -351,9 +359,10 @@ import Testing
         await settle(vm)
         #expect(vm.status == .finished)
         #expect(vm.hasTranslations)
-        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Talk.en.srt").path))
-        // The imported file is still the source subtitle, untouched.
-        #expect(try String(contentsOf: subtitle, encoding: .utf8) == Self.srt)
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Talk.srt").path))
+        // Without a video the translation takes the imported file's name, like on Windows: the file is replaced.
+        let saved = try String(contentsOf: subtitle, encoding: .utf8)
+        #expect(saved.contains("Hello.") && !saved.contains("Merhaba."))
     }
 
     @Test func fullTranslateCheckedOfflineIncludesTheTranslationModel() async throws {
@@ -379,7 +388,7 @@ import Testing
         await settle(vm)
         #expect(vm.status == .finished)
         #expect(vm.hasTranslations)
-        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "Film.srt").path))
     }
 
     // MARK: - A cancelled render is not a failure
@@ -406,7 +415,7 @@ import Testing
         vm.openVideo(folder.appending(path: "Other.mp4"))
         await job?.value
         #expect(vm.status == .idle)
-        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Film.en.srt").path))
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Film.srt").path))
     }
 
     @Test func aStoppedRenderLeavesTheStatusAlone() async throws {
