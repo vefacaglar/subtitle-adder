@@ -200,49 +200,49 @@
                             </Grid>
                         </Border>
                         <Border Style="{StaticResource CardStyle}">
-                            <StackPanel Spacing="10">
-                                <Grid ColumnSpacing="16">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                    <StackPanel VerticalAlignment="Center" Margin="34,0,0,0">
-                                        <TextBlock loc:Localize.Text="Sunucu adresi (IP ve port)" Style="{StaticResource CardTitleStyle}" />
-                                        <TextBlock loc:Localize.Text="Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"
-                                                   Style="{StaticResource SecondaryTextStyle}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                                        <TextBox x:Name="ExternalLlmUrlBox" MinWidth="220" VerticalAlignment="Center"
-                                                 PlaceholderText="http://192.168.1.50:11434" TextChanged="ExternalLlmUrlBox_TextChanged"
-                                                 loc:Localize.AutomationName="Sunucu adresi (IP ve port)" />
-                                        <Button x:Name="TestExternalLlmButton" Click="TestExternalLlmButton_Click" VerticalAlignment="Center"
-                                                loc:Localize.ToolTip="Sunucuya ping at ve modelleri getir" loc:Localize.AutomationName="Bağlantıyı test et">
-                                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                                <FontIcon Glyph="&#xE895;" FontSize="14" />
-                                                <TextBlock loc:Localize.Text="Bağlantıyı test et" />
-                                            </StackPanel>
-                                        </Button>
-                                    </StackPanel>
+                            <StackPanel Spacing="8" Margin="34,0,0,0">
+                                <TextBlock loc:Localize.Text="Sunucu adresi (IP ve port)" Style="{StaticResource CardTitleStyle}" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="ExternalLlmUrlBox" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                                             PlaceholderText="http://192.168.1.50:11434" TextChanged="ExternalLlmUrlBox_TextChanged"
+                                             loc:Localize.AutomationName="Sunucu adresi (IP ve port)" />
+                                    <Button x:Name="TestExternalLlmButton" Grid.Column="1" Click="TestExternalLlmButton_Click" VerticalAlignment="Center"
+                                            loc:Localize.ToolTip="Sunucuya ping at ve modelleri getir" loc:Localize.AutomationName="Bağlantıyı test et">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <FontIcon Glyph="&#xE895;" FontSize="14" />
+                                            <TextBlock loc:Localize.Text="Bağlantıyı test et" />
+                                        </StackPanel>
+                                    </Button>
                                 </Grid>
-                                <InfoBar x:Name="ExternalLlmTestBar" Margin="34,0,0,0" IsOpen="False" IsClosable="True" />
+                                <TextBlock loc:Localize.Text="Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"
+                                           Style="{StaticResource SecondaryTextStyle}" />
+                                <InfoBar x:Name="ExternalLlmTestBar" IsOpen="False" IsClosable="True" />
                             </StackPanel>
                         </Border>
                         <Border Style="{StaticResource CardStyle}">
-                            <Grid ColumnSpacing="16">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                <StackPanel VerticalAlignment="Center" Margin="34,0,0,0">
-                                    <TextBlock loc:Localize.Text="Uzak model adı (isteğe bağlı)" Style="{StaticResource CardTitleStyle}" />
-                                    <TextBlock loc:Localize.Text="Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır."
-                                               Style="{StaticResource SecondaryTextStyle}" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                                    <ComboBox x:Name="ExternalLlmModelBox" IsEditable="True" MinWidth="220" VerticalAlignment="Center"
+                            <StackPanel Spacing="8" Margin="34,0,0,0">
+                                <TextBlock loc:Localize.Text="Uzak model adı (isteğe bağlı)" Style="{StaticResource CardTitleStyle}" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="ExternalLlmModelBox" IsEditable="True" HorizontalAlignment="Stretch" VerticalAlignment="Center"
                                               PlaceholderText="gemma4:e4b" SelectionChanged="ExternalLlmModelBox_SelectionChanged"
                                               TextSubmitted="ExternalLlmModelBox_TextSubmitted" LostFocus="ExternalLlmModelBox_LostFocus"
                                               loc:Localize.AutomationName="Uzak model adı (isteğe bağlı)" />
-                                    <Button x:Name="RefreshExternalModelsButton" Click="RefreshExternalModelsButton_Click" VerticalAlignment="Center"
+                                    <Button x:Name="RefreshExternalModelsButton" Grid.Column="1" Click="RefreshExternalModelsButton_Click" VerticalAlignment="Center"
                                             loc:Localize.ToolTip="Uzaktaki modelleri listele" loc:Localize.AutomationName="Uzaktaki modelleri listele">
                                         <FontIcon Glyph="&#xE72C;" FontSize="14" />
                                     </Button>
-                                </StackPanel>
-                            </Grid>
+                                </Grid>
+                                <TextBlock loc:Localize.Text="Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır."
+                                           Style="{StaticResource SecondaryTextStyle}" />
+                            </StackPanel>
                         </Border>
                         <Border Style="{StaticResource CardStyle}">
                             <Grid ColumnSpacing="16">

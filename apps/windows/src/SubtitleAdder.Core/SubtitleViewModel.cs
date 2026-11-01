@@ -494,21 +494,24 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             if (Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
             {
                 resolvedHostLabel = uri.Host;
+                var port = uri.IsDefaultPort ? 11434 : uri.Port;
+                string? resolvedIp = null;
                 if (uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
                 {
                     try
                     {
                         var addresses = await System.Net.Dns.GetHostAddressesAsync(uri.Host, cancellationToken).ConfigureAwait(true);
-                        var ipv4 = addresses.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
-                        if (ipv4 is not null)
-                        {
-                            resolvedHostLabel = $"{uri.Host} → {ipv4}";
-                            var builder = new UriBuilder(uri) { Host = ipv4.ToString() };
-                            resolvedBaseUrl = builder.Uri.ToString().TrimEnd('/');
-                        }
+                        resolvedIp = addresses.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)?.ToString();
                     }
                     catch (Exception) when (!cancellationToken.IsCancellationRequested)
                     {
+                    }
+                    resolvedIp ??= await ExternalLlmState.Shared.DiscoverLanServerIpAsync(port, cancellationToken).ConfigureAwait(true);
+                    if (resolvedIp is not null)
+                    {
+                        resolvedHostLabel = $"{uri.Host} → {resolvedIp}";
+                        var builder = new UriBuilder(uri) { Host = resolvedIp };
+                        resolvedBaseUrl = builder.Uri.ToString().TrimEnd('/');
                     }
                 }
             }

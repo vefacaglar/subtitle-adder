@@ -44,6 +44,8 @@ public sealed class PlaylistRow(Guid id) : ObservableObject
     public bool IsWorking { get => field; set => SetProperty(ref field, value); }
     public bool IsCompleted { get => field; set => SetProperty(ref field, value); }
     public bool IsFailed { get => field; set => SetProperty(ref field, value); }
+    public bool IsIndeterminate { get => field; set => SetProperty(ref field, value); }
+    public double ProgressValue { get => field; set => SetProperty(ref field, value); }
     public bool CanEdit { get => field; set => SetProperty(ref field, value); } = true;
 
     public override string ToString() => $"{FileName} ({SourceLanguageTitle}) — {StatusText}";

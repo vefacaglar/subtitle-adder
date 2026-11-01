@@ -28,6 +28,7 @@ public sealed class ExternalLlmState
     private volatile bool _enabled;
     private volatile string _url = "";
     private volatile string _model = "";
+    private volatile string? _cachedResolvedHostIp;
 
     public bool Enabled
     {
@@ -38,7 +39,12 @@ public sealed class ExternalLlmState
     public string Url
     {
         get => _url;
-        set => _url = value ?? "";
+        set
+        {
+            var next = value ?? "";
+            if (_url != next) _cachedResolvedHostIp = null;
+            _url = next;
+        }
     }
 
     public string Model
@@ -53,7 +59,8 @@ public sealed class ExternalLlmState
 
     /// <summary>
     /// Resolves <c>.local</c> mDNS hostnames (e.g. <c>mac-studio.local</c>) dynamically at launch time to their current
-    /// IPv4 address while keeping the saved <see cref="Url"/> as the hostname so DHCP IP changes never break the connection.
+    /// IPv4 address (falling back to fast LAN subnet port discovery when mesh routers like TP-Link Deco block mDNS) while
+    /// keeping the saved <see cref="Url"/> as the hostname so DHCP IP changes never break the connection.
     /// </summary>
     public string? ResolveActiveUrl()
     {
@@ -62,8 +69,9 @@ public sealed class ExternalLlmState
                         raw.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
             ? raw
             : "http://" + raw;
-        if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri) &&
-            uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri)) return raw;
+        var port = uri.IsDefaultPort ? 11434 : uri.Port;
+        if (uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
         {
             try
             {
@@ -71,14 +79,113 @@ public sealed class ExternalLlmState
                 var ipv4 = addresses.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
                 if (ipv4 is not null)
                 {
-                    var builder = new UriBuilder(uri) { Host = ipv4.ToString() };
+                    _cachedResolvedHostIp = ipv4.ToString();
+                    var builder = new UriBuilder(uri) { Host = _cachedResolvedHostIp };
                     return builder.Uri.ToString().TrimEnd('/');
                 }
             }
             catch (Exception)
             {
             }
+
+            if (_cachedResolvedHostIp is { Length: > 0 } cached && CanConnectTcp(cached, port, 250))
+            {
+                var builder = new UriBuilder(uri) { Host = cached };
+                return builder.Uri.ToString().TrimEnd('/');
+            }
+
+            if (DiscoverLanServerIpAsync(port).GetAwaiter().GetResult() is { } discovered)
+            {
+                _cachedResolvedHostIp = discovered;
+                var builder = new UriBuilder(uri) { Host = discovered };
+                return builder.Uri.ToString().TrimEnd('/');
+            }
         }
         return raw;
+    }
+
+    public async Task<string?> DiscoverLanServerIpAsync(int port, CancellationToken cancellationToken = default)
+    {
+        var localIp = GetLocalLanIpv4();
+        if (localIp is null) return null;
+        var lastDot = localIp.LastIndexOf('.');
+        if (lastDot <= 0) return null;
+        var prefix = localIp[..(lastDot + 1)];
+
+        if (_cachedResolvedHostIp is { Length: > 0 } cached && CanConnectTcp(cached, port, 250))
+        {
+            return cached;
+        }
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(900));
+        var token = cts.Token;
+
+        var tasks = new List<Task<string?>>(254);
+        for (var i = 1; i <= 254; i++)
+        {
+            var ip = prefix + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (ip == localIp) continue;
+            tasks.Add(ProbeTcpAsync(ip, port, token));
+        }
+
+        while (tasks.Count > 0 && !token.IsCancellationRequested)
+        {
+            var finished = await Task.WhenAny(tasks).ConfigureAwait(false);
+            tasks.Remove(finished);
+            var winner = await finished.ConfigureAwait(false);
+            if (winner is not null)
+            {
+                _cachedResolvedHostIp = winner;
+                await cts.CancelAsync().ConfigureAwait(false);
+                return winner;
+            }
+        }
+        return null;
+    }
+
+    private static async Task<string?> ProbeTcpAsync(string ip, int port, CancellationToken token)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            await client.ConnectAsync(ip, port, token).ConfigureAwait(false);
+            return ip;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static bool CanConnectTcp(string ip, int port, int timeoutMs)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            var task = client.ConnectAsync(ip, port);
+            return task.Wait(timeoutMs) && client.Connected;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static string? GetLocalLanIpv4()
+    {
+        try
+        {
+            using var socket = new System.Net.Sockets.Socket(
+                System.Net.Sockets.AddressFamily.InterNetwork,
+                System.Net.Sockets.SocketType.Dgram,
+                System.Net.Sockets.ProtocolType.Udp);
+            socket.Connect("8.8.8.8", 80);
+            return (socket.LocalEndPoint as System.Net.IPEndPoint)?.Address.ToString();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 }

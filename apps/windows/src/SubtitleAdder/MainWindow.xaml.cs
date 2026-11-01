@@ -57,7 +57,7 @@ public sealed partial class MainWindow : Window
         // Buttons follow the commands' CanExecute (wired here rather than through Command bindings).
         foreach (var (command, button) in new (CommunityToolkit.Mvvm.Input.IRelayCommand, Button)[]
                  {
-                     (Vm.GenerateCommand, GenerateButton), (Vm.GenerateAndTranslateCommand, GenerateAndTranslateButton),
+                     (Vm.GenerateCommand, GenerateButton),
                      (Vm.StartPlaylistCommand, StartPlaylistButton),
                      (Vm.CancelCommand, CancelButton), (Vm.TranslateCommand, TranslateButton),
                      (Vm.UndoCommand, UndoButton), (Vm.RedoCommand, RedoButton),
@@ -66,6 +66,8 @@ public sealed partial class MainWindow : Window
             button.IsEnabled = command.CanExecute(null);
             command.CanExecuteChanged += (_, _) => button.IsEnabled = command.CanExecute(null);
         }
+        GenerateAndTranslateButton.IsEnabled = !Vm.IsWorking;
+        Vm.GenerateAndTranslateCommand.CanExecuteChanged += (_, _) => GenerateAndTranslateButton.IsEnabled = !Vm.IsWorking;
         Vm.PropertyChanged += OnViewModelChanged;
         Vm.LocalizationChanged += (_, _) => RefreshAll();
         Vm.Catalog.PropertyChanged += OnCatalogChanged;
@@ -192,6 +194,7 @@ public sealed partial class MainWindow : Window
 
     private void UpdateStatus()
     {
+        UpdateTabActionVisibility();
         var kind = Vm.StatusKind;
         Progress.Visibility = kind == JobStatusKind.Working ? Visibility.Visible : Visibility.Collapsed;
         Progress.IsIndeterminate = Vm.IsIndeterminate;
@@ -869,9 +872,14 @@ public sealed partial class MainWindow : Window
         Vm.Generate();
     }
 
-    private void GenerateAndTranslate_Click(object sender, RoutedEventArgs e)
+    private async void GenerateAndTranslate_Click(object sender, RoutedEventArgs e)
     {
         Vm.FinishEditing();
+        if (Vm.Video is null && !Vm.HasSentences)
+        {
+            await PickVideoAsync();
+            if (Vm.Video is null && !Vm.HasSentences) return;
+        }
         Vm.GenerateAndTranslate();
     }
 
@@ -896,10 +904,37 @@ public sealed partial class MainWindow : Window
     private void SwitchTab(bool playlist)
     {
         _isPlaylistTabActive = playlist;
-        EditorTabButton.IsChecked = !playlist;
-        PlaylistTabButton.IsChecked = playlist;
+        var activeBg = (Brush)Application.Current.Resources["LayerFillColorDefaultBrush"];
+        var activeBorder = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"];
+        var transparent = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+
+        EditorTabButton.Background = !playlist ? activeBg : transparent;
+        EditorTabButton.BorderBrush = !playlist ? activeBorder : transparent;
+        EditorTabTitle.FontWeight = !playlist ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+        EditorTabIndicator.Visibility = !playlist ? Visibility.Visible : Visibility.Collapsed;
+
+        PlaylistTabButton.Background = playlist ? activeBg : transparent;
+        PlaylistTabButton.BorderBrush = playlist ? activeBorder : transparent;
+        PlaylistTabTitle.FontWeight = playlist ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+        PlaylistTabIndicator.Visibility = playlist ? Visibility.Visible : Visibility.Collapsed;
+
         EditorView.Visibility = playlist ? Visibility.Collapsed : Visibility.Visible;
         PlaylistPanel.Visibility = playlist ? Visibility.Visible : Visibility.Collapsed;
+        UpdateTabActionVisibility();
+    }
+
+    private void UpdateTabActionVisibility()
+    {
+        var singleTab = !_isPlaylistTabActive;
+        OpenButton.Visibility = singleTab ? Visibility.Visible : Visibility.Collapsed;
+        ImportSubtitleButton.Visibility = singleTab ? Visibility.Visible : Visibility.Collapsed;
+        LanguageBox.Visibility = singleTab ? Visibility.Visible : Visibility.Collapsed;
+        AutoSaveCheckBox.Visibility = singleTab ? Visibility.Visible : Visibility.Collapsed;
+        var showSingleVideoActions = singleTab && !Vm.IsWorking;
+        GenerateButton.Visibility = showSingleVideoActions ? Visibility.Visible : Visibility.Collapsed;
+        GenerateAndTranslateButton.Visibility = showSingleVideoActions ? Visibility.Visible : Visibility.Collapsed;
+        GenerateAndTranslateButton.IsEnabled = !Vm.IsWorking;
+        TranslateButton.Visibility = singleTab && Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void SyncPlaylistRows()
@@ -937,6 +972,8 @@ public sealed partial class MainWindow : Window
             row.IsWorking = item.IsWorking;
             row.IsCompleted = item.IsCompleted;
             row.IsFailed = item.IsFailed;
+            row.IsIndeterminate = item.IsWorking && item.Fraction is null;
+            row.ProgressValue = item.Fraction ?? 0;
             row.CanEdit = item.CanEdit && !Vm.IsPlaylistRunning;
         }
     }

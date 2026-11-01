@@ -71,8 +71,37 @@ def _external_models_url(chat_url: str) -> str | None:
     return None
 
 
+def _discover_lan_server_ip(port: int) -> str | None:
+    """Scans the local /24 IPv4 subnet for an open LLM server port when mesh Wi-Fi routers (e.g. TP-Link Deco) block mDNS."""
+    import concurrent.futures
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            my_ip = s.getsockname()[0]
+        prefix = ".".join(my_ip.split(".")[:3]) + "."
+    except OSError:
+        return None
+
+    def probe(last_octet: int) -> str | None:
+        ip = f"{prefix}{last_octet}"
+        if ip == my_ip:
+            return None
+        try:
+            with socket.create_connection((ip, port), timeout=0.35):
+                return ip
+        except OSError:
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
+        for found in pool.map(probe, range(1, 255)):
+            if found:
+                return found
+    return None
+
+
 def _resolve_lan_url(url: str) -> str:
-    """Resolves `.local` mDNS hostnames to IPv4 with retry so Windows child processes don't fail with Errno 11001."""
+    """Resolves `.local` mDNS hostnames to IPv4 (with LAN port scan fallback for Deco mesh routers)."""
     from urllib.parse import urlparse, urlunparse
 
     try:
@@ -81,16 +110,18 @@ def _resolve_lan_url(url: str) -> str:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         if not host or not host.lower().endswith(".local"):
             return url
-        for attempt in range(3):
-            try:
-                infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-                if infos:
-                    ipv4 = infos[0][4][0]
-                    netloc = f"{ipv4}:{parsed.port}" if parsed.port else ipv4
-                    return urlunparse(parsed._replace(netloc=netloc))
-            except OSError:
-                if attempt < 2:
-                    time.sleep(0.25 * (attempt + 1))
+        try:
+            infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+            if infos:
+                ipv4 = infos[0][4][0]
+                netloc = f"{ipv4}:{parsed.port}" if parsed.port else ipv4
+                return urlunparse(parsed._replace(netloc=netloc))
+        except OSError:
+            pass
+        discovered_ip = _discover_lan_server_ip(port)
+        if discovered_ip:
+            netloc = f"{discovered_ip}:{parsed.port}" if parsed.port else discovered_ip
+            return urlunparse(parsed._replace(netloc=netloc))
     except Exception:
         pass
     return url
