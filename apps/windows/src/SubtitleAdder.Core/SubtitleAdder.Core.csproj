@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>SubtitleAdder.Core</RootNamespace>
+    <AssemblyName>SubtitleAdder.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EngineKit\EngineKit.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The macOS app's String Catalog is the single source of truth for the shared app strings. -->
+    <EmbeddedResource Include="..\..\..\macos\Sources\SubtitleAdderApp\Resources\Localizable.xcstrings"
+                      Link="Resources\Localizable.xcstrings"
+                      LogicalName="SubtitleAdder.Core.Localizable.xcstrings" />
+    <!-- Windows-only strings, same JSON format; looked up before the shared catalog. -->
+    <EmbeddedResource Include="Strings\Windows.xcstrings"
+                      LogicalName="SubtitleAdder.Core.Windows.xcstrings" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SubtitleAdder.Core.Tests" />
+  </ItemGroup>
+
+</Project>
