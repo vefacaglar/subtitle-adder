@@ -21,7 +21,8 @@
                     "env": {
                         "PATH": "${env:USERPROFILE}\\.local\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}"
                     }
-                }
+                },
+                "command": "uv sync --group cuda"
             }
         },
         {

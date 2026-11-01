@@ -201,3 +201,56 @@ def test_create_transcriber_selects_backend(monkeypatch):
         ("whisper", "turbo"),
         ("onnx", "gigaam-v3-e2e-rnnt", "int8"),
     ]
+
+
+def test_whisper_falls_back_to_cpu_when_cuda_libraries_fail(wav_file, monkeypatch):
+    """A GPU without the CUDA runtime libraries fails on the first batch; the run restarts on the CPU."""
+    import types
+
+    from subtitle_engine import cuda
+    from subtitle_engine.transcribe import FasterWhisperTranscriber
+
+    loads = []
+
+    class FakeWhisperModel:
+        def __init__(self, size, device, compute_type):
+            loads.append((device, compute_type))
+            self.device = device
+
+        def transcribe(self, *args, **kwargs):
+            if self.device == "cuda":
+                raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+            word = types.SimpleNamespace(start=0.0, end=0.5, word=" Hello")
+            segment = types.SimpleNamespace(end=0.5, words=[word])
+            return iter([segment]), types.SimpleNamespace(language="en", duration=1.0)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeWhisperModel))
+    monkeypatch.setattr(cuda, "cuda_usable", lambda: True)
+
+    transcript = FasterWhisperTranscriber("base").transcribe(wav_file)
+
+    assert loads == [("cuda", "float16"), ("cpu", "int8")]
+    assert [w.text for w in transcript.words] == ["Hello"]
+
+
+def test_whisper_uses_cpu_when_cuda_is_not_usable(monkeypatch):
+    import types
+
+    from subtitle_engine import cuda
+    from subtitle_engine.transcribe import FasterWhisperTranscriber
+
+    loads = []
+    fake = types.SimpleNamespace(WhisperModel=lambda size, device, compute_type: loads.append((device, compute_type)))
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+    monkeypatch.setattr(cuda, "cuda_usable", lambda: False)
+
+    FasterWhisperTranscriber("base")
+
+    assert loads == [("cpu", "int8")]
+
+
+def test_unrelated_runtime_errors_are_not_treated_as_cuda_failures():
+    from subtitle_engine.cuda import is_cuda_library_error
+
+    assert is_cuda_library_error(RuntimeError("Library cudnn_ops64_9.dll is not found"))
+    assert not is_cuda_library_error(RuntimeError("Invalid input features shape"))

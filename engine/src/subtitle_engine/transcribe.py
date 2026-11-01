@@ -4,6 +4,7 @@ Backends implement the `Transcriber` protocol; adding a new one (mlx-whisper, ..
 pipeline and the apps unchanged.
 """
 import re
+import sys
 import wave
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -30,21 +31,45 @@ class Transcriber(Protocol):
 
 
 class FasterWhisperTranscriber:
-    """faster-whisper (CTranslate2). CPU int8 on Mac, GPU on Windows when CUDA is available. The model is downloaded on first use."""
+    """faster-whisper (CTranslate2). CPU int8 on Mac; on Windows/Linux the NVIDIA GPU when the CUDA libraries load
+    (`cuda` dependency group), otherwise CPU. The model is downloaded on first use."""
 
     def __init__(self, model_size: str = "small", device: str = "auto", compute_type: str | None = None):
-        import ctranslate2
+        from . import cuda
+
+        if device == "auto":
+            device = "cuda" if cuda.cuda_usable() else "cpu"
+        elif device == "cuda":
+            cuda.register_libraries()
+        self._model_size = model_size
+        self._compute_type = compute_type
+        self._load(device)
+
+    def _load(self, device: str) -> None:
         from faster_whisper import WhisperModel
 
-        if compute_type is None:
-            # Models are stored as float16; on CPU they get expanded to float32 and slow down. int8 on CPU, float16 on CUDA.
-            on_cuda = device == "cuda" or (device == "auto" and ctranslate2.get_cuda_device_count() > 0)
-            compute_type = "float16" if on_cuda else "int8"
-        self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        # Models are stored as float16; on CPU they get expanded to float32 and slow down. int8 on CPU, float16 on CUDA.
+        compute_type = self._compute_type or ("float16" if device == "cuda" else "int8")
+        self._device = device
+        self._model = WhisperModel(self._model_size, device=device, compute_type=compute_type)
 
     def transcribe(
         self, audio: Path, language: str | None = None, on_progress: ProgressFn | None = None
     ) -> Transcript:
+        from . import cuda
+
+        try:
+            return self._transcribe(audio, language, on_progress)
+        except RuntimeError as exc:
+            # The GPU path fails on the first batch when a CUDA library is missing or the GPU is unsupported;
+            # nothing has been reported yet, so the run restarts on the CPU.
+            if self._device != "cuda" or not cuda.is_cuda_library_error(exc):
+                raise
+            print(f"CUDA unavailable, falling back to CPU: {exc}", file=sys.stderr)
+            self._load("cpu")
+            return self._transcribe(audio, language, on_progress)
+
+    def _transcribe(self, audio: Path, language: str | None, on_progress: ProgressFn | None) -> Transcript:
         segments, info = self._model.transcribe(
             str(audio), language=language, word_timestamps=True, vad_filter=True
         )
