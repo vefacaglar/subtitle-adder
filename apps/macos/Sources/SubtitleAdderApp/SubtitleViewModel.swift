@@ -144,6 +144,8 @@ final class SubtitleViewModel {
             defaults.set(sideBySideLayout, forKey: Self.sideBySideLayoutDefaultsKey)
         }
     }
+    /// Set by the ⌘O menu command; the main window opens its video picker and clears it.
+    var videoPickerRequested = false
     /// Hides the window toolbar so the player and the lines get the room; not persisted.
     var isTheaterMode = false
     /// Separate speakers while transcribing (`--diarize`); persistent, on by default.
@@ -657,9 +659,17 @@ final class SubtitleViewModel {
         return LocalizedMessage(id) { SubtitleViewModel.labelText(for: stage, fraction: fraction, purpose: purpose) }
     }
 
+    /// Whole percent (0...100) of a 0...1 fraction, clamped and rounded.
+    nonisolated static func percent(_ fraction: Double) -> Int {
+        Int((min(max(fraction, 0), 1) * 100).rounded())
+    }
+
     nonisolated fileprivate static func labelText(for stage: EngineEvent.Stage, fraction: Double?, purpose: JobPurpose) -> String {
         switch stage {
         case .extractingAudio:
+            if let fraction {
+                return L("Ses ayrılıyor… %lld%%", percent(fraction))
+            }
             return L("Ses ayrılıyor…")
         case .downloadingModel:
             let prefix = switch purpose {
@@ -668,23 +678,26 @@ final class SubtitleViewModel {
             case .transcription: L("Model indiriliyor…")
             }
             if let fraction {
-                return "\(prefix) \(L("%lld%%", Int((min(max(fraction, 0), 1) * 100).rounded())))"
+                return "\(prefix) \(L("%lld%%", percent(fraction)))"
             }
             return prefix
         case .loadingModel:
             return purpose == .translation ? L("Çeviri modeli yükleniyor…") : L("Model yükleniyor…")
         case .transcribing:
+            if let fraction {
+                return L("Konuşma metne çevriliyor… %lld%%", percent(fraction))
+            }
             return L("Konuşma metne çevriliyor…")
         case .diarizing:
             if let fraction {
-                return L("Konuşmacılar ayrılıyor… %lld%%", Int((min(max(fraction, 0), 1) * 100).rounded()))
+                return L("Konuşmacılar ayrılıyor… %lld%%", percent(fraction))
             }
             return L("Konuşmacılar ayrılıyor…")
         case .segmenting:
             return L("Cümleler çıkarılıyor…")
         case .translating:
             if let fraction {
-                return L("Çevriliyor… %lld%%", Int((min(max(fraction, 0), 1) * 100).rounded()))
+                return L("Çevriliyor… %lld%%", percent(fraction))
             }
             return L("Çevriliyor…")
         case .unknown:

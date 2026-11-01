@@ -72,7 +72,8 @@ struct SentenceEditorView: View {
                         focus: $focusedUID,
                         translationFocus: $focusedTranslationUID,
                         showsSpeaker: showsSpeakers,
-                        vm: vm
+                        vm: vm,
+                        player: player
                     )
                 }
             }
@@ -81,6 +82,7 @@ struct SentenceEditorView: View {
                 guard let uid, player.isPlaying, focusedUID == nil, focusedTranslationUID == nil else { return }
                 withAnimation { proxy.scrollTo(uid, anchor: .center) }
             }
+            .accessibilityLabel(L("Satırlar"))
             .onDeleteCommand {
                 finishEditing()
                 vm.deleteSelected()
@@ -172,7 +174,7 @@ struct SentenceEditorView: View {
                 vm.deleteSelected()
             }
             .disabled(vm.selection == nil)
-            .help(L("Sil"))
+            .help(L("Satırı Sil (⌫)"))
         }
         .labelStyle(AdaptiveLabelStyle(iconOnly: width < Self.compactBarWidth))
     }
@@ -222,6 +224,35 @@ private struct AdaptiveLabelStyle: LabelStyle {
     }
 }
 
+/// Split, merge and delete in a line's context menu. They act on the row under the pointer, like retranslate: inside
+/// a multi-selection delete covers all of it (split and merge need a single line), anywhere else just this row.
+/// A view of its own so reading the playback time (for Split) doesn't make every row redraw while a video plays.
+private struct RowEditActions: View {
+    let uid: UUID
+    let vm: SubtitleViewModel
+    let player: PlayerModel
+    /// Releases the focused text fields before the lines change.
+    let finishEditing: () -> Void
+
+    var body: some View {
+        Button(L("Böl"), systemImage: "scissors") {
+            finishEditing()
+            vm.splitRow(uid, at: player.currentTime)
+        }
+        .disabled(!vm.canSplitRow(uid, at: player.currentTime))
+        Button(L("Sonrakiyle birleştir"), systemImage: "arrow.triangle.merge") {
+            finishEditing()
+            vm.mergeRowWithNext(uid)
+        }
+        .disabled(!vm.canMergeRow(uid))
+        Button(L("Sil"), systemImage: "trash", role: .destructive) {
+            finishEditing()
+            vm.deleteRow(uid)
+        }
+        .disabled(!vm.canDeleteRow(uid))
+    }
+}
+
 /// Capsule with a small spinner and the translation progress, e.g. "Çevriliyor… 45%".
 private struct TranslationBadge: View {
     let text: String
@@ -249,6 +280,7 @@ private struct SentenceRow: View {
     var translationFocus: FocusState<UUID?>.Binding
     let showsSpeaker: Bool
     let vm: SubtitleViewModel
+    let player: PlayerModel
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -296,6 +328,11 @@ private struct SentenceRow: View {
                 vm.translateSelected()
             }
             .disabled(vm.isWorking)
+            Divider()
+            RowEditActions(uid: sentence.uid, vm: vm, player: player) {
+                focus.wrappedValue = nil
+                translationFocus.wrappedValue = nil
+            }
             if showsSpeaker {
                 Divider()
                 speakerChoices

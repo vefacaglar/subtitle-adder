@@ -34,6 +34,12 @@ struct ContentView: View {
         .toolbar(vm.isTheaterMode ? .hidden : .automatic, for: .windowToolbar)
         // Lets the menu commands act on this window's view model only while it is the key window (not Settings).
         .focusedSceneValue(\.subtitleVM, vm)
+        // ⌘O (File menu) asks the view model, which only accepts while a video can be picked; the same picker opens.
+        .onChange(of: vm.videoPickerRequested) { _, requested in
+            guard requested else { return }
+            vm.videoPickerRequested = false
+            chooseVideo()
+        }
         .background { WindowReader { chrome.attach($0) } }
         .onAppear {
             chrome.onEscape = {
@@ -77,7 +83,7 @@ struct ContentView: View {
             document: exportDocument,
             contentType: .plainText,
             defaultFilename: vm.exportFilename
-        ) { _ in }
+        ) { vm.exportFinished($0) }
     }
 
     private var workspaceSwitcher: some View {
@@ -146,12 +152,9 @@ struct ContentView: View {
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
             if vm.workspace == .editor {
-                Button(L("Video seç"), systemImage: "film") {
-                    runAfterPicking = false
-                    pickingVideo = true
-                }
-                .disabled(vm.isPlaylistRunning)
-                .help(L("Video dosyası seç"))
+                Button(L("Video seç"), systemImage: "film") { chooseVideo() }
+                    .disabled(!vm.canPickVideo)
+                    .help(L("Video dosyası seç (⌘O)"))
                 Button(L("Altyazı aç"), systemImage: "doc.text") { pickingSubtitle = true }
                     .disabled(vm.isWorking)
                     .help(L("Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle"))
@@ -214,6 +217,11 @@ struct ContentView: View {
                     .help(L("Videonun sesini metne çevirip altyazı çıkar (⌘↩)"))
             }
         }
+    }
+
+    private func chooseVideo() {
+        runAfterPicking = false
+        pickingVideo = true
     }
 
     /// With neither a video nor lines there is nothing to run on, so "Komple çevir" asks for a video and runs on it.
@@ -332,38 +340,45 @@ struct ContentView: View {
 
     private var statusBar: some View {
         HStack(spacing: 10) {
-            switch vm.status {
-            case .idle where vm.isAsyncTranslating:
-                // Background translation with nothing else running.
-                if let fraction = vm.asyncTranslationFraction {
-                    ProgressView(value: fraction).frame(width: 120)
-                } else {
-                    ProgressView().controlSize(.small)
-                }
-                Text(vm.asyncStatusText)
-            case .idle:
-                Text(vm.workspace == .playlist || vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
-            case .working(let label, let fraction):
-                if let fraction {
-                    ProgressView(value: fraction).frame(width: 120)
-                } else {
-                    ProgressView().controlSize(.small)
-                }
-                Text(label.text)
-                if let detail = vm.asyncStatusDetail {
-                    Text("· " + detail).foregroundStyle(.secondary)
-                }
-            case .finished:
-                Label(vm.finishedSummary, systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            case .failed(let message):
-                Label(message.text, systemImage: "exclamationmark.triangle.fill")
+            if let notice = vm.playbackNotice(player.failureMessage) {
+                // Playback only; generating subtitles still works (the engine decodes the audio itself).
+                Label(notice.text, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .lineLimit(2)
-                if vm.canGoOnlineAndRetry {
-                    Button(L("Çevrimdışı modu kapat ve indir")) { vm.goOnlineAndRetry() }
+            } else {
+                switch vm.status {
+                case .idle where vm.isAsyncTranslating:
+                    // Background translation with nothing else running.
+                    if let fraction = vm.asyncTranslationFraction {
+                        ProgressView(value: fraction).frame(width: 120)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(vm.asyncStatusText)
+                case .idle:
+                    Text(vm.workspace == .playlist || vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
+                case .working(let label, let fraction):
+                    if let fraction {
+                        ProgressView(value: fraction).frame(width: 120)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(label.text)
+                    if let detail = vm.asyncStatusDetail {
+                        Text("· " + detail).foregroundStyle(.secondary)
+                    }
+                case .finished:
+                    Label(vm.finishedSummary, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                case .failed(let message):
+                    Label(message.text, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                    if vm.canGoOnlineAndRetry {
+                        Button(L("Çevrimdışı modu kapat ve indir")) { vm.goOnlineAndRetry() }
+                    }
                 }
             }
             Spacer()

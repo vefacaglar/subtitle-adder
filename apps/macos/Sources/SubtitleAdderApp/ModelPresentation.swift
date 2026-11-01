@@ -116,6 +116,12 @@ enum ModelLabel {
         return languages.count > 3 ? "\(shown)…" : shown
     }
 
+    /// "Hız 4/5 · Doğruluk 2/5" from the catalog's relative 1-5 scales; `nil` for a model without ratings (a 0 means unknown).
+    static func ratingText(for model: EngineModel) -> String? {
+        guard model.speed > 0, model.accuracy > 0 else { return nil }
+        return L("Hız %lld/5 · Doğruluk %lld/5", min(model.speed, 5), min(model.accuracy, 5))
+    }
+
     static func storageStatus(for model: EngineModel) -> String {
         if model.downloaded {
             L("Yüklü — diskte %@", sizeText(model.diskMB ?? model.sizeMB))

@@ -73,14 +73,23 @@ final class ModelCatalog {
     private(set) var loadError: LocalizedMessage?
     private(set) var deleting: Set<String> = []
     private(set) var deleteErrors: [String: LocalizedMessage] = [:]
+    /// Result of the last successful deletion ("1,5 GB boşaltıldı."), shown in the Models tab until dismissed or timed out.
+    private(set) var deleteNotice: LocalizedMessage?
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
+    /// How long `deleteNotice` stays visible on its own.
+    @ObservationIgnored let noticeDuration: Duration
 
     /// The models used by the running subtitle generation or translation (including the speaker model); those can't be deleted from Settings.
     var activeModels: Set<String> = []
 
     @ObservationIgnored let engine: EngineClient?
 
-    init(engine: EngineClient? = EngineCommand.locate().map { EngineClient(command: $0) }) {
+    init(
+        engine: EngineClient? = EngineCommand.locate().map { EngineClient(command: $0) },
+        noticeDuration: Duration = .seconds(8)
+    ) {
         self.engine = engine
+        self.noticeDuration = noticeDuration
     }
 
     /// Total actual disk usage in the catalog (models not downloaded are not counted).
@@ -150,13 +159,44 @@ final class ModelCatalog {
         deleteErrors[model.id] = nil
         defer { deleting.remove(model.id) }
         do {
-            _ = try await engine.deleteModel(model.id)
+            let freedMB = try await engine.deleteModel(model.id)
+            showDeleteNotice(Self.deleteNotice(for: model.id, freedMB: freedMB))
             if let index = models.firstIndex(where: { $0.id == model.id }) {
                 models[index].downloaded = false
                 models[index].diskMB = nil
             }
         } catch {
             deleteErrors[model.id] = .error(error)
+        }
+    }
+
+    /// Text for a finished deletion. The engine reports 0 MB when every file was shared with another model (or tiny),
+    /// which would read like a failure as "0 MB boşaltıldı.", so that case says what happened instead.
+    nonisolated static func deleteNotice(for id: String, freedMB: Int) -> LocalizedMessage {
+        if freedMB <= 0 {
+            return LocalizedMessage("deleted-shared:\(id)") {
+                L("%@ silindi; dosyalarını başka bir model de kullandığı için yer açılmadı.", ModelLabel.name(for: id))
+            }
+        }
+        return LocalizedMessage("deleted-freed:\(id):\(freedMB)") {
+            L("%@ boşaltıldı.", ModelLabel.sizeText(freedMB))
+        }
+    }
+
+    func dismissDeleteNotice() {
+        noticeTask?.cancel()
+        noticeTask = nil
+        deleteNotice = nil
+    }
+
+    private func showDeleteNotice(_ notice: LocalizedMessage) {
+        noticeTask?.cancel()
+        deleteNotice = notice
+        let duration = noticeDuration
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled else { return }
+            self?.deleteNotice = nil
         }
     }
 }

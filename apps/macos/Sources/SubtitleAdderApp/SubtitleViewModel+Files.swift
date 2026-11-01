@@ -62,6 +62,15 @@ extension SubtitleViewModel {
 
     // MARK: - Saving
 
+    /// Whether a video can be picked (toolbar button and ⌘O): in the editor, and not while a playlist run owns the video.
+    var canPickVideo: Bool { workspace == .editor && !isPlaylistRunning }
+
+    /// ⌘O: asks the window to show its video picker. The view resets the flag once it has opened the picker.
+    func requestVideoPicker() {
+        guard canPickVideo else { return }
+        videoPickerRequested = true
+    }
+
     /// Whether the lines can be exported: there are some and no job is rewriting them.
     var canExport: Bool { !sentences.isEmpty && !isWorking }
 
@@ -118,13 +127,29 @@ extension SubtitleViewModel {
         do {
             try Data(text.utf8).write(to: url, options: .atomic)
         } catch {
-            let reason = error.localizedDescription
-            status = .failed(LocalizedMessage("save-failed:\(reason)") { L("Dosya kaydedilemedi: %@", reason) })
+            reportSaveFailure(error)
             return nil
         }
         savedSubtitleName = url.lastPathComponent
         if !isWorking, status != .finished { status = .finished }
         return url
+    }
+
+    /// Shows "Dosya kaydedilemedi: …" in the status bar; used by every place that writes a subtitle file.
+    func reportSaveFailure(_ error: any Error) {
+        let reason = error.localizedDescription
+        status = .failed(LocalizedMessage("save-failed:\(reason)") { L("Dosya kaydedilemedi: %@", reason) })
+    }
+
+    /// Result of the export panel: a write error is reported, a cancelled panel is not an error.
+    func exportFinished(_ result: Result<URL, any Error>) {
+        guard case .failure(let error) = result, !Self.isUserCancellation(error) else { return }
+        reportSaveFailure(error)
+    }
+
+    nonisolated static func isUserCancellation(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError
     }
 
     /// Writes the translation next to the video when auto-save is on and there is a translation and a folder to write to.
@@ -160,6 +185,16 @@ extension SubtitleViewModel {
     }
 
     // MARK: - Status text
+
+    /// The playback problem to show in place of the status line, or `nil`. It only replaces a calm status (ready or
+    /// finished) in the editor: a running job's progress and any real error stay visible, and generation is never blocked.
+    func playbackNotice(_ failure: LocalizedMessage?) -> LocalizedMessage? {
+        guard let failure, workspace == .editor, !isAsyncTranslating else { return nil }
+        switch status {
+        case .idle, .finished: return failure
+        case .working, .failed: return nil
+        }
+    }
 
     /// "N satır · dil: xx" (the language is left out when unknown), plus the translation language and the saved file.
     var finishedSummary: String {

@@ -246,6 +246,22 @@ private func waitUntilDead(_ pid: pid_t) async throws -> Bool {
     #expect(command?.arguments.contains("subtitle-engine") == true)
 }
 
+@Test func explicitEnginePathWins() {
+    let command = EngineCommand.locate(environment: ["SUBTITLE_ENGINE": "/opt/engine/subtitle-engine"])
+    #expect(command?.executable.path == "/opt/engine/subtitle-engine")
+    #expect(command?.arguments.isEmpty == true)
+}
+
+@Test func emptyOrBlankEnginePathCountsAsUnset() {
+    let fallback = EngineCommand.locate(environment: [:])
+    for value in ["", "   ", "\t\n"] {
+        let command = EngineCommand.locate(environment: ["SUBTITLE_ENGINE": value])
+        #expect(command?.executable == fallback?.executable)
+        #expect(command?.arguments == fallback?.arguments)
+        #expect(command?.executable.path != "")
+    }
+}
+
 @Test func findsEngineInsideAppBundle() throws {
     let tmp = FileManager.default.temporaryDirectory.appending(path: "bundle-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: tmp) }

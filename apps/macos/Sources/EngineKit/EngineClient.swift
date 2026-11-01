@@ -23,7 +23,8 @@ public struct EngineCommand: Sendable {
     /// In order: the `SUBTITLE_ENGINE` environment variable (engine binary), the `subtitle-engine`
     /// in the bundle, and in development the `engine/` project in the repo (`uv run`).
     public static func locate(environment: [String: String] = ProcessInfo.processInfo.environment) -> EngineCommand? {
-        if let path = environment["SUBTITLE_ENGINE"] {
+        // An empty or blank variable counts as unset (a stray `SUBTITLE_ENGINE=` must not shadow the bundled engine).
+        if let path = environment["SUBTITLE_ENGINE"]?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
             return EngineCommand(executable: URL(filePath: path))
         }
         if let bundled = bundledEngine() {

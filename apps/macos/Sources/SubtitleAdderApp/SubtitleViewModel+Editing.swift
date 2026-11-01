@@ -17,6 +17,49 @@ extension SubtitleViewModel {
         return index + 1 < sentences.count
     }
 
+    // MARK: - Row context menu
+
+    /// The lines a context-menu action on the row `uid` covers: the whole selection when the row is part of it, else
+    /// just the row (the same rule `selectRow` applies).
+    func rowTargets(_ uid: UUID) -> Set<UUID> {
+        selectedUIDs.contains(uid) ? selectedUIDs : [uid]
+    }
+
+    /// Same rules as the edit bar's Split: one line only, no running job, and `time` strictly inside the line.
+    func canSplitRow(_ uid: UUID, at time: Double) -> Bool {
+        guard !isWorking, rowTargets(uid).count == 1, let index = sentences.index(ofUID: uid) else { return false }
+        return sentences.canSplit(at: index, at: time)
+    }
+
+    /// Same rules as the edit bar's merge: one line only, no running job, and a line after it.
+    func canMergeRow(_ uid: UUID) -> Bool {
+        guard !isWorking, rowTargets(uid).count == 1, let index = sentences.index(ofUID: uid) else { return false }
+        return index + 1 < sentences.count
+    }
+
+    /// Delete takes the whole selection when the row is part of it.
+    func canDeleteRow(_ uid: UUID) -> Bool {
+        !isWorking && sentences.index(ofUID: uid) != nil
+    }
+
+    func splitRow(_ uid: UUID, at time: Double) {
+        guard canSplitRow(uid, at: time) else { return }
+        selectRow(uid)
+        splitSelected(at: time)
+    }
+
+    func mergeRowWithNext(_ uid: UUID) {
+        guard canMergeRow(uid) else { return }
+        selectRow(uid)
+        mergeSelectedWithNext()
+    }
+
+    func deleteRow(_ uid: UUID) {
+        guard canDeleteRow(uid) else { return }
+        selectRow(uid)
+        deleteSelected()
+    }
+
     // MARK: - Text draft
 
     /// The text to display for a line: for the focused line, the draft that hasn't been committed yet.

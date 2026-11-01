@@ -219,6 +219,7 @@ private struct AppearanceSettingsTab: View {
                     get: { style.textColor },
                     set: { textHex = HexColor.hex(from: $0) }
                 ), supportsOpacity: false)
+                .help(L("Yazı rengini seç"))
                 Picker(L("Arka plan"), selection: $background) {
                     ForEach(OverlayBackground.allCases) { Text($0.title).tag($0.rawValue) }
                 }
@@ -346,6 +347,17 @@ private struct ModelsSettingsTab: View {
                 Label(error.text, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
             }
+            if let notice = catalog.deleteNotice {
+                HStack(spacing: 6) {
+                    Label(notice.text, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Spacer(minLength: 0)
+                    Button(L("Kapat"), systemImage: "xmark.circle.fill") { catalog.dismissDeleteNotice() }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .help(L("Mesajı kapat"))
+                }
+            }
             if catalog.totalDiskMB > 0 {
                 Text(L("Toplam %@ disk kullanılıyor.", ModelLabel.sizeText(catalog.totalDiskMB)))
             } else {
@@ -377,6 +389,11 @@ private struct ModelSettingsRow: View {
                 Text(ModelLabel.languageSummary(for: model))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let rating = ModelLabel.ratingText(for: model) {
+                    Text(rating)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text(ModelLabel.storageStatus(for: model))
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -7,7 +7,7 @@ import Foundation
 enum FakeEngine {
     static func make(
         models: String = "", transcribe: String = "", translate: String = "", render: String = "cat",
-        translateInput: String = "cat > /dev/null"
+        translateInput: String = "cat > /dev/null", deleteModel: String = ""
     ) throws -> EngineClient {
         let url = FileManager.default.temporaryDirectory.appending(path: "fake-engine-\(UUID().uuidString).sh")
         let script = """
@@ -25,6 +25,9 @@ enum FakeEngine {
         ;;
         render)
         \(render)
+        ;;
+        delete-model)
+        \(deleteModel.isEmpty ? ":" : deleteModel)
         ;;
         esac
         """

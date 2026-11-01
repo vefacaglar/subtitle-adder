@@ -56,7 +56,7 @@ extension FocusedValues {
     @Entry var subtitleVM: SubtitleViewModel?
 }
 
-/// Menu commands for generate (⌘↩) and stop (⌘.), so they keep working while theater mode hides the toolbar. They act
+/// Menu commands for open video (⌘O), generate (⌘↩) and stop (⌘.), so they keep working while theater mode hides the toolbar. They act
 /// on the focused main window's view model, so they do nothing while Settings is key (⌘↩ there must not restart a job).
 /// Full screen (⌃⌘F) is the system's own View menu item.
 private struct LayoutCommands: Commands {
@@ -65,6 +65,9 @@ private struct LayoutCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
+            Button(L("Video seç"), systemImage: "film") { focused?.requestVideoPicker() }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(focused?.canPickVideo != true)
             Button(L("Altyazı üret"), systemImage: "captions.bubble") { focused?.generate() }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(focused.map { $0.video == nil || $0.isWorking || $0.workspace != .editor } ?? true)

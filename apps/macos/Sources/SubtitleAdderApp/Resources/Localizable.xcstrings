@@ -65,6 +65,38 @@
         }
       }
     },
+    "%@ boşaltıldı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ boşaltıldı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ freed."
+          }
+        }
+      }
+    },
+    "%@ silindi; dosyalarını başka bir model de kullandığı için yer açılmadı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ silindi; dosyalarını başka bir model de kullandığı için yer açılmadı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ deleted; no space was freed because another model uses its files."
+          }
+        }
+      }
+    },
     "%@ için %@ seçildi.": {
       "localizations": {
         "tr": {
@@ -865,6 +897,54 @@
         }
       }
     },
+    "Hız %lld/5 · Doğruluk %lld/5": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hız %lld/5 · Doğruluk %lld/5"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Speed %lld/5 · Accuracy %lld/5"
+          }
+        }
+      }
+    },
+    "Kapat": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kapat"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close"
+          }
+        }
+      }
+    },
+    "Mesajı kapat": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mesajı kapat"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dismiss message"
+          }
+        }
+      }
+    },
     "Kaydedildi: %@": {
       "localizations": {
         "tr": {
@@ -941,6 +1021,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Transcribing speech…"
+          }
+        }
+      }
+    },
+    "Konuşma metne çevriliyor… %lld%%": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Konuşma metne çevriliyor… %%%lld"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transcribing speech… %lld%%"
           }
         }
       }
@@ -1697,6 +1793,38 @@
         }
       }
     },
+    "Satırı Sil (⌫)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Satırı Sil (⌫)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Line (⌫)"
+          }
+        }
+      }
+    },
+    "Satırlar": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Satırlar"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lines"
+          }
+        }
+      }
+    },
     "Satırı oynatma konumundan ikiye böl": {
       "localizations": {
         "tr": {
@@ -1725,6 +1853,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Extracting audio…"
+          }
+        }
+      }
+    },
+    "Ses ayrılıyor… %lld%%": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ses ayrılıyor… %%%lld"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extracting audio… %lld%%"
           }
         }
       }
@@ -2113,18 +2257,18 @@
         }
       }
     },
-    "Video dosyası seç": {
+    "Video dosyası seç (⌘O)": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Video dosyası seç"
+            "value": "Video dosyası seç (⌘O)"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choose a video file"
+            "value": "Choose a video file (⌘O)"
           }
         }
       }
@@ -2141,6 +2285,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "Choose Video"
+          }
+        }
+      }
+    },
+    "Bilinmeyen hata": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bilinmeyen hata"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unknown error"
+          }
+        }
+      }
+    },
+    "Bu biçim oynatılamıyor.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu biçim oynatılamıyor."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This format can't be played."
+          }
+        }
+      }
+    },
+    "Video oynatılamadı: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video oynatılamadı: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't play the video: %@"
           }
         }
       }
@@ -2269,6 +2461,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Text color"
+          }
+        }
+      }
+    },
+    "Yazı rengini seç": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yazı rengini seç"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose the text color"
           }
         }
       }
