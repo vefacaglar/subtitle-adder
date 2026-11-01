@@ -1,4 +1,5 @@
 using Microsoft.UI.Dispatching;
+using SubtitleAdder.Core;
 using SubtitleAdder.EngineKit;
 using Windows.Media.Core;
 using Windows.Media.Playback;
@@ -20,6 +21,8 @@ public sealed class PlayerController : IDisposable
     private MediaSource? _source;   // disposed when replaced so the old file is not kept open
     private volatile bool _mediaReady;
     private volatile bool _disposed;
+    private readonly PlaybackTimeline _timeline = new();
+    private double? _seekWhenReady;
 
     public PlayerController(DispatcherQueue queue)
     {
@@ -30,6 +33,12 @@ public sealed class PlayerController : IDisposable
             if (_disposed) return;
             _mediaReady = true;
             UpdateVideoSize();
+            if (_seekWhenReady is { } target)
+            {
+                _seekWhenReady = null;
+                Seek(target);
+            }
+            Tick();
         });
         Player.MediaFailed += (_, e) => _queue.TryEnqueue(() =>
         {
@@ -45,7 +54,8 @@ public sealed class PlayerController : IDisposable
 
     public MediaPlayer Player { get; } = new();
 
-    public double CurrentTime { get; private set; }
+    public double CurrentTime => _timeline.Position;
+    public double Duration => _timeline.Duration;
     public bool IsPlaying { get; private set; }
     public bool HasMedia => !_disposed && _mediaReady;
 
@@ -65,7 +75,9 @@ public sealed class PlayerController : IDisposable
         var generation = Interlocked.Increment(ref _loadGeneration);
         _mediaReady = false;
         IsPlaying = false;
-        CurrentTime = 0;
+        _timeline.Reset();
+        _seekWhenReady = null;
+        Ticked?.Invoke();
         // Don't use the old video's aspect ratio until the new size arrives.
         VideoSize = (16, 9);
         VideoSizeChanged?.Invoke();
@@ -139,10 +151,14 @@ public sealed class PlayerController : IDisposable
 
     public void Seek(double seconds)
     {
-        var target = Math.Max(0, seconds);
-        CurrentTime = target;
-        UpdateActive();
+        if (_disposed) return;
+        if (HasMedia)
+            _timeline.Observe(CurrentTime, Player.PlaybackSession.NaturalDuration.TotalSeconds, DateTimeOffset.UtcNow);
+        var target = _timeline.Seek(seconds, DateTimeOffset.UtcNow);
         if (HasMedia) Player.PlaybackSession.Position = TimeSpan.FromSeconds(target);
+        else _seekWhenReady = target;
+        UpdateActive();
+        Ticked?.Invoke();
     }
 
     public void TogglePlayback()
@@ -170,7 +186,7 @@ public sealed class PlayerController : IDisposable
         var playing = session.PlaybackState == MediaPlaybackState.Playing;
         // Also follows scrubbing with the transport controls while paused.
         var seconds = session.Position.TotalSeconds;
-        if (double.IsFinite(seconds)) CurrentTime = seconds;
+        _timeline.Observe(seconds, session.NaturalDuration.TotalSeconds, DateTimeOffset.UtcNow);
         IsPlaying = playing;
         UpdateActive();
         Ticked?.Invoke();

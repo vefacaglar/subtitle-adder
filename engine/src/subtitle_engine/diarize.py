@@ -32,6 +32,9 @@ CENTROID_MAX_SECONDS = 30.0
 CENTROID_SEGMENT_SECONDS = 6.0  # a longer segment is cropped to its middle part
 # With automatic counting, a "speaker" with less speech than this is treated as noise and dropped.
 MIN_SPEAKER_SECONDS = 1.0
+# Conservative post-check: a bounded number of short turns, using the existing voice model.
+VERIFY_MAX_TURNS = 32
+VERIFY_MIN_SIMILARITY = 0.65
 # Speech compaction: only active speech intervals (plus padding) are fed to segmentation.
 SPEECH_PAD_SECONDS = 0.25
 SPEECH_MERGE_GAP = 1.5
@@ -126,7 +129,7 @@ class SherpaDiarizer:
 
         def callback(processed: int, total: int) -> int:
             if total > 0:
-                report(min(processed / total, 1.0))
+                report(0.85 * min(processed / total, 1.0))
             return 0  # 0 = keep going
 
         compact_samples, spans = compact_speech_samples(samples, words)
@@ -134,11 +137,15 @@ class SherpaDiarizer:
         raw = [SpeakerSegment(round(s.start, 3), round(s.end, 3), int(s.speaker)) for s in result]
         if spans is not None:
             raw = unmap_compacted_segments(raw, spans)
+        slice_cache: dict[tuple[int, int], list[float]] = {}
         if not num_speakers:
-            raw = merge_similar_speakers(raw, lambda chunk: self._embed(chunk), samples)
+            raw = merge_similar_speakers(raw, lambda chunk: self._embed(chunk), samples,
+                                         _slice_cache=slice_cache)
         raw = normalize(raw, drop_noise=not num_speakers)
+        report(0.9)
         if words and len({s.speaker for s in raw}) >= 2:
-            raw = verify_short_turns(raw, words, samples, lambda chunk: self._embed(chunk))
+            raw = verify_short_turns(raw, words, samples, lambda chunk: self._embed(chunk),
+                                     _slice_cache=slice_cache)
         report(1.0)
         return raw
 
@@ -300,6 +307,8 @@ def merge_similar_speakers(
     embed_samples: Callable[[object], Sequence[float]],
     samples,
     threshold: float = MERGE_SIMILARITY,
+    *,
+    _slice_cache: dict[tuple[int, int], list[float]] | None = None,
 ) -> list[SpeakerSegment]:
     """Merges clusters whose centroids are cosine-similar, repeating until stable.
 
@@ -309,7 +318,7 @@ def merge_similar_speakers(
     """
     if len({s.speaker for s in segments}) < 2:
         return segments
-    slice_cache: dict[tuple[int, int], list[float]] = {}
+    slice_cache = _slice_cache if _slice_cache is not None else {}
     centroids = cluster_centroids(segments, samples, embed_samples, _slice_cache=slice_cache)
     while len(centroids) > 1:
         keys = sorted(centroids)
@@ -329,18 +338,18 @@ def verify_short_turns(
     words: Sequence[Word],
     samples,
     embed_samples: Callable[[object], Sequence[float]],
+    *,
+    _slice_cache: dict[tuple[int, int], list[float]] | None = None,
 ) -> list[SpeakerSegment]:
-    """Acoustically verifies short standalone replies (0.35s-1.8s) against speaker centroids.
+    """Checks short replies and isolated speaker switches against existing voice centroids.
 
-    A brief reply ("Evet.", "Hayır.") right after a question (?) or conversational pause (>=0.25s)
-    is often swallowed by the 5s segmentation window of the preceding speaker. Comparing its voice
-    embedding directly against the speaker centroids recovers the true speaker turn.
+    Only unambiguous acoustic matches can change a label. Mixed-speaker/overlapping turns are
+    left alone, and at most VERIFY_MAX_TURNS candidates spread across the recording are checked.
+    The merge pass's cached reference embeddings can be reused; no second full diarization run.
     """
     if not segments or not words or len(samples) < SAMPLE_RATE:
         return segments
-    slice_cache: dict[tuple[int, int], list[float]] = {}
-    centroids = cluster_centroids(segments, samples, embed_samples, _slice_cache=slice_cache)
-    if len(centroids) < 2:
+    if len({s.speaker for s in segments}) < 2:
         return segments
 
     index = _SegmentIndex(segments)
@@ -354,7 +363,7 @@ def verify_short_turns(
             sentences.append((start_idx, i + 1))
             start_idx = i + 1
 
-    overrides: list[SpeakerSegment] = []
+    candidates: list[tuple[int, int, bool, int | None]] = []
     for s_idx, (w_lo, w_hi) in enumerate(sentences):
         count = w_hi - w_lo
         if count > 3:
@@ -366,15 +375,42 @@ def verify_short_turns(
             continue
         prev_question = s_idx > 0 and words[sentences[s_idx - 1][1] - 1].text.rstrip(_CLOSERS).endswith("?")
         prev_gap = (t_start - words[w_lo - 1].end) if w_lo > 0 else 1.0
-        if not prev_question and prev_gap < 0.25:
-            continue
         cur_speaker = word_speakers[w_lo]
-        if cur_speaker not in centroids:
+        if any(spk != cur_speaker for spk in word_speakers[w_lo:w_hi]):
             continue
-        # Only re-evaluate if it was glued to an adjacent turn's speaker.
         prev_speaker = word_speakers[w_lo - 1] if w_lo > 0 else None
         next_speaker = word_speakers[w_hi] if w_hi < len(words) else None
-        if cur_speaker != prev_speaker and cur_speaker != next_speaker:
+        next_gap = words[w_hi].start - t_end if w_hi < len(words) else 1.0
+        if prev_gap < 0 or next_gap < 0:
+            continue
+        # Do not flatten simultaneous voices into one speaker, even if one has more overlap.
+        hi = bisect_left(index.starts, t_end)
+        lo = bisect_right(index.max_end, t_start, 0, hi)
+        if any(s.speaker != cur_speaker and s.end > t_start for s in index.segments[lo:hi]):
+            continue
+        island = (prev_speaker is not None and prev_speaker == next_speaker
+                  and cur_speaker != prev_speaker and max(prev_gap, next_gap) <= 0.25)
+        glued_reply = (cur_speaker in (prev_speaker, next_speaker)
+                       and (prev_question or prev_gap >= 0.25))
+        if not island and not glued_reply:
+            continue
+        candidates.append((w_lo, w_hi, prev_question, prev_speaker if island else None))
+
+    if not candidates:
+        return segments
+    if len(candidates) > VERIFY_MAX_TURNS:
+        candidates = [candidates[i * (len(candidates) - 1) // (VERIFY_MAX_TURNS - 1)]
+                      for i in range(VERIFY_MAX_TURNS)]
+    slice_cache = _slice_cache if _slice_cache is not None else {}
+    centroids = cluster_centroids(segments, samples, embed_samples, _slice_cache=slice_cache)
+    if len(centroids) < 2:
+        return segments
+
+    overrides: list[SpeakerSegment] = []
+    for w_lo, w_hi, prev_question, surrounding_speaker in candidates:
+        t_start, t_end = words[w_lo].start, words[w_hi - 1].end
+        cur_speaker = word_speakers[w_lo]
+        if cur_speaker not in centroids:
             continue
 
         lo_samp = max(0, int((t_start - 0.05) * SAMPLE_RATE))
@@ -382,10 +418,12 @@ def verify_short_turns(
         if hi_samp - lo_samp < int(0.35 * SAMPLE_RATE):
             continue
         vec = _unit(embed_samples(samples[lo_samp:hi_samp]))
-        cur_sim = _cosine(vec, centroids[cur_speaker])
-        best_sim, best_spk = max((_cosine(vec, c), spk) for spk, c in centroids.items())
+        ranked = sorted(((_cosine(vec, c), spk) for spk, c in centroids.items()), reverse=True)
+        best_sim, best_spk = ranked[0]
         margin = 0.06 if prev_question else 0.10
-        if best_spk != cur_speaker and best_sim - cur_sim >= margin:
+        if (best_spk != cur_speaker and best_sim >= VERIFY_MIN_SIMILARITY
+                and best_sim - ranked[1][0] >= margin
+                and (surrounding_speaker is None or best_spk == surrounding_speaker)):
             overrides.append(SpeakerSegment(round(t_start, 3), round(t_end, 3), best_spk))
 
     if not overrides:

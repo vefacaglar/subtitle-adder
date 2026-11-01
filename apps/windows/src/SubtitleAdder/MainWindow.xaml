@@ -237,7 +237,7 @@
                             <MediaPlayerElement x:Name="PlayerElement" AreTransportControlsEnabled="True" Stretch="Uniform" RequestedTheme="Dark"
                                                 loc:Localize.AutomationName="Video">
                                 <MediaPlayerElement.TransportControls>
-                                                                <MediaTransportControls IsCompact="True" />
+                                    <loc:PreviewTransportControls x:Name="PreviewControls" IsCompact="False" />
                                 </MediaPlayerElement.TransportControls>
                             </MediaPlayerElement>
                             <Grid x:Name="OverlayArea" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">

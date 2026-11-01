@@ -1,6 +1,18 @@
 {
   "sourceLanguage" : "tr",
   "strings" : {
+    "Süren altyazı ya da çeviri işini durdur" : { "localizations" : {
+      "en" : { "stringUnit" : { "state" : "translated", "value" : "Stop the current subtitle or translation job" } },
+      "tr" : { "stringUnit" : { "state" : "translated", "value" : "Süren altyazı ya da çeviri işini durdur" } }
+    } },
+    "Video konumu" : { "localizations" : {
+      "en" : { "stringUnit" : { "state" : "translated", "value" : "Video position" } },
+      "tr" : { "stringUnit" : { "state" : "translated", "value" : "Video konumu" } }
+    } },
+    "Oynatma süresi" : { "localizations" : {
+      "en" : { "stringUnit" : { "state" : "translated", "value" : "Playback time" } },
+      "tr" : { "stringUnit" : { "state" : "translated", "value" : "Oynatma süresi" } }
+    } },
     "K%lld" : { "localizations" : {
       "en" : { "stringUnit" : { "state" : "translated", "value" : "S%lld" } },
       "tr" : { "stringUnit" : { "state" : "translated", "value" : "K%lld" } }
