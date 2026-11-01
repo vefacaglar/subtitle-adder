@@ -950,11 +950,7 @@ public sealed partial class MainWindow : Window
 
     // MARK: - Player and overlay
 
-    private void PlayerGrid_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        PreviewControls.Width = Math.Max(0, Math.Min(680, e.NewSize.Width - 24));
-        UpdateOverlay();
-    }
+    private void PlayerGrid_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateOverlay();
 
     private void PlayerGrid_PointerEntered(object sender, PointerRoutedEventArgs e)
     {
@@ -991,8 +987,8 @@ public sealed partial class MainWindow : Window
         }
         OverlayArea.Width = width;
         OverlayArea.Height = height;
-        // Stay above the compact floating controls.
-        Overlay.Margin = new Thickness(16, 0, 16, Math.Max(76, height * 0.1));
+        // Stay above the compact transport controls.
+        Overlay.Margin = new Thickness(16, 0, 16, Math.Max(64, height * 0.1));
         var text = _player.ActiveId is { } id
             ? OverlayText.Compose(Vm.Sentences, Vm.Translations, Vm.DisplayMode, id)
             : null;

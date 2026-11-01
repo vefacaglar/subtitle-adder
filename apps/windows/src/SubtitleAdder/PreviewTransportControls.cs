@@ -60,9 +60,6 @@ public sealed class PreviewTransportControls : MediaTransportControls
         if (GetTemplateChild("ControlPanelGrid") is Grid panel)
         {
             panel.RenderTransform = null;
-            panel.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(210, 24, 24, 28));
-            panel.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(40, 255, 255, 255));
-            panel.CornerRadius = new CornerRadius(12);
         }
         // These named parts are supplied by the pinned WinUI MediaTransportControls template.
         // The native slider's private playback tracking can lag after an external subtitle seek.
@@ -71,7 +68,7 @@ public sealed class PreviewTransportControls : MediaTransportControls
             native.Visibility = Visibility.Collapsed;
             _seek = new Slider
             {
-                Margin = new Thickness(8, 0, 2, 0), Height = 32, MinWidth = 24,
+                Margin = native.Margin, Height = native.Height, MinWidth = native.MinWidth,
                 VerticalAlignment = VerticalAlignment.Center, IsThumbToolTipEnabled = false,
                 StepFrequency = 0.1, SmallChange = 1, LargeChange = 10,
             };
@@ -90,33 +87,11 @@ public sealed class PreviewTransportControls : MediaTransportControls
             nativeTimes.Height = 0;
             nativeTimes.Visibility = Visibility.Collapsed;
         }
-        if (GetTemplateChild("ControlPanelGrid") is Grid controls
-            && GetTemplateChild("LeftSidePlayBorder") is Border play
-            && GetTemplateChild("MediaTransportControls_Timeline_Border") is Border timelineBorder
-            && GetTemplateChild("MediaTransportControls_Command_Border") is Border commands)
+        if (GetTemplateChild("ControlPanelGrid") is Grid controls)
         {
-            // Equal side columns keep play at the geometric center, regardless of button widths.
-            controls.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
-            controls.ColumnDefinitions[1].Width = GridLength.Auto;
-            controls.ColumnDefinitions[2].Width = new GridLength(1, GridUnitType.Star);
-            Grid.SetColumn(timelineBorder, 0);
-            Grid.SetColumn(play, 1);
-            play.HorizontalAlignment = HorizontalAlignment.Center;
-
-            var right = new Grid();
-            // CompactMode assigns the native command border to row 1 / column 2.
-            right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(0) });
-            right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            right.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0) });
-            right.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0) });
-            right.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            right.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            Grid.SetRow(right, 1);
-            Grid.SetColumn(right, 2);
-            controls.Children.Remove(commands);
-            Grid.SetRow(commands, 1);
-            Grid.SetColumn(commands, 2);
-            right.Children.Add(commands);
+            // Preserve the original native layout: play on the left, timeline in the middle,
+            // volume and other native buttons on the right. Keep only the requested time readout.
+            controls.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             _time = new TextBlock
             {
                 FontFamily = new FontFamily("Consolas"), FontSize = 12,
@@ -125,10 +100,9 @@ public sealed class PreviewTransportControls : MediaTransportControls
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
             };
-            Grid.SetColumn(_time, 3);
+            Grid.SetColumn(_time, controls.ColumnDefinitions.Count - 1);
             Grid.SetRow(_time, 1);
-            right.Children.Add(_time);
-            controls.Children.Add(right);
+            controls.Children.Add(_time);
         }
         _volumeFlyout = (GetTemplateChild("VolumeMuteButton") as AppBarButton)?.Flyout;
         if (_volumeFlyout is not null)
