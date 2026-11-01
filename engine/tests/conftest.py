@@ -1,4 +1,5 @@
 import math
+import os
 import wave
 from pathlib import Path
 
@@ -54,3 +55,21 @@ def tone_video(tmp_path: Path) -> Path:
 def read_wav(path: Path) -> tuple[int, int, float]:
     with wave.open(str(path)) as w:
         return w.getframerate(), w.getnchannels(), w.getnframes() / w.getframerate()
+
+
+def symlinks_supported(directory: Path) -> bool:
+    """Can symlinks be created in `directory`? Windows without Developer Mode / admin cannot."""
+    probe = directory / "_symlink_probe"
+    try:
+        probe.symlink_to("target")
+    except (OSError, NotImplementedError):
+        return False
+    probe.unlink()
+    return True
+
+
+def require_symlinks(directory: Path) -> None:
+    """Skips the calling test when symlinks cannot be created (never weakens it into a copy)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    if not symlinks_supported(directory):
+        pytest.skip("symlinks are not available on this machine (Windows without Developer Mode)")

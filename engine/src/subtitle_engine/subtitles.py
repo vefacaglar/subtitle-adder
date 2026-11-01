@@ -60,5 +60,6 @@ def render(sentences: list[Sentence], fmt: str) -> str:
 
 def write(sentences: list[Sentence], path: Path, fmt: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render(sentences, fmt), encoding="utf-8")
+    with path.open("w", encoding="utf-8", newline="\n") as f:  # same bytes on every OS (no CRLF translation on Windows)
+        f.write(render(sentences, fmt))
     return path

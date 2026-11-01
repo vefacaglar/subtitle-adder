@@ -5,14 +5,27 @@ import os
 import shutil
 
 import pytest
+from conftest import require_symlinks, symlinks_supported
 
 from subtitle_engine import models
 
 MIB = 1024 * 1024
 
 
-def make_cached_repo(cache_dir, repo_id, files, revision="1" * 40):
-    """Imitates the real HF cache layout: blobs + snapshots + refs (no network)."""
+def make_cached_repo(cache_dir, repo_id, files, revision="1" * 40, layout="auto"):
+    """Imitates the real HF cache layout (no network).
+
+    layout: "symlink"  snapshot entries are relative symlinks to repo blobs (macOS/Linux, Windows with symlinks);
+            "copy"     what huggingface_hub writes where symlinks are unavailable: real files in snapshots/,
+                       the freshly downloaded blob was moved there so blobs/ stays empty;
+            "copy-dup" like "copy" but the blob is kept as well (an already cached blob re-pointed by HF);
+            "auto"     "symlink" where supported, otherwise "copy".
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    if layout == "auto":
+        layout = "symlink" if symlinks_supported(cache_dir) else "copy"
+    if layout == "symlink":
+        require_symlinks(cache_dir)
     repo = cache_dir / f"models--{repo_id.replace('/', '--')}"
     blobs, snapshot = repo / "blobs", repo / "snapshots" / revision
     blobs.mkdir(parents=True, exist_ok=True)
@@ -22,9 +35,11 @@ def make_cached_repo(cache_dir, repo_id, files, revision="1" * 40):
         blob.write_bytes(b"x" * size)
         target = snapshot / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        try:
+        if layout == "symlink":
             target.symlink_to(os.path.relpath(blob, target.parent))
-        except OSError:  # symlink permission may be missing on Windows
+        elif layout == "copy":
+            shutil.move(blob, target)
+        else:
             shutil.copyfile(blob, target)
     refs = repo / "refs"
     refs.mkdir(exist_ok=True)
@@ -355,6 +370,7 @@ def make_shared_repo(cache_dir, repo_id, files, revision="1" * 40):
 
     `files`: name -> (content key, bytes); the same key in two repos yields the same shared blob.
     """
+    require_symlinks(cache_dir)
     store = cache_dir / "blobs"
     store.mkdir(exist_ok=True)
     (store / ".huggingface-shared-blobs").write_text("1\n")
@@ -532,3 +548,41 @@ def test_delete_failure_raises_turkish_error(tmp_path, monkeypatch):
     with pytest.raises(models.ModelError, match="tamamen silinemedi"):
         models.delete_model("base", cache_dir=tmp_path)
     assert _payload(store, "a").is_file()
+
+
+# --- no-symlink layout (huggingface_hub on Windows without Developer Mode): runs everywhere ---------
+
+@pytest.mark.parametrize("layout", ["copy", "copy-dup"])
+def test_copy_layout_disk_usage_and_detection(tmp_path, layout):
+    repo = make_cached_repo(
+        tmp_path, "Systran/faster-whisper-base", {"model.bin": 3 * MIB, "config.json": 1000}, layout=layout
+    )
+    assert not any(p.is_symlink() for p in repo.rglob("*"))
+    sizes = models.cached_disk_mb(tmp_path)
+    # huggingface_hub's scan counts the snapshot files only; a kept duplicate blob is not part of the model
+    assert sizes == {"Systran/faster-whisper-base": 3}
+
+
+@pytest.mark.parametrize("layout", ["copy", "copy-dup"])
+def test_copy_layout_delete_counts_snapshot_files(tmp_path, layout):
+    repo = make_cached_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": 3 * MIB}, layout=layout)
+    make_cached_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": 2 * MIB}, revision="2" * 40, layout=layout)
+    other = make_cached_repo(tmp_path, "Systran/faster-whisper-small", {"model.bin": MIB}, layout=layout)
+
+    expected = 5 if layout == "copy" else 10  # real bytes on disk: every copy and every kept blob
+    assert models.delete_model("base", cache_dir=tmp_path) == expected
+    assert not repo.exists()
+    assert other.is_dir()
+
+
+def test_copy_layout_ignores_shared_store_and_keeps_it(tmp_path):
+    """Without symlinks HF does not use the shared blob store; an unrelated store must stay untouched."""
+    store = tmp_path / "blobs"
+    (store / "ab").mkdir(parents=True)
+    (store / ".huggingface-shared-blobs").write_text("1\n")
+    payload = store / "ab" / ("ab" + "0" * 62)
+    payload.write_bytes(b"x" * MIB)
+    make_cached_repo(tmp_path, "Systran/faster-whisper-base", {"model.bin": 2 * MIB}, layout="copy")
+
+    assert models.delete_model("base", cache_dir=tmp_path) == 2
+    assert payload.is_file()

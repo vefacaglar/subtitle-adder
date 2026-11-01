@@ -210,10 +210,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _force_utf8() -> None:
-    """On Windows pipes use the ANSI code page; the protocol is UTF-8."""
+    """Windows pipes default to the ANSI code page and CRLF; the protocol is UTF-8 with LF."""
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8")
+            if stream is sys.stdin:
+                stream.reconfigure(encoding="utf-8")
+            else:
+                stream.reconfigure(encoding="utf-8", newline="\n")
         except (AttributeError, ValueError, OSError):
             pass  # stream was replaced (test, StringIO) or cannot be reconfigured
 

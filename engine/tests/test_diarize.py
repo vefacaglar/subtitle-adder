@@ -388,7 +388,7 @@ def test_translate_rejects_non_translation_models(capsys, monkeypatch):
 
 # --- owned files and partial deletes ------------------------------------------------------------
 
-def owned_cache(tmp_path, shared=False):
+def owned_cache(tmp_path, shared=False, layout="auto"):
     """Segmentation repo (owned file + a foreign file) and the embedding repo (owned + a foreign model)."""
     from test_models import make_cached_repo, make_shared_repo
 
@@ -400,8 +400,10 @@ def owned_cache(tmp_path, shared=False):
         emb, _ = make_shared_repo(tmp_path, emb_repo, {
             emb_file: ("emb", 2 * 1024 * 1024), "other-model.onnx": ("other", 5 * 1024 * 1024)})
         return info, seg_repo, emb, store
-    seg_repo = make_cached_repo(tmp_path, info.repo, {info.files[0]: 1024 * 1024, "model.onnx": 4 * 1024 * 1024})
-    emb = make_cached_repo(tmp_path, emb_repo, {emb_file: 2 * 1024 * 1024, "other-model.onnx": 5 * 1024 * 1024})
+    seg_repo = make_cached_repo(tmp_path, info.repo, {info.files[0]: 1024 * 1024, "model.onnx": 4 * 1024 * 1024},
+                                layout=layout)
+    emb = make_cached_repo(tmp_path, emb_repo, {emb_file: 2 * 1024 * 1024, "other-model.onnx": 5 * 1024 * 1024},
+                            layout=layout)
     return info, seg_repo, emb, None
 
 
@@ -424,6 +426,27 @@ def test_delete_only_removes_owned_files_and_keeps_foreign_ones(tmp_path, shared
     if shared:
         left = [p.name for p in store.rglob("*") if p.is_file() and len(p.name) == 64]
         assert len(left) == 2  # only the two foreign blobs remain in the shared store
+
+
+def test_delete_owned_files_in_copy_layout(tmp_path):
+    """No-symlink layout (Windows): owned snapshot files are real files, foreign ones stay."""
+    info, seg_repo, emb, _ = owned_cache(tmp_path, layout="copy")
+    assert models.cached_disk_mb(tmp_path)[f"{info.repo}#{info.files[0]}"] == 1
+    assert models.delete_model(info.id, cache_dir=tmp_path) == 3
+    snap = lambda repo: sorted(p.name for p in (repo / "snapshots").rglob("*") if not p.is_dir())  # noqa: E731
+    assert snap(seg_repo) == ["model.onnx"] and snap(emb) == ["other-model.onnx"]
+    assert (emb / "snapshots" / ("1" * 40) / "other-model.onnx").read_bytes() == b"x" * (5 * 1024 * 1024)
+
+
+def test_delete_removes_repo_folder_when_nothing_else_is_left_in_copy_layout(tmp_path):
+    from test_models import make_cached_repo
+
+    info = models.find(diarize.MODEL_ID)
+    emb_repo, (emb_file,) = info.extra[0]
+    make_cached_repo(tmp_path, info.repo, {info.files[0]: 1024 * 1024}, layout="copy")
+    make_cached_repo(tmp_path, emb_repo, {emb_file: 2 * 1024 * 1024}, layout="copy")
+    assert models.delete_model(info.id, cache_dir=tmp_path) == 3
+    assert not any(p.name.startswith("models--") for p in tmp_path.iterdir())
 
 
 def test_delete_removes_repo_folder_when_nothing_else_is_left(tmp_path):

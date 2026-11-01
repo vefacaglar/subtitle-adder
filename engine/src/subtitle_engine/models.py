@@ -484,9 +484,22 @@ def _shared_target(link: Path, root: Path) -> Path | None:
 
 
 def _inspect_repo_blobs(repo_path: Path, root: Path) -> tuple[int, set[Path]]:
-    """The repo's `blobs/` folder: (bytes of real files owned by the repo, targets in the shared store)."""
+    """The repo's real bytes and shared-store targets: (bytes of real files owned by the repo, targets).
+
+    Real files are the non-symlink files in `blobs/` and in `snapshots/`: where symlinks are
+    unavailable (Windows without Developer Mode) huggingface_hub keeps the data in the snapshot
+    itself, so `blobs/` is empty or holds only a duplicate.
+    """
     local = 0
     targets: set[Path] = set()
+    for folder, _, names in os.walk(repo_path / "snapshots", followlinks=False):
+        for name in names:
+            entry = Path(folder) / name
+            try:
+                if not entry.is_symlink():
+                    local += entry.stat().st_size
+            except OSError:
+                pass
     try:
         entries = list((repo_path / "blobs").iterdir())
     except OSError:
@@ -597,7 +610,11 @@ def _remove_repo_leftovers(cache_root: Path, repo_path: Path, repo_id: str) -> N
         repo_path.resolve().relative_to(cache_root)  # path escaping the cache: do not touch
     except (OSError, ValueError):
         return
-    shutil.rmtree(repo_path, ignore_errors=True)
+    for attempt in range(5):  # Windows: antivirus/indexer can briefly hold a freshly touched file
+        shutil.rmtree(repo_path, ignore_errors=True)
+        if not repo_path.exists():
+            return
+        time.sleep(0.1 * (attempt + 1))
 
 
 def ensure_model(model_id: str, on_progress: ProgressFn | None = None) -> str | None:

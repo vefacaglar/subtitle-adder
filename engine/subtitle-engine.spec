@@ -1,4 +1,5 @@
 # PyInstaller (onedir) spec: run by `scripts/package-macos.sh`.
+# Platform-neutral: collect_all picks up the .dylib/.so/.dll files; the EXE gets its .exe suffix on Windows.
 # Manually: cd engine && uv run --group build pyinstaller subtitle-engine.spec
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
