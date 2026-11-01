@@ -39,10 +39,19 @@ jobs:
         working-directory: apps/macos
     steps:
       - uses: actions/checkout@v4
+      # The dev-engine lookup test expects uv (the app runs the engine through `uv run` in development).
+      - uses: astral-sh/setup-uv@v6
       - run: swift --version
       - uses: actions/cache@v4
         with:
           path: apps/macos/.build
           key: swiftpm-${{ runner.os }}-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved') }}
       - run: swift build
-      - run: swift test
+      - name: swift test
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee test.log || {
+            # Surface failing tests as annotations on the run summary.
+            grep -E "✘|error:" test.log | head -20 | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }

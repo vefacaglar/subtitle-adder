@@ -37,7 +37,9 @@ public struct EngineCommand: Sendable {
             .deletingLastPathComponent()  // repo
             .appending(path: "engine")
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let uvCandidates = ["\(home)/.local/bin/uv", "/opt/homebrew/bin/uv", "/usr/local/bin/uv", "\(home)/.cargo/bin/uv"]
+        // Apps launched from Finder get a minimal PATH, so the usual install locations come first; PATH covers the rest (CI, mise, …).
+        let pathDirs = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map { "\($0)/uv" }
+        let uvCandidates = ["\(home)/.local/bin/uv", "/opt/homebrew/bin/uv", "/usr/local/bin/uv", "\(home)/.cargo/bin/uv"] + pathDirs
         guard FileManager.default.fileExists(atPath: repoEngine.appending(path: "pyproject.toml").path),
               let uv = uvCandidates.first(where: FileManager.default.isExecutableFile(atPath:))
         else { return nil }
