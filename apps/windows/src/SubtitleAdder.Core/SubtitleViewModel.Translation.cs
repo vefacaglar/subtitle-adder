@@ -64,14 +64,24 @@ public sealed partial class SubtitleViewModel
             }
             return;
         }
+        var totalCount = Math.Max(1, _sentences.Count);
+        var alreadyDoneCount = reuseExistingTranslations ? Math.Max(0, _sentences.Count - request.Count) : 0;
+        var initialFraction = alreadyDoneCount > 0 ? Math.Clamp((double)alreadyDoneCount / totalCount, 0.0, 0.99) : (double?)null;
         var model = _translationModel;
-        Status = new JobStatus.Working(LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);
+        Status = initialFraction is { } initF
+            ? new JobStatus.Working(Label(EngineStage.Translating, initF, JobPurpose.Translation), initF)
+            : new JobStatus.Working(LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);
         StartJob(new HashSet<string> { model }, token => engine.Translate(request, target, source, model, token), engineEvent =>
         {
             switch (engineEvent)
             {
                 case EngineEvent.Stage stage:
-                    Status = new JobStatus.Working(Label(stage.Kind, stage.Fraction, JobPurpose.Translation), stage.Fraction);
+                    var fraction = stage.Fraction;
+                    if (alreadyDoneCount > 0 && stage.Kind == EngineStage.Translating && fraction is { } f)
+                    {
+                        fraction = Math.Clamp((alreadyDoneCount + request.Count * Math.Clamp(f, 0.0, 1.0)) / totalCount, 0.0, 1.0);
+                    }
+                    Status = new JobStatus.Working(Label(stage.Kind, fraction, JobPurpose.Translation), fraction);
                     break;
                 case EngineEvent.Translation translation:
                     ApplyTranslation(translation.Sentences, translation.Language, request, mergeIntoExisting: reuseExistingTranslations);
@@ -97,6 +107,39 @@ public sealed partial class SubtitleViewModel
         });
     }
 
+    private async Task PumpPartialTranslationsExternallyAsync(
+        IEngineClient engine,
+        HashSet<Guid> queuedAsyncUids,
+        CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            List<Sentence>? batch = null;
+            var target = "";
+            string? source = null;
+            var model = "";
+            await _ui.InvokeAsync(() =>
+            {
+                if (token.IsCancellationRequested || _sentences.Count <= 1) return;
+                target = _translationTarget;
+                source = TranslationSource;
+                model = _translationModel;
+                if (source == target) return;
+                batch = _sentences
+                    .Take(_sentences.Count - 1)
+                    .Where(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text))
+                    .ToList();
+                if (batch.Count > 0)
+                {
+                    foreach (var s in batch) queuedAsyncUids.Add(s.Uid);
+                }
+            }).ConfigureAwait(false);
+
+            if (batch is null || batch.Count == 0) break;
+            await TranslatePartialBatchExternallyAsync(engine, batch, target, source, model, token).ConfigureAwait(false);
+        }
+    }
+
     private async Task TranslatePartialBatchExternallyAsync(
         IEngineClient engine,
         IReadOnlyList<Sentence> batch,
@@ -106,18 +149,59 @@ public sealed partial class SubtitleViewModel
         CancellationToken token)
     {
         if (batch.Count == 0 || source == target) return;
+        var alreadyTranslatedCount = 0;
+        await _ui.InvokeAsync(() =>
+        {
+            if (token.IsCancellationRequested) return;
+            alreadyTranslatedCount = _translations.Count;
+            if (alreadyTranslatedCount > 0 && _sentences.Count > 0)
+            {
+                AsyncTranslationFraction = Math.Clamp((double)alreadyTranslatedCount / _sentences.Count, 0.0, 0.99);
+            }
+            IsAsyncTranslating = true;
+        }).ConfigureAwait(false);
+
         try
         {
             await foreach (var engineEvent in engine.Translate(batch, target, source, model, token).ConfigureAwait(false))
             {
                 if (token.IsCancellationRequested) return;
-                if (engineEvent is EngineEvent.Translation translation)
+                if (engineEvent is EngineEvent.Stage stage && stage.Kind == EngineStage.Translating && stage.Fraction is { } f)
+                {
+                    await _ui.InvokeAsync(() =>
+                    {
+                        if (token.IsCancellationRequested) return;
+                        var total = Math.Max(_sentences.Count, alreadyTranslatedCount + batch.Count);
+                        var overall = total > 0
+                            ? Math.Clamp((alreadyTranslatedCount + batch.Count * Math.Clamp(f, 0.0, 1.0)) / total, 0.0, 0.99)
+                            : f;
+                        AsyncTranslationFraction = overall;
+                        if (_status is JobStatus.Working w &&
+                            w.Label.Id.StartsWith("stage:Translating:", StringComparison.Ordinal))
+                        {
+                            Status = new JobStatus.Working(
+                                Label(EngineStage.Translating, overall, JobPurpose.Translation),
+                                overall);
+                        }
+                    }).ConfigureAwait(false);
+                }
+                else if (engineEvent is EngineEvent.Translation translation)
                 {
                     await _ui.InvokeAsync(() =>
                     {
                         if (!token.IsCancellationRequested)
                         {
                             ApplyTranslation(translation.Sentences, translation.Language, batch, mergeIntoExisting: true);
+                            var total = Math.Max(1, _sentences.Count);
+                            var overall = Math.Clamp((double)_translations.Count / total, 0.0, 0.99);
+                            AsyncTranslationFraction = overall;
+                            if (_status is JobStatus.Working w &&
+                                w.Label.Id.StartsWith("stage:Translating:", StringComparison.Ordinal))
+                            {
+                                Status = new JobStatus.Working(
+                                    Label(EngineStage.Translating, overall, JobPurpose.Translation),
+                                    overall);
+                            }
                         }
                     }).ConfigureAwait(false);
                 }

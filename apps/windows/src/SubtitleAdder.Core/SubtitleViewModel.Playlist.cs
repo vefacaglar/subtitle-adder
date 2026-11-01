@@ -260,7 +260,13 @@ public sealed partial class SubtitleViewModel
                     var modelSnapshot = _translationModel;
                     var formatSnapshot = _exportFormat;
                     _activePlaylistItemId = null;
-                    UpdatePlaylistItem(itemSnapshot.Id, PlaylistItemState.Working, LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);
+                    var initFraction = preTranslatedSnapshot.Count > 0 && sentencesSnapshot.Count > 0
+                        ? Math.Clamp((double)preTranslatedSnapshot.Count / sentencesSnapshot.Count, 0.0, 0.99)
+                        : (double?)null;
+                    var initMsg = initFraction is { } initF
+                        ? Label(EngineStage.Translating, initF, JobPurpose.Translation)
+                        : LocalizedMessage.Key("Çeviri hazırlanıyor…");
+                    UpdatePlaylistItem(itemSnapshot.Id, PlaylistItemState.Working, initMsg, initFraction);
                     pendingExternalTranslations.Add(TranslateAndSavePlaylistItemExternallyAsync(
                         asyncEngine,
                         externalSemaphore,
@@ -317,7 +323,15 @@ public sealed partial class SubtitleViewModel
 
             if (pendingExternalTranslations.Count > 0)
             {
+                if (pendingExternalTranslations.Any(t => !t.IsCompleted) && !token.IsCancellationRequested)
+                {
+                    Status = new JobStatus.Working(Label(EngineStage.Translating, null, JobPurpose.Translation), null);
+                }
                 await Task.WhenAll(pendingExternalTranslations).ConfigureAwait(true);
+                if (!token.IsCancellationRequested && _status is JobStatus.Working)
+                {
+                    Status = JobStatus.FinishedStatus;
+                }
             }
         }
         finally
@@ -364,6 +378,8 @@ public sealed partial class SubtitleViewModel
                 }
             }
 
+            var preDoneCount = mergedEntries.Count;
+            var totalCount = Math.Max(1, sentences.Count);
             var remaining = sentences.Where(s => !mergedEntries.ContainsKey(s.Uid)).ToList();
             string? engineError = null;
             if (remaining.Count > 0)
@@ -373,12 +389,24 @@ public sealed partial class SubtitleViewModel
                     switch (engineEvent)
                     {
                         case EngineEvent.Stage stage:
+                            var fraction = stage.Fraction;
+                            if (preDoneCount > 0 && stage.Kind == EngineStage.Translating && fraction is { } f)
+                            {
+                                fraction = Math.Clamp((preDoneCount + remaining.Count * Math.Clamp(f, 0.0, 1.0)) / totalCount, 0.0, 1.0);
+                            }
                             await _ui.InvokeAsync(() =>
+                            {
                                 UpdatePlaylistItem(
                                     itemId,
                                     PlaylistItemState.Working,
-                                    Label(stage.Kind, stage.Fraction, JobPurpose.Translation),
-                                    stage.Fraction)).ConfigureAwait(false);
+                                    Label(stage.Kind, fraction, JobPurpose.Translation),
+                                    fraction);
+                                if (_video == videoPath && _status is JobStatus.Working w &&
+                                    w.Label.Id.StartsWith("stage:Translating:", StringComparison.Ordinal))
+                                {
+                                    Status = new JobStatus.Working(Label(stage.Kind, fraction, JobPurpose.Translation), fraction);
+                                }
+                            }).ConfigureAwait(false);
                             break;
                         case EngineEvent.Translation translation:
                             for (var i = 0; i < translation.Sentences.Count; i++)
