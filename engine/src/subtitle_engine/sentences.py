@@ -18,7 +18,7 @@ def _core(text: str) -> str:
 @dataclass
 class SegmenterConfig:
     pause_gap: float = 1.2
-    max_chars: int = 84
+    max_chars: float = 84
     max_duration: float = 6.0
 
 
@@ -70,8 +70,19 @@ def split_sentences(words: list[Word], pause_gap: float) -> list[list[Word]]:
     return result
 
 
+def _is_clause_start(prev_word: Word, curr_word: Word) -> bool:
+    """True when `curr_word` looks like an unpunctuated new clause starter (e.g. capitalized word or after a pause)."""
+    if curr_word.start - prev_word.end >= 0.28:
+        return True
+    prev_core = _core(prev_word.text).strip()
+    curr_core = _core(curr_word.text).strip()
+    if not prev_core or not curr_core:
+        return False
+    return curr_core[0].isupper() and not prev_core[0].isupper()
+
+
 def fit(words: list[Word], config: SegmenterConfig) -> list[list[Word]]:
-    """Splits a sentence that exceeds the limits, preferably at a comma, otherwise at the limit. No text is lost."""
+    """Splits a sentence that exceeds the limits, preferably at a comma or clause boundary, otherwise at the limit."""
     result: list[list[Word]] = []
     while len(words) > 1 and _too_long(words, config):
         cut = 1
@@ -80,6 +91,12 @@ def fit(words: list[Word], config: SegmenterConfig) -> list[list[Word]]:
         soft = [i + 1 for i in range(cut - 1) if _core(words[i].text).endswith(SOFT_BREAK)]
         if soft and soft[-1] >= cut // 2:
             cut = soft[-1]
+        else:
+            clause_breaks = [
+                i for i in range(max(1, cut // 2), cut) if _is_clause_start(words[i - 1], words[i])
+            ]
+            if clause_breaks:
+                cut = clause_breaks[-1]
         result.append(words[:cut])
         words = words[cut:]
     result.append(words)
