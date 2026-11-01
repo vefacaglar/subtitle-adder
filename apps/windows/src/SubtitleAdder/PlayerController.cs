@@ -57,6 +57,8 @@ public sealed class PlayerController : IDisposable
     public double CurrentTime => _timeline.Position;
     public double Duration => _timeline.Duration;
     public bool IsPlaying { get; private set; }
+    public bool IsMuted => !_disposed && Player.IsMuted;
+    public double Volume => _disposed ? 1.0 : Player.Volume;
     public bool HasMedia => !_disposed && _mediaReady;
 
     /// <summary>Natural video size; 16:9 until the real size is known.</summary>
@@ -177,6 +179,23 @@ public sealed class PlayerController : IDisposable
             Player.Pause();
             IsPlaying = false;
         }
+        Ticked?.Invoke();
+    }
+
+    public void ToggleMute()
+    {
+        if (_disposed) return;
+        Player.IsMuted = !Player.IsMuted;
+        Ticked?.Invoke();
+    }
+
+    public void SetVolume(double volume)
+    {
+        if (_disposed) return;
+        var clamped = Math.Clamp(volume, 0.0, 1.0);
+        Player.Volume = clamped;
+        if (clamped > 0 && Player.IsMuted) Player.IsMuted = false;
+        Ticked?.Invoke();
     }
 
     private void Tick()

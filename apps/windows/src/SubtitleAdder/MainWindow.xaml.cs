@@ -49,16 +49,17 @@ public sealed partial class MainWindow : Window
 
         _player = new PlayerController(DispatcherQueue);
         PlayerElement.SetMediaPlayer(_player.Player);
-        // No zoom button: the overlay is laid out for the aspect-fit video.
-        PlayerElement.TransportControls.IsZoomButtonVisible = false;
         _player.ActiveChanged += OnActiveChanged;
         _player.VideoSizeChanged += UpdateOverlay;
         _player.Ticked += () =>
         {
             SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
-            PreviewControls.Synchronize(_player.CurrentTime, _player.Duration);
+            PreviewControls.Synchronize(_player.CurrentTime, _player.Duration, _player.IsPlaying, _player.IsMuted, _player.Volume);
         };
         PreviewControls.SeekRequested += _player.Seek;
+        PreviewControls.PlayPauseRequested += _player.TogglePlayback;
+        PreviewControls.MuteToggleRequested += _player.ToggleMute;
+        PreviewControls.VolumeRequested += _player.SetVolume;
         PreviewControls.InteractionChanged += UpdatePreviewControlVisibility;
         _player.Failed += message => ShowSaveError(() => L("Video oynatılamadı: %@", message));
         Splitter.Target = PlayerRow;
@@ -952,6 +953,8 @@ public sealed partial class MainWindow : Window
 
     private void PlayerGrid_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateOverlay();
 
+    private void PlayerElement_Tapped(object sender, TappedRoutedEventArgs e) => _player.TogglePlayback();
+
     private void PlayerGrid_PointerEntered(object sender, PointerRoutedEventArgs e)
     {
         _pointerOverPlayer = true;
@@ -967,8 +970,7 @@ public sealed partial class MainWindow : Window
     private void UpdatePreviewControlVisibility()
     {
         var visible = _pointerOverPlayer || PreviewControls.IsInteracting;
-        PreviewControls.Opacity = visible ? 1 : 0;
-        PreviewControls.IsHitTestVisible = visible;
+        PreviewControls.SetVisible(visible);
     }
 
     private void UpdateOverlay()
@@ -988,7 +990,7 @@ public sealed partial class MainWindow : Window
         OverlayArea.Width = width;
         OverlayArea.Height = height;
         // Stay above the compact transport controls.
-        Overlay.Margin = new Thickness(16, 0, 16, Math.Max(64, height * 0.1));
+        Overlay.Margin = new Thickness(16, 0, 16, Math.Max(82, height * 0.12));
         var text = _player.ActiveId is { } id
             ? OverlayText.Compose(Vm.Sentences, Vm.Translations, Vm.DisplayMode, id)
             : null;
