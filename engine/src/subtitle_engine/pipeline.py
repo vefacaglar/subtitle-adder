@@ -91,9 +91,16 @@ def run(
         del transcriber  # large Whisper models keep gigabytes resident; free them before diarizing
         gc.collect()
         on_stage("diarizing", 0.0)
-        segments = (diarizer_factory or diarization.create_diarizer)().diarize(
-            audio, num_speakers=num_speakers, on_progress=lambda f: on_stage("diarizing", f)
-        )
+        diarizer = (diarizer_factory or diarization.create_diarizer)()
+        import inspect
+
+        diarize_kwargs: dict = {
+            "num_speakers": num_speakers,
+            "on_progress": lambda f: on_stage("diarizing", f),
+        }
+        if "words" in inspect.signature(diarizer.diarize).parameters:
+            diarize_kwargs["words"] = transcript.words
+        segments = diarizer.diarize(audio, **diarize_kwargs)
         speakers = diarization.assign_speakers(transcript.words, segments)
 
     on_stage("segmenting", None)

@@ -479,3 +479,67 @@ def test_partial_delete_reports_what_is_left_and_still_frees_the_rest(tmp_path, 
 def test_fallback_download_sizes_use_real_part_sizes():
     info = models.find(diarize.MODEL_ID)
     assert [models._fallback_bytes(info, i) for i in range(2)] == [1_540_506, 28_281_164]
+
+
+
+# --- speech compaction, embedding cache & short-turn verification --------------------------------
+
+def test_compact_speech_samples_skips_silence_and_unmaps_timestamps():
+    import numpy as np
+
+    # 30s recording with only two 2s speech regions at [2.0, 4.0] and [20.0, 22.0]
+    samples = np.ones(30 * diarize.SAMPLE_RATE, dtype=np.float32) * 0.1
+    words = [tw("Merhaba", 2.0, 3.0), tw("dünya.", 3.0, 4.0), tw("İkinci", 20.0, 21.0), tw("kısım.", 21.0, 22.0)]
+    compacted, spans = diarize.compact_speech_samples(samples, words)
+    assert spans is not None and len(spans) == 2
+    assert len(compacted) < len(samples) * 0.25  # >75% of silent audio skipped
+
+    # Segments returned in compacted timeline map back to [1.75, 4.25] and [19.75, 22.25]
+    comp_segs = [seg(spans[0].comp_start, spans[0].comp_end, 0), seg(spans[1].comp_start, spans[1].comp_end, 1)]
+    unmapped = diarize.unmap_compacted_segments(comp_segs, spans)
+    assert unmapped == [seg(1.75, 4.25, 0), seg(19.75, 22.25, 1)]
+
+
+def test_merge_similar_speakers_caches_segment_embeddings():
+    import numpy as np
+
+    calls = []
+    vectors = {1.0: [1.0, 0.0, 0.0], 2.0: [0.99, 0.1, 0.0], 3.0: [0.98, 0.15, 0.0], 4.0: [0.0, 0.0, 1.0]}
+    samples = np.concatenate([np.full(16000 * 2, v, dtype=np.float32) for v in (1.0, 2.0, 3.0, 4.0)])
+    segments = [seg(0, 2, 0), seg(2, 4, 1), seg(4, 6, 2), seg(6, 8, 3)]
+
+    def embed(chunk):
+        calls.append(float(chunk[0]))
+        return vectors[float(chunk[0])]
+
+    merged = diarize.merge_similar_speakers(segments, embed, samples)
+    assert [s.speaker for s in merged] == [0, 0, 0, 3]
+    # Even though 3 merge iterations ran, each of the 4 audio slices was embedded only once!
+    assert len(calls) == 4
+
+
+def test_verify_short_turns_recovers_swallowed_reply_after_question():
+    import numpy as np
+
+    # Speaker 0 (value 1.0) asks a question, Speaker 1 (value 2.0) answers "Evet." (0.5s),
+    # then Speaker 1 speaks longer at [4.0, 7.0], but pyannote swallowed [1.2, 1.7] into Speaker 0's segment.
+    samples = np.ones(16000 * 8, dtype=np.float32)
+    samples[int(1.1 * 16000) : int(1.8 * 16000)] = 2.0
+    samples[int(4.0 * 16000) : int(7.5 * 16000)] = 2.0
+
+    words = [
+        tw("Hazır", 0.0, 0.5),
+        tw("mısın?", 0.5, 1.0),
+        tw("Evet.", 1.2, 1.7),
+        tw("Tamam", 2.0, 2.8),
+        tw("başlıyoruz.", 2.8, 3.8),
+        tw("Harika", 4.2, 5.5),
+        tw("oldu.", 5.5, 7.0),
+    ]
+    raw_segments = [seg(0.0, 3.9, 0), seg(4.0, 7.2, 1)]
+    vectors = {1.0: [1.0, 0.0], 2.0: [0.0, 1.0]}
+    refined = diarize.verify_short_turns(
+        raw_segments, words, samples, lambda chunk: vectors[round(float(np.median(chunk)), 1)]
+    )
+    assigned = assign_speakers(words, refined)
+    assert assigned == [0, 0, 1, 0, 0, 1, 1]

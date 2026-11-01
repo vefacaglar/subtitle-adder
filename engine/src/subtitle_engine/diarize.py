@@ -32,6 +32,12 @@ CENTROID_MAX_SECONDS = 30.0
 CENTROID_SEGMENT_SECONDS = 6.0  # a longer segment is cropped to its middle part
 # With automatic counting, a "speaker" with less speech than this is treated as noise and dropped.
 MIN_SPEAKER_SECONDS = 1.0
+# Speech compaction: only active speech intervals (plus padding) are fed to segmentation.
+SPEECH_PAD_SECONDS = 0.25
+SPEECH_MERGE_GAP = 1.5
+SPEECH_SEPARATOR_SECONDS = 0.25
+COMPACT_MIN_DURATION = 10.0
+COMPACT_MAX_RATIO = 0.85
 
 
 @dataclass(frozen=True)
@@ -41,9 +47,21 @@ class SpeakerSegment:
     speaker: int
 
 
+@dataclass(frozen=True)
+class _SpeechSpan:
+    orig_start: float
+    orig_end: float
+    comp_start: float
+    comp_end: float
+
+
 class Diarizer(Protocol):
     def diarize(
-        self, audio: Path, num_speakers: int | None = None, on_progress: ProgressFn | None = None
+        self,
+        audio: Path,
+        num_speakers: int | None = None,
+        on_progress: ProgressFn | None = None,
+        words: Sequence[Word] | None = None,
     ) -> list[SpeakerSegment]: ...
 
 
@@ -59,7 +77,7 @@ class SherpaDiarizer:
         segmentation = _cached_path(info.repo, info.files[0])
         embedding = _cached_path(embedding_repo, embedding_file)
         self._sherpa = sherpa_onnx
-        self._threads = num_threads or max(1, min(8, os.cpu_count() or 1))
+        self._threads = num_threads or max(1, os.cpu_count() or 1)
         self._threshold = threshold
         self._segmentation = sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(model=segmentation),
@@ -85,7 +103,11 @@ class SherpaDiarizer:
         return sherpa.OfflineSpeakerDiarization(config)
 
     def diarize(
-        self, audio: Path, num_speakers: int | None = None, on_progress: ProgressFn | None = None
+        self,
+        audio: Path,
+        num_speakers: int | None = None,
+        on_progress: ProgressFn | None = None,
+        words: Sequence[Word] | None = None,
     ) -> list[SpeakerSegment]:
         samples = read_wav(audio)
         if num_speakers:
@@ -107,13 +129,18 @@ class SherpaDiarizer:
                 report(min(processed / total, 1.0))
             return 0  # 0 = keep going
 
-        result = engine.process(samples, callback=callback).sort_by_start_time()
+        compact_samples, spans = compact_speech_samples(samples, words)
+        result = engine.process(compact_samples, callback=callback).sort_by_start_time()
         raw = [SpeakerSegment(round(s.start, 3), round(s.end, 3), int(s.speaker)) for s in result]
+        if spans is not None:
+            raw = unmap_compacted_segments(raw, spans)
         if not num_speakers:
             raw = merge_similar_speakers(raw, lambda chunk: self._embed(chunk), samples)
+        raw = normalize(raw, drop_noise=not num_speakers)
+        if words and len({s.speaker for s in raw}) >= 2:
+            raw = verify_short_turns(raw, words, samples, lambda chunk: self._embed(chunk))
         report(1.0)
-        return normalize(raw, drop_noise=not num_speakers)
-
+        return raw
 
     def _embed(self, samples) -> list[float]:
         if self._extractor is None:
@@ -122,6 +149,101 @@ class SherpaDiarizer:
         stream.accept_waveform(sample_rate=SAMPLE_RATE, waveform=samples)
         stream.input_finished()
         return list(self._extractor.compute(stream))
+
+
+def compact_speech_samples(
+    samples, words: Sequence[Word] | None = None
+) -> tuple[object, list[_SpeechSpan] | None]:
+    """Extracts only active speech intervals when non-speech exceeds 15% of a >=10s recording.
+
+    Uses ASR word timestamps when available (falling back to fast RMS energy windows otherwise),
+    so silence, music intros/outros and SFX scenes are skipped during segmentation and clustering.
+    """
+    import numpy as np
+
+    if not isinstance(samples, np.ndarray):
+        return samples, None
+    duration = len(samples) / SAMPLE_RATE
+    if duration < COMPACT_MIN_DURATION:
+        return samples, None
+
+    intervals: list[tuple[float, float]] = []
+    if words:
+        for w in words:
+            lo = max(0.0, w.start - SPEECH_PAD_SECONDS)
+            hi = min(duration, w.end + SPEECH_PAD_SECONDS)
+            if hi <= lo:
+                continue
+            if intervals and lo - intervals[-1][1] <= SPEECH_MERGE_GAP:
+                intervals[-1] = (intervals[-1][0], max(intervals[-1][1], hi))
+            else:
+                intervals.append((lo, hi))
+    else:
+        frame_len = SAMPLE_RATE // 10  # 100 ms frames
+        n_frames = len(samples) // frame_len
+        if n_frames > 0:
+            frames = samples[: n_frames * frame_len].reshape(n_frames, frame_len)
+            rms = np.sqrt(np.mean(frames * frames, axis=1))
+            floor = float(np.percentile(rms, 15))
+            thresh = max(0.002, min(0.015, floor * 2.5))
+            for idx, val in enumerate(rms):
+                if val >= thresh:
+                    lo = max(0.0, idx * 0.1 - SPEECH_PAD_SECONDS)
+                    hi = min(duration, (idx + 1) * 0.1 + SPEECH_PAD_SECONDS)
+                    if intervals and lo - intervals[-1][1] <= SPEECH_MERGE_GAP:
+                        intervals[-1] = (intervals[-1][0], max(intervals[-1][1], hi))
+                    else:
+                        intervals.append((lo, hi))
+
+    if not intervals:
+        return samples, None
+    speech_seconds = sum(hi - lo for lo, hi in intervals)
+    if speech_seconds >= duration * COMPACT_MAX_RATIO or speech_seconds < 1.0:
+        return samples, None
+
+    sep = np.zeros(int(SPEECH_SEPARATOR_SECONDS * SAMPLE_RATE), dtype=np.float32)
+    chunks: list[np.ndarray] = []
+    spans: list[_SpeechSpan] = []
+    cursor = 0.0
+    for orig_lo, orig_hi in intervals:
+        s_idx = max(0, int(round(orig_lo * SAMPLE_RATE)))
+        e_idx = min(len(samples), int(round(orig_hi * SAMPLE_RATE)))
+        if e_idx <= s_idx:
+            continue
+        if chunks:
+            chunks.append(sep)
+            cursor += len(sep) / SAMPLE_RATE
+        chunk = samples[s_idx:e_idx]
+        comp_lo = cursor
+        comp_hi = cursor + len(chunk) / SAMPLE_RATE
+        spans.append(_SpeechSpan(s_idx / SAMPLE_RATE, e_idx / SAMPLE_RATE, comp_lo, comp_hi))
+        chunks.append(chunk)
+        cursor = comp_hi
+
+    if not chunks:
+        return samples, None
+    return np.concatenate(chunks), spans
+
+
+def unmap_compacted_segments(
+    segments: Sequence[SpeakerSegment], spans: Sequence[_SpeechSpan]
+) -> list[SpeakerSegment]:
+    """Maps segments from the compacted speech buffer back to the original audio timeline."""
+    mapped: list[SpeakerSegment] = []
+    for seg in segments:
+        for span in spans:
+            if span.comp_end <= seg.start:
+                continue
+            if span.comp_start >= seg.end:
+                break
+            ov_s = max(seg.start, span.comp_start)
+            ov_e = min(seg.end, span.comp_end)
+            if ov_e - ov_s >= 0.04:
+                orig_s = round(span.orig_start + (ov_s - span.comp_start), 3)
+                orig_e = round(span.orig_start + (ov_e - span.comp_start), 3)
+                if orig_e > orig_s:
+                    mapped.append(SpeakerSegment(orig_s, orig_e, seg.speaker))
+    return mapped
 
 
 def _unit(vector: Sequence[float]) -> list[float]:
@@ -134,7 +256,10 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 def cluster_centroids(
-    segments: Sequence[SpeakerSegment], samples, embed: Callable[[object], Sequence[float]]
+    segments: Sequence[SpeakerSegment],
+    samples,
+    embed: Callable[[object], Sequence[float]],
+    _slice_cache: dict[tuple[int, int], list[float]] | None = None,
 ) -> dict[int, list[float]]:
     """Centroid embedding per speaker from a bounded sample: its longest segments, at most
     CENTROID_MAX_SEGMENTS and CENTROID_MAX_SECONDS of audio, each cropped to its middle part."""
@@ -152,8 +277,14 @@ def cluster_centroids(
                 continue
             middle = (s.start + s.end) / 2
             lo = max(int((middle - length / 2) * SAMPLE_RATE), 0)
-            vector = embed(samples[lo : lo + int(length * SAMPLE_RATE)])
-            vectors.append(_unit(vector))
+            hi = lo + int(length * SAMPLE_RATE)
+            if _slice_cache is not None and (lo, hi) in _slice_cache:
+                unit_vec = _slice_cache[(lo, hi)]
+            else:
+                unit_vec = _unit(embed(samples[lo:hi]))
+                if _slice_cache is not None:
+                    _slice_cache[(lo, hi)] = unit_vec
+            vectors.append(unit_vec)
             weights.append(length)
             total += length
         if vectors:
@@ -173,11 +304,13 @@ def merge_similar_speakers(
     """Merges clusters whose centroids are cosine-similar, repeating until stable.
 
     Agglomerative clustering over a long recording tends to split one person into several
-    clusters; the centroids come from a bounded sample, so the extra cost does not grow with length.
+    clusters; the centroids come from a bounded sample and reuse cached segment embeddings,
+    so the extra cost does not grow with length or merge count.
     """
     if len({s.speaker for s in segments}) < 2:
         return segments
-    centroids = cluster_centroids(segments, samples, embed_samples)
+    slice_cache: dict[tuple[int, int], list[float]] = {}
+    centroids = cluster_centroids(segments, samples, embed_samples, _slice_cache=slice_cache)
     while len(centroids) > 1:
         keys = sorted(centroids)
         best = max(
@@ -187,8 +320,92 @@ def merge_similar_speakers(
             break
         _, keep, drop = best
         segments = [SpeakerSegment(s.start, s.end, keep if s.speaker == drop else s.speaker) for s in segments]
-        centroids = cluster_centroids(segments, samples, embed_samples)
+        centroids = cluster_centroids(segments, samples, embed_samples, _slice_cache=slice_cache)
     return segments
+
+
+def verify_short_turns(
+    segments: list[SpeakerSegment],
+    words: Sequence[Word],
+    samples,
+    embed_samples: Callable[[object], Sequence[float]],
+) -> list[SpeakerSegment]:
+    """Acoustically verifies short standalone replies (0.35s-1.8s) against speaker centroids.
+
+    A brief reply ("Evet.", "Hayır.") right after a question (?) or conversational pause (>=0.25s)
+    is often swallowed by the 5s segmentation window of the preceding speaker. Comparing its voice
+    embedding directly against the speaker centroids recovers the true speaker turn.
+    """
+    if not segments or not words or len(samples) < SAMPLE_RATE:
+        return segments
+    slice_cache: dict[tuple[int, int], list[float]] = {}
+    centroids = cluster_centroids(segments, samples, embed_samples, _slice_cache=slice_cache)
+    if len(centroids) < 2:
+        return segments
+
+    index = _SegmentIndex(segments)
+    word_speakers = [index.speaker_for(w) for w in words]
+
+    # Group words into punctuation-bounded sentences.
+    sentences: list[tuple[int, int]] = []
+    start_idx = 0
+    for i, w in enumerate(words):
+        if _final(w) or i == len(words) - 1:
+            sentences.append((start_idx, i + 1))
+            start_idx = i + 1
+
+    overrides: list[SpeakerSegment] = []
+    for s_idx, (w_lo, w_hi) in enumerate(sentences):
+        count = w_hi - w_lo
+        if count > 3:
+            continue
+        t_start = words[w_lo].start
+        t_end = words[w_hi - 1].end
+        dur = t_end - t_start
+        if not (0.35 <= dur <= 1.8):
+            continue
+        prev_question = s_idx > 0 and words[sentences[s_idx - 1][1] - 1].text.rstrip(_CLOSERS).endswith("?")
+        prev_gap = (t_start - words[w_lo - 1].end) if w_lo > 0 else 1.0
+        if not prev_question and prev_gap < 0.25:
+            continue
+        cur_speaker = word_speakers[w_lo]
+        if cur_speaker not in centroids:
+            continue
+        # Only re-evaluate if it was glued to an adjacent turn's speaker.
+        prev_speaker = word_speakers[w_lo - 1] if w_lo > 0 else None
+        next_speaker = word_speakers[w_hi] if w_hi < len(words) else None
+        if cur_speaker != prev_speaker and cur_speaker != next_speaker:
+            continue
+
+        lo_samp = max(0, int((t_start - 0.05) * SAMPLE_RATE))
+        hi_samp = min(len(samples), int((t_end + 0.05) * SAMPLE_RATE))
+        if hi_samp - lo_samp < int(0.35 * SAMPLE_RATE):
+            continue
+        vec = _unit(embed_samples(samples[lo_samp:hi_samp]))
+        cur_sim = _cosine(vec, centroids[cur_speaker])
+        best_sim, best_spk = max((_cosine(vec, c), spk) for spk, c in centroids.items())
+        margin = 0.06 if prev_question else 0.10
+        if best_spk != cur_speaker and best_sim - cur_sim >= margin:
+            overrides.append(SpeakerSegment(round(t_start, 3), round(t_end, 3), best_spk))
+
+    if not overrides:
+        return segments
+
+    # Splice overridden short-turn intervals into the segment list.
+    updated = list(segments)
+    for ov in overrides:
+        next_list: list[SpeakerSegment] = []
+        for seg in updated:
+            if seg.end <= ov.start or seg.start >= ov.end:
+                next_list.append(seg)
+            else:
+                if seg.start < ov.start:
+                    next_list.append(SpeakerSegment(seg.start, ov.start, seg.speaker))
+                if seg.end > ov.end:
+                    next_list.append(SpeakerSegment(ov.end, seg.end, seg.speaker))
+        next_list.append(ov)
+        updated = sorted(next_list, key=lambda s: (s.start, s.end))
+    return updated
 
 
 def _cached_path(repo: str, filename: str) -> str:
@@ -244,8 +461,8 @@ def assign_speakers(words: Sequence[Word], segments: Sequence[SpeakerSegment]) -
     """Gives each word a speaker, then repairs timing noise around turn changes.
 
     1. Largest total time overlap per speaker; no overlap -> nearest segment (None without segments).
-    2. `_smooth`: a lone word between two longer runs of one speaker joins them, unless it is a
-       complete short reply (it, or the word before it, ends a sentence).
+    2. `_smooth`: a lone word (or unpunctuated 2-word jitter) between longer runs of one speaker
+       joins them, unless it is a complete short reply (it, or the word before it, ends a sentence).
     3. `_snap`: a speaker change in the middle of a sentence moves to the nearest sentence end
        when only one or two words are involved.
     Speakers are renumbered by first appearance in the words. Runs in O((words + segments) log).
@@ -303,25 +520,34 @@ def _runs(speakers: Sequence[int | None]) -> list[tuple[int, int]]:
 
 
 def _smooth(words: Sequence[Word], speakers: list[int | None]) -> list[int | None]:
-    """Joins a single-word island to its surrounding speaker (A A B A A -> A A A A A).
+    """Joins a single-word (or brief 2-word mid-sentence) island to its surrounding speaker.
 
     Decided on the original assignment (no cascading) and only when both neighbouring runs have at
-    least two words, so alternating one-word turns survive. A real one-word reply is kept: an island
-    that ends a sentence, or that follows a word ending one ("Hazır mısın? | Evet. | Başlayalım." -- Turkish example).
+    least two words (three for a 2-word island), so alternating turns survive. A real short reply is
+    kept: an island that ends a sentence, or that follows a word ending one
+    ("Hazır mısın? | Evet. | Başlayalım." -- Turkish example).
     """
     result = list(speakers)
     runs = _runs(speakers)
     for k in range(1, len(runs) - 1):
         (start, end), before, after = runs[k], runs[k - 1], runs[k + 1]
-        if end - start != 1 or speakers[before[0]] is None:
+        island_len = end - start
+        if island_len not in (1, 2) or speakers[before[0]] is None:
             continue
         if speakers[before[0]] != speakers[after[0]]:
             continue
-        if before[1] - before[0] < 2 or after[1] - after[0] < 2:
+        min_surround = 2 if island_len == 1 else 3
+        if before[1] - before[0] < min_surround or after[1] - after[0] < min_surround:
             continue
-        if _final(words[start]) or _final(words[start - 1]):
+        if _final(words[start - 1]) or any(_final(words[ idx]) for idx in range(start, end)):
             continue
-        result[start] = speakers[before[0]]
+        if island_len == 2:
+            if words[end - 1].end - words[start].start > 0.9:
+                continue
+            if words[start].start - words[start - 1].end > 0.25 or words[end].start - words[end - 1].end > 0.25:
+                continue
+        for idx in range(start, end):
+            result[idx] = speakers[before[0]]
     return result
 
 
