@@ -47,12 +47,14 @@ public sealed record Sentence
 
     /// <summary>Zero-based speaker index from diarization; <c>null</c> when diarization is off.</summary>
     public int? Speaker { get; init; }
+    public bool NeedsReview { get; init; }
 
     /// <summary>Content equality; the transient view identity (<see cref="Uid"/>) is not part of the comparison.</summary>
     public bool Equals(Sentence? other) =>
         other is not null
         && Id == other.Id && Start.Equals(other.Start) && End.Equals(other.End)
-        && Text == other.Text && Words.SequenceEqual(other.Words) && Speaker == other.Speaker;
+        && Text == other.Text && Words.SequenceEqual(other.Words) && Speaker == other.Speaker
+        && NeedsReview == other.NeedsReview;
 
     public override int GetHashCode()
     {
@@ -63,6 +65,7 @@ public sealed record Sentence
         hash.Add(Text);
         foreach (var word in Words) hash.Add(word);
         hash.Add(Speaker);
+        hash.Add(NeedsReview);
         return hash.ToHashCode();
     }
 }
@@ -81,13 +84,14 @@ internal sealed class SentenceJsonConverter : JsonConverter<Sentence>
         string? text = null;
         IReadOnlyList<Word>? words = null;
         int? speaker = null;
+        var needsReview = false;
         while (reader.Read())
         {
             if (reader.TokenType == JsonTokenType.EndObject)
             {
                 if (id is null || start is null || end is null || text is null)
                     throw new JsonException("sentence: id/start/end/text missing");
-                return new Sentence(id.Value, start.Value, end.Value, text, words, speaker);
+                return new Sentence(id.Value, start.Value, end.Value, text, words, speaker) { NeedsReview = needsReview };
             }
             var name = reader.GetString();
             reader.Read();
@@ -105,6 +109,7 @@ internal sealed class SentenceJsonConverter : JsonConverter<Sentence>
                 case "speaker":
                     speaker = reader.TokenType == JsonTokenType.Null ? null : reader.GetInt32();
                     break;
+                case "needs_review": needsReview = reader.TokenType == JsonTokenType.True; break;
                 default: reader.Skip(); break;
             }
         }
@@ -121,6 +126,7 @@ internal sealed class SentenceJsonConverter : JsonConverter<Sentence>
         writer.WritePropertyName("words");
         JsonSerializer.Serialize(writer, value.Words, options);
         if (value.Speaker is { } speaker) writer.WriteNumber("speaker", speaker);
+        if (value.NeedsReview) writer.WriteBoolean("needs_review", true);
         writer.WriteEndObject();
     }
 }

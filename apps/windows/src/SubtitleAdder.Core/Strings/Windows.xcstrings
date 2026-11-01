@@ -1,6 +1,26 @@
 {
   "sourceLanguage" : "tr",
   "strings" : {
+    "K%lld" : { "localizations" : {
+      "en" : { "stringUnit" : { "state" : "translated", "value" : "S%lld" } },
+      "tr" : { "stringUnit" : { "state" : "translated", "value" : "K%lld" } }
+    } },
+    "Seçilenleri yeniden çevir" : { "localizations" : {
+      "en" : { "stringUnit" : { "state" : "translated", "value" : "Retranslate selected lines" } },
+      "tr" : { "stringUnit" : { "state" : "translated", "value" : "Seçilenleri yeniden çevir" } }
+    } },
+    "Ctrl veya Shift ile satırları seç, seçilenleri yeniden çevir" : { "localizations" : {
+      "en" : { "stringUnit" : { "state" : "translated", "value" : "Select lines with Ctrl or Shift, then retranslate the selection" } },
+      "tr" : { "stringUnit" : { "state" : "translated", "value" : "Ctrl veya Shift ile satırları seç, seçilenleri yeniden çevir" } }
+    } },
+    "Bu satır çevrilemedi. Seçip yeniden çevirebilir veya elle düzeltebilirsin." : { "localizations" : {
+      "en" : { "stringUnit" : { "state" : "translated", "value" : "This line could not be translated. Select it to retry or edit it manually." } },
+      "tr" : { "stringUnit" : { "state" : "translated", "value" : "Bu satır çevrilemedi. Seçip yeniden çevirebilir veya elle düzeltebilirsin." } }
+    } },
+    "Çeviriyi kontrol et" : { "localizations" : {
+      "en" : { "stringUnit" : { "state" : "translated", "value" : "Review translation" } },
+      "tr" : { "stringUnit" : { "state" : "translated", "value" : "Çeviriyi kontrol et" } }
+    } },
     " · kaydedildi: %@" : {
       "localizations" : {
         "en" : {

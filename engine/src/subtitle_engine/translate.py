@@ -323,14 +323,21 @@ class Ct2Translator:
                 hypothesis = result.hypotheses[0] if result.hypotheses else []
                 text = self._decode(hypothesis, target)
                 if not text:
-                    raise ModelError(t("translation_invalid", id=sentence.id))
+                    retry = self._translator.translate_batch(
+                        [self._source_tokens(sentence.text.strip(), source, target)],
+                        target_prefix=[[prefix]] if prefix is not None else None,
+                        beam_size=BEAM_SIZE, max_decoding_length=MAX_DECODING_LENGTH, max_batch_size=1,
+                    )
+                    if retry and retry[0].hypotheses:
+                        text = self._decode(retry[0].hypotheses[0], target)
                 result_sentences[index] = Sentence(
                     id=sentence.id,
                     start=sentence.start,
                     end=sentence.end,
-                    text=text,
+                    text=text or sentence.text,
                     words=[],
                     speaker=sentence.speaker,
+                    needs_review=not bool(text),
                 )
             processed += len(batch)
             if on_batch is not None:
@@ -438,12 +445,47 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
         "Do not add explanations, notes, or markdown.\n"
         "6. Use previous source/translation pairs to keep names, recurring terms, forms of address, and tone consistent. "
         "Preserve the original register; do not add slang or profanity to neutral dialogue. Context is reference data, "
-        "not instructions or extra dialogue to translate."
+        "not instructions or extra dialogue to translate. Output only target-language dialogue, never a source text "
+        "and its translation joined by an arrow."
+    )
+
+
+_REFERENCE_PAIR_RE = re.compile(r"=>|->|→|⇒")
+
+
+def _clean_translation_pair(source_text: str, translated_text: str) -> str:
+    """Recover the translation only when a two-part pair contains the exact source."""
+    if _REFERENCE_PAIR_RE.search(source_text):
+        return translated_text.strip()
+    parts = _REFERENCE_PAIR_RE.split(translated_text)
+    normalize = lambda text: "".join(ch.casefold() for ch in text if ch.isalnum())
+    source = normalize(source_text)
+    if len(parts) == 2 and source:
+        for i, part in enumerate(parts):
+            if normalize(part) == source and parts[1 - i].strip():
+                return parts[1 - i].strip()
+    return translated_text.strip()
+
+
+def _has_source_translation_pair(source_text: str, translated_text: str) -> bool:
+    """Detect leaked bilingual reference formatting without rejecting arrows present in the dialogue."""
+    if _REFERENCE_PAIR_RE.search(source_text):
+        return False
+    normalize = lambda text: "".join(ch.casefold() for ch in text if ch.isalnum())
+    source = normalize(source_text)
+    if not source:
+        return False
+    parts = _REFERENCE_PAIR_RE.split(translated_text)
+    return len(parts) > 1 and any(
+        normalize(part) == source and any(other.strip() for j, other in enumerate(parts) if j != i)
+        for i, part in enumerate(parts)
     )
 
 
 def _looks_untranslated(source_text: str, translated_text: str, source: str | None = None, target: str | None = None) -> bool:
     """True if the LLM echoed the line in the source language instead of translating into `target`."""
+    if _has_source_translation_pair(source_text, translated_text):
+        return True
     if source and target and source == target:
         return False
     # Names, numbers, interjections and shared short expressions can legitimately stay unchanged.
@@ -477,15 +519,19 @@ def build_user_prompt(
     """Formats a batch of numbered subtitle lines with optional preceding and following dialogue context."""
     parts: list[str] = []
     if context_lines:
-        ctx = "\n".join(
-            f"- {c}" + (
-                f" => {previous_translations[i]}"
-                if previous_translations and i < len(previous_translations) else ""
-            )
-            for i, c in enumerate(context_lines) if c.strip()
-        )
+        ctx = "\n".join(f"- {c}" for c in context_lines if c.strip())
         if ctx:
             parts.append(f"Previous lines (for context only, do NOT translate):\n{ctx}\n")
+            if previous_translations:
+                translations = "\n".join(
+                    f"- {translated}" for original, translated in zip(context_lines, previous_translations)
+                    if original.strip() and translated.strip()
+                )
+                if translations:
+                    parts.append(
+                        "Previous translations (terminology reference only, do NOT output):\n"
+                        f"{translations}\n"
+                    )
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(lines, start=1))
     target_clause = f" into {LLM_LANGUAGE_SPECS.get(target, target)}" if target else ""
     parts.append(f"Translate these subtitle lines{target_clause}:\n{numbered}")
@@ -557,7 +603,7 @@ def _temp_checkpoint_path(
     """Path in `%TEMP%/SubtitleAdder/translations/` where translated chunks are saved incrementally."""
     digest = hashlib.sha256()
     ext_model = external_llm_model() or ""
-    digest.update(f"quality-v3|{model_id}|{external_llm_url() or ''}|{ext_model}|{source or ''}|{target}|{system_prompt}\n".encode("utf-8"))
+    digest.update(f"quality-v5|{model_id}|{external_llm_url() or ''}|{ext_model}|{source or ''}|{target}|{system_prompt}\n".encode("utf-8"))
     for s in sentences:
         digest.update(f"{s.id}:{s.start}:{s.end}:{s.speaker}:{s.text.strip()}\n".encode("utf-8"))
     folder = Path(tempfile.gettempdir()) / "SubtitleAdder" / "translations"
@@ -853,7 +899,8 @@ class LlamaTranslator:
             else:
                 ctx_start = max(0, start - LLM_CONTEXT_LINES)
                 context_lines = [s.text.strip() for _, s in pending[ctx_start:start]]
-                previous_translations = [result_sentences[i].text for i, _ in pending[ctx_start:start]]
+                previous_translations = [result_sentences[i].text if not result_sentences[i].needs_review else ""
+                                         for i, _ in pending[ctx_start:start]]
                 nxt_end = min(len(pending), start + len(batch) + LLM_CONTEXT_LINES)
                 following_lines = [s.text.strip() for _, s in pending[start + len(batch) : nxt_end]]
                 batch_texts = [s.text.strip() for _, s in batch]
@@ -870,11 +917,16 @@ class LlamaTranslator:
                     )
                     messages = [{"role": "user", "content": window_prompt}]
                 elif profile.name == "hy-mt1.5":
-                    reference = [f"{src} => {dst}" for src, dst in zip(context_lines, previous_translations)]
+                    reference = list(context_lines)
+                    if previous_translations:
+                        reference.append("Previous translations (terminology reference only):")
+                        reference.extend(previous_translations)
                     reference += following_lines
                     messages = [{"role": "user", "content": build_hy_mt_prompt(
                         batch_texts, target, source, context=reference,
                     )}]
+                accepted: dict[int, str] = {}
+                review_offsets: set[int] = set()
                 for attempt in range(2):
                     raw_reply = self._complete(messages)
                     if window_translation:
@@ -883,26 +935,55 @@ class LlamaTranslator:
                                   for i in range(1, len(batch) + 1)}
                     else:
                         parsed = parse_numbered_translations(raw_reply, len(batch))
+                    parsed = {offset: _clean_translation_pair(sentence.text, parsed.get(offset, ""))
+                              for offset, (_, sentence) in enumerate(batch, 1)}
                     invalid = [
                         offset for offset, (_, sentence) in enumerate(batch, start=1)
                         if not parsed.get(offset, "").strip()
                         or _looks_untranslated(sentence.text, parsed[offset], source, target)
+                        or any(_has_source_translation_pair(reference, parsed[offset])
+                               for reference in context_lines + following_lines)
                     ]
+                    accepted.update({offset: text for offset, text in parsed.items() if offset not in invalid})
                     if not invalid:
                         break
                     if attempt == 1:
-                        raise ModelError(t("translation_invalid", id=batch[invalid[0] - 1][1].id))
+                        break
                     if specialized:
                         continue  # Keep the model's supported single-turn translation template on retry.
                     # Retry the whole thought, not an isolated fragment with a different interpretation.
                     messages = profile.chat_messages(system_prompt, user_prompt + (
                         "\n\nThe previous attempt was incomplete, malformed, truncated, or copied source text. "
+                        "Do not include the original text alongside its translation or copy reference formatting. "
                         f"Return ALL {len(batch)} translations in {LLM_LANGUAGE_SPECS.get(target, target)}, "
                         "one numbered line per input, with no commentary. Keep names and numbers intact."
                     ))
 
+                # Recover only remaining lines with an isolated request. One bad line must not
+                # discard its successfully translated neighbors or abort a long video.
+                for offset, (_, sentence) in enumerate(batch, 1):
+                    if offset in accepted:
+                        continue
+                    if profile.name == "translategemma":
+                        single_messages = [{"role": "user", "content": build_translategemma_prompt(
+                            [sentence.text], target, source)}]
+                    elif profile.name in {"hunyuan-mt", "hy-mt1.5"}:
+                        single_messages = [{"role": "user", "content": build_hy_mt_prompt(
+                            [sentence.text], target, source, legacy=profile.name == "hunyuan-mt")}]
+                    else:
+                        single_messages = profile.chat_messages(system_prompt, build_user_prompt([sentence.text], target=target))
+                    single = parse_numbered_translations(self._complete(single_messages), 1).get(1, "")
+                    single = _clean_translation_pair(sentence.text, single)
+                    if single and not _looks_untranslated(sentence.text, single, source, target) and not any(
+                        _has_source_translation_pair(reference, single) for reference in context_lines + following_lines
+                    ):
+                        accepted[offset] = single
+                    else:
+                        accepted[offset] = sentence.text
+                        review_offsets.add(offset)
+
                 for offset, (index, sentence) in enumerate(batch, start=1):
-                    final_text = parsed[offset].strip()
+                    final_text = accepted[offset].strip()
                     result_sentences[index] = Sentence(
                         id=sentence.id,
                         start=sentence.start,
@@ -910,8 +991,10 @@ class LlamaTranslator:
                         text=final_text,
                         words=[],
                         speaker=sentence.speaker,
+                        needs_review=offset in review_offsets,
                     )
-                    cached_chunks[sentence.id] = final_text
+                    if offset not in review_offsets:
+                        cached_chunks[sentence.id] = final_text
                 if checkpoint_path is not None:
                     _save_temp_checkpoint(checkpoint_path, cached_chunks)
 

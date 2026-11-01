@@ -59,7 +59,9 @@ def test_previous_translations_and_following_source_reach_next_batch(monkeypatch
     translator = translate.LlamaTranslator("gemma-4-e4b", completion_fn=complete)
     result = translator.translate(source, "tr", source="en")
     assert "- Please come in, director." in calls[0][1]["content"]
-    assert "- The director has arrived. => Müdür Hanım geldi." in calls[1][1]["content"]
+    assert "- The director has arrived." in calls[1][1]["content"]
+    assert "Previous translations (terminology reference only, do NOT output):\n- Müdür Hanım geldi." in calls[1][1]["content"]
+    assert "=>" not in calls[1][1]["content"]
     assert [(s.id, s.start, s.end, s.speaker) for s in result] == [
         (s.id, s.start, s.end, s.speaker) for s in source
     ]
@@ -77,7 +79,7 @@ def test_invalid_single_line_is_retried_before_publishing(bad_reply):
 
 
 @pytest.mark.parametrize("reply", ["", "[1] Where are you going?", "[1] Selam.\nExplanation."])
-def test_repeated_invalid_response_is_an_error_not_completed_source_text(reply):
+def test_repeated_invalid_response_preserves_source_with_explicit_review_marker(reply):
     calls, batches, progress = [], [], []
 
     def complete(messages):
@@ -85,11 +87,11 @@ def test_repeated_invalid_response_is_an_error_not_completed_source_text(reply):
         return reply
 
     translator = translate.LlamaTranslator("gemma-4-e4b", completion_fn=complete)
-    with pytest.raises(models.ModelError, match="10.*Çeviri tamamlanmadı"):
-        translator.translate(cues("Where are you going?"), "tr", source="en",
-                             on_batch=batches.append, on_progress=progress.append)
-    assert len(calls) == 2
-    assert batches == [] and progress == []
+    result = translator.translate(cues("Where are you going?"), "tr", source="en",
+                                  on_batch=batches.append, on_progress=progress.append)
+    assert len(calls) == 3
+    assert result[0].text == "Where are you going?" and result[0].needs_review
+    assert len(batches) == 1 and progress == [1.0]
 
 
 @pytest.mark.parametrize("text", ["Alice!", "New York", "2026", "OK."])
@@ -246,10 +248,15 @@ def test_failed_later_batch_keeps_only_valid_checkpoint_and_resumes_with_context
     monkeypatch.setattr(translate, "LLM_BATCH_SIZE", 1)
     path = tmp_path / "translation.json"
     monkeypatch.setattr(translate, "_temp_checkpoint_path", lambda *args: path)
-    replies = iter(["[1] Müdür Hanım geldi.", "", ""])
+    replies = iter(["[1] Müdür Hanım geldi.", models.ModelError("server disconnected")])
     translator = translate.LlamaTranslator("gemma-4-e4b", completion_fn=lambda _: "")
     translator._completion_fn = None  # Exercise the real checkpoint path without a model or network.
-    monkeypatch.setattr(translator, "_complete", lambda _: next(replies))
+    def interrupted(_):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+    monkeypatch.setattr(translator, "_complete", interrupted)
     source = cues("The director has arrived.", "Please come in, director.")
     with pytest.raises(models.ModelError):
         translator.translate(source, "tr", source="en")
@@ -264,12 +271,12 @@ def test_failed_later_batch_keeps_only_valid_checkpoint_and_resumes_with_context
     monkeypatch.setattr(translator, "_complete", complete)
     result = translator.translate(source, "tr", source="en")
     assert len(calls) == 1
-    assert "=> Müdür Hanım geldi." in calls[0][1]["content"]
+    assert "Previous translations (terminology reference only, do NOT output):\n- Müdür Hanım geldi." in calls[0][1]["content"]
     assert result[1].text == "Buyurun Müdür Hanım."
     assert not path.exists()
 
 
-def test_cli_emits_error_without_successful_translation_for_invalid_output(monkeypatch, capsys):
+def test_cli_completes_with_review_metadata_for_unrecoverable_line(monkeypatch, capsys):
     import io
     import sys
 
@@ -277,7 +284,35 @@ def test_cli_emits_error_without_successful_translation_for_invalid_output(monke
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps([s.to_dict() for s in cues("Hello there.")])))
     monkeypatch.setattr(models, "require_download", lambda _: False)
     monkeypatch.setattr(translate, "create_translator", lambda _: translator)
-    assert cli.main(["translate", "--to", "tr", "--from", "en", "--json"]) == 1
+    assert cli.main(["translate", "--to", "tr", "--from", "en", "--json"]) == 0
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert events[-1]["event"] == "error"
-    assert not any(event["event"] == "translation" for event in events)
+    assert events[-1]["event"] == "translation"
+    assert events[-1]["sentences"][0]["needs_review"] is True
+    assert not any(event["event"] == "error" for event in events)
+
+
+def test_valid_neighbors_survive_bad_retry_and_single_line_recovery():
+    calls = []
+    replies = iter(["[1] Merhaba.\n[2] Where are you going?", "", "[1] Nereye gidiyorsun?"])
+
+    def complete(messages):
+        calls.append(messages)
+        return next(replies)
+
+    translator = translate.LlamaTranslator("qwen3.5-4b", completion_fn=complete)
+    result = translator.translate(cues("Hello.", "Where are you going?"), "tr", "en")
+    assert [s.text for s in result] == ["Merhaba.", "Nereye gidiyorsun?"]
+    assert not any(s.needs_review for s in result)
+    assert "[1] Where are you going?" in calls[-1][-1]["content"]
+    assert "Hello." not in calls[-1][-1]["content"]
+
+
+def test_unrecoverable_line_does_not_block_following_batch(monkeypatch):
+    monkeypatch.setattr(translate, "LLM_BATCH_SIZE", 1)
+    replies = iter(["", "", "", "[1] Nereye gidiyorsun?"])
+    translator = translate.LlamaTranslator("qwen3.5-4b", completion_fn=lambda _: next(replies))
+    result = translator.translate(cues("Hello there.", "Where are you going?"), "tr", "en")
+    assert result[0].needs_review and result[0].text == "Hello there."
+    assert result[1].text == "Nereye gidiyorsun?" and not result[1].needs_review
+    assert Sentence.from_dict(result[0].to_dict()).needs_review
+    assert "needs_review" not in result[1].to_dict()

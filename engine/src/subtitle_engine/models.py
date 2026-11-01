@@ -49,9 +49,13 @@ class Sentence:
     text: str
     words: list[Word] = field(default_factory=list)
     speaker: int | None = None  # 0-based speaker; None when diarization was off
+    needs_review: bool = False  # Translation could not be recovered; source text was preserved.
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        result = asdict(self)
+        if not self.needs_review:
+            result.pop("needs_review")
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> "Sentence":
@@ -63,6 +67,7 @@ class Sentence:
             text=data["text"],
             words=words,
             speaker=data.get("speaker"),
+            needs_review=data.get("needs_review", False),
         )
 
 

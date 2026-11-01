@@ -330,6 +330,12 @@
                                             loc:Localize.ToolTip="Satırı oynatma konumundan ikiye böl">
                                         <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8C6;" FontSize="14" /><TextBlock x:Name="SplitLabel" loc:Localize.Text="Böl" /></StackPanel>
                                     </Button>
+                                    <Button Style="{StaticResource IconButtonStyle}" Padding="9,5" Click="TranslateSelected_Click"
+                                            IsEnabled="{x:Bind Vm.CanTranslateSelected, Mode=OneWay}"
+                                            loc:Localize.ToolTip="Ctrl veya Shift ile satırları seç, seçilenleri yeniden çevir"
+                                            loc:Localize.AutomationName="Seçilenleri yeniden çevir">
+                                        <FontIcon Glyph="&#xF2B7;" FontSize="14" />
+                                    </Button>
                                     <Button x:Name="MergeButton" Style="{StaticResource IconButtonStyle}" Padding="9,5" Click="Merge_Click" IsEnabled="{x:Bind Vm.CanMergeSelected, Mode=OneWay}">
                                         <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE71B;" FontSize="14" /><TextBlock x:Name="MergeLabel" loc:Localize.Text="Sonrakiyle birleştir" /></StackPanel>
                                     </Button>
@@ -341,7 +347,7 @@
                             </Grid>
                             <Border Grid.Row="1" Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Visibility="{x:Bind Vm.HasSentences, Mode=OneWay}" />
 
-                            <ListView x:Name="Lines" Grid.Row="2" ItemsSource="{x:Bind Rows}" SelectionMode="Single" Padding="0,4"
+                            <ListView x:Name="Lines" Grid.Row="2" ItemsSource="{x:Bind Rows}" SelectionMode="Extended" Padding="0,4"
                                       SelectionChanged="Lines_SelectionChanged" PreviewKeyDown="Lines_PreviewKeyDown"
                                       Visibility="{x:Bind Vm.HasSentences, Mode=OneWay}" loc:Localize.AutomationName="Satırlar">
                                 <ListView.ItemContainerStyle>
@@ -371,7 +377,7 @@
                                                        Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" Visibility="{x:Bind IsActive, Mode=OneWay}" />
                                             <TextBlock Grid.Column="1" Text="{x:Bind TimeText, Mode=OneWay}" FontFamily="{StaticResource MonoFont}" FontSize="12" Margin="0,8,0,0"
                                                        VerticalAlignment="Top" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                            <Button Grid.Column="2" MinWidth="120" VerticalAlignment="Top" Padding="8,4" Click="SpeakerRow_Click"
+                                            <Button Grid.Column="2" MinWidth="44" VerticalAlignment="Top" Padding="4,4" Click="SpeakerRow_Click"
                                                     Background="{ThemeResource SubtleFillColorTransparentBrush}" BorderBrush="Transparent"
                                                     Visibility="{x:Bind ShowsSpeaker, Mode=OneWay}"
                                                     loc:Localize.ToolTip="Bu satırı söyleyen kişiyi değiştir" loc:Localize.AutomationName="Konuşmacıyı değiştir">
@@ -399,10 +405,16 @@
                                                              loc:Localize.PlaceholderText="Çeviri" loc:Localize.AutomationName="Çeviri"
                                                              GotFocus="TranslationText_GotFocus" LostFocus="TranslationText_LostFocus"
                                                              TextChanged="TranslationText_TextChanged" KeyDown="TranslationText_KeyDown" />
-                                                    <FontIcon Grid.Column="2" Glyph="&#xE81C;" FontSize="13" VerticalAlignment="Center" Margin="0,0,4,0"
+                                                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                                    <FontIcon Glyph="&#xE81C;" FontSize="13" VerticalAlignment="Center" Margin="0,0,4,0"
                                                               Foreground="{ThemeResource SystemFillColorCautionBrush}" Visibility="{x:Bind IsStale, Mode=OneWay}"
                                                               loc:Localize.ToolTip="Orijinal metin değişti; çeviri eski olabilir. “Çevir…” ile yenile."
                                                               loc:Localize.AutomationName="Çeviri eski" />
+                                                    <FontIcon Glyph="&#xE7BA;" FontSize="13" Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                                                              Visibility="{x:Bind NeedsReview, Mode=OneWay}"
+                                                              loc:Localize.ToolTip="Bu satır çevrilemedi. Seçip yeniden çevirebilir veya elle düzeltebilirsin."
+                                                              loc:Localize.AutomationName="Çeviriyi kontrol et" />
+                                                    </StackPanel>
                                                 </Grid>
                                             </StackPanel>
                                         </Grid>

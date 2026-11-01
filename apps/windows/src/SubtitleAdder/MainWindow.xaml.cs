@@ -142,6 +142,9 @@ public sealed partial class MainWindow : Window
                 if (Vm.SelectedSentence is { } selected) _player.Seek(selected.Start);
                 SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
                 break;
+            case nameof(SubtitleViewModel.SelectedUids):
+                SyncSelection();
+                break;
             case nameof(SubtitleViewModel.Status):
             case nameof(SubtitleViewModel.IsAsyncTranslating):
             case nameof(SubtitleViewModel.AsyncTranslationFraction):
@@ -485,10 +488,10 @@ public sealed partial class MainWindow : Window
             EditorRow.Height = new GridLength(0);
 
             PlayerCol.MinWidth = 260;
-            PlayerCol.Width = new GridLength(5, GridUnitType.Star);
+            PlayerCol.Width = new GridLength(2, GridUnitType.Star);
             SplitterCol.Width = new GridLength(12);
             EditorCol.MinWidth = 320;
-            EditorCol.Width = new GridLength(4, GridUnitType.Star);
+            EditorCol.Width = new GridLength(1, GridUnitType.Star);
 
             Splitter.IsSideBySide = true;
             Splitter.Minimum = 260;
@@ -662,51 +665,58 @@ public sealed partial class MainWindow : Window
 
     private void SyncRows()
     {
-        var list = Vm.Sentences;
-        var showsSpeaker = Vm.ShowsSpeakers;
-        var dark = Root.ActualTheme == ElementTheme.Dark;
-        var wanted = list.Select(s => s.Uid).ToHashSet();
-        for (var i = Rows.Count - 1; i >= 0; i--)
+        var wasSyncing = _syncing;
+        _syncing = true;
+        try
         {
-            if (!wanted.Contains(Rows[i].Uid)) Rows.RemoveAt(i);
-        }
-        var byUid = Rows.ToDictionary(r => r.Uid);
-        for (var i = 0; i < list.Count; i++)
-        {
-            var sentence = list[i];
-            if (i < Rows.Count && Rows[i].Uid == sentence.Uid)
+            var list = Vm.Sentences;
+            var showsSpeaker = Vm.ShowsSpeakers;
+            var dark = Root.ActualTheme == ElementTheme.Dark;
+            var wanted = list.Select(s => s.Uid).ToHashSet();
+            for (var i = Rows.Count - 1; i >= 0; i--)
             {
-                // In place.
+                if (!wanted.Contains(Rows[i].Uid)) Rows.RemoveAt(i);
             }
-            else if (byUid.TryGetValue(sentence.Uid, out var existing))
+            var byUid = Rows.ToDictionary(r => r.Uid);
+            for (var i = 0; i < list.Count; i++)
             {
-                Rows.Move(Rows.IndexOf(existing), i);
+                var sentence = list[i];
+                if (i < Rows.Count && Rows[i].Uid == sentence.Uid)
+                {
+                    // In place.
+                }
+                else if (byUid.TryGetValue(sentence.Uid, out var existing))
+                {
+                    Rows.Move(Rows.IndexOf(existing), i);
+                }
+                else
+                {
+                    var created = new SentenceRow(sentence.Uid);
+                    byUid[sentence.Uid] = created;
+                    Rows.Insert(i, created);
+                }
+                Update(Rows[i], sentence);
             }
-            else
-            {
-                var created = new SentenceRow(sentence.Uid);
-                byUid[sentence.Uid] = created;
-                Rows.Insert(i, created);
-            }
-            Update(Rows[i], sentence);
-        }
-        SyncSelection();
+            SyncSelection();
 
-        void Update(SentenceRow row, Sentence sentence)
-        {
-            row.Number = sentence.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            row.TimeText = $"{SubtitleTime.Short(sentence.Start)} → {SubtitleTime.Short(sentence.End)}";
-            row.Text = Vm.DraftText(sentence);
-            row.ShowsSpeaker = showsSpeaker;
-            row.HasSpeaker = sentence.Speaker is not null;
-            row.SpeakerText = SubtitleViewModel.SpeakerTitle(sentence.Speaker);
-            row.SpeakerBrush = sentence.Speaker is { } speaker ? SpeakerBrush(speaker, dark) : null;
-            var translation = Vm.TranslationFor(sentence);
-            row.HasTranslation = translation is not null;
-            row.TranslationText = translation is null ? "" : Vm.TranslationDraftText(sentence);
-            row.IsStale = Vm.IsTranslationStale(sentence);
-            row.IsActive = sentence.Uid == _player.ActiveId;
+            void Update(SentenceRow row, Sentence sentence)
+            {
+                row.Number = sentence.Id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                row.TimeText = $"{SubtitleTime.Short(sentence.Start)} → {SubtitleTime.Short(sentence.End)}";
+                row.Text = Vm.DraftText(sentence);
+                row.ShowsSpeaker = showsSpeaker;
+                row.HasSpeaker = sentence.Speaker is not null;
+                row.SpeakerText = SubtitleViewModel.CompactSpeakerTitle(sentence.Speaker);
+                row.SpeakerBrush = sentence.Speaker is { } speaker ? SpeakerBrush(speaker, dark) : null;
+                var translation = Vm.TranslationFor(sentence);
+                row.HasTranslation = translation is not null;
+                row.TranslationText = translation is null ? "" : Vm.TranslationDraftText(sentence);
+                row.IsStale = Vm.IsTranslationStale(sentence);
+                row.NeedsReview = translation?.NeedsReview ?? sentence.NeedsReview;
+                row.IsActive = sentence.Uid == _player.ActiveId;
+            }
         }
+        finally { _syncing = wasSyncing; }
     }
 
     private Brush SpeakerBrush(int speaker, bool dark)
@@ -725,23 +735,27 @@ public sealed partial class MainWindow : Window
 
     private void SyncSelection()
     {
-        var row = RowFor(Vm.Selection);
-        if (ReferenceEquals(Lines.SelectedItem, row)) return;
+        var wanted = Rows.Where(r => Vm.SelectedUids.Contains(r.Uid)).ToHashSet();
+        var wasSyncing = _syncing;
         _syncing = true;
         try
         {
-            Lines.SelectedItem = row;
+            foreach (var row in Lines.SelectedItems.OfType<SentenceRow>().ToList())
+                if (!wanted.Contains(row)) Lines.SelectedItems.Remove(row);
+            foreach (var row in wanted)
+                if (!Lines.SelectedItems.Contains(row)) Lines.SelectedItems.Add(row);
         }
         finally
         {
-            _syncing = false;
+            _syncing = wasSyncing;
         }
     }
 
     private void Lines_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncing) return;
-        Vm.Selection = (Lines.SelectedItem as SentenceRow)?.Uid;
+        Vm.SetSelectedLines(Lines.SelectedItems.OfType<SentenceRow>().Select(r => r.Uid).ToList(),
+            e.AddedItems.OfType<SentenceRow>().LastOrDefault()?.Uid);
     }
 
     private void OnActiveChanged()
@@ -755,7 +769,8 @@ public sealed partial class MainWindow : Window
 
     private void SelectRow(SentenceRow row)
     {
-        if (Vm.Selection != row.Uid) Vm.Selection = row.Uid;
+        if (Vm.SelectedUids.Contains(row.Uid)) Vm.SetSelectedLines(Vm.SelectedUids, row.Uid);
+        else Vm.Selection = row.Uid;
     }
 
     private static SentenceRow? RowOf(object sender) => (sender as FrameworkElement)?.DataContext as SentenceRow;
@@ -864,6 +879,14 @@ public sealed partial class MainWindow : Window
         if (sender is not MenuFlyout menu || RowOf(menu.Target) is not { } row) return;
         SelectRow(row);
         menu.Items.Clear();
+        var retranslate = new MenuFlyoutItem
+        {
+            Text = L("Seçilenleri yeniden çevir"), Icon = new FontIcon { Glyph = "\uF2B7" },
+            IsEnabled = Vm.CanTranslateSelected,
+        };
+        retranslate.Click += TranslateSelected_Click;
+        menu.Items.Add(retranslate);
+        menu.Items.Add(new MenuFlyoutSeparator());
         if (Vm.ShowsSpeakers)
         {
             AddSpeakerItems(menu.Items, row);
@@ -886,6 +909,12 @@ public sealed partial class MainWindow : Window
     }
 
     // MARK: - Edit bar
+
+    private void TranslateSelected_Click(object sender, RoutedEventArgs e)
+    {
+        Vm.FinishEditing();
+        Vm.TranslateSelected();
+    }
 
     private void StartMinus_Click(object sender, RoutedEventArgs e) => Vm.Nudge(TimingEdge.Start, -SentenceEditing.NudgeStep);
     private void StartPlus_Click(object sender, RoutedEventArgs e) => Vm.Nudge(TimingEdge.Start, SentenceEditing.NudgeStep);

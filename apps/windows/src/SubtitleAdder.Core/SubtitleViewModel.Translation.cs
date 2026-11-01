@@ -17,14 +17,20 @@ public sealed partial class SubtitleViewModel
         if (!translated) return _sentences;
         return [.. _sentences.Select(sentence =>
             _translations.TryGetValue(sentence.Uid, out var entry) && entry.Text.Length > 0
-                ? sentence with { Text = entry.Text, Words = [] }
+                ? sentence with { Text = entry.Text, Words = [], NeedsReview = entry.NeedsReview }
                 : sentence with { Words = [] })];
     }
 
     /// <summary>Translates all lines to the selected target language. While running, Stop cancels the same job.</summary>
     public void Translate() => TranslateCore(reuseExistingTranslations: false);
 
-    private void TranslateCore(bool reuseExistingTranslations)
+    public void TranslateSelected()
+    {
+        if (!CanTranslateSelected) return;
+        TranslateCore(reuseExistingTranslations: false, selectedUids: SelectedUids.ToHashSet());
+    }
+
+    private void TranslateCore(bool reuseExistingTranslations, IReadOnlySet<Guid>? selectedUids = null)
     {
         if (_sentences.Count == 0) return;
         if (Catalog.Engine is not { } engine)
@@ -45,9 +51,12 @@ public sealed partial class SubtitleViewModel
             Status = new JobStatus.Failed(LocalizedMessage.Key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç."));
             return;
         }
-        if (BlockedOffline([_translationModel], Translate)) return;
+        if (BlockedOffline([_translationModel], selectedUids is null ? Translate : () =>
+            TranslateCore(reuseExistingTranslations: false, selectedUids: selectedUids))) return;
         _savedSubtitleName = null;
-        var request = reuseExistingTranslations
+        var request = selectedUids is not null
+            ? _sentences.Where(s => selectedUids.Contains(s.Uid)).ToList()
+            : reuseExistingTranslations
             ? _sentences
                 .Where(s => !_translations.TryGetValue(s.Uid, out var existing) || !IsReusableTranslation(s, existing, target))
                 .ToList()
@@ -85,7 +94,9 @@ public sealed partial class SubtitleViewModel
                     Status = new JobStatus.Working(Label(stage.Kind, fraction, JobPurpose.Translation), fraction);
                     break;
                 case EngineEvent.Translation translation:
-                    ApplyTranslation(translation.Sentences, translation.Language, request, mergeIntoExisting: reuseExistingTranslations);
+                    ApplyTranslation(translation.Sentences, translation.Language, request,
+                        mergeIntoExisting: reuseExistingTranslations || selectedUids is not null,
+                        preserveOtherLanguages: selectedUids is not null);
                     break;
                 case EngineEvent.Error error:
                     return new JobStatus.Failed(LocalizedMessage.Verbatim(error.Message));
@@ -126,7 +137,7 @@ public sealed partial class SubtitleViewModel
 
     internal static bool IsReusableTranslation(Sentence sentence, TranslationEntry existing, string target)
     {
-        if (existing.IsStale(sentence) || existing.Language != target) return false;
+        if (existing.NeedsReview || existing.IsStale(sentence) || existing.Language != target) return false;
         var translated = existing.Text.Trim();
         if (translated.Length == 0) return false;
         var source = sentence.Text.Trim();
@@ -248,10 +259,11 @@ public sealed partial class SubtitleViewModel
 
     /// <summary>Maps translated lines by their stable <c>Uid</c> values; supports both incremental batches and final results.</summary>
     private void ApplyTranslation(
-        IReadOnlyList<Sentence> translated, string language, IReadOnlyList<Sentence> source, bool mergeIntoExisting = false)
+        IReadOnlyList<Sentence> translated, string language, IReadOnlyList<Sentence> source,
+        bool mergeIntoExisting = false, bool preserveOtherLanguages = false)
     {
         var hadTranslations = _translations.Count > 0;
-        var entries = mergeIntoExisting && _translationLanguage == language
+        var entries = mergeIntoExisting && (preserveOtherLanguages || _translationLanguage == language)
             ? new Dictionary<Guid, TranslationEntry>(_translations)
             : new Dictionary<Guid, TranslationEntry>();
         for (var index = 0; index < translated.Count; index++)
@@ -259,7 +271,10 @@ public sealed partial class SubtitleViewModel
             var result = translated[index];
             var original = source.FirstOrDefault(s => s.Id == result.Id);
             if (original is null) continue;
-            entries[original.Uid] = new TranslationEntry(result.Text, original.Text, language);
+            if (result.NeedsReview && _translations.TryGetValue(original.Uid, out var existing))
+                entries[original.Uid] = existing with { NeedsReview = true };
+            else
+                entries[original.Uid] = new TranslationEntry(result.Text, original.Text, language, result.NeedsReview);
         }
         Translations = entries;
         TranslationLanguage = language;
@@ -312,7 +327,7 @@ public sealed partial class SubtitleViewModel
     public void SetTranslationText(string text, Guid uid)
     {
         if (!_translations.TryGetValue(uid, out var entry) || entry.Text == text) return;
-        var updated = new Dictionary<Guid, TranslationEntry>(_translations) { [uid] = entry with { Text = text } };
+        var updated = new Dictionary<Guid, TranslationEntry>(_translations) { [uid] = entry with { Text = text, NeedsReview = false } };
         using var group = UndoStack.BeginGroup();
         ReplaceTranslations(updated, K("Çeviriyi Değiştir"));
     }

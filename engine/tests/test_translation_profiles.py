@@ -170,7 +170,9 @@ def test_hy_mt15_context_is_reference_not_extra_translation(monkeypatch):
     ], "tr", source="en")
     assert all(len(messages) == 1 and messages[0]["role"] == "user" for messages in calls)
     prompt = calls[1][0]["content"]
-    assert "The director has arrived. => Müdür Hanım geldi." in prompt
+    assert "The director has arrived." in prompt
+    assert "Previous translations (terminology reference only):\nMüdür Hanım geldi." in prompt
+    assert "=>" not in prompt
     assert "不需要翻译上文" in prompt
     assert prompt.endswith("[1] Please come in, director.")
     assert [s.id for s in result] == [10, 11, 12]

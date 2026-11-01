@@ -32,6 +32,9 @@ public sealed partial class SubtitleViewModel
     public static string SpeakerTitle(int? speaker) =>
         speaker is { } index ? L("Konuşmacı %lld", (long)index + 1) : L("Konuşmacı yok");
 
+    public static string CompactSpeakerTitle(int? speaker) =>
+        speaker is { } index ? L("K%lld", (long)index + 1) : "—";
+
     /// <summary>Label of a timing edge ("Başlangıç" / "Bitiş").</summary>
     public static string EdgeTitle(TimingEdge edge) => edge == TimingEdge.Start ? L("Başlangıç") : L("Bitiş");
 

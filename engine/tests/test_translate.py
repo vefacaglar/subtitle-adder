@@ -153,11 +153,12 @@ def test_language_tag_does_not_leak_into_text(make_translator):
     assert result[0].text == "hola"
 
 
-def test_empty_hypothesis_reports_incomplete_translation(make_translator):
-    translator, _ = make_translator("madlad-3b", [""])
+def test_empty_hypothesis_retries_then_marks_line_for_review(make_translator):
+    translator, fake = make_translator("madlad-3b", [""])
 
-    with pytest.raises(models.ModelError, match="Çeviri tamamlanmadı"):
-        translator.translate([sentence(1, 0, 1, "Metin.")], "es")
+    result = translator.translate([sentence(1, 0, 1, "Metin.")], "es")
+    assert result[0].text == "Metin." and result[0].needs_review
+    assert len(fake.calls) == 2
 
 
 def test_cli_json_event_order_and_translation_event(capsys, monkeypatch):

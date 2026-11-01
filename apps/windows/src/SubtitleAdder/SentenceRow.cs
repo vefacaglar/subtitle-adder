@@ -25,6 +25,7 @@ public sealed class SentenceRow(Guid uid) : ObservableObject
     public bool HasTranslation { get => field; set => SetProperty(ref field, value); }
     public string TranslationText { get => field; set => SetProperty(ref field, value); } = "";
     public bool IsStale { get => field; set => SetProperty(ref field, value); }
+    public bool NeedsReview { get => field; set => SetProperty(ref field, value); }
     public bool IsActive { get => field; set => SetProperty(ref field, value); }
 
     /// <summary>The list item's accessible name (ListViewItem reads the item's ToString).</summary>

@@ -71,6 +71,8 @@ The app finds the engine in this order: the `SUBTITLE_ENGINE` environment variab
 
 ## Commands
 
+Translation sentences can optionally carry `"needs_review": true` when bounded recovery attempts failed and the original text was preserved. This is a backward-compatible protocol v1 addition; it does not prevent rendering or saving. The flag is retained in JSON, but is not written into SRT/VTT dialogue. Windows displays a review marker and preserves an existing translation when a retry fails. The Windows editor supports Ctrl/Shift multi-selection and retranslating selected lines, including imported partially translated SRT/VTT/JSON files; neighboring dialogue provides context, but only requested line IDs are applied.
+
 ```bash
 cd engine && uv sync && uv run pytest              # engine tests
 cd engine && uv run pytest -m slow                 # real STT (samples/demo.mp4)

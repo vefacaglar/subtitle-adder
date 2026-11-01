@@ -44,7 +44,7 @@ public static class SubtitleDisplays
 /// A line's translation. <see cref="SourceText"/> is the original text at the time it was translated; if the original
 /// changes later, the translation counts as "eski" (stale) and is marked in the UI.
 /// </summary>
-public sealed record TranslationEntry(string Text, string SourceText, string Language)
+public sealed record TranslationEntry(string Text, string SourceText, string Language, bool NeedsReview = false)
 {
     public bool IsStale(Sentence sentence) => SourceText != sentence.Text;
 }

@@ -416,7 +416,7 @@ public sealed partial class SubtitleViewModel
                                 var orig = remaining.FirstOrDefault(s => s.Id == tr.Id);
                                 if (orig is not null)
                                 {
-                                    mergedEntries[orig.Uid] = new TranslationEntry(tr.Text, orig.Text, translation.Language);
+                                    mergedEntries[orig.Uid] = new TranslationEntry(tr.Text, orig.Text, translation.Language, tr.NeedsReview);
                                 }
                             }
                             await _ui.InvokeAsync(() =>

@@ -160,6 +160,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         StartPlaylistCommand = new RelayCommand(StartPlaylist, () => CanStartPlaylist);
         CancelCommand = new RelayCommand(Cancel, () => IsWorking);
         TranslateCommand = new RelayCommand(Translate, () => Sentences.Count > 0 && !IsWorking);
+        TranslateSelectedCommand = new RelayCommand(TranslateSelected, () => CanTranslateSelected);
         UndoCommand = new RelayCommand(Undo, () => CanUndo);
         RedoCommand = new RelayCommand(Redo, () => CanRedo);
         MergeSelectedCommand = new RelayCommand(MergeSelectedWithNext, () => CanMergeSelected);
@@ -759,6 +760,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         {
             if (ReferenceEquals(_sentences, value)) return;
             _sentences = value;
+            SetSelectedLines(_selectedUids, _selection);
             OnPropertyChanged();
             OnPropertyChanged(nameof(HasSentences));
             OnPropertyChanged(nameof(Speakers));
@@ -826,10 +828,27 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         get => _selection;
         set
         {
-            if (!SetProperty(ref _selection, value)) return;
-            RaiseSelectionDerived();
-            RaiseCommands();
+            SetSelectedLines(value is { } uid ? [uid] : [], value);
         }
+    }
+
+    private HashSet<Guid> _selectedUids = [];
+    public IReadOnlySet<Guid> SelectedUids => _selectedUids;
+    public bool CanTranslateSelected => _selectedUids.Count > 0 && !IsWorking;
+
+    public void SetSelectedLines(IEnumerable<Guid> uids, Guid? active = null)
+    {
+        var valid = _sentences.Select(s => s.Uid).ToHashSet();
+        var selected = uids.Where(valid.Contains).ToHashSet();
+        var current = active is { } requested && selected.Contains(requested) ? active
+            : _selection is { } previous && selected.Contains(previous) ? _selection
+            : _sentences.FirstOrDefault(s => selected.Contains(s.Uid))?.Uid;
+        var changed = !_selectedUids.SetEquals(selected);
+        _selectedUids = selected;
+        SetProperty(ref _selection, current, nameof(Selection));
+        if (changed) OnPropertyChanged(nameof(SelectedUids));
+        RaiseSelectionDerived();
+        RaiseCommands();
     }
 
     /// <summary>Uncommitted text of the line being edited (used while focused).</summary>
@@ -978,6 +997,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public IRelayCommand StartPlaylistCommand { get; }
     public IRelayCommand CancelCommand { get; }
     public IRelayCommand TranslateCommand { get; }
+    public IRelayCommand TranslateSelectedCommand { get; }
     public IRelayCommand UndoCommand { get; }
     public IRelayCommand RedoCommand { get; }
     public IRelayCommand MergeSelectedCommand { get; }
@@ -1072,6 +1092,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             StopJob();
             Catalog.ActiveModels = new HashSet<string>();
             _loadedSubtitlePath = path;
+            DetectedLanguage = null;
             _savedSubtitleName = null;
             Translations = new Dictionary<Guid, TranslationEntry>();
             TranslationDraft = null;
@@ -1555,6 +1576,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasSelection));
         OnPropertyChanged(nameof(SelectedStartText));
         OnPropertyChanged(nameof(SelectedEndText));
+        OnPropertyChanged(nameof(CanTranslateSelected));
     }
 
     private void RaiseCommands()
@@ -1568,6 +1590,8 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         StartPlaylistCommand?.NotifyCanExecuteChanged();
         CancelCommand?.NotifyCanExecuteChanged();
         TranslateCommand?.NotifyCanExecuteChanged();
+        TranslateSelectedCommand?.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanTranslateSelected));
         MergeSelectedCommand?.NotifyCanExecuteChanged();
         DeleteSelectedCommand?.NotifyCanExecuteChanged();
     }
