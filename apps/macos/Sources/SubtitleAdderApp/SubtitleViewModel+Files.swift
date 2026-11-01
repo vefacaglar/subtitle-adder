@@ -44,22 +44,19 @@ extension SubtitleViewModel {
     }
 
     /// Files dropped on the window or handed over by Finder: subtitle files by extension, everything else is a video.
-    /// One video opens in the editor, and a subtitle dropped with it is loaded after it (replacing a sidecar).
+    /// Several videos, or any video while the playlist is showing or running, go to the playlist. One video opens in
+    /// the editor, and a subtitle dropped with it is loaded after it (replacing a sidecar).
     func openFiles(_ urls: [URL]) {
         let subtitle = urls.first(where: SubtitleParser.isSubtitleFile)
         let videos = urls.filter { !SubtitleParser.isSubtitleFile($0) }
-        if videos.count > 1 {
+        if videos.count > 1 || (!videos.isEmpty && (workspace == .playlist || isPlaylistRunning)) {
             openMultipleVideos(videos)
             return
         }
+        // The run owns the editor's video and lines until it ends.
+        guard !isPlaylistRunning else { return }
         if let video = videos.first { openVideo(video) }
         if let subtitle { loadSubtitleFile(subtitle) }
-    }
-
-    /// Hook for the batch playlist: more than one video dropped at once belongs there. Until the playlist exists the first
-    /// video opens in the editor, as a single drop does.
-    func openMultipleVideos(_ videos: [URL]) {
-        openVideo(videos[0])
     }
 
     // MARK: - Saving

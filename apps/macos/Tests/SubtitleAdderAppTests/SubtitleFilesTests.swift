@@ -152,10 +152,12 @@ import Testing
         #expect(vm.loadedSubtitle == subtitle)
         #expect(vm.sentences.map(\.text) == ["Merhaba.", "Dünya."])
 
-        // Several videos go through the playlist hook, which opens the first one until the playlist exists.
+        // Several videos go to the playlist; the editor keeps its video.
         let second = folder.appending(path: "c.mp4")
         vm.openFiles([second, folder.appending(path: "d.mp4")])
-        #expect(vm.video == second)
+        #expect(vm.video == video)
+        #expect(vm.playlist.map(\.fileName) == ["c.mp4", "d.mp4"])
+        #expect(vm.workspace == .playlist)
     }
 
     // MARK: - Saving

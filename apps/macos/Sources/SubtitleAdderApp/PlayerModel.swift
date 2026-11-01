@@ -65,6 +65,11 @@ final class PlayerModel {
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
+    func pause() {
+        player.pause()
+        isPlaying = false
+    }
+
     func togglePlayback() {
         guard player.currentItem != nil else { return }
         if player.timeControlStatus == .paused {

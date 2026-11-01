@@ -113,6 +113,22 @@
         }
       }
     },
+    "%lld / %lld tamamlandı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld / %lld tamamlandı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld / %2$lld completed"
+          }
+        }
+      }
+    },
     "%lld satır · dil: %@": {
       "localizations": {
         "tr": {
@@ -353,6 +369,22 @@
         }
       }
     },
+    "Birden fazla videoyu buraya sürükle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Birden fazla videoyu buraya sürükle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag multiple videos here"
+          }
+        }
+      }
+    },
     "Bitiş": {
       "localizations": {
         "tr": {
@@ -429,6 +461,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Change who says this line"
+          }
+        }
+      }
+    },
+    "Bu videonun konuşma (kaynak) dilini seç": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu videonun konuşma (kaynak) dilini seç"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select the spoken (source) language for this video"
           }
         }
       }
@@ -589,6 +637,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Stop"
+          }
+        }
+      }
+    },
+    "Düzenleyici": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Düzenleyici"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editor"
           }
         }
       }
@@ -781,6 +845,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Fast"
+          }
+        }
+      }
+    },
+    "Kaydedildi: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kaydedildi: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved: %@"
           }
         }
       }
@@ -1101,6 +1181,118 @@
           "stringUnit": {
             "state": "translated",
             "value": "License: %@"
+          }
+        }
+      }
+    },
+    "Listede henüz video yok.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listede henüz video yok."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No videos in the list yet."
+          }
+        }
+      }
+    },
+    "Listedeki tüm videolar sırayla seçili hedef dile çevrilip kendi klasörlerine kaydedilir.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listedeki tüm videolar sırayla seçili hedef dile çevrilip kendi klasörlerine kaydedilir."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All videos in the list are translated sequentially into the selected target language and saved to their own folders."
+          }
+        }
+      }
+    },
+    "Listedeki tüm videoları sırayla metne çevir, seçili hedef dile çevir ve kendi klasörlerine kaydet": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listedeki tüm videoları sırayla metne çevir, seçili hedef dile çevir ve kendi klasörlerine kaydet"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transcribe, translate into the selected target language, and save each video in the list to its own folder sequentially"
+          }
+        }
+      }
+    },
+    "Listedeki tüm videoların konuşma (kaynak) dilini tek seferde ayarla": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listedeki tüm videoların konuşma (kaynak) dilini tek seferde ayarla"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set the spoken (source) language for all videos in the list at once"
+          }
+        }
+      }
+    },
+    "Listeden kaldır": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listeden kaldır"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove from list"
+          }
+        }
+      }
+    },
+    "Listeye birden fazla video dosyası ekle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listeye birden fazla video dosyası ekle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add multiple video files to the playlist"
+          }
+        }
+      }
+    },
+    "Listeyi temizle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listeyi temizle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear list"
           }
         }
       }
@@ -1617,6 +1809,38 @@
         }
       }
     },
+    "Sırada": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sırada"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queued"
+          }
+        }
+      }
+    },
+    "Tamamlanan ve bekleyen videoları listeden temizle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tamamlanan ve bekleyen videoları listeden temizle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear completed and pending videos from the list"
+          }
+        }
+      }
+    },
     "Tema": {
       "localizations": {
         "tr": {
@@ -1681,6 +1905,22 @@
         }
       }
     },
+    "Tüm kaynak diller": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tüm kaynak diller"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All source languages"
+          }
+        }
+      }
+    },
     "Tüm satırları seçili hedef dile yerel modelle çevir": {
       "localizations": {
         "tr": {
@@ -1693,6 +1933,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Translate all lines into the chosen target language with a local model"
+          }
+        }
+      }
+    },
+    "Tümünü Çevir ve Kaydet": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tümünü Çevir ve Kaydet"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translate & Save All"
           }
         }
       }
@@ -1869,6 +2125,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "If several people speak in the video, tell who said what; a small model is downloaded on first use."
+          }
+        }
+      }
+    },
+    "Videoda konuşma bulunamadı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videoda konuşma bulunamadı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No speech was found in the video."
+          }
+        }
+      }
+    },
+    "Videoları ekle…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videoları ekle…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add videos…"
           }
         }
       }
@@ -2065,6 +2353,54 @@
         }
       }
     },
+    "Çalma listesi": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çalma listesi"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Playlist"
+          }
+        }
+      }
+    },
+    "Çalma listesi (%lld)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çalma listesi (%lld)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Playlist (%lld)"
+          }
+        }
+      }
+    },
+    "Çalışma alanı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çalışma alanı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Workspace"
+          }
+        }
+      }
+    },
     "Çalışıyor…": {
       "localizations": {
         "tr": {
@@ -2237,6 +2573,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Translation models"
+          }
+        }
+      }
+    },
+    "Çeviri tamamlanamadı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri tamamlanamadı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation could not be completed."
           }
         }
       }

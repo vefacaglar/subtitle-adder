@@ -15,7 +15,7 @@ final class SubtitleViewModel {
     /// An empty code means automatic detection; the choice is persisted in UserDefaults.
     var language: String {
         didSet {
-            guard language != oldValue else { return }
+            guard language != oldValue, !isPlaylistRunning else { return }
             defaults.set(language, forKey: Self.languageDefaultsKey)
             modelNotice = nil
             reconcileModelSelection()
@@ -24,7 +24,7 @@ final class SubtitleViewModel {
     }
     var model: String {
         didSet {
-            guard model != oldValue else { return }
+            guard model != oldValue, !isPlaylistRunning else { return }
             defaults.set(model, forKey: Self.modelDefaultsKey)
             modelNotice = nil
         }
@@ -32,7 +32,7 @@ final class SubtitleViewModel {
     /// Target language used in the translation request; the choice is persistent.
     var translationTarget: String {
         didSet {
-            guard translationTarget != oldValue else { return }
+            guard translationTarget != oldValue, !isPlaylistRunning else { return }
             defaults.set(translationTarget, forKey: Self.translationTargetDefaultsKey)
         }
     }
@@ -147,6 +147,9 @@ final class SubtitleViewModel {
     var exportFormat: SubtitleFormat = .srt
     var status: Status = .idle {
         didSet {
+            if case .working(let label, let fraction) = status {
+                syncActivePlaylistItem(label: label, fraction: fraction)
+            }
             // The offline retry only makes sense for the failure that registered it.
             if case .failed = status { return }
             offlineRetry = nil
@@ -192,6 +195,19 @@ final class SubtitleViewModel {
 
     var job: Task<Void, Never>?
     var jobID = UUID()  // only the current job may change the state
+
+    /// Which of the two views the window shows; dropping videos behaves differently on the playlist.
+    var workspace: Workspace = .editor
+    /// The batch playlist, in memory only. See `SubtitleViewModel+Playlist.swift`.
+    var playlist: [PlaylistItem] = []
+    /// A playlist run is under way: the source language, model and target are the run's, not the user's, and none
+    /// of them is persisted until it ends.
+    var isPlaylistRunning = false
+    /// The item the foreground job (transcription, or translation in sequential mode) belongs to.
+    @ObservationIgnored var activePlaylistItemID: UUID?
+    @ObservationIgnored var playlistTask: Task<Void, Never>?
+    /// Translate-and-save tasks of items handed to the external server, and the last one (the next waits for it).
+    @ObservationIgnored var playlistBackground: [Task<Void, Never>] = []
 
     private(set) var video: URL?
     /// The subtitle file the lines came from (import or sidecar); where "Altyazıyı kaydet" writes when there is no video.
@@ -275,8 +291,11 @@ final class SubtitleViewModel {
     /// Catalog filtered by language; the toolbar picker shows this.
     var availableModels: [EngineModel] { catalog.models(for: language) }
 
+    /// A job is running, or a playlist run is under way (including its background translations).
     var isWorking: Bool {
-        if case .working = status { true } else { false }
+        if isPlaylistRunning { return true }
+        if case .working = status { return true }
+        return false
     }
 
     /// Source language that changes with the language code (automatic if empty); passed to the translate command as `--from`.
@@ -310,7 +329,8 @@ final class SubtitleViewModel {
 
     /// The target language can't be the same as the source language; if it is, switches to another target.
     func reconcileTranslationTarget() {
-        guard let source = translationSource, source == translationTarget else { return }
+        // A playlist run keeps the target it started with.
+        guard !isPlaylistRunning, let source = translationSource, source == translationTarget else { return }
         guard let next = SubtitleLanguage.translationTargets.first(where: { $0.rawValue != source }) else { return }
         translationTarget = next.rawValue
     }
@@ -459,6 +479,7 @@ final class SubtitleViewModel {
     }
 
     func cancel() {
+        cancelPlaylist()
         job?.cancel()
         job = nil
         jobID = UUID()

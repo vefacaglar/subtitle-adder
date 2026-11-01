@@ -14,27 +14,11 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if vm.video == nil, vm.sentences.isEmpty {
-                dropZone.padding(20)
-            } else if vm.video == nil {
-                // Only a subtitle file is open: edit and save it without a player.
-                SentenceEditorView(vm: vm, player: player)
-            } else {
-                VSplitView {
-                    PlayerView(
-                        model: player,
-                        sentences: vm.sentences,
-                        translations: vm.translations,
-                        translationTitle: vm.translationTitle,
-                        display: Binding(
-                            get: { vm.effectiveDisplayMode },
-                            set: { vm.displayMode = $0 }
-                        )
-                    )
-                    .frame(minHeight: 200, idealHeight: 360)
-                    SentenceEditorView(vm: vm, player: player)
-                        .frame(minHeight: 180)
-                }
+            workspaceSwitcher.padding(.vertical, 8)
+            Divider()
+            switch vm.workspace {
+            case .editor: editor
+            case .playlist: PlaylistView(vm: vm)
             }
             Divider()
             statusBar.padding(.horizontal, 16).padding(.vertical, 10)
@@ -51,7 +35,9 @@ struct ContentView: View {
             vm.reconcileModelSelection()
             vm.reconcileTranslationModelSelection()
         }
-        .onChange(of: vm.video, initial: true) { _, url in player.load(url) }
+        // A playlist run goes through many videos; the player stays empty until it is over.
+        .onChange(of: vm.isPlaylistRunning ? nil : vm.video, initial: true) { _, url in player.load(url) }
+        .onChange(of: vm.workspace) { _, _ in player.pause() }
         .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
         .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent]) { result in
             let run = runAfterPicking
@@ -74,17 +60,58 @@ struct ContentView: View {
         ) { _ in }
     }
 
+    private var workspaceSwitcher: some View {
+        Picker(L("Çalışma alanı"), selection: $vm.workspace) {
+            Text(L("Düzenleyici")).tag(Workspace.editor)
+            Text(vm.hasPlaylistItems ? L("Çalma listesi (%lld)", vm.playlist.count) : L("Çalma listesi"))
+                .tag(Workspace.playlist)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+    }
+
+    @ViewBuilder private var editor: some View {
+        if vm.video == nil, vm.sentences.isEmpty {
+            dropZone.padding(20)
+        } else if vm.video == nil {
+            // Only a subtitle file is open: edit and save it without a player.
+            SentenceEditorView(vm: vm, player: player)
+        } else if vm.isPlaylistRunning {
+            SentenceEditorView(vm: vm, player: player)
+        } else {
+            VSplitView {
+                PlayerView(
+                    model: player,
+                    sentences: vm.sentences,
+                    translations: vm.translations,
+                    translationTitle: vm.translationTitle,
+                    display: Binding(
+                        get: { vm.effectiveDisplayMode },
+                        set: { vm.displayMode = $0 }
+                    )
+                )
+                .frame(minHeight: 200, idealHeight: 360)
+                SentenceEditorView(vm: vm, player: player)
+                    .frame(minHeight: 180)
+            }
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItemGroup {
-            Button(L("Video seç"), systemImage: "film") {
-                runAfterPicking = false
-                pickingVideo = true
+            if vm.workspace == .editor {
+                Button(L("Video seç"), systemImage: "film") {
+                    runAfterPicking = false
+                    pickingVideo = true
+                }
+                .disabled(vm.isPlaylistRunning)
+                .help(L("Video dosyası seç"))
+                Button(L("Altyazı aç"), systemImage: "doc.text") { pickingSubtitle = true }
+                    .disabled(vm.isWorking)
+                    .help(L("Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle"))
             }
-            .help(L("Video dosyası seç"))
-            Button(L("Altyazı aç"), systemImage: "doc.text") { pickingSubtitle = true }
-                .disabled(vm.isWorking)
-                .help(L("Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle"))
             Picker(L("Dil"), selection: $vm.language) {
                 ForEach(SubtitleLanguage.allCases) { language in
                     Text(language.title).tag(language.rawValue)
@@ -93,10 +120,13 @@ struct ContentView: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .frame(width: 175)
+            .disabled(vm.isPlaylistRunning)
             .help(L("Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır."))
             ModelPicker(selection: $vm.model, models: vm.availableModels)
+                .disabled(vm.isPlaylistRunning)
             speakerMenu
-            if !vm.sentences.isEmpty {
+            // The playlist translates everything, so its target is chosen before there are any lines.
+            if !vm.sentences.isEmpty || vm.workspace == .playlist {
                 Picker(L("Çeviri dili"), selection: $vm.translationTarget) {
                     ForEach(SubtitleLanguage.translationTargets) { language in
                         Text(language.targetName).tag(language.rawValue)
@@ -110,21 +140,26 @@ struct ContentView: View {
                 .help(vm.translationSource == nil
                     ? L("Çeviri hedef dili. Kaynak dil bilinmiyor; NLLB için önce konuşma dilini seç.")
                     : L("Çeviri hedef dili; kaynak dille aynı olan seçilemez."))
-                Button(L("Çevir…"), systemImage: "translate") { vm.translate() }
-                    .labelStyle(.titleAndIcon)
-                    .disabled(vm.isWorking)
-                    .help(L("Tüm satırları seçili hedef dile yerel modelle çevir"))
+                if vm.workspace == .editor {
+                    Button(L("Çevir…"), systemImage: "translate") { vm.translate() }
+                        .labelStyle(.titleAndIcon)
+                        .disabled(vm.isWorking)
+                        .help(L("Tüm satırları seçili hedef dile yerel modelle çevir"))
+                }
                 translationModelMenu
             }
         }
         ToolbarItemGroup(placement: .primaryAction) {
-            Toggle(L("Otomatik kaydet"), systemImage: "square.and.arrow.down", isOn: $vm.autoSaveSubtitle)
-                .help(L("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"))
+            // The playlist always saves what it translates, so the toggle only belongs to the editor.
+            if vm.workspace == .editor {
+                Toggle(L("Otomatik kaydet"), systemImage: "square.and.arrow.down", isOn: $vm.autoSaveSubtitle)
+                    .help(L("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"))
+            }
             if vm.isWorking {
                 Button(L("Durdur"), systemImage: "stop.fill") { vm.cancel() }
                     .labelStyle(.titleAndIcon)
                     .help(L("Süren altyazı ya da çeviri işini durdur"))
-            } else {
+            } else if vm.workspace == .editor {
                 Button(L("Komple çevir"), systemImage: "wand.and.stars") { generateAndTranslate() }
                     .labelStyle(.titleAndIcon)
                     .buttonStyle(.borderedProminent)
@@ -257,7 +292,7 @@ struct ContentView: View {
         HStack(spacing: 10) {
             switch vm.status {
             case .idle:
-                Text(vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
+                Text(vm.workspace == .playlist || vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
             case .working(let label, let fraction):
                 if let fraction {
                     ProgressView(value: fraction).frame(width: 120)
@@ -295,6 +330,16 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 150)
+            if vm.workspace == .editor {
+                exportControls
+            }
+        }
+        .font(.callout)
+    }
+
+    /// Which text the file carries, and the buttons that write it.
+    @ViewBuilder private var exportControls: some View {
+        HStack(spacing: 10) {
             Picker(L("Dil"), selection: $vm.exportLanguage) {
                 Text(L("Orijinal")).tag(ExportLanguage.original)
                 Text(vm.translationTitle).tag(ExportLanguage.translated)
