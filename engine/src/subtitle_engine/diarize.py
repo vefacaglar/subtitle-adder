@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Protocol
 
 from . import models
+from .i18n import t
 from .models import ModelError, Word
 
 ProgressFn = Callable[[float], None]
@@ -80,7 +81,7 @@ class SherpaDiarizer:
             ),
         )
         if not config.validate():
-            raise ModelError("Konuşmacı ayrıştırma modeli yüklenemedi; dosyalar bozuk olabilir.")
+            raise ModelError(t("diarize_load_failed"))
         return sherpa.OfflineSpeakerDiarization(config)
 
     def diarize(
@@ -193,7 +194,7 @@ def merge_similar_speakers(
 def _cached_path(repo: str, filename: str) -> str:
     path = models.huggingface_hub.try_to_load_from_cache(repo, filename)
     if not isinstance(path, str):
-        raise ModelError("Konuşmacı ayrıştırma modeli indirilmemiş; önce indirilmesi gerekiyor.")
+        raise ModelError(t("diarize_not_downloaded"))
     return path
 
 
@@ -203,7 +204,7 @@ def read_wav(path: Path):
 
     with wave.open(str(path)) as wav:
         if wav.getframerate() != SAMPLE_RATE or wav.getnchannels() != 1 or wav.getsampwidth() != 2:
-            raise ModelError("Konuşmacı ayrıştırma 16 kHz mono 16-bit WAV ses bekler.")
+            raise ModelError(t("diarize_wav_format"))
         frames = wav.readframes(wav.getnframes())
     return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
 
@@ -306,7 +307,7 @@ def _smooth(words: Sequence[Word], speakers: list[int | None]) -> list[int | Non
 
     Decided on the original assignment (no cascading) and only when both neighbouring runs have at
     least two words, so alternating one-word turns survive. A real one-word reply is kept: an island
-    that ends a sentence, or that follows a word ending one ("Hazır mısın? | Evet. | Başlayalım.").
+    that ends a sentence, or that follows a word ending one ("Hazır mısın? | Evet. | Başlayalım." -- Turkish example).
     """
     result = list(speakers)
     runs = _runs(speakers)
@@ -329,7 +330,7 @@ def _snap(words: Sequence[Word], speakers: list[int | None]) -> list[int | None]
     SNAP_MAX_WORDS words and SNAP_MAX_SECONDS of speech.
 
     Forward: the new speaker's first words finish the previous speaker's sentence ("... hazır olur |
-    dersin?") -> they go back to the previous speaker. Backward: the previous speaker's last words
+    dersin?", Turkish example) -> they go back to the previous speaker. Backward: the previous speaker's last words
     after a sentence end start the new speaker's sentence -> they go to the new speaker. Pauses are
     not used (Whisper glues word timestamps). A change right after sentence-final punctuation is
     a real turn and is never touched.

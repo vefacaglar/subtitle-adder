@@ -8,6 +8,7 @@ from . import diarize as diarization
 from . import models, subtitles
 from .audio import extract_audio
 from .diarize import Diarizer
+from .i18n import t
 from .models import Sentence
 from .sentences import SegmenterConfig, segment
 from .transcribe import Transcriber
@@ -41,10 +42,10 @@ def run(
     diarizer_factory: DiarizerFactory | None = None,
 ) -> PipelineResult:
     if num_speakers is not None and num_speakers < 1:
-        raise ValueError("Konuşmacı sayısı en az 1 olmalı.")
+        raise ValueError(t("speakers_min"))
     info = models.find(model) if model else None
     if info is not None and info.kind != "transcription":
-        raise ValueError(f"{model} bir konuşma tanıma modeli değil; 'models' komutu geçerli modelleri listeler.")
+        raise ValueError(t("not_transcription_model", model=model))
     if language and info is not None and info.languages is not None and language not in info.languages:
         raise ValueError(models.support_error(info, language))
 

@@ -2,6 +2,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from .i18n import t
 from .models import Sentence, Word
 
 SENTENCE_END = (".", "!", "?", "…")
@@ -45,7 +46,7 @@ def speaker_runs(
     if speakers is None:
         return [(list(words), None)]
     if len(speakers) != len(words):
-        raise ValueError("Konuşmacı listesi kelime sayısıyla aynı uzunlukta olmalı.")
+        raise ValueError(t("speaker_list_length"))
     runs: list[tuple[list[Word], int | None]] = []
     for word, speaker in zip(words, speakers):
         if runs and runs[-1][1] == speaker:

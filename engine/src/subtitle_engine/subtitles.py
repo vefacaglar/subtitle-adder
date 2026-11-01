@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 
+from .i18n import t
 from .models import Sentence
 
 FORMATS = ("srt", "vtt", "json")
@@ -54,7 +55,7 @@ def render(sentences: list[Sentence], fmt: str) -> str:
         )
     if fmt == "json":
         return json.dumps([s.to_dict() for s in sentences], ensure_ascii=False, indent=2)
-    raise ValueError(f"Bilinmeyen format: {fmt}")
+    raise ValueError(t("unknown_format", format=fmt))
 
 
 def write(sentences: list[Sentence], path: Path, fmt: str) -> Path:

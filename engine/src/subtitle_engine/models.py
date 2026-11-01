@@ -20,6 +20,8 @@ from huggingface_hub.errors import CacheNotFound
 from huggingface_hub.utils import filter_repo_objects
 from tqdm import tqdm
 
+from .i18n import MESSAGES, t
+
 _SHARED_BLOBS_DIR = "blobs"  # huggingface_hub: cache-wide shared (xet) blob store
 _SHARED_MARKER = ".huggingface-shared-blobs"
 _SHARED_HASH = re.compile(r"[0-9a-f]{64}")
@@ -240,19 +242,24 @@ DISPLAY_NAMES = {
     "canary-1b-v2": "Canary",
     "madlad-3b": "MADLAD",
     "nllb-1.3b": "NLLB",
-    "speaker-diarization": "Konuşmacı ayrıştırma",
 }
-TURKISH_LANGUAGE_NAMES = {
-    "ru": "Rusça",
-    "pt": "Portekizce",
-    "es": "İspanyolca",
-    "tr": "Türkçe",
-    "en": "İngilizce",
-}
+
+
+def display_name(model_id: str) -> str:
+    """Name shown to the user (the diarization model's name follows the UI language)."""
+    if model_id == "speaker-diarization":
+        return t("name_speaker_diarization")
+    return DISPLAY_NAMES.get(model_id, model_id)
+
+
+def language_name(code: str) -> str:
+    """Language name in the UI language; unknown codes are returned as is."""
+    key = f"lang_{code}"
+    return t(key) if key in MESSAGES else code
 
 
 class ModelError(Exception):
-    """Model error with a Turkish message that can be shown to the user (the CLI turns it into an `error` event)."""
+    """Model error with a localized message that can be shown to the user (the CLI turns it into an `error` event)."""
 
 
 def find(model_id: str) -> ModelInfo | None:
@@ -350,7 +357,7 @@ def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
     """
     info = find(model_id)
     if info is None:
-        raise ModelError(f"Bilinmeyen model: {model_id}. Geçerli kimlikleri 'models' komutu listeler.")
+        raise ModelError(t("unknown_model", model=model_id))
 
     # If other catalog entries share the same repo, deleting would break them too.
     mine = {repo for repo, _ in _parts(info)}
@@ -360,7 +367,7 @@ def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
         if other.id != info.id and mine & {repo for repo, _ in _parts(other)}
     ]
     if shared:
-        raise ModelError(f"{info.id} modeli {', '.join(shared)} ile aynı dosyaları paylaşıyor; silinmedi.")
+        raise ModelError(t("model_shared", model=info.id, others=", ".join(shared)))
 
     root = Path(cache_dir or HF_HUB_CACHE).expanduser().resolve()
     cache = _scan_cache(root)
@@ -373,7 +380,7 @@ def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
             if found.repo_type == "model" and found.repo_id == repo
         ]
     if not repos:
-        raise ModelError(f"{info.id} modeli indirilmemiş; silinecek dosya yok.")
+        raise ModelError(t("model_not_downloaded_delete", model=info.id))
 
     freed = 0
     leftovers: list[str] = []
@@ -391,8 +398,7 @@ def delete_model(model_id: str, cache_dir: str | Path | None = None) -> int:
     if leftovers:
         # Keep going past a failing repo, then say honestly what happened instead of losing the freed bytes.
         raise ModelError(
-            f"{DISPLAY_NAMES.get(info.id, info.id)} modeli kısmen silindi ({_mb(freed)} MB boşaldı); "
-            f"kalan: {'; '.join(leftovers)}"
+            t("partial_delete", name=display_name(info.id), freed=_mb(freed), left="; ".join(leftovers))
         )
     return _mb(freed)
 
@@ -404,7 +410,7 @@ def _delete_whole_repo(root: Path, repo, repo_id: str) -> int:
     # delete_revisions looks the commit id up in the whole cache; removing just this repo folder is safer.
     _remove_repo_leftovers(root, repo_path, repo_id)
     if repo_path.exists():
-        raise ModelError(f"Model dosyaları tamamen silinemedi: {repo_path}")
+        raise ModelError(t("delete_incomplete", path=repo_path))
     return local_bytes + _sweep_shared_blobs(root, shared_targets)
 
 
@@ -447,7 +453,7 @@ def _delete_owned_files(root: Path, repo, repo_id: str, names: set[str]) -> int:
         local, more = _inspect_repo_blobs(repo_path, root)
         _remove_repo_leftovers(root, repo_path, repo_id)
         if repo_path.exists():
-            raise ModelError(f"Model dosyaları tamamen silinemedi: {repo_path}")
+            raise ModelError(t("delete_incomplete", path=repo_path))
         freed += local
         targets |= more
     return freed + _sweep_shared_blobs(root, targets)
@@ -695,25 +701,24 @@ def model_dir(model_id: str) -> Path:
     """Local snapshot folder of a downloaded model; no network.
 
     CTranslate2 looks for the weights as a single file (model.bin); the folder path lives in the same
-    snapshot. Raises a (Turkish) `ModelError` if the model is missing.
+    snapshot. Raises a (localized) `ModelError` if the model is missing.
     """
     info = find(model_id)
     if info is None:
-        raise ModelError(f"Bilinmeyen model: {model_id}. Geçerli kimlikleri 'models' komutu listeler.")
+        raise ModelError(t("unknown_model", model=model_id))
     path = huggingface_hub.try_to_load_from_cache(info.repo, "model.bin")
     if not isinstance(path, str):
-        raise ModelError(f"{info.id} modeli indirilmemiş; önce indirilmesi gerekiyor.")
+        raise ModelError(t("model_not_downloaded", model=info.id))
     return Path(path).parent
 
 
 def support_error(info: ModelInfo, language: str) -> str:
-    """Returns a (Turkish) explanation if the chosen language is not among those the model supports."""
-    name = DISPLAY_NAMES.get(info.id, info.id)
+    """Returns a (localized) explanation if the chosen language is not among those the model supports."""
+    name = display_name(info.id)
     languages = info.languages or ()
     if len(languages) == 1:
-        language_name = TURKISH_LANGUAGE_NAMES.get(languages[0], languages[0])
-        return f"{name} yalnız {language_name} destekler."
-    return f"{name} {language} dilini desteklemiyor. Desteklenen diller: {', '.join(languages)}."
+        return t("only_language", name=name, language=language_name(languages[0]))
+    return t("unsupported_language", name=name, language=language, supported=", ".join(languages))
 
 
 def _reporter(total: int, on_progress: ProgressFn | None) -> Callable[[float], None]:

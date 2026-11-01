@@ -13,8 +13,9 @@ import json
 import sys
 from pathlib import Path
 
-from . import models, pipeline, subtitles
+from . import i18n, models, pipeline, subtitles
 from .models import KATALOG, Sentence, cached_disk_mb, delete_model, disk_mb, is_downloaded
+from .i18n import t
 from .sentences import SegmenterConfig
 
 PROTOCOL_VERSION = 1
@@ -27,7 +28,7 @@ def _emit(payload: dict) -> None:
 
 def _transcribe(args: argparse.Namespace) -> int:
     if args.speakers is not None and not args.diarize:
-        raise ValueError("--speakers yalnız --diarize ile kullanılabilir.")
+        raise ValueError(t("speakers_needs_diarize"))
     def on_stage(stage: str, fraction: float | None) -> None:
         if args.json:
             _emit({"event": "stage", "stage": stage, "fraction": fraction})
@@ -61,7 +62,7 @@ def _transcribe(args: argparse.Namespace) -> int:
             "sentences": [s.to_dict() for s in result.sentences],
         })
     else:
-        print(f"dil: {result.language} | {len(result.sentences)} altyazı satırı")
+        print(t("summary", language=result.language, count=len(result.sentences)))
         for path in result.outputs:
             print(f"-> {path}")
     return 0
@@ -87,7 +88,7 @@ def _translate(args: argparse.Namespace) -> int:
         elif fraction is None:
             print(f"… {stage}", file=sys.stderr)
 
-    # A language/model problem must surface as a (Turkish) `error` event before any download starts.
+    # A language/model problem must surface as a (localized) `error` event before any download starts.
     check_request(args.model, args.to, args.source)
     sentences = [Sentence.from_dict(d) for d in json.load(sys.stdin)]
     if models.needs_download(args.model):
@@ -137,12 +138,12 @@ def _models(args: argparse.Namespace) -> int:
         _emit({"event": "models", "models": rows})
         return 0
     print(
-        f"{'model':<22}{'tür':>14}{'boyut':>10}{'disk':>10}"
-        f"{'hız':>6}{'doğruluk':>10}{'lisans':>20}{'önbellek':>10}"
+        f"{t('col_model'):<22}{t('col_kind'):>14}{t('col_size'):>10}{t('col_disk'):>10}"
+        f"{t('col_speed'):>6}{t('col_accuracy'):>10}{t('col_license'):>20}{t('col_cache'):>10}"
     )
     for row in rows:
         disk = "—" if row["disk_mb"] is None else f"{row['disk_mb']} MB"
-        cached = "var" if row["downloaded"] else "yok"
+        cached = t("cached_yes") if row["downloaded"] else t("cached_no")
         print(
             f"{row['id']:<22}{row['kind']:>14}{row['size_mb']:>7} MB{disk:>10}"
             f"{row['speed']:>6}{row['accuracy']:>10}{row['license']:>20}{cached:>10}"
@@ -156,16 +157,23 @@ def _delete_model(args: argparse.Namespace) -> int:
     if args.json:
         _emit({"event": "deleted", "id": args.id, "freed_mb": freed})
     else:
-        print(f"{args.id} silindi, {freed} MB boşaldı")
+        print(t("deleted", id=args.id, freed=freed))
     return 0
+
+
+_LANG_HELP = f"language of user-facing messages (overrides {i18n.ENV_VAR}; anything but en means tr)"
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="subtitle-engine")
+    p.add_argument("--lang", default=None, metavar="tr|en", help=_LANG_HELP)
+    # Same option after the subcommand; separate dest so a missing sub-level value cannot clobber the global one.
+    lang_parent = argparse.ArgumentParser(add_help=False)
+    lang_parent.add_argument("--lang", dest="sub_lang", default=None, metavar="tr|en", help=_LANG_HELP)
     p.add_argument("--version", action="version", version=f"%(prog)s protocol {PROTOCOL_VERSION}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    t = sub.add_parser("transcribe", help="generate subtitles from a video")
+    t = sub.add_parser("transcribe", parents=[lang_parent], help="generate subtitles from a video")
     t.add_argument("video", type=Path)
     t.add_argument("-o", "--out-dir", type=Path, default=Path("output"))
     t.add_argument("-l", "--language", default=None, help="e.g. tr, en (auto-detected if omitted)")
@@ -178,23 +186,23 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--json", action="store_true", help="write a JSON event stream to stdout")
     t.set_defaults(handler=_transcribe)
 
-    tr = sub.add_parser("translate", help="translate the sentence JSON on stdin with a local model")
+    tr = sub.add_parser("translate", parents=[lang_parent], help="translate the sentence JSON on stdin with a local model")
     tr.add_argument("--to", required=True, help="target language (e.g. tr, en, es, pt, ru)")
     tr.add_argument("--from", dest="source", default=None, help="source language; required for NLLB")
     tr.add_argument("-m", "--model", default="madlad-3b", help="translation model (see the models command)")
     tr.add_argument("--json", action="store_true", help="write a JSON event stream to stdout")
     tr.set_defaults(handler=_translate)
 
-    r = sub.add_parser("render", help="convert the sentence JSON on stdin to a subtitle format")
+    r = sub.add_parser("render", parents=[lang_parent], help="convert the sentence JSON on stdin to a subtitle format")
     r.add_argument("-f", "--format", choices=subtitles.FORMATS, default="srt")
     r.add_argument("-o", "--out", type=Path, default=None)
     r.set_defaults(handler=_render)
 
-    ms = sub.add_parser("models", help="list the model catalog and download status")
+    ms = sub.add_parser("models", parents=[lang_parent], help="list the model catalog and download status")
     ms.add_argument("--json", action="store_true", help="write a single JSON line")
     ms.set_defaults(handler=_models)
 
-    dm = sub.add_parser("delete-model", help="delete a downloaded model from the cache")
+    dm = sub.add_parser("delete-model", parents=[lang_parent], help="delete a downloaded model from the cache")
     dm.add_argument("id", help="model id (see the models command)")
     dm.add_argument("--json", action="store_true", help="write a single JSON line")
     dm.set_defaults(handler=_delete_model)
@@ -213,13 +221,14 @@ def _force_utf8() -> None:
 def main(argv: list[str] | None = None) -> int:
     _force_utf8()
     args = build_parser().parse_args(argv)
+    i18n.set_language(args.sub_lang or args.lang)  # None keeps the SUBTITLE_ENGINE_LANG environment variable in charge
     try:
         return args.handler(args)
     except Exception as exc:  # the app receives every failure as a single kind of event
         if getattr(args, "json", False):
             _emit({"event": "error", "message": str(exc)})
         else:
-            print(f"hata: {exc}", file=sys.stderr)
+            print(f"{t('error_prefix')}: {exc}", file=sys.stderr)
         return 1
 
 

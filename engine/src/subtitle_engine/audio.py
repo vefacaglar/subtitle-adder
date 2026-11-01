@@ -7,6 +7,8 @@ from pathlib import Path
 
 import av
 
+from .i18n import t
+
 SAMPLE_RATE = 16_000
 GAP_TOLERANCE = SAMPLE_RATE // 20  # drifts under 50 ms are not padded
 
@@ -25,12 +27,12 @@ class AudioExtractionError(RuntimeError):
 
 def extract_audio(video: Path, out_wav: Path) -> Path:
     if not video.is_file():
-        raise AudioExtractionError(f"Video bulunamadı: {video}")
+        raise AudioExtractionError(t("video_not_found", video=video))
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     try:
         with av.open(str(video)) as container:
             if not container.streams.audio:
-                raise AudioExtractionError("Videoda ses izi yok.")
+                raise AudioExtractionError(t("no_audio_track"))
             stream = container.streams.best("audio") or container.streams.audio[0]
             origin = (container.start_time or 0) / av.time_base
             cursor = 0  # input time covered so far, in 16 kHz samples
@@ -53,5 +55,5 @@ def extract_audio(video: Path, out_wav: Path) -> Path:
                 for chunk in resampler.resample(None):
                     wav.writeframes(chunk.to_ndarray().tobytes())
     except av.FFmpegError as exc:
-        raise AudioExtractionError(f"Ses okunamadı: {exc}") from exc
+        raise AudioExtractionError(t("audio_read_failed", error=exc)) from exc
     return out_wav

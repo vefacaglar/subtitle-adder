@@ -6,7 +6,17 @@ import av
 import numpy as np
 import pytest
 
+from subtitle_engine import i18n
 from subtitle_engine.models import Word
+
+
+@pytest.fixture(autouse=True)
+def _default_language(monkeypatch):
+    """Tests do not depend on the developer's SUBTITLE_ENGINE_LANG or on a language pinned by an earlier test."""
+    monkeypatch.delenv(i18n.ENV_VAR, raising=False)
+    i18n.set_language(None)
+    yield
+    i18n.set_language(None)
 
 
 def make_words(text: str, step: float = 0.4) -> list[Word]:

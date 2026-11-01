@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol
 
 from . import models
+from .i18n import t
 from .models import ModelError, Sentence
 
 ProgressFn = Callable[[float], None]
@@ -44,25 +45,25 @@ class Translator(Protocol):
 
 
 def check_request(model_id: str, target: str, source: str | None = None) -> models.ModelInfo:
-    """Is the request compatible with the catalog and language support? If not, raises a (Turkish) `ModelError`."""
+    """Is the request compatible with the catalog and language support? If not, raises a (localized) `ModelError`."""
     info = models.find(model_id)
     if info is None or info.kind != "translation":
         raise ModelError(
-            f"Bilinmeyen çeviri modeli: {model_id}. Geçerli kimlikleri 'models' komutu listeler."
+            t("unknown_translation_model", model=model_id)
         )
     supported = info.languages or ()
     if target not in supported:
         raise ModelError(models.support_error(info, target))
     if info.id == "nllb-1.3b":
         if not source:
-            raise ModelError("NLLB için kaynak dil (--from) zorunlu; ör. --from tr.")
+            raise ModelError(t("nllb_source_required"))
         if source not in supported:
-            name = models.DISPLAY_NAMES.get(info.id, info.id)
+            name = models.display_name(info.id)
             raise ModelError(
-                f"{name} {source} dilinden çeviri yapamıyor. Desteklenen diller: {', '.join(supported)}."
+                t("cannot_translate_from", name=name, source=source, supported=", ".join(supported))
             )
         if source not in NLLB_LANGUAGE_CODES or target not in NLLB_LANGUAGE_CODES:
-            raise ModelError(f"NLLB {target} dili için tanımlı değil.")
+            raise ModelError(t("nllb_language_undefined", target=target))
     # MADLAD uses no source language tag; --from is ignored even if given.
     return info
 
@@ -72,7 +73,7 @@ def create_translator(model_id: str, device: str = "cpu", compute_type: str = "i
     info = models.find(model_id)
     if info is None or info.kind != "translation":
         raise ModelError(
-            f"Bilinmeyen çeviri modeli: {model_id}. Geçerli kimlikleri 'models' komutu listeler."
+            t("unknown_translation_model", model=model_id)
         )
     return Ct2Translator(model_id, device=device, compute_type=compute_type)
 
@@ -83,7 +84,7 @@ class Ct2Translator:
     def __init__(self, model_id: str, device: str = "cpu", compute_type: str = "int8"):
         info = models.find(model_id)
         if info is None or info.kind != "translation":
-            raise ModelError(f"Bilinmeyen çeviri modeli: {model_id}.")
+            raise ModelError(t("unknown_translation_model_short", model=model_id))
         self._info = info
         directory = models.model_dir(model_id)
         self._tokenizer = _load_tokenizer(directory, model_id)
