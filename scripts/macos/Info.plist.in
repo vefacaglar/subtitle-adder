@@ -17,6 +17,8 @@
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Çeviriyi yerel ağdaki bir LLM sunucusuna yaptırmak için gerekir. / Needed to translate with an LLM server on your local network.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHumanReadableCopyright</key><string>MIT License</string>
     <key>CFBundleDocumentTypes</key>

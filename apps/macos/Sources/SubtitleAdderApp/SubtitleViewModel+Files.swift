@@ -24,6 +24,7 @@ extension SubtitleViewModel {
         job?.cancel()
         job = nil
         jobID = UUID()
+        cancelAsyncTranslation()
         catalog.activeModels = []
         loadedSubtitle = url
         savedSubtitleName = nil

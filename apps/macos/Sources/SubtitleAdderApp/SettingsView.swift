@@ -96,9 +96,78 @@ private struct GeneralSettingsTab: View {
             } footer: {
                 Text(L("Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez. Ses ve metin hiçbir durumda dışarı gönderilmez."))
             }
+
+            externalLLMSection
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 640)
+        .frame(width: 560, height: 800)
+        // The server's models may have changed since the last visit.
+        .task {
+            if vm.isExternalLLMActive, !vm.isTestingExternalConnection { await vm.testExternalConnection() }
+        }
+    }
+
+    /// Translation on another computer of the local network (LM Studio, Ollama, llama-server).
+    private var externalLLMSection: some View {
+        Section {
+            Toggle(L("Ağdaki başka bir cihazın LLM sunucusunu kullan"), isOn: $vm.externalLlmEnabled)
+            Group {
+                TextField(
+                    L("Sunucu adresi (IP ve port)"), text: $vm.externalLlmUrl, prompt: Text(verbatim: "http://192.168.1.50:11434")
+                )
+                .autocorrectionDisabled()
+                LabeledContent {
+                    HStack(spacing: 8) {
+                        if vm.isTestingExternalConnection { ProgressView().controlSize(.small) }
+                        Button(L("Bağlantıyı test et")) { Task { await vm.testExternalConnection() } }
+                            .disabled(vm.isTestingExternalConnection)
+                            .help(L("Sunucuya ping at ve modelleri getir"))
+                    }
+                } label: {
+                    if let connection = vm.externalConnection {
+                        Label(
+                            connection.message.text,
+                            systemImage: connection.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(connection.isError ? Color.red : Color.green)
+                    }
+                }
+                HStack(spacing: 4) {
+                    TextField(
+                        L("Uzak model adı (isteğe bağlı)"), text: $vm.externalLlmModel, prompt: Text(verbatim: "gemma4:e4b")
+                    )
+                    .autocorrectionDisabled()
+                    Menu {
+                        ForEach(vm.externalModels, id: \.self) { name in
+                            Button(name) { vm.externalLlmModel = name }
+                        }
+                        if !vm.externalModels.isEmpty { Divider() }
+                        Button(L("Uzaktaki modelleri listele")) { Task { await vm.testExternalConnection() } }
+                    } label: {
+                        Label(L("Uzaktaki modelleri listele"), systemImage: "list.bullet")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .labelStyle(.iconOnly)
+                    .fixedSize()
+                    .help(L("Uzaktaki modelleri listele"))
+                }
+                Toggle(L("Asenkron çeviri (Sadece harici LLM ile)"), isOn: $vm.externalLlmAsync)
+            }
+            .disabled(!vm.externalLlmEnabled)
+            if vm.externalLlmEnabled {
+                Text(L("Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(L("Açıkken bu bilgisayar konuşmayı metne dökerken harici cihaz aynı anda çeviri yapar; kapalıyken sıralı çevrilir."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text(L("Harici LLM sunucusu (Yerel ağ)"))
+        } footer: {
+            Text(L("Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır.") + " " + L("Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"))
+        }
     }
 }
 

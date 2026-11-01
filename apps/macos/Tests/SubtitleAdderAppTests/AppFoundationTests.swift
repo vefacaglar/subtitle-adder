@@ -107,7 +107,9 @@ import Testing
         let (again, againState, _) = makeModel(defaults: defaults)
         #expect(!again.offlineMode)
         #expect(!againState.settings.offline)
-        again.externalLLM = ExternalLLM(url: "192.168.1.5:1234", model: "m")
+        again.externalLlmEnabled = true
+        again.externalLlmUrl = "192.168.1.5:1234"
+        again.externalLlmModel = "m"
         #expect(againState.settings == EngineLaunchSettings(offline: false, externalLLM: ExternalLLM(url: "192.168.1.5:1234", model: "m")))
     }
 
@@ -137,7 +139,8 @@ import Testing
         let (vm, _, _) = makeModel(engine: try fakeEngine(models: Self.modelsEvent))
         await vm.catalog.load()
         #expect(isBlocked(vm, ["madlad-3b"]))
-        vm.externalLLM = ExternalLLM(url: "192.168.1.5:11434")
+        vm.externalLlmEnabled = true
+        vm.externalLlmUrl = "192.168.1.5:11434"
         #expect(!isBlocked(vm, ["madlad-3b"]))
         #expect(isBlocked(vm, ["base", "madlad-3b"]))
         guard case .failed(let message) = vm.status else { Issue.record("expected a failure"); return }

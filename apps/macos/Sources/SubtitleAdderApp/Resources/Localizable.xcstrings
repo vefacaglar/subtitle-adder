@@ -2976,6 +2976,294 @@
           }
         }
       }
+    },
+    "Harici LLM sunucusu (Yerel ağ)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Harici LLM sunucusu (Yerel ağ)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "External LLM server (Local network)"
+          }
+        }
+      }
+    },
+    "Ağdaki başka bir cihazın LLM sunucusunu kullan": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ağdaki başka bir cihazın LLM sunucusunu kullan"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use an LLM server on another device on the network"
+          }
+        }
+      }
+    },
+    "Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offloads translation to another PC or Mac on the local network (LM Studio, Ollama, llama-server)."
+          }
+        }
+      }
+    },
+    "Sunucu adresi (IP ve port)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunucu adresi (IP ve port)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server address (IP and port)"
+          }
+        }
+      }
+    },
+    "Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "E.g. 192.168.1.50:1234 for LM Studio, 192.168.1.50:11434 for Ollama"
+          }
+        }
+      }
+    },
+    "Bağlantıyı test et": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bağlantıyı test et"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Test connection"
+          }
+        }
+      }
+    },
+    "Sunucuya ping at ve modelleri getir": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunucuya ping at ve modelleri getir"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ping server and fetch models"
+          }
+        }
+      }
+    },
+    "Lütfen geçerli bir sunucu adresi girin.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lütfen geçerli bir sunucu adresi girin."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please enter a valid server address."
+          }
+        }
+      }
+    },
+    "Sunucuya ulaşılamadı: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunucuya ulaşılamadı: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not reach server: %@"
+          }
+        }
+      }
+    },
+    "Bağlantı başarılı (%@ · %lld ms · %lld uygun model bulundu)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bağlantı başarılı (%@ · %lld ms · %lld uygun model bulundu)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connected (%@ · %lld ms · %lld suitable models found)"
+          }
+        }
+      }
+    },
+    "Uzak model adı (isteğe bağlı)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uzak model adı (isteğe bağlı)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remote model name (optional)"
+          }
+        }
+      }
+    },
+    "Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If left empty, the first model loaded on the server is detected automatically."
+          }
+        }
+      }
+    },
+    "Uzaktaki modelleri listele": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uzaktaki modelleri listele"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "List remote models"
+          }
+        }
+      }
+    },
+    "Asenkron çeviri (Sadece harici LLM ile)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Asenkron çeviri (Sadece harici LLM ile)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Asynchronous translation (External LLM only)"
+          }
+        }
+      }
+    },
+    "Açıkken bu bilgisayar konuşmayı metne dökerken harici cihaz aynı anda çeviri yapar; kapalıyken sıralı çevrilir.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Açıkken bu bilgisayar konuşmayı metne dökerken harici cihaz aynı anda çeviri yapar; kapalıyken sıralı çevrilir."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When on, the external device translates simultaneously while this Mac transcribes speech; when off, translation runs sequentially."
+          }
+        }
+      }
+    },
+    "Harici LLM": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Harici LLM"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "External LLM"
+          }
+        }
+      }
+    },
+    "Harici: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Harici: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "External: %@"
+          }
+        }
+      }
+    },
+    "Harici: %@ (Asenkron)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Harici: %@ (Asenkron)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "External: %@ (Async)"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

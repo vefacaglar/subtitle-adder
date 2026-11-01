@@ -78,14 +78,50 @@ final class SubtitleViewModel {
             publishLaunchSettings()
         }
     }
-    /// A server on the local network that translates instead of a local model; the launch settings carry it to the
-    /// engine. Set by the external LLM settings.
-    var externalLLM: ExternalLLM? {
+    /// External LLM server on the local network (Settings > Harici LLM sunucusu): translation goes there instead of a
+    /// local model. All four settings are persistent; the three that matter to the engine reach it through the launch
+    /// settings.
+    var externalLlmEnabled: Bool {
         didSet {
-            guard externalLLM != oldValue else { return }
+            guard externalLlmEnabled != oldValue else { return }
+            defaults.set(externalLlmEnabled, forKey: Self.externalLlmEnabledDefaultsKey)
             publishLaunchSettings()
         }
     }
+    /// Address of the server as typed (IP and port, with or without `http://`).
+    var externalLlmUrl: String {
+        didSet {
+            guard externalLlmUrl != oldValue else { return }
+            defaults.set(externalLlmUrl, forKey: Self.externalLlmUrlDefaultsKey)
+            // Models and the test result belong to the old address.
+            externalModels = []
+            externalConnection = nil
+            publishLaunchSettings()
+        }
+    }
+    /// Model name on the server; empty lets the engine pick the first one the server lists.
+    var externalLlmModel: String {
+        didSet {
+            guard externalLlmModel != oldValue else { return }
+            defaults.set(externalLlmModel, forKey: Self.externalLlmModelDefaultsKey)
+            publishLaunchSettings()
+        }
+    }
+    /// With an external LLM, translate partial lines in the background while the video is still being transcribed.
+    var externalLlmAsync: Bool {
+        didSet {
+            guard externalLlmAsync != oldValue else { return }
+            defaults.set(externalLlmAsync, forKey: Self.externalLlmAsyncDefaultsKey)
+        }
+    }
+    /// Models the server listed in the last connection test, without embedding-only ones.
+    var externalModels: [String] = []
+    /// Result of the last connection test, shown under the address field.
+    var externalConnection: ExternalConnectionNotice?
+    var isTestingExternalConnection = false
+    /// Share of the lines translated in the background while transcription is still running; `nil` when no
+    /// background translation is active.
+    var asyncTranslationFraction: Double?
     /// Separate speakers while transcribing (`--diarize`); persistent, on by default.
     var diarize: Bool {
         didSet {
@@ -143,6 +179,16 @@ final class SubtitleViewModel {
     @ObservationIgnored var offlineRetry: (@MainActor () -> Void)?
     @ObservationIgnored let defaults: UserDefaults
     @ObservationIgnored let launchState: EngineLaunchState
+    /// Fetches the server's model list for the connection test; tests replace it.
+    @ObservationIgnored let externalFetch: ExternalLLMServer.Fetch
+    /// Background translation of the lines transcribed so far (external LLM, async mode): the running task, the lines
+    /// already handed to it, and the run it belongs to. See `SubtitleViewModel+ExternalLLM.swift`.
+    @ObservationIgnored var asyncTask: Task<Void, Never>?
+    @ObservationIgnored var asyncQueued: Set<UUID> = []
+    @ObservationIgnored var asyncRunID = UUID()
+    /// Set once transcription is over: the running batch finishes, no new one starts.
+    @ObservationIgnored var asyncDraining = false
+    @ObservationIgnored var connectionTestID = UUID()
 
     var job: Task<Void, Never>?
     var jobID = UUID()  // only the current job may change the state
@@ -170,17 +216,23 @@ final class SubtitleViewModel {
     private static let displayModeDefaultsKey = "subtitleDisplayMode"
     static let offlineModeDefaultsKey = "offlineMode"
     private static let autoSaveDefaultsKey = "autoSaveSubtitle"
+    private static let externalLlmEnabledDefaultsKey = "externalLlmEnabled"
+    private static let externalLlmUrlDefaultsKey = "externalLlmUrl"
+    private static let externalLlmModelDefaultsKey = "externalLlmModel"
+    private static let externalLlmAsyncDefaultsKey = "externalLlmAsync"
     private static let diarizeDefaultsKey = "diarizeSpeakers"
     private static let speakerCountDefaultsKey = "speakerCount"
 
     init(
         catalog: ModelCatalog,
         defaults: UserDefaults = .standard,
-        launchState: EngineLaunchState = .shared
+        launchState: EngineLaunchState = .shared,
+        externalFetch: ExternalLLMServer.Fetch? = nil
     ) {
         self.catalog = catalog
         self.defaults = defaults
         self.launchState = launchState
+        self.externalFetch = externalFetch ?? ExternalLLMServer.urlSessionFetch()
         let savedLanguage = defaults.string(forKey: Self.languageDefaultsKey) ?? ""
         // The old version accepted free text; a code not in the list falls back to automatic.
         language = SubtitleLanguage(rawValue: savedLanguage) == nil ? "" : savedLanguage
@@ -198,13 +250,17 @@ final class SubtitleViewModel {
         speakerCount = savedCount >= 2 ? savedCount : 0
         offlineMode = defaults.object(forKey: Self.offlineModeDefaultsKey) as? Bool ?? true
         autoSaveSubtitle = defaults.object(forKey: Self.autoSaveDefaultsKey) as? Bool ?? true
+        externalLlmEnabled = defaults.bool(forKey: Self.externalLlmEnabledDefaultsKey)
+        externalLlmUrl = defaults.string(forKey: Self.externalLlmUrlDefaultsKey) ?? ""
+        externalLlmModel = defaults.string(forKey: Self.externalLlmModelDefaultsKey) ?? ""
+        externalLlmAsync = defaults.bool(forKey: Self.externalLlmAsyncDefaultsKey)
         reconcileModelSelection()
         reconcileTranslationTarget()
         publishLaunchSettings()
     }
 
     /// Hands the offline and external LLM settings to the engine launcher; read at every engine launch.
-    private func publishLaunchSettings() {
+    func publishLaunchSettings() {
         launchState.settings = EngineLaunchSettings(offline: offlineMode, externalLLM: externalLLM)
     }
 
@@ -266,6 +322,7 @@ final class SubtitleViewModel {
         job?.cancel()
         job = nil
         jobID = UUID()
+        cancelAsyncTranslation()
         catalog.activeModels = []
         sentences = []
         translations = [:]
@@ -297,6 +354,9 @@ final class SubtitleViewModel {
         if thenTranslate { needed.append(translationModel) }
         let retry: @MainActor () -> Void = { [weak self] in self?.generate(thenTranslate: thenTranslate) }
         if blockedOffline(needed, retry: retry) { return }
+        cancelAsyncTranslation()
+        // Komple çevir with an external LLM in async mode: the server translates while the Mac is still transcribing.
+        let asyncTranslate = thenTranslate && isExternalAsyncActive
         sentences = []
         translations = [:]
         translationDraft = nil
@@ -343,7 +403,10 @@ final class SubtitleViewModel {
                         status = .working(Self.label(for: stage, fraction: fraction, purpose: purpose), fraction: fraction)
                     case .partial(let language, let snapshot):
                         applyPartial(language: language, sentences: snapshot)
+                        if asyncTranslate { startAsyncTranslation(engine: engine) }
                     case .result(let result):
+                        // The last line is final now, but the closing pass takes it from here.
+                        asyncDraining = true
                         sentences = sentences.mergedWithSnapshot(result.sentences)
                         detectedLanguage = result.language
                         reconcileTranslationTarget()
@@ -359,11 +422,18 @@ final class SubtitleViewModel {
                 }
                 // On cancel the stream ends without an error; in that case the status doesn't change.
                 guard jobID == id, !Task.isCancelled else { return }
+                if failed { cancelAsyncTranslation() }
                 if !failed { status = .finished }
+                // Let the batch already at the server finish; the lines it didn't cover are translated below.
+                if asyncTranslate, !failed {
+                    await finishAsyncTranslation()
+                    guard jobID == id, !Task.isCancelled else { return }
+                }
                 // Komple çevir: hand over to the translation job, which also auto-saves. Nothing to translate
-                // (no speech found) just stays finished.
+                // (no speech found) just stays finished. After background translation only the missing, outdated
+                // and wrong-language lines are left to do.
                 if thenTranslate, !failed, !sentences.isEmpty {
-                    translate()
+                    translate(reuseExisting: asyncTranslate)
                     return
                 }
                 // Make the downloaded model show as "hazır" (ready) in the menu.
@@ -371,7 +441,10 @@ final class SubtitleViewModel {
             } catch is CancellationError {
                 if jobID == id { status = .idle }
             } catch {
-                if jobID == id { status = .failed(.error(error)) }
+                if jobID == id {
+                    cancelAsyncTranslation()
+                    status = .failed(.error(error))
+                }
             }
         }
     }
@@ -389,6 +462,7 @@ final class SubtitleViewModel {
         job?.cancel()
         job = nil
         jobID = UUID()
+        cancelAsyncTranslation()
         catalog.activeModels = []
         status = .idle
     }

@@ -26,7 +26,9 @@ extension SubtitleViewModel {
     }
 
     /// Translates all lines to the selected target language. While running, Stop cancels the same job.
-    func translate() {
+    /// With `reuseExisting` (after background translation) only the lines that have no translation yet, whose
+    /// translation is outdated or in another language are sent.
+    func translate(reuseExisting: Bool = false) {
         guard !sentences.isEmpty else { return }
         guard let engine = catalog.engine else {
             status = .failed(.error(EngineError.notFound))
@@ -40,19 +42,38 @@ extension SubtitleViewModel {
             status = .failed(.key("Kaynak ve hedef dil aynı olamaz."))
             return
         }
-        if translationModel == "nllb-1.3b", source == nil {
+        // An external LLM takes any language pair, so NLLB's need for a source language doesn't apply.
+        if translationModel == "nllb-1.3b", source == nil, !isExternalLLMActive {
             status = .failed(.key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç."))
             return
         }
         let model = translationModel
-        if blockedOffline([model], retry: { [weak self] in self?.translate() }) { return }
-        let request = sentences
+        if blockedOffline([model], retry: { [weak self] in self?.translate(reuseExisting: reuseExisting) }) { return }
+        cancelAsyncTranslation()
+        let request = reuseExisting ? linesNeedingTranslation(into: target) : sentences
+        // Lines that already have a translation count as done in the progress.
+        let alreadyDone = sentences.count - request.count
+        let total = max(1, sentences.count)
         savedSubtitleName = nil
         job?.cancel()
         let id = UUID()
         jobID = id
-        catalog.activeModels = [model]
-        status = .working(.key("Çeviri hazırlanıyor…"), fraction: nil)
+        // An external server has no local model to protect from deletion.
+        catalog.activeModels = isExternalLLMActive ? [] : [model]
+        if request.isEmpty {
+            // Everything was translated in the background: only the save is left.
+            status = .working(.key("Çeviri hazırlanıyor…"), fraction: nil)
+            job = Task {
+                guard jobID == id, !Task.isCancelled else { return }
+                status = .finished
+                await autoSaveTranslationIfEnabled()
+            }
+            return
+        }
+        status = alreadyDone > 0
+            ? .working(Self.label(for: .translating, fraction: Double(alreadyDone) / Double(total), purpose: .translation),
+                       fraction: Double(alreadyDone) / Double(total))
+            : .working(.key("Çeviri hazırlanıyor…"), fraction: nil)
         job = Task {
             // However it ends, the model becomes deletable in Settings.
             defer { if jobID == id { catalog.activeModels = [] } }
@@ -61,14 +82,17 @@ extension SubtitleViewModel {
                 for try await event in engine.translate(request, to: target, from: source, model: model) {
                     guard jobID == id, !Task.isCancelled else { return }
                     switch event {
-                    case .stage(let stage, let fraction):
+                    case .stage(let stage, var fraction):
+                        if alreadyDone > 0, stage == .translating, let part = fraction {
+                            fraction = (Double(alreadyDone) + Double(request.count) * min(max(part, 0), 1)) / Double(total)
+                        }
                         status = .working(
                             Self.label(for: stage, fraction: fraction, purpose: .translation),
                             fraction: fraction
                         )
                     case .translation(let language, let translated):
                         // One event per batch (a growing prefix) plus a final one; each is applied as it arrives.
-                        applyTranslation(translated, language: language, source: request)
+                        applyTranslation(translated, language: language, source: request, merge: reuseExisting)
                     case .result, .partial:
                         break
                     case .error(let message):
@@ -92,14 +116,35 @@ extension SubtitleViewModel {
         }
     }
 
-    /// Maps translated lines by their stable `uid` values; the engine preserves order and ids.
-    func applyTranslation(_ translated: [Sentence], language: String, source: [Sentence]) {
-        let hadTranslations = hasTranslations
-        var entries: [UUID: TranslationEntry] = [:]
-        for (index, result) in translated.enumerated() {
+    /// The lines that have no translation into `target`, or whose translation is outdated (the original was edited).
+    func linesNeedingTranslation(into target: String) -> [Sentence] {
+        sentences.filter { sentence in
+            guard let entry = translations[sentence.uid] else { return true }
+            return entry.isStale(for: sentence) || entry.language != target
+        }
+    }
+
+    /// Maps translated lines by their stable `uid` values; the engine preserves order and ids. With `merge` the
+    /// translations of other lines (same language) are kept and these are added to them.
+    func applyTranslation(_ translated: [Sentence], language: String, source: [Sentence], merge: Bool = false) {
+        storeTranslations(Self.pairs(translated, with: source), language: language, merge: merge)
+    }
+
+    /// Each translated line with the line it translates: matched by id, else by position.
+    static func pairs(_ translated: [Sentence], with source: [Sentence]) -> [(result: Sentence, original: Sentence)] {
+        translated.enumerated().compactMap { index, result in
             let original = source.first(where: { $0.id == result.id })
                 ?? (source.indices.contains(index) ? source[index] : nil)
-            guard let original else { continue }
+            return original.map { (result, $0) }
+        }
+    }
+
+    func storeTranslations(_ pairs: [(result: Sentence, original: Sentence)], language: String, merge: Bool) {
+        let hadTranslations = hasTranslations
+        var entries: [UUID: TranslationEntry] = merge && (translationLanguage == language || translations.isEmpty)
+            ? translations
+            : [:]
+        for (result, original) in pairs {
             entries[original.uid] = TranslationEntry(
                 text: result.text,
                 sourceText: original.text,

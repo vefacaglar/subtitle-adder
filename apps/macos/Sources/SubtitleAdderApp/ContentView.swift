@@ -151,21 +151,57 @@ struct ContentView: View {
 
     private static let subtitleTypes: [UTType] = SubtitleParser.extensions.compactMap { UTType(filenameExtension: $0) } + [.plainText]
 
-    /// The model "Çevir…" uses: local LLMs first, then MADLAD and NLLB. The choice is the same one Settings shows.
+    /// The model "Çevir…" uses: local LLMs first, then MADLAD and NLLB (the same choice Settings shows), or the models
+    /// of the external server when one is set up.
     private var translationModelMenu: some View {
         Menu {
-            ForEach(catalog.llamaTranslationModels) { translationModelButton($0) }
-            if !catalog.llamaTranslationModels.isEmpty, !catalog.classicTranslationModels.isEmpty {
-                Divider()
+            if vm.isExternalLLMActive {
+                externalModelItems
+            } else {
+                localModelItems
             }
-            ForEach(catalog.classicTranslationModels) { translationModelButton($0) }
         } label: {
-            Text(ModelLabel.name(for: vm.translationModel))
-                .frame(minWidth: 110, alignment: .leading)
+            if vm.isExternalLLMActive {
+                Label(vm.translationModelTitle, systemImage: "network")
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Text(vm.translationModelTitle)
+                    .frame(minWidth: 110, alignment: .leading)
+            }
         }
         .disabled(vm.isWorking)
         .accessibilityLabel(L("Çeviri modeli"))
-        .help(L("Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir."))
+        .help(vm.isExternalLLMActive
+            ? L("Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır.")
+            : L("Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir."))
+    }
+
+    @ViewBuilder private var localModelItems: some View {
+        ForEach(catalog.llamaTranslationModels) { translationModelButton($0) }
+        if !catalog.llamaTranslationModels.isEmpty, !catalog.classicTranslationModels.isEmpty {
+            Divider()
+        }
+        ForEach(catalog.classicTranslationModels) { translationModelButton($0) }
+    }
+
+    /// Models the external server listed, then the refresh action.
+    @ViewBuilder private var externalModelItems: some View {
+        ForEach(vm.externalModels, id: \.self) { name in
+            Button {
+                vm.externalLlmModel = name
+            } label: {
+                if name == vm.externalLlmModel {
+                    Label(name, systemImage: "checkmark")
+                } else {
+                    Text(name)
+                }
+            }
+        }
+        if !vm.externalModels.isEmpty { Divider() }
+        Button(L("Uzaktaki modelleri listele"), systemImage: "arrow.clockwise") {
+            Task { await vm.testExternalConnection() }
+        }
+        .disabled(vm.isTestingExternalConnection)
     }
 
     private func translationModelButton(_ model: EngineModel) -> some View {
@@ -229,6 +265,9 @@ struct ContentView: View {
                     ProgressView().controlSize(.small)
                 }
                 Text(label.text)
+                if let detail = vm.asyncStatusDetail {
+                    Text("· " + detail).foregroundStyle(.secondary)
+                }
             case .finished:
                 Label(vm.finishedSummary, systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
