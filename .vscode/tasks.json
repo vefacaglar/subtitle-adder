@@ -14,6 +14,14 @@
             "problemMatcher": [],
             "presentation": {
                 "reveal": "silent"
+            },
+            "windows": {
+                "options": {
+                    "cwd": "${workspaceFolder}/engine",
+                    "env": {
+                        "PATH": "${env:USERPROFILE}\\.local\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}"
+                    }
+                }
             }
         },
         {
@@ -123,6 +131,78 @@
             "problemMatcher": [
                 "$swiftc"
             ]
+        },
+        {
+            "label": "windows: build",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "build",
+                "${workspaceFolder}/apps/windows/src/SubtitleAdder/SubtitleAdder.csproj",
+                "-p:Platform=x64",
+                "-p:GenerateFullPaths=true",
+                "-consoleloggerparameters:NoSummary"
+            ],
+            "dependsOn": [
+                "engine: uv sync"
+            ],
+            "problemMatcher": "$msCompile",
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "windows: test",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "test",
+                "${workspaceFolder}/apps/windows/SubtitleAdder.slnx",
+                "-p:Platform=x64"
+            ],
+            "options": {
+                "env": {
+                    "PATH": "${env:USERPROFILE}\\.local\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}"
+                }
+            },
+            "problemMatcher": "$msCompile",
+            "group": "test"
+        },
+        {
+            "label": "windows: end-to-end test (real engine)",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "test",
+                "${workspaceFolder}/apps/windows/SubtitleAdder.slnx",
+                "-p:Platform=x64"
+            ],
+            "options": {
+                "env": {
+                    "PATH": "${env:USERPROFILE}\\.local\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}",
+                    "ENGINE_E2E": "1"
+                }
+            },
+            "problemMatcher": "$msCompile",
+            "group": "test"
+        },
+        {
+            "label": "windows: package",
+            "type": "process",
+            "command": "pwsh",
+            "args": [
+                "-NoProfile",
+                "-File",
+                "${workspaceFolder}/scripts/package-windows.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:USERPROFILE}\\.local\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}"
+                }
+            },
+            "problemMatcher": []
         }
     ]
 }
