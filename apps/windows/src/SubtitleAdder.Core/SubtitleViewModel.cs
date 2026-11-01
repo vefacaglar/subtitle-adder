@@ -505,7 +505,6 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                             resolvedHostLabel = $"{uri.Host} → {ipv4}";
                             var builder = new UriBuilder(uri) { Host = ipv4.ToString() };
                             resolvedBaseUrl = builder.Uri.ToString().TrimEnd('/');
-                            ExternalLlmState.Shared.Url = resolvedBaseUrl;
                         }
                     }
                     catch (Exception) when (!cancellationToken.IsCancellationRequested)
