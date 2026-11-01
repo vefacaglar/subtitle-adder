@@ -19,7 +19,7 @@
                 "options": {
                     "cwd": "${workspaceFolder}/engine",
                     "env": {
-                        "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}"
+                        "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}"
                     }
                 },
                 "command": "uv sync --group cuda"
@@ -164,7 +164,7 @@
             ],
             "options": {
                 "env": {
-                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}"
+                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}"
                 }
             },
             "problemMatcher": "$msCompile",
@@ -181,7 +181,7 @@
             ],
             "options": {
                 "env": {
-                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}",
+                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}",
                     "ENGINE_E2E": "1"
                 }
             },
@@ -190,39 +190,27 @@
         },
         {
             "label": "windows: package",
-            "type": "process",
-            "command": "pwsh",
-            "args": [
-                "-NoProfile",
-                "-File",
-                "${workspaceFolder}/scripts/package-windows.ps1"
-            ],
+            "type": "shell",
+            "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\"",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "env": {
-                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}"
+                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}"
                 }
             },
             "problemMatcher": []
         },
         {
             "label": "windows: publish",
-            "type": "process",
-            "command": "pwsh",
-            "args": [
-                "-NoProfile",
-                "-File",
-                "${workspaceFolder}/scripts/package-windows.ps1",
-                "-Zip",
-                "-NoSmokeTest"
-            ],
+            "type": "shell",
+            "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\" -Zip -NoSmokeTest",
             "dependsOn": [
                 "engine: uv sync"
             ],
             "options": {
                 "cwd": "${workspaceFolder}",
                 "env": {
-                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:PATH}"
+                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}"
                 }
             },
             "problemMatcher": [],
