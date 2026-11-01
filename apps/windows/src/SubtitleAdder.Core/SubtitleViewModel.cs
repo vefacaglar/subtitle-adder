@@ -380,6 +380,119 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     /// <summary>True ONLY when external LAN LLM mode is active AND optional asynchronous translation is enabled.</summary>
     public bool IsExternalAsyncActive => IsExternalLlmActive && _externalLlmAsync;
 
+    private IReadOnlyList<string> _externalLlmModels = [];
+    private bool _isLoadingExternalModels;
+    private static readonly System.Net.Http.HttpClient ExternalModelsHttp = new() { Timeout = TimeSpan.FromSeconds(3.5) };
+
+    /// <summary>Suitable chat/translation LLM models discovered on the remote LAN server (<c>/v1/models</c> or <c>/api/tags</c>).</summary>
+    public IReadOnlyList<string> ExternalLlmModels
+    {
+        get => _externalLlmModels;
+        private set => SetProperty(ref _externalLlmModels, value);
+    }
+
+    public bool IsLoadingExternalModels
+    {
+        get => _isLoadingExternalModels;
+        private set => SetProperty(ref _isLoadingExternalModels, value);
+    }
+
+    internal static string? NormalizeExternalBaseUrl(string rawUrl)
+    {
+        var url = (rawUrl ?? "").Trim().TrimEnd('/');
+        if (url.Length == 0) return null;
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            url = "http://" + url;
+        }
+        foreach (var suffix in new[] { "/v1/chat/completions", "/chat/completions", "/api/chat", "/api/tags", "/v1/models", "/v1" })
+        {
+            if (url.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                url = url[..^suffix.Length].TrimEnd('/');
+                break;
+            }
+        }
+        return url.Length > 0 ? url : null;
+    }
+
+    internal static List<string> ParseSuitableExternalModels(string json)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return result;
+            foreach (var arrayProp in new[] { "data", "models" })
+            {
+                if (!root.TryGetProperty(arrayProp, out var arr) || arr.ValueKind != System.Text.Json.JsonValueKind.Array)
+                    continue;
+                foreach (var item in arr.EnumerateArray())
+                {
+                    if (item.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                    string? id = null;
+                    if (item.TryGetProperty("id", out var idEl) && idEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                        id = idEl.GetString();
+                    else if (item.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                        id = nameEl.GetString();
+                    id = id?.Trim();
+                    if (string.IsNullOrEmpty(id)) continue;
+                    // Filter out embedding-only models that cannot run chat/translation completions.
+                    if (id.Contains("embed", StringComparison.OrdinalIgnoreCase) ||
+                        id.Contains("minilm", StringComparison.OrdinalIgnoreCase) ||
+                        id.Contains("bge-", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    if (seen.Add(id)) result.Add(id);
+                }
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+        }
+        return result;
+    }
+
+    /// <summary>Queries the remote LAN LLM server (<c>/v1/models</c> and <c>/api/tags</c>) and populates <see cref="ExternalLlmModels"/>.</summary>
+    public async Task RefreshExternalModelsAsync(CancellationToken cancellationToken = default)
+    {
+        if (NormalizeExternalBaseUrl(_externalLlmUrl) is not { } baseUrl)
+        {
+            ExternalLlmModels = [];
+            return;
+        }
+        IsLoadingExternalModels = true;
+        try
+        {
+            var discovered = new List<string>();
+            foreach (var endpoint in new[] { $"{baseUrl}/v1/models", $"{baseUrl}/api/tags" })
+            {
+                try
+                {
+                    var json = await ExternalModelsHttp.GetStringAsync(endpoint, cancellationToken).ConfigureAwait(true);
+                    discovered = ParseSuitableExternalModels(json);
+                    if (discovered.Count > 0) break;
+                }
+                catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                {
+                }
+            }
+            ExternalLlmModels = discovered;
+            if (string.IsNullOrWhiteSpace(_externalLlmModel) && discovered.Count > 0)
+            {
+                ExternalLlmModel = discovered[0];
+            }
+        }
+        finally
+        {
+            IsLoadingExternalModels = false;
+        }
+    }
+
     /// <summary>Whether "Komple çevir" is enabled (either a video is open or lines are already loaded, and no job is running).</summary>
     public bool CanGenerateAndTranslate => !IsWorking && (_video is not null || _sentences.Count > 0);
 

@@ -850,4 +850,25 @@ public class ViewModelTranslationTests
             Directory.Delete(rootDir, recursive: true);
         }
     }
+
+    [Fact]
+    public void ExternalModelsParserExtractsSuitableModelsAndFiltersEmbeddings()
+    {
+        Assert.Equal("http://mac-studio.local:11434",
+            SubtitleViewModel.NormalizeExternalBaseUrl("http://mac-studio.local:11434/api/chat"));
+        Assert.Equal("http://192.168.1.50:1234",
+            SubtitleViewModel.NormalizeExternalBaseUrl("192.168.1.50:1234/v1/chat/completions"));
+
+        const string ollamaJson = """
+        {
+            "models": [
+                { "name": "gemma4:e4b" },
+                { "name": "nomic-embed-text:latest" },
+                { "name": "qwen3:14b" }
+            ]
+        }
+        """;
+        var models = SubtitleViewModel.ParseSuitableExternalModels(ollamaJson);
+        Assert.Equal(["gemma4:e4b", "qwen3:14b"], models);
+    }
 }

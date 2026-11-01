@@ -39,7 +39,11 @@ public sealed partial class SettingsWindow : Window
             _language.PropertyChanged -= OnChanged;
         };
         PreviewArea.SizeChanged += (_, _) => UpdatePreview();
-        Root.Loaded += async (_, _) => await _catalog.LoadAsync();
+        Root.Loaded += async (_, _) =>
+        {
+            await _catalog.LoadAsync();
+            if (_vm.IsExternalLlmActive) await _vm.RefreshExternalModelsAsync();
+        };
 
         Refresh(refill: true);
         UpdateModels();
@@ -121,11 +125,15 @@ public sealed partial class SettingsWindow : Window
         OfflineSwitch.IsOn = _vm.OfflineMode;
         ExternalLlmSwitch.IsOn = _vm.ExternalLlmEnabled;
         if (ExternalLlmUrlBox.Text != _vm.ExternalLlmUrl) ExternalLlmUrlBox.Text = _vm.ExternalLlmUrl;
-        if (ExternalLlmModelBox.Text != _vm.ExternalLlmModel) ExternalLlmModelBox.Text = _vm.ExternalLlmModel;
         ExternalLlmAsyncSwitch.IsOn = _vm.ExternalLlmAsync;
+        _syncing = false;
+        Fill(ExternalLlmModelBox, _vm.ExternalLlmModels, IndexOf(_vm.ExternalLlmModels, m => m == _vm.ExternalLlmModel), refill);
+        _syncing = true;
+        if (ExternalLlmModelBox.Text != _vm.ExternalLlmModel) ExternalLlmModelBox.Text = _vm.ExternalLlmModel;
         _syncing = false;
         ExternalLlmUrlBox.IsEnabled = _vm.ExternalLlmEnabled;
         ExternalLlmModelBox.IsEnabled = _vm.ExternalLlmEnabled;
+        RefreshExternalModelsButton.IsEnabled = _vm.ExternalLlmEnabled && !_vm.IsLoadingExternalModels;
         ExternalLlmAsyncSwitch.IsEnabled = _vm.ExternalLlmEnabled;
         var counts = SubtitleViewModel.SpeakerCountChoices;
         Fill(SpeakerCountBox, counts.Select(SubtitleViewModel.SpeakerCountTitle), IndexOf(counts, c => c == _vm.SpeakerCount), refill);
@@ -250,10 +258,11 @@ public sealed partial class SettingsWindow : Window
         _vm.OfflineMode = OfflineSwitch.IsOn;
     }
 
-    private void ExternalLlmSwitch_Toggled(object sender, RoutedEventArgs e)
+    private async void ExternalLlmSwitch_Toggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
         _vm.ExternalLlmEnabled = ExternalLlmSwitch.IsOn;
+        if (_vm.IsExternalLlmActive) await _vm.RefreshExternalModelsAsync();
     }
 
     private void ExternalLlmUrlBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -262,10 +271,28 @@ public sealed partial class SettingsWindow : Window
         _vm.ExternalLlmUrl = ExternalLlmUrlBox.Text;
     }
 
-    private void ExternalLlmModelBox_TextChanged(object sender, TextChangedEventArgs e)
+    private void ExternalLlmModelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncing) return;
-        _vm.ExternalLlmModel = ExternalLlmModelBox.Text;
+        if (ExternalLlmModelBox.SelectedItem is string selected)
+            _vm.ExternalLlmModel = selected;
+    }
+
+    private void ExternalLlmModelBox_TextSubmitted(ComboBox sender, ComboBoxTextSubmittedEventArgs args)
+    {
+        if (_syncing) return;
+        _vm.ExternalLlmModel = args.Text ?? string.Empty;
+    }
+
+    private void ExternalLlmModelBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        _vm.ExternalLlmModel = ExternalLlmModelBox.Text ?? string.Empty;
+    }
+
+    private async void RefreshExternalModelsButton_Click(object sender, RoutedEventArgs e)
+    {
+        await _vm.RefreshExternalModelsAsync();
     }
 
     private void ExternalLlmAsyncSwitch_Toggled(object sender, RoutedEventArgs e)

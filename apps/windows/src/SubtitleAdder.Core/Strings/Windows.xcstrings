@@ -1248,6 +1248,22 @@
           }
         }
       }
+    },
+    "Uzaktaki modelleri listele" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "List remote models"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uzaktaki modelleri listele"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
