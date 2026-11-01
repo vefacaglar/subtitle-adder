@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import i18n, models, pipeline, subtitles
+from . import cuda, i18n, models, pipeline, subtitles
 from .models import KATALOG, Sentence, cached_disk_mb, delete_model, disk_mb, is_downloaded
 from .i18n import t
 from .sentences import SegmenterConfig
@@ -95,6 +95,9 @@ def _translate(args: argparse.Namespace) -> int:
     if models.require_download(args.model):
         on_stage("downloading_model", 0.0)
         models.ensure_model(args.model, on_progress=lambda f: on_stage("downloading_model", f))
+    if cuda.needs_cuda_download():
+        on_stage("downloading_model", 0.0)
+        cuda.ensure_cuda(on_progress=lambda f: on_stage("downloading_model", f))
     models.go_offline()
 
     on_stage("loading_model", None)

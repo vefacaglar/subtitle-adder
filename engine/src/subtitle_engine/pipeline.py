@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import diarize as diarization
+from . import cuda, diarize as diarization
 from . import models, subtitles
 from .audio import extract_audio
 from .diarize import Diarizer
@@ -69,6 +69,10 @@ def run(
         models.ensure_model(
             diarization.MODEL_ID, on_progress=lambda fraction: on_stage("downloading_model", fraction)
         )
+
+    if (info is None or info.backend == "whisper") and cuda.needs_cuda_download():
+        on_stage("downloading_model", 0.0)
+        cuda.ensure_cuda(on_progress=lambda fraction: on_stage("downloading_model", fraction))
 
     # Everything this run needs is on disk now; names outside the catalog may still be fetched by faster-whisper.
     if info is not None or models.offline_requested():

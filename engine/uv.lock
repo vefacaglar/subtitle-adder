@@ -912,6 +912,7 @@ wheels = [
 name = "subtitle-engine"
 version = "0.1.0"
 source = { editable = "." }
+default-groups = ["cuda", "dev"]
 dependencies = [
     { name = "av", version = "18.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "av", version = "19.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },

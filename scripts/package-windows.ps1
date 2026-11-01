@@ -4,7 +4,7 @@
 Packages Subtitle Adder for Windows: the WinUI 3 app (self-contained) + the PyInstaller (onedir) engine.
 
 .DESCRIPTION
-    pwsh scripts/package-windows.ps1 [-SkipEngineBuild] [-Zip] [-Version 0.2.0]
+    pwsh scripts/package-windows.ps1 [-SkipEngineBuild] [-NoSmokeTest] [-Zip] [-Version 0.2.0]
 
 Output: build\Subtitle Adder\SubtitleAdder.exe with build\Subtitle Adder\subtitle-engine\subtitle-engine.exe next to
 it (EngineCommand.Locate's packaged path). Builds for win-x64 only.
@@ -19,12 +19,16 @@ Environment variables:
 .PARAMETER SkipEngineBuild
 Reuses build\engine-dist\subtitle-engine if it is already built (like SKIP_ENGINE_BUILD=1 on macOS).
 
+.PARAMETER NoSmokeTest
+Skips the 8-second GUI startup smoke test (useful when VS Code launches SubtitleAdder.exe immediately afterwards).
+
 .PARAMETER Zip
 Also writes build\SubtitleAdder-<version>-win-x64.zip.
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipEngineBuild,
+    [switch]$NoSmokeTest,
     [switch]$Zip,
     [string]$Version
 )
@@ -100,12 +104,12 @@ if (-not $SkipEngineBuild -or -not (Test-Path $EngineExe)) {
     Log '2/5 Building engine (PyInstaller onedir)'
     $uv = Find-Uv
     if (-not $uv) { throw 'uv not found; install it (https://docs.astral.sh/uv/) or add it to PATH.' }
-    # A separate environment with only the runtime deps + PyInstaller: the dev engine\.venv (pytest, an optional
-    # cuda group) is left untouched and nothing from it leaks into the package.
+    # A separate environment with only the runtime deps + PyInstaller: the dev engine\.venv (pytest, cuda group)
+    # is left untouched and nothing from it leaks into the package.
     $env:UV_PROJECT_ENVIRONMENT = Join-Path $Build 'engine-venv'
     Push-Location (Join-Path $Root 'engine')
     try {
-        & $uv sync --locked --no-dev --group build --quiet
+        & $uv sync --locked --no-default-groups --group build --quiet
         & $uv run --no-sync pyinstaller subtitle-engine.spec --noconfirm --log-level WARN `
             --distpath (Join-Path $Build 'engine-dist') --workpath (Join-Path $Build 'engine-work')
     }
@@ -117,6 +121,24 @@ if (-not $SkipEngineBuild -or -not (Test-Path $EngineExe)) {
 }
 else {
     Log '2/5 Engine build skipped'
+}
+
+# Seed the local CUDA runtime cache from engine\.venv if available so the packaged app uses the GPU immediately
+# without having to re-download the wheels on this machine.
+$devNvidia = Join-Path $Root 'engine\.venv\Lib\site-packages\nvidia'
+if ($env:LOCALAPPDATA -and (Test-Path $devNvidia)) {
+    $cudaCacheNvidia = Join-Path $env:LOCALAPPDATA 'SubtitleAdder\cuda\nvidia'
+    Get-ChildItem $devNvidia -Directory | ForEach-Object {
+        $srcBin = Join-Path $_.FullName 'bin'
+        if (Test-Path $srcBin) {
+            $dstBin = Join-Path $cudaCacheNvidia "$($_.Name)\bin"
+            New-Item -ItemType Directory -Force $dstBin | Out-Null
+            Get-ChildItem $srcBin -Filter *.dll -File | ForEach-Object {
+                $dstFile = Join-Path $dstBin $_.Name
+                if (-not (Test-Path $dstFile)) { Copy-Item $_.FullName $dstFile }
+            }
+        }
+    }
 }
 
 Log '3/5 Assembling folder'
@@ -162,8 +184,8 @@ $locateOut = Join-Path $Build 'locate-check'
 dotnet build $LocateCheck -c Release -o $locateOut -nologo -v quiet
 & (Join-Path $locateOut 'LocateCheck.exe') $AppDir
 # Startup smoke test: a publish that misses XAML resources crashes within a second or two. Skipped on CI runners,
-# which may have no interactive desktop.
-if (-not $env:GITHUB_ACTIONS) {
+# which may have no interactive desktop, or when -NoSmokeTest is passed (e.g. VS Code preLaunchTask).
+if (-not $env:GITHUB_ACTIONS -and -not $NoSmokeTest) {
     $app = Start-Process (Join-Path $AppDir 'SubtitleAdder.exe') -PassThru
     if ($app.WaitForExit(8000)) { throw "SubtitleAdder.exe exited at startup (code $($app.ExitCode))." }
     $app.Kill($true)

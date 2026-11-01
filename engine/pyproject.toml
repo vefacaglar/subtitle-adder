@@ -38,6 +38,7 @@ markers = ["slow: tests that download and run real models (pytest -m slow)"]
 addopts = "-m 'not slow'"
 
 [tool.uv]
+default-groups = ["dev", "cuda"]
 # Newer nvidia-cublas-cu12 releases ship Linux wheels only; make the resolver pick versions that also install on Windows.
 required-environments = [
     "sys_platform == 'win32' and platform_machine == 'AMD64'",

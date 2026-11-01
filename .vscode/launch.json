@@ -2,14 +2,15 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Subtitle Adder (macOS)",
-            "type": "swift",
+            "name": "Subtitle Adder (Windows, publish)",
+            "type": "coreclr",
             "request": "launch",
-            "target": "SubtitleAdderApp",
-            "configuration": "debug",
-            "cwd": "${workspaceFolder}/apps/macos",
+            "program": "${workspaceFolder}/build/Subtitle Adder/SubtitleAdder.exe",
             "args": [],
-            "preLaunchTask": "Prepare (engine + app)"
+            "cwd": "${workspaceFolder}/build/Subtitle Adder",
+            "console": "internalConsole",
+            "stopAtEntry": false,
+            "preLaunchTask": "windows: publish"
         },
         {
             "name": "Subtitle Adder (Windows)",
@@ -21,6 +22,16 @@
             "console": "internalConsole",
             "stopAtEntry": false,
             "preLaunchTask": "windows: build"
+        },
+        {
+            "name": "Subtitle Adder (macOS)",
+            "type": "swift",
+            "request": "launch",
+            "target": "SubtitleAdderApp",
+            "configuration": "debug",
+            "cwd": "${workspaceFolder}/apps/macos",
+            "args": [],
+            "preLaunchTask": "Prepare (engine + app)"
         },
         {
             "name": "Engine: process demo video (Python)",

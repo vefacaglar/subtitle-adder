@@ -5,6 +5,7 @@ NLLB's BPE tokenizer from the Hugging Face `tokenizer.json` file (`tokenizers`,
 Rust); transformers/torch are not needed. The source text never leaves the machine;
 the network is only used to download models.
 """
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -68,8 +69,8 @@ def check_request(model_id: str, target: str, source: str | None = None) -> mode
     return info
 
 
-def create_translator(model_id: str, device: str = "cpu", compute_type: str = "int8") -> Translator:
-    """Builds the CTranslate2 translator for a catalog id (int8 on CPU)."""
+def create_translator(model_id: str, device: str = "auto", compute_type: str = "int8") -> Translator:
+    """Builds the CTranslate2 translator for a catalog id (GPU when CUDA is usable, otherwise CPU)."""
     info = models.find(model_id)
     if info is None or info.kind != "translation":
         raise ModelError(
@@ -81,14 +82,22 @@ def create_translator(model_id: str, device: str = "cpu", compute_type: str = "i
 class Ct2Translator:
     """Runs CTranslate2 T5 (MADLAD) and M2M100 (NLLB) models behind a single protocol."""
 
-    def __init__(self, model_id: str, device: str = "cpu", compute_type: str = "int8"):
+    def __init__(self, model_id: str, device: str = "auto", compute_type: str = "int8"):
+        from . import cuda
+
         info = models.find(model_id)
         if info is None or info.kind != "translation":
             raise ModelError(t("unknown_translation_model_short", model=model_id))
+        if device == "auto":
+            device = "cuda" if cuda.cuda_usable() else "cpu"
+        elif device == "cuda":
+            cuda.register_libraries()
         self._info = info
-        directory = models.model_dir(model_id)
-        self._tokenizer = _load_tokenizer(directory, model_id)
-        self._translator = _load_ct2_translator(directory, device, compute_type)
+        self._device = device
+        self._compute_type = compute_type
+        self._directory = models.model_dir(model_id)
+        self._tokenizer = _load_tokenizer(self._directory, model_id)
+        self._translator = _load_ct2_translator(self._directory, device, compute_type)
 
     def translate(
         self,
@@ -97,6 +106,8 @@ class Ct2Translator:
         source: str | None = None,
         on_progress: ProgressFn | None = None,
     ) -> list[Sentence]:
+        from . import cuda
+
         check_request(self._info.id, target, source)
         # Empty lines are not sent to the model; they come back textless with their times and ids preserved.
         result_sentences = [
@@ -116,13 +127,28 @@ class Ct2Translator:
             sources = [
                 self._source_tokens(sentence.text.strip(), source, target) for _, sentence in batch
             ]
-            results = self._translator.translate_batch(
-                sources,
-                target_prefix=[[prefix] for _ in batch] if prefix is not None else None,
-                beam_size=BEAM_SIZE,
-                max_decoding_length=MAX_DECODING_LENGTH,
-                max_batch_size=BATCH_SIZE,
-            )
+            target_prefix = [[prefix] for _ in batch] if prefix is not None else None
+            try:
+                results = self._translator.translate_batch(
+                    sources,
+                    target_prefix=target_prefix,
+                    beam_size=BEAM_SIZE,
+                    max_decoding_length=MAX_DECODING_LENGTH,
+                    max_batch_size=BATCH_SIZE,
+                )
+            except RuntimeError as exc:
+                if self._device != "cuda" or not cuda.is_cuda_library_error(exc):
+                    raise
+                print(f"CUDA unavailable, falling back to CPU: {exc}", file=sys.stderr)
+                self._device = "cpu"
+                self._translator = _load_ct2_translator(self._directory, "cpu", self._compute_type)
+                results = self._translator.translate_batch(
+                    sources,
+                    target_prefix=target_prefix,
+                    beam_size=BEAM_SIZE,
+                    max_decoding_length=MAX_DECODING_LENGTH,
+                    max_batch_size=BATCH_SIZE,
+                )
             for (index, sentence), result in zip(batch, results):
                 hypothesis = result.hypotheses[0] if result.hypotheses else []
                 text = self._decode(hypothesis, target)

@@ -7,7 +7,7 @@ import av
 import numpy as np
 import pytest
 
-from subtitle_engine import i18n
+from subtitle_engine import cuda, i18n
 from subtitle_engine.models import Word
 
 
@@ -18,6 +18,12 @@ def _default_language(monkeypatch):
     i18n.set_language(None)
     yield
     i18n.set_language(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_implicit_cuda_download(monkeypatch):
+    """Unit tests must not trigger a real CUDA wheel download unless testing `cuda` explicitly."""
+    monkeypatch.setattr(cuda, "needs_cuda_download", lambda: False)
 
 
 def make_words(text: str, step: float = 0.4) -> list[Word]:

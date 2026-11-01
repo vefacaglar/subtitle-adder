@@ -27,9 +27,9 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: engine/uv.lock
-      - run: uv sync --locked
+      - run: uv sync --locked --no-group cuda
       # Slow tests download real models; they are excluded by default (pyproject addopts).
-      - run: uv run pytest -q
+      - run: uv run --no-group cuda pytest -q
 
   macos-app:
     name: macOS app
