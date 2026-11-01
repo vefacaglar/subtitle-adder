@@ -50,24 +50,14 @@
             "preLaunchTask": "engine: uv sync"
         },
         {
+            "name": "Subtitle Adder (macOS, release)",
             "type": "swift",
             "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:subtitle-adder}/apps/macos",
-            "name": "Debug SubtitleAdderApp (apps/macos)",
-            "target": "SubtitleAdderApp",
-            "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug SubtitleAdderApp (apps/macos)"
-        },
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:subtitle-adder}/apps/macos",
-            "name": "Release SubtitleAdderApp (apps/macos)",
             "target": "SubtitleAdderApp",
             "configuration": "release",
-            "preLaunchTask": "swift: Build Release SubtitleAdderApp (apps/macos)"
+            "cwd": "${workspaceFolder}/apps/macos",
+            "args": [],
+            "preLaunchTask": "Prepare release (engine + app)"
         }
     ]
 }

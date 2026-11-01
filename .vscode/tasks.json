@@ -5,49 +5,106 @@
             "label": "engine: uv sync",
             "type": "shell",
             "command": "uv sync",
-            "options": { "cwd": "${workspaceFolder}/engine" },
+            "options": {
+                "cwd": "${workspaceFolder}/engine"
+            },
             "problemMatcher": [],
-            "presentation": { "reveal": "silent" }
+            "presentation": {
+                "reveal": "silent"
+            }
         },
         {
             "label": "app: build",
             "type": "shell",
             "command": "swift build --product SubtitleAdderApp",
-            "options": { "cwd": "${workspaceFolder}/apps/macos" },
-            "problemMatcher": ["$swiftc"],
+            "options": {
+                "cwd": "${workspaceFolder}/apps/macos"
+            },
+            "problemMatcher": [
+                "$swiftc"
+            ],
             "group": "build",
-            "presentation": { "reveal": "silent" }
+            "presentation": {
+                "reveal": "silent"
+            }
         },
         {
             "label": "Prepare (engine + app)",
-            "dependsOn": ["engine: uv sync", "app: build"],
-            "group": { "kind": "build", "isDefault": true },
+            "dependsOn": [
+                "engine: uv sync",
+                "app: build"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "app: build release",
+            "type": "shell",
+            "command": "swift build -c release --product SubtitleAdderApp",
+            "options": {
+                "cwd": "${workspaceFolder}/apps/macos"
+            },
+            "problemMatcher": [
+                "$swiftc"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "Prepare release (engine + app)",
+            "dependsOn": [
+                "engine: uv sync",
+                "app: build release"
+            ],
+            "group": "build",
             "problemMatcher": []
         },
         {
             "label": "Run app",
             "type": "shell",
             "command": "swift run SubtitleAdderApp",
-            "options": { "cwd": "${workspaceFolder}/apps/macos" },
-            "dependsOn": ["engine: uv sync"],
-            "problemMatcher": ["$swiftc"],
+            "options": {
+                "cwd": "${workspaceFolder}/apps/macos"
+            },
+            "dependsOn": [
+                "engine: uv sync"
+            ],
+            "problemMatcher": [
+                "$swiftc"
+            ],
             "isBackground": false
         },
         {
             "label": "Tests (engine + app)",
             "type": "shell",
             "command": "(cd engine && uv run pytest) && (cd apps/macos && swift test)",
-            "options": { "cwd": "${workspaceFolder}" },
-            "group": { "kind": "test", "isDefault": true },
-            "problemMatcher": ["$swiftc"]
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$swiftc"
+            ]
         },
         {
             "label": "End-to-end test (real engine)",
             "type": "shell",
             "command": "ENGINE_E2E=1 swift test --filter realEngineOnDemoVideo",
-            "options": { "cwd": "${workspaceFolder}/apps/macos" },
+            "options": {
+                "cwd": "${workspaceFolder}/apps/macos"
+            },
             "group": "test",
-            "problemMatcher": ["$swiftc"]
+            "problemMatcher": [
+                "$swiftc"
+            ]
         }
     ]
 }
