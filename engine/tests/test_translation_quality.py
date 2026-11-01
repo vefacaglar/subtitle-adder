@@ -304,7 +304,7 @@ def test_valid_neighbors_survive_bad_retry_and_single_line_recovery():
     assert [s.text for s in result] == ["Merhaba.", "Nereye gidiyorsun?"]
     assert not any(s.needs_review for s in result)
     assert "[1] Where are you going?" in calls[-1][-1]["content"]
-    assert "Hello." not in calls[-1][-1]["content"]
+    assert "Previous lines (for context only, do NOT translate):\n- Hello." in calls[-1][-1]["content"]
 
 
 def test_unrecoverable_line_does_not_block_following_batch(monkeypatch):
