@@ -49,6 +49,8 @@ public final class EngineLaunchState: @unchecked Sendable {
     private let lock = NSLock()
     private var value = EngineLaunchSettings()
 
+    public init() {}
+
     public var settings: EngineLaunchSettings {
         get {
             lock.lock()

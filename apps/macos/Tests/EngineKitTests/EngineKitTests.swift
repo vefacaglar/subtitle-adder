@@ -377,3 +377,13 @@ func realEngineTranslatesDemoVideo() async throws {
     }
     #expect(translations == [["Hola."], ["Hola.", "Adios."]])
 }
+
+@Test func llamaModelsAreMarkedByBackend() async throws {
+    let engine = try fakeEngine("""
+    echo '{"event": "models", "models": [{"id": "gemma-4-e4b", "kind": "translation", "backend": "llama", "languages": ["tr", "de", "ja", "zh"], "size_mb": 4747, "disk_mb": null, "speed": 2, "accuracy": 5, "license": "Apache-2.0", "downloaded": false}, {"id": "madlad-3b", "kind": "translation", "backend": "ctranslate2", "languages": ["tr"], "size_mb": 2839, "disk_mb": null, "speed": 2, "accuracy": 5, "license": "Apache-2.0", "downloaded": false}]}'
+    """)
+    let models = try await engine.models()
+    #expect(models[0].isLlama && models[0].isTranslation)
+    #expect(!models[1].isLlama)
+    #expect(models[0].supports(language: "ja"))
+}

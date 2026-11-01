@@ -7,6 +7,8 @@ struct PlayerView: View {
     let model: PlayerModel
     let sentences: [Sentence]
     let translations: [UUID: TranslationEntry]
+    /// Label of the translation segment, e.g. "Çeviri (es)".
+    let translationTitle: String
     @Binding var display: SubtitleDisplay
     private let overlay = OverlayStyleStorage()
 
@@ -38,12 +40,13 @@ struct PlayerView: View {
                 .foregroundStyle(.white.opacity(0.85))
             Picker(L("Gösterilen"), selection: $display) {
                 ForEach(SubtitleDisplay.allCases) { mode in
-                    Text(mode.title).tag(mode)
+                    Text(mode == .translation ? translationTitle : mode.title).tag(mode)
+                        .disabled(mode != .original && translations.isEmpty)
                 }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 196)
+            .frame(width: 250)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -51,7 +54,6 @@ struct PlayerView: View {
         .help(translations.isEmpty
             ? L("Önce altyazıları çevir; sonra orijinali, çeviriyi ya da ikisini birden gösterebilirsin.")
             : L("Video üstünde gösterilecek metin"))
-        .disabled(translations.isEmpty)
     }
 
     private var activeText: String? {

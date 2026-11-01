@@ -8,7 +8,6 @@ struct ContentView: View {
     @State private var player = PlayerModel()
     @State private var pickingVideo = false
     @State private var exportFormat: SubtitleFormat = .srt
-    @State private var exportLanguage: ExportLanguage = .original
     @State private var exportDocument: TextDocument?
 
     var body: some View {
@@ -21,7 +20,11 @@ struct ContentView: View {
                         model: player,
                         sentences: vm.sentences,
                         translations: vm.translations,
-                        display: $vm.displayMode
+                        translationTitle: vm.translationTitle,
+                        display: Binding(
+                            get: { vm.effectiveDisplayMode },
+                            set: { vm.displayMode = $0 }
+                        )
                     )
                     .frame(minHeight: 200, idealHeight: 360)
                     SentenceEditorView(vm: vm, player: player)
@@ -42,12 +45,6 @@ struct ContentView: View {
         .onChange(of: catalog.models, initial: true) { _, _ in
             vm.reconcileModelSelection()
             vm.reconcileTranslationModelSelection()
-        }
-        .onChange(of: vm.video, initial: true) { _, _ in
-            exportLanguage = .original
-        }
-        .onChange(of: vm.translationLanguage) { _, language in
-            if language == nil { exportLanguage = .original }
         }
         .onChange(of: vm.video, initial: true) { _, url in player.load(url) }
         .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
@@ -96,6 +93,7 @@ struct ContentView: View {
                     .labelStyle(.titleAndIcon)
                     .disabled(vm.isWorking)
                     .help(L("Tüm satırları seçili hedef dile yerel modelle çevir"))
+                translationModelMenu
             }
         }
         ToolbarItem(placement: .primaryAction) {
@@ -110,6 +108,35 @@ struct ContentView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(vm.video == nil)
                     .help(L("Videonun sesini metne çevirip altyazı çıkar (⌘↩)"))
+            }
+        }
+    }
+
+    /// The model "Çevir…" uses: local LLMs first, then MADLAD and NLLB. The choice is the same one Settings shows.
+    private var translationModelMenu: some View {
+        Menu {
+            ForEach(catalog.llamaTranslationModels) { translationModelButton($0) }
+            if !catalog.llamaTranslationModels.isEmpty, !catalog.classicTranslationModels.isEmpty {
+                Divider()
+            }
+            ForEach(catalog.classicTranslationModels) { translationModelButton($0) }
+        } label: {
+            Text(ModelLabel.name(for: vm.translationModel))
+                .frame(minWidth: 110, alignment: .leading)
+        }
+        .disabled(vm.isWorking)
+        .accessibilityLabel(L("Çeviri modeli"))
+        .help(L("Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir."))
+    }
+
+    private func translationModelButton(_ model: EngineModel) -> some View {
+        Button {
+            vm.translationModel = model.id
+        } label: {
+            if model.id == vm.translationModel {
+                Label(ModelLabel.translationMenuTitle(for: model), systemImage: "checkmark")
+            } else {
+                Text(ModelLabel.translationMenuTitle(for: model))
             }
         }
     }
@@ -170,6 +197,9 @@ struct ContentView: View {
                 Label(message.text, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .lineLimit(2)
+                if vm.canGoOnlineAndRetry {
+                    Button(L("Çevrimdışı modu kapat ve indir")) { vm.goOnlineAndRetry() }
+                }
             }
             Spacer()
             if let notice = vm.modelNotice {
@@ -185,9 +215,9 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 150)
-            Picker(L("Dil"), selection: $exportLanguage) {
+            Picker(L("Dil"), selection: $vm.exportLanguage) {
                 Text(L("Orijinal")).tag(ExportLanguage.original)
-                Text(vm.translationLanguage.map { L("Çeviri (%@)", $0) } ?? L("Çeviri")).tag(ExportLanguage.translated)
+                Text(vm.translationTitle).tag(ExportLanguage.translated)
                     .disabled(vm.translations.isEmpty)
             }
             .pickerStyle(.menu)
@@ -195,7 +225,7 @@ struct ContentView: View {
             .help(L("Dışa aktarılan altyazıda orijinal mi, çeviri mi kullanılsın"))
             Button(L("Dışa aktar…")) {
                 Task {
-                    let translated = exportLanguage == .translated && !vm.translations.isEmpty
+                    let translated = vm.exportLanguage == .translated && !vm.translations.isEmpty
                     if let text = await vm.render(as: exportFormat, translated: translated) {
                         exportDocument = TextDocument(text: text)
                     }
@@ -216,14 +246,9 @@ struct ContentView: View {
 
     private var exportFilename: String {
         let base = vm.video?.deletingPathExtension().lastPathComponent ?? "subtitles"
-        let suffix = exportLanguage == .translated ? ".\(vm.translationLanguage ?? "translated")" : ""
+        let suffix = vm.exportLanguage == .translated ? ".\(vm.translationLanguage ?? "translated")" : ""
         return "\(base)\(suffix).\(exportFormat.rawValue)"
     }
-}
-
-enum ExportLanguage: String, CaseIterable, Identifiable, Sendable {
-    case original, translated
-    var id: String { rawValue }
 }
 
 enum SubtitleTime {

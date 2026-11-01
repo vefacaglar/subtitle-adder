@@ -32,13 +32,33 @@ final class ModelCatalog {
             license: "CC-BY-NC-4.0", downloaded: false
         ),
         EngineModel(
+            id: "qwen3.5-4b", kind: "translation", backend: "llama",
+            languages: translationLanguages, sizeMB: 2614, speed: 3, accuracy: 4,
+            license: "Apache-2.0", downloaded: false
+        ),
+        EngineModel(
             id: "madlad-3b", kind: "translation", backend: "ctranslate2",
             languages: translationLanguages, sizeMB: 2839, speed: 2, accuracy: 5,
             license: "Apache-2.0", downloaded: false
         ),
+        EngineModel(
+            id: "gemma-4-e4b", kind: "translation", backend: "llama",
+            languages: translationLanguages, sizeMB: 4747, speed: 2, accuracy: 5,
+            license: "Apache-2.0", downloaded: false
+        ),
+        EngineModel(
+            id: "qwen3.5-9b", kind: "translation", backend: "llama",
+            languages: translationLanguages, sizeMB: 5417, speed: 2, accuracy: 5,
+            license: "Apache-2.0", downloaded: false
+        ),
+        EngineModel(
+            id: "gemma-4-12b", kind: "translation", backend: "llama",
+            languages: translationLanguages, sizeMB: 6792, speed: 1, accuracy: 5,
+            license: "Apache-2.0", downloaded: false
+        ),
     ]
 
-    private static let translationLanguages = ["tr", "en", "pt", "es", "ru"]
+    private static let translationLanguages = ["tr", "en", "pt", "es", "ru", "de", "fr", "ja", "zh"]
 
     private static let europeanLanguages = [
         "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
@@ -47,6 +67,9 @@ final class ModelCatalog {
 
     private(set) var models: [EngineModel] = fallbackModels
     private(set) var isLoading = false
+    /// Whether the list came from the engine at least once; until then `models` is only the fallback list and its
+    /// download flags mean nothing.
+    private(set) var hasLoaded = false
     private(set) var loadError: LocalizedMessage?
     private(set) var deleting: Set<String> = []
     private(set) var deleteErrors: [String: LocalizedMessage] = [:]
@@ -72,9 +95,20 @@ final class ModelCatalog {
         return transcription.filter { $0.supports(language: language) }
     }
 
-    /// The "Çeviri modelleri" section in Settings and the default translation model picker.
+    /// The "Çeviri modelleri" section in Settings and the default translation model picker:
+    /// local LLMs first, then MADLAD and NLLB.
     var translationModels: [EngineModel] {
-        models.filter(\.isTranslation)
+        llamaTranslationModels + classicTranslationModels
+    }
+
+    /// Translation models that run through llama.cpp (Qwen, Gemma).
+    var llamaTranslationModels: [EngineModel] {
+        models.filter { $0.isTranslation && $0.isLlama }
+    }
+
+    /// CTranslate2 translation models (MADLAD, NLLB).
+    var classicTranslationModels: [EngineModel] {
+        models.filter { $0.isTranslation && !$0.isLlama }
     }
 
     /// Speaker separation models; shown in their own Settings section, never in the transcription picker.
@@ -93,7 +127,10 @@ final class ModelCatalog {
         defer { isLoading = false }
         do {
             let list = try await engine.models()
-            if !list.isEmpty { models = list }
+            if !list.isEmpty {
+                models = list
+                hasLoaded = true
+            }
             loadError = nil
         } catch is CancellationError {
             // The window closed; don't show an error, it will be retried on the next open.

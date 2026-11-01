@@ -92,7 +92,8 @@ public struct EngineModel: Sendable, Equatable, Decodable, Identifiable {
     public var id: String
     /// "transcription" (speech recognition), "translation" or "diarization" (speaker separation).
     public var kind: String
-    /// "whisper" (supports all languages, detects language) or "onnx" (fixed language list).
+    /// "whisper" (supports all languages, detects language), "onnx" (fixed language list), "ctranslate2" or
+    /// "llama" (translation), "sherpa" (diarization).
     public var backend: String
     /// Supported ISO 639-1 codes; `nil` means all languages.
     public var languages: [String]?
@@ -132,6 +133,8 @@ public struct EngineModel: Sendable, Equatable, Decodable, Identifiable {
     public var isTranslation: Bool { kind == "translation" }
     public var isDiarization: Bool { kind == "diarization" }
     public var isTranscription: Bool { kind == "transcription" }
+    /// Translation models run through llama.cpp (Qwen, Gemma); the others use CTranslate2 (MADLAD, NLLB).
+    public var isLlama: Bool { backend == "llama" }
 
     /// Licenses that forbid commercial use ("NC" appears in the SPDX name).
     public var hasNonCommercialLicense: Bool {

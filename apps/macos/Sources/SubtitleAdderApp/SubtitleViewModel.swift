@@ -16,7 +16,7 @@ final class SubtitleViewModel {
     var language: String {
         didSet {
             guard language != oldValue else { return }
-            UserDefaults.standard.set(language, forKey: Self.languageDefaultsKey)
+            defaults.set(language, forKey: Self.languageDefaultsKey)
             modelNotice = nil
             reconcileModelSelection()
             reconcileTranslationTarget()
@@ -25,7 +25,7 @@ final class SubtitleViewModel {
     var model: String {
         didSet {
             guard model != oldValue else { return }
-            UserDefaults.standard.set(model, forKey: Self.modelDefaultsKey)
+            defaults.set(model, forKey: Self.modelDefaultsKey)
             modelNotice = nil
         }
     }
@@ -33,42 +33,88 @@ final class SubtitleViewModel {
     var translationTarget: String {
         didSet {
             guard translationTarget != oldValue else { return }
-            UserDefaults.standard.set(translationTarget, forKey: Self.translationTargetDefaultsKey)
+            defaults.set(translationTarget, forKey: Self.translationTargetDefaultsKey)
         }
     }
     /// Translation model (chosen in Settings, persistent).
     var translationModel: String {
         didSet {
             guard translationModel != oldValue else { return }
-            UserDefaults.standard.set(translationModel, forKey: Self.translationModelDefaultsKey)
+            defaults.set(translationModel, forKey: Self.translationModelDefaultsKey)
         }
     }
     /// Whether the subtitle over the video shows the original or the translation; persistent.
+    /// With translations present, picking Original or Translation also switches the export language to match.
     var displayMode: SubtitleDisplay {
         didSet {
             guard displayMode != oldValue else { return }
-            UserDefaults.standard.set(displayMode.rawValue, forKey: Self.displayModeDefaultsKey)
+            defaults.set(displayMode.rawValue, forKey: Self.displayModeDefaultsKey)
+            guard hasTranslations else { return }
+            switch displayMode {
+            case .translation: exportLanguage = .translated
+            case .original: exportLanguage = .original
+            case .both: break
+            }
+        }
+    }
+    /// Whether the exported subtitle carries the original or the translated text. Falls back to the original
+    /// when the translations go away; with translations present it moves the display mode along.
+    var exportLanguage: ExportLanguage = .original {
+        didSet {
+            guard exportLanguage != oldValue, hasTranslations else { return }
+            if exportLanguage == .translated, displayMode == .original {
+                displayMode = .translation
+            } else if exportLanguage == .original, displayMode == .translation {
+                displayMode = .original
+            }
+        }
+    }
+    /// Strict offline mode (Settings > Gizlilik): the engine never touches the network, so missing models
+    /// aren't downloaded. Persistent, on by default.
+    var offlineMode: Bool {
+        didSet {
+            guard offlineMode != oldValue else { return }
+            defaults.set(offlineMode, forKey: Self.offlineModeDefaultsKey)
+            publishLaunchSettings()
+        }
+    }
+    /// A server on the local network that translates instead of a local model; the launch settings carry it to the
+    /// engine. Set by the external LLM settings.
+    var externalLLM: ExternalLLM? {
+        didSet {
+            guard externalLLM != oldValue else { return }
+            publishLaunchSettings()
         }
     }
     /// Separate speakers while transcribing (`--diarize`); persistent, on by default.
     var diarize: Bool {
         didSet {
             guard diarize != oldValue else { return }
-            UserDefaults.standard.set(diarize, forKey: Self.diarizeDefaultsKey)
+            defaults.set(diarize, forKey: Self.diarizeDefaultsKey)
         }
     }
     /// Known speaker count; 0 means automatic. Persistent.
     var speakerCount: Int {
         didSet {
             guard speakerCount != oldValue else { return }
-            UserDefaults.standard.set(speakerCount, forKey: Self.speakerCountDefaultsKey)
+            defaults.set(speakerCount, forKey: Self.speakerCountDefaultsKey)
         }
     }
-    var status: Status = .idle
+    var status: Status = .idle {
+        didSet {
+            // The offline retry only makes sense for the failure that registered it.
+            if case .failed = status { return }
+            offlineRetry = nil
+        }
+    }
     var detectedLanguage: String?
     var sentences: [Sentence] = []
     /// Translations keyed by the line's stable `uid`; marked "eski" (stale) when the text is edited.
-    var translations: [UUID: TranslationEntry] = [:]
+    var translations: [UUID: TranslationEntry] = [:] {
+        didSet {
+            if translations.isEmpty { exportLanguage = .original }
+        }
+    }
     /// Target language of the last successful translation (for the export label).
     var translationLanguage: String?
     /// Uncommitted text of the translation being edited.
@@ -83,6 +129,11 @@ final class SubtitleViewModel {
 
     /// Shared model catalog; the toolbar and Settings use the same list.
     let catalog: ModelCatalog
+
+    /// Re-runs the job that offline mode blocked; set only together with the matching failed status.
+    @ObservationIgnored var offlineRetry: (@MainActor () -> Void)?
+    @ObservationIgnored let defaults: UserDefaults
+    @ObservationIgnored let launchState: EngineLaunchState
 
     var job: Task<Void, Never>?
     var jobID = UUID()  // only the current job may change the state
@@ -104,29 +155,51 @@ final class SubtitleViewModel {
     private static let translationModelDefaultsKey = "translationModel"
     private static let translationTargetDefaultsKey = "translationTarget"
     private static let displayModeDefaultsKey = "subtitleDisplayMode"
+    static let offlineModeDefaultsKey = "offlineMode"
     private static let diarizeDefaultsKey = "diarizeSpeakers"
     private static let speakerCountDefaultsKey = "speakerCount"
 
-    init(catalog: ModelCatalog) {
+    init(
+        catalog: ModelCatalog,
+        defaults: UserDefaults = .standard,
+        launchState: EngineLaunchState = .shared
+    ) {
         self.catalog = catalog
-        let savedLanguage = UserDefaults.standard.string(forKey: Self.languageDefaultsKey) ?? ""
+        self.defaults = defaults
+        self.launchState = launchState
+        let savedLanguage = defaults.string(forKey: Self.languageDefaultsKey) ?? ""
         // The old version accepted free text; a code not in the list falls back to automatic.
         language = SubtitleLanguage(rawValue: savedLanguage) == nil ? "" : savedLanguage
-        model = UserDefaults.standard.string(forKey: Self.modelDefaultsKey) ?? Self.defaultModel
-        let savedTarget = UserDefaults.standard.string(forKey: Self.translationTargetDefaultsKey) ?? ""
+        model = defaults.string(forKey: Self.modelDefaultsKey) ?? Self.defaultModel
+        let savedTarget = defaults.string(forKey: Self.translationTargetDefaultsKey) ?? ""
         translationTarget = SubtitleLanguage(rawValue: savedTarget).map(\.rawValue)
             .flatMap { $0 == SubtitleLanguage.automatic.rawValue ? nil : $0 }
             ?? Self.defaultTranslationTarget
-        translationModel = UserDefaults.standard.string(forKey: Self.translationModelDefaultsKey)
+        translationModel = defaults.string(forKey: Self.translationModelDefaultsKey)
             ?? Self.defaultTranslationModel
-        let savedDisplay = UserDefaults.standard.string(forKey: Self.displayModeDefaultsKey) ?? ""
+        let savedDisplay = defaults.string(forKey: Self.displayModeDefaultsKey) ?? ""
         displayMode = SubtitleDisplay(rawValue: savedDisplay) ?? .original
-        diarize = UserDefaults.standard.object(forKey: Self.diarizeDefaultsKey) as? Bool ?? true
-        let savedCount = UserDefaults.standard.integer(forKey: Self.speakerCountDefaultsKey)
+        diarize = defaults.object(forKey: Self.diarizeDefaultsKey) as? Bool ?? true
+        let savedCount = defaults.integer(forKey: Self.speakerCountDefaultsKey)
         speakerCount = savedCount >= 2 ? savedCount : 0
+        offlineMode = defaults.object(forKey: Self.offlineModeDefaultsKey) as? Bool ?? true
         reconcileModelSelection()
         reconcileTranslationTarget()
+        publishLaunchSettings()
     }
+
+    /// Hands the offline and external LLM settings to the engine launcher; read at every engine launch.
+    private func publishLaunchSettings() {
+        launchState.settings = EngineLaunchSettings(offline: offlineMode, externalLLM: externalLLM)
+    }
+
+    var hasTranslations: Bool { !translations.isEmpty }
+
+    /// The mode actually shown: without translations only the original exists, whatever was chosen last.
+    var effectiveDisplayMode: SubtitleDisplay { hasTranslations ? displayMode : .original }
+
+    /// Title of the translation choice in the display and export pickers, e.g. "Çeviri (es)".
+    var translationTitle: String { SubtitleDisplay.translationTitle(language: translationLanguage) }
 
     /// Catalog filtered by language; the toolbar picker shows this.
     var availableModels: [EngineModel] { catalog.models(for: language) }
@@ -196,6 +269,9 @@ final class SubtitleViewModel {
             status = .failed(.error(EngineError.notFound))
             return
         }
+        var needed = [model]
+        if diarize { needed.append(Self.diarizationModelID) }
+        if blockedOffline(needed, retry: { [weak self] in self?.generate() }) { return }
         sentences = []
         translations = [:]
         translationDraft = nil
@@ -206,7 +282,7 @@ final class SubtitleViewModel {
         detectedLanguage = nil
         modelNotice = nil
         status = .working(.key("Başlıyor…"), fraction: nil)
-        let outDir = WorkingDirectory.url()
+        let outDir = WorkingDirectory.ensureExists()
         let options = EngineClient.TranscribeOptions(
             language: language.isEmpty ? nil : language,
             model: model,
@@ -239,13 +315,16 @@ final class SubtitleViewModel {
                         let download = downloadPhases.update(stage: stage, fraction: fraction)
                         let purpose: JobPurpose = download == .diarization ? .diarization : .transcription
                         status = .working(Self.label(for: stage, fraction: fraction, purpose: purpose), fraction: fraction)
+                    case .partial(let language, let snapshot):
+                        applyPartial(language: language, sentences: snapshot)
                     case .result(let result):
-                        sentences = result.sentences
+                        sentences = sentences.mergedWithSnapshot(result.sentences)
                         detectedLanguage = result.language
                         reconcileTranslationTarget()
-                        // The app doesn't use the extracted WAV; delete the temporary file.
+                        // The app doesn't use the extracted WAV, so it goes right away instead of waiting for the
+                        // quit cleanup; the subtitle outputs and engine checkpoints stay in the working folder until then.
                         try? FileManager.default.removeItem(atPath: result.audio)
-                    case .translation, .partial:
+                    case .translation:
                         break
                     case .error(let message):
                         failed = true
@@ -263,6 +342,15 @@ final class SubtitleViewModel {
                 if jobID == id { status = .failed(.error(error)) }
             }
         }
+    }
+
+    /// Live transcription snapshot: replaces the lines, keeping the identity of the ones that are still there.
+    /// The language is `"?"` until the engine has detected it.
+    func applyPartial(language: String, sentences snapshot: [Sentence]) {
+        sentences = sentences.mergedWithSnapshot(snapshot)
+        guard !language.isEmpty, language != "?" else { return }
+        detectedLanguage = language
+        reconcileTranslationTarget()
     }
 
     func cancel() {

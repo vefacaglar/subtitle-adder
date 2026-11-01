@@ -117,6 +117,8 @@ struct SentenceEditorView: View {
         .controlSize(.small)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+        // Live snapshots from a running job replace the lines, so edits wait until it finishes.
+        .disabled(vm.isWorking)
     }
 
     private func timingControls(_ title: String, edge: TimingEdge, value: Double?) -> some View {
@@ -178,6 +180,7 @@ private struct SentenceRow: View {
                 .lineLimit(1...4)
                 .focused(focus, equals: sentence.uid)
                 .onSubmit { vm.commitDraft() }
+                .disabled(vm.isWorking)
                 if vm.translation(for: sentence) != nil {
                     translationField
                 }
@@ -256,6 +259,7 @@ private struct SentenceRow: View {
             .foregroundStyle(.secondary)
             .focused(translationFocus, equals: sentence.uid)
             .onSubmit { vm.commitTranslationDraft() }
+            .disabled(vm.isWorking)
             if vm.isTranslationStale(for: sentence) {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.caption2)

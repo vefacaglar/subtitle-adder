@@ -56,7 +56,13 @@ private struct GeneralSettingsTab: View {
                 }
                 .disabled(vm.availableModels.isEmpty)
                 Picker(L("Varsayılan çeviri modeli"), selection: $vm.translationModel) {
-                    ForEach(catalog.translationModels) { model in
+                    ForEach(catalog.llamaTranslationModels) { model in
+                        Text(ModelLabel.name(for: model.id)).tag(model.id)
+                    }
+                    if !catalog.llamaTranslationModels.isEmpty, !catalog.classicTranslationModels.isEmpty {
+                        Divider()
+                    }
+                    ForEach(catalog.classicTranslationModels) { model in
                         Text(ModelLabel.name(for: model.id)).tag(model.id)
                     }
                 }
@@ -82,9 +88,17 @@ private struct GeneralSettingsTab: View {
             } footer: {
                 Text(L("Videoda birden çok kişi konuşuyorsa kimin ne dediğini ayır; ilk kullanımda küçük bir model indirilir."))
             }
+
+            Section {
+                Toggle(L("Çevrimdışı mod"), isOn: $vm.offlineMode)
+            } header: {
+                Text(L("Gizlilik"))
+            } footer: {
+                Text(L("Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez. Ses ve metin hiçbir durumda dışarı gönderilmez."))
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 560, height: 520)
+        .frame(width: 560, height: 640)
     }
 }
 

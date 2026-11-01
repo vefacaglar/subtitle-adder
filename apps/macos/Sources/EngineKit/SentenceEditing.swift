@@ -8,7 +8,49 @@ public enum SentenceEditing {
     public static let nudgeStep: Double = 0.1
 }
 
+/// A line's times (rounded to milliseconds) and text; two snapshots of the same line compare equal.
+private struct SentenceSpan: Hashable {
+    var startMS: Int
+    var endMS: Int
+    var text: String
+
+    init(_ sentence: Sentence) {
+        startMS = Int((sentence.start * 1000).rounded())
+        endMS = Int((sentence.end * 1000).rounded())
+        text = sentence.text
+    }
+}
+
 extension [Sentence] {
+    /// Returns `snapshot` (a full list from the engine) with the `uid` of each line that matches a line of `self`,
+    /// so the list view, selection and translations keep their identities while live snapshots replace the lines.
+    /// A line matches first by identical times and text, then (among the rest) by its number (`id`); each `uid` is used once.
+    public func mergedWithSnapshot(_ snapshot: [Sentence]) -> [Sentence] {
+        guard !isEmpty else { return snapshot }
+        var uidBySpan: [SentenceSpan: UUID] = [:]
+        var uidByID: [Int: UUID] = [:]
+        for sentence in self {
+            uidBySpan[SentenceSpan(sentence)] = uidBySpan[SentenceSpan(sentence)] ?? sentence.uid
+            uidByID[sentence.id] = uidByID[sentence.id] ?? sentence.uid
+        }
+        // Two passes, so a line that kept its times and text is never robbed of its identity by a number match.
+        var used: Set<UUID> = []
+        var uids: [UUID?] = snapshot.map { incoming in
+            guard let uid = uidBySpan[SentenceSpan(incoming)], used.insert(uid).inserted else { return nil }
+            return uid
+        }
+        for (index, incoming) in snapshot.enumerated() where uids[index] == nil {
+            if let uid = uidByID[incoming.id], used.insert(uid).inserted { uids[index] = uid }
+        }
+        return zip(snapshot, uids).map { incoming, uid in
+            guard let uid else { return incoming }
+            return Sentence(
+                id: incoming.id, uid: uid, start: incoming.start, end: incoming.end,
+                text: incoming.text, words: incoming.words, speaker: incoming.speaker
+            )
+        }
+    }
+
     /// Index of the line that should be shown at `time`: `start <= time < end`.
     public func activeIndex(at time: Double) -> Int? {
         firstIndex { $0.start <= time && time < $0.end }

@@ -9,6 +9,10 @@ enum SubtitleLanguage: String, CaseIterable, Identifiable, Sendable {
     case spanish = "es"
     case russian = "ru"
     case english = "en"
+    case german = "de"
+    case french = "fr"
+    case japanese = "ja"
+    case chinese = "zh"
 
     var id: String { rawValue }
 
@@ -21,6 +25,10 @@ enum SubtitleLanguage: String, CaseIterable, Identifiable, Sendable {
         case .spanish: L("İspanyolca (es)")
         case .russian: L("Rusça (ru)")
         case .english: L("İngilizce (en)")
+        case .german: L("Almanca (de)")
+        case .french: L("Fransızca (fr)")
+        case .japanese: L("Japonca (ja)")
+        case .chinese: L("Çince (zh)")
         }
     }
 
@@ -33,6 +41,10 @@ enum SubtitleLanguage: String, CaseIterable, Identifiable, Sendable {
         case .spanish: L("İspanyolca")
         case .russian: L("Rusça")
         case .english: L("İngilizce")
+        case .german: L("Almanca")
+        case .french: L("Fransızca")
+        case .japanese: L("Japonca")
+        case .chinese: L("Çince")
         }
     }
 
@@ -50,6 +62,10 @@ enum SubtitleLanguage: String, CaseIterable, Identifiable, Sendable {
         case .spanish: L("İspanyolca")
         case .russian: L("Rusça")
         case .english: L("İngilizce")
+        case .german: L("Almanca")
+        case .french: L("Fransızca")
+        case .japanese: L("Japonca")
+        case .chinese: L("Çince")
         }
     }
 }
@@ -69,6 +85,10 @@ enum ModelLabel {
         case "gigaam-v3": L("GigaAM (Rusça)")
         case "nllb-1.3b": L("NLLB-200 1.3B")
         case "madlad-3b": L("MADLAD-400 3B")
+        case "qwen3.5-4b": L("Qwen 3.5 4B")
+        case "gemma-4-e4b": L("Gemma 4 E4B")
+        case "qwen3.5-9b": L("Qwen 3.5 9B")
+        case "gemma-4-12b": L("Gemma 4 12B")
         case "speaker-diarization": L("Konuşmacı ayırma")
         default: id
         }
@@ -76,6 +96,12 @@ enum ModelLabel {
 
     static func menuTitle(for model: EngineModel) -> String {
         "\(name(for: model.id)) · \(detail(for: model))"
+    }
+
+    /// Translation menu row: the usual title plus a mark for models whose license forbids commercial use.
+    static func translationMenuTitle(for model: EngineModel) -> String {
+        let title = menuTitle(for: model)
+        return model.hasNonCommercialLicense ? "\(title) · \(L("Ticari olmayan lisans"))" : title
     }
 
     static func detail(for model: EngineModel) -> String {

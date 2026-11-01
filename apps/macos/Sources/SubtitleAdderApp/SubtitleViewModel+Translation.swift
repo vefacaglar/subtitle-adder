@@ -44,8 +44,9 @@ extension SubtitleViewModel {
             status = .failed(.key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç."))
             return
         }
-        let request = sentences
         let model = translationModel
+        if blockedOffline([model], retry: { [weak self] in self?.translate() }) { return }
+        let request = sentences
         job?.cancel()
         let id = UUID()
         jobID = id
@@ -65,6 +66,7 @@ extension SubtitleViewModel {
                             fraction: fraction
                         )
                     case .translation(let language, let translated):
+                        // One event per batch (a growing prefix) plus a final one; each is applied as it arrives.
                         applyTranslation(translated, language: language, source: request)
                     case .result, .partial:
                         break
@@ -87,7 +89,8 @@ extension SubtitleViewModel {
     }
 
     /// Maps translated lines by their stable `uid` values; the engine preserves order and ids.
-    private func applyTranslation(_ translated: [Sentence], language: String, source: [Sentence]) {
+    func applyTranslation(_ translated: [Sentence], language: String, source: [Sentence]) {
+        let hadTranslations = hasTranslations
         var entries: [UUID: TranslationEntry] = [:]
         for (index, result) in translated.enumerated() {
             let original = source.first(where: { $0.id == result.id })
@@ -102,6 +105,11 @@ extension SubtitleViewModel {
         translations = entries
         translationLanguage = language
         translationTarget = language
+        // The first translation to arrive switches the video overlay and the export to the translated text.
+        if !hadTranslations, hasTranslations {
+            if displayMode == .original { displayMode = .translation }
+            exportLanguage = .translated
+        }
     }
 
     // MARK: - Editing the translation text

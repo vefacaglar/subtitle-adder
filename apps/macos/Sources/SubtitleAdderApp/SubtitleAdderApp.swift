@@ -1,4 +1,5 @@
 import AppKit
+import EngineKit
 import Foundation
 import SwiftUI
 
@@ -17,9 +18,20 @@ struct SubtitleAdderApp: App {
         AppearanceController.shared.start()
         // Must exist before anything builds a localized string.
         _language = State(initialValue: AppLanguage())
+        // Nothing runs yet, so the engine's scratch folder from earlier sessions can go.
+        WorkingDirectory.cleanUp()
         let catalog = ModelCatalog()
+        let model = SubtitleViewModel(catalog: catalog)
         _catalog = State(initialValue: catalog)
-        _vm = State(initialValue: SubtitleViewModel(catalog: catalog))
+        _vm = State(initialValue: model)
+        // On quit, clear the scratch folder again unless a job is still running (the next launch gets it then).
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                if !model.isWorking { WorkingDirectory.cleanUp() }
+            }
+        }
     }
 
     var body: some Scene {
