@@ -1,0 +1,8 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <!-- x64 only: the same output folder (bin\x64\...) whether built from the solution or from this folder.
+       Set before the SDK computes its paths, so it lives here rather than in the project file. -->
+  <PropertyGroup>
+    <Platform Condition="'$(Platform)' == '' Or '$(Platform)' == 'AnyCPU'">x64</Platform>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/EngineKit/EngineKit.csproj" />
+    <Project Path="src/SubtitleAdder.Core/SubtitleAdder.Core.csproj" />
+    <Project Path="src/SubtitleAdder/SubtitleAdder.csproj">
+      <Platform Solution="*|Any CPU" Project="x64" />
+    </Project>
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EngineKit.Tests/EngineKit.Tests.csproj" />
+    <Project Path="tests/FakeEngine/FakeEngine.csproj" />
+    <Project Path="tests/SubtitleAdder.Core.Tests/SubtitleAdder.Core.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,340 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="SubtitleAdder.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:loc="using:SubtitleAdder"
+    Title="Subtitle Adder">
+
+    <Grid x:Name="Root" AllowDrop="True" DragOver="Root_DragOver" Drop="Root_Drop" PreviewKeyDown="Root_PreviewKeyDown">
+        <Grid.Resources>
+            <Style x:Key="ToolButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <Setter Property="Padding" Value="11,5" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="IconButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <Setter Property="Padding" Value="7" />
+                <Setter Property="MinWidth" Value="30" />
+                <Setter Property="Background" Value="{ThemeResource SubtleFillColorTransparentBrush}" />
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+            </Style>
+            <!-- Segoe UI digits are tabular, so times line up without a monospaced font. -->
+            <x:String x:Key="MonoFont">Segoe UI Variable Text, Segoe UI</x:String>
+        </Grid.Resources>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Title bar (content extends into it; the caption buttons sit on the right). -->
+        <Grid x:Name="AppTitleBar" Padding="16,0,140,0" ColumnSpacing="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Image Source="ms-appx:///Assets/AppIcon.png" Width="18" Height="18" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="Subtitle Adder" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center" />
+            <TextBlock x:Name="TitleFile" Grid.Column="2" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
+        </Grid>
+
+        <!-- Command area -->
+        <Grid Grid.Row="1" Padding="12,0,12,10" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="OpenButton" Style="{StaticResource ToolButtonStyle}" Click="Open_Click" loc:Localize.ToolTip="Video dosyası seç (Ctrl+O)" loc:Localize.AutomationName="Video seç">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8E5;" FontSize="16" />
+                        <TextBlock x:Name="OpenLabel" loc:Localize.Text="Video seç" />
+                    </StackPanel>
+                </Button>
+                <Border Width="1" Margin="2,6" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                <ComboBox x:Name="LanguageBox" Width="190" VerticalAlignment="Center" SelectionChanged="LanguageBox_SelectionChanged"
+                          loc:Localize.AutomationName="Konuşma dili"
+                          loc:Localize.ToolTip="Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır." />
+                <DropDownButton x:Name="ModelButton" VerticalAlignment="Center" HorizontalContentAlignment="Left"
+                                loc:Localize.AutomationName="Altyazı modeli"
+                                loc:Localize.ToolTip="Daha doğru modeller daha yavaştır; ilk kullanımda indirilir.">
+                    <TextBlock x:Name="ModelNameText" Text="{x:Bind Vm.ModelName, Mode=OneWay}" MinWidth="110" />
+                    <DropDownButton.Flyout>
+                        <MenuFlyout x:Name="ModelFlyout" Placement="BottomEdgeAlignedLeft" Opening="ModelFlyout_Opening" />
+                    </DropDownButton.Flyout>
+                </DropDownButton>
+                <DropDownButton x:Name="SpeakerButton" VerticalAlignment="Center" IsEnabled="{x:Bind loc:Ui.Not(Vm.IsWorking), Mode=OneWay}"
+                                loc:Localize.AutomationName="Konuşmacılar"
+                                loc:Localize.ToolTip="Videoda birden çok kişi konuşuyorsa kimin ne dediğini ayır; ilk kullanımda küçük bir model indirilir.">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon x:Name="SpeakerIcon" Glyph="&#xE716;" FontSize="16" />
+                        <TextBlock x:Name="SpeakerLabel" loc:Localize.Text="Konuşmacılar" />
+                    </StackPanel>
+                    <DropDownButton.Flyout>
+                        <MenuFlyout x:Name="SpeakerFlyout" Placement="BottomEdgeAlignedLeft" Opening="SpeakerFlyout_Opening" />
+                    </DropDownButton.Flyout>
+                </DropDownButton>
+                <StackPanel x:Name="TranslateGroup" Orientation="Horizontal" Spacing="8" Visibility="{x:Bind Vm.HasSentences, Mode=OneWay}">
+                    <Border Width="1" Margin="2,6" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                    <ComboBox x:Name="TargetBox" Width="170" VerticalAlignment="Center" SelectionChanged="TargetBox_SelectionChanged"
+                              IsEnabled="{x:Bind loc:Ui.Not(Vm.IsWorking), Mode=OneWay}" loc:Localize.AutomationName="Çeviri dili" />
+                    <Button x:Name="TranslateButton" Style="{StaticResource ToolButtonStyle}" Click="Translate_Click"
+                            loc:Localize.ToolTip="Tüm satırları seçili hedef dile yerel modelle çevir" loc:Localize.AutomationName="Çevir…">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xF2B7;" FontSize="16" />
+                            <TextBlock x:Name="TranslateLabel" loc:Localize.Text="Çevir…" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="SettingsButton" Style="{StaticResource IconButtonStyle}" Click="Settings_Click"
+                        loc:Localize.ToolTip="Ayarlar (Ctrl+,)" loc:Localize.AutomationName="Ayarlar">
+                    <FontIcon Glyph="&#xE713;" FontSize="16" />
+                </Button>
+                <Button x:Name="GenerateButton" Style="{StaticResource AccentButtonStyle}" Padding="14,5" Click="Generate_Click"
+                        Visibility="{x:Bind loc:Ui.Collapsed(Vm.IsWorking), Mode=OneWay}"
+                        loc:Localize.ToolTip="Videonun sesini metne çevirip altyazı çıkar (Ctrl+Enter)" loc:Localize.AutomationName="Altyazı üret">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE7F0;" FontSize="16" />
+                        <TextBlock loc:Localize.Text="Altyazı üret" />
+                    </StackPanel>
+                </Button>
+                <Button x:Name="CancelButton" Style="{StaticResource ToolButtonStyle}" Click="Cancel_Click"
+                        Visibility="{x:Bind Vm.IsWorking, Mode=OneWay}"
+                        loc:Localize.ToolTip="Süren altyazı ya da çeviri işini durdur" loc:Localize.AutomationName="Durdur">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE71A;" FontSize="14" />
+                        <TextBlock loc:Localize.Text="Durdur" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <InfoBar x:Name="ErrorBar" Grid.Row="2" Margin="12,0,12,10" Severity="Error" IsOpen="False" IsClosable="True" />
+
+        <!-- Content -->
+        <Grid Grid.Row="3" Margin="12,0,12,0">
+            <Grid x:Name="DropZone" CornerRadius="8" Background="{ThemeResource LayerFillColorDefaultBrush}">
+                <Rectangle RadiusX="8" RadiusY="8" StrokeThickness="1.5" StrokeDashArray="5,4"
+                           Stroke="{ThemeResource ControlStrongStrokeColorDefaultBrush}" />
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
+                    <FontIcon Glyph="&#xE714;" FontSize="44" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock loc:Localize.Text="Videoyu buraya sürükle" Style="{StaticResource SubtitleTextBlockStyle}" HorizontalAlignment="Center" />
+                    <TextBlock loc:Localize.Text="ya da araç çubuğundan seç" Foreground="{ThemeResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                    <Button Margin="0,8,0,0" HorizontalAlignment="Center" Style="{StaticResource ToolButtonStyle}" Click="Open_Click"
+                            loc:Localize.AutomationName="Video seç">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE8E5;" FontSize="16" />
+                            <TextBlock loc:Localize.Text="Video seç" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <Grid x:Name="WorkArea" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition x:Name="PlayerRow" Height="5*" MinHeight="200" />
+                    <RowDefinition Height="12" />
+                    <RowDefinition x:Name="EditorRow" Height="4*" MinHeight="180" />
+                </Grid.RowDefinitions>
+
+                <Border CornerRadius="8" Background="Black">
+                    <Grid x:Name="PlayerGrid" SizeChanged="PlayerGrid_SizeChanged">
+                        <MediaPlayerElement x:Name="PlayerElement" AreTransportControlsEnabled="True" Stretch="Uniform" RequestedTheme="Dark"
+                                            loc:Localize.AutomationName="Video">
+                            <MediaPlayerElement.TransportControls>
+                                <MediaTransportControls IsCompact="True" />
+                            </MediaPlayerElement.TransportControls>
+                        </MediaPlayerElement>
+                        <Grid x:Name="OverlayArea" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
+                            <loc:OverlayLabel x:Name="Overlay" />
+                        </Grid>
+                        <Border x:Name="DisplayPicker" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10" Padding="10,4,4,4"
+                                CornerRadius="8" Background="{ThemeResource SmokeFillColorDefaultBrush}" RequestedTheme="Dark">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock loc:Localize.Text="Gösterilen" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center" />
+                                <ComboBox x:Name="DisplayBox" MinWidth="120" SelectionChanged="DisplayBox_SelectionChanged" loc:Localize.AutomationName="Gösterilen" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Border>
+
+                <loc:SplitterHandle x:Name="Splitter" Grid.Row="1">
+                    <Border Width="40" Height="4" CornerRadius="2" HorizontalAlignment="Center" VerticalAlignment="Center"
+                            Background="{ThemeResource ControlStrongFillColorDisabledBrush}" />
+                </loc:SplitterHandle>
+
+                <Border Grid.Row="2" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Edit bar -->
+                        <Grid x:Name="EditBar" Padding="12,6" ColumnSpacing="20" Visibility="{x:Bind Vm.HasSentences, Mode=OneWay}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel x:Name="StartControls" Orientation="Horizontal" Spacing="2">
+                                <TextBlock loc:Localize.Text="Başlangıç" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <Button x:Name="StartMinus" Style="{StaticResource IconButtonStyle}" Click="StartMinus_Click"><FontIcon Glyph="&#xE738;" FontSize="12" /></Button>
+                                <TextBlock Text="{x:Bind Vm.SelectedStartText, Mode=OneWay}" FontFamily="{StaticResource MonoFont}" VerticalAlignment="Center" MinWidth="64" TextAlignment="Center" />
+                                <Button x:Name="StartPlus" Style="{StaticResource IconButtonStyle}" Click="StartPlus_Click"><FontIcon Glyph="&#xE710;" FontSize="12" /></Button>
+                                <Button x:Name="StartNow" Style="{StaticResource IconButtonStyle}" Click="StartNow_Click" loc:Localize.AutomationName="Şimdiki an"><FontIcon Glyph="&#xE81D;" FontSize="14" /></Button>
+                            </StackPanel>
+                            <StackPanel x:Name="EndControls" Grid.Column="1" Orientation="Horizontal" Spacing="2">
+                                <TextBlock loc:Localize.Text="Bitiş" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <Button x:Name="EndMinus" Style="{StaticResource IconButtonStyle}" Click="EndMinus_Click"><FontIcon Glyph="&#xE738;" FontSize="12" /></Button>
+                                <TextBlock Text="{x:Bind Vm.SelectedEndText, Mode=OneWay}" FontFamily="{StaticResource MonoFont}" VerticalAlignment="Center" MinWidth="64" TextAlignment="Center" />
+                                <Button x:Name="EndPlus" Style="{StaticResource IconButtonStyle}" Click="EndPlus_Click"><FontIcon Glyph="&#xE710;" FontSize="12" /></Button>
+                                <Button x:Name="EndNow" Style="{StaticResource IconButtonStyle}" Click="EndNow_Click" loc:Localize.AutomationName="Şimdiki an"><FontIcon Glyph="&#xE81D;" FontSize="14" /></Button>
+                            </StackPanel>
+                            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="4">
+                                <Button x:Name="UndoButton" Style="{StaticResource IconButtonStyle}" Click="Undo_Click"><FontIcon Glyph="&#xE7A7;" FontSize="14" /></Button>
+                                <Button x:Name="RedoButton" Style="{StaticResource IconButtonStyle}" Click="Redo_Click"><FontIcon Glyph="&#xE7A6;" FontSize="14" /></Button>
+                                <Border Width="1" Margin="4,6" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                <Button x:Name="SplitButton" Style="{StaticResource IconButtonStyle}" Padding="9,5" Click="Split_Click"
+                                        loc:Localize.ToolTip="Satırı oynatma konumundan ikiye böl">
+                                    <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8C6;" FontSize="14" /><TextBlock loc:Localize.Text="Böl" /></StackPanel>
+                                </Button>
+                                <Button x:Name="MergeButton" Style="{StaticResource IconButtonStyle}" Padding="9,5" Click="Merge_Click" IsEnabled="{x:Bind Vm.CanMergeSelected, Mode=OneWay}">
+                                    <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE71B;" FontSize="14" /><TextBlock loc:Localize.Text="Sonrakiyle birleştir" /></StackPanel>
+                                </Button>
+                                <Button x:Name="DeleteButton" Style="{StaticResource IconButtonStyle}" Padding="9,5" Click="Delete_Click" IsEnabled="{x:Bind Vm.HasSelection, Mode=OneWay}"
+                                        loc:Localize.ToolTip="Satırı Sil (Delete)">
+                                    <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE74D;" FontSize="14" /><TextBlock loc:Localize.Text="Sil" /></StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                        <Border Grid.Row="1" Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Visibility="{x:Bind Vm.HasSentences, Mode=OneWay}" />
+
+                        <ListView x:Name="Lines" Grid.Row="2" ItemsSource="{x:Bind Rows}" SelectionMode="Single" Padding="0,4"
+                                  SelectionChanged="Lines_SelectionChanged" PreviewKeyDown="Lines_PreviewKeyDown"
+                                  Visibility="{x:Bind Vm.HasSentences, Mode=OneWay}" loc:Localize.AutomationName="Satırlar">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    <Setter Property="Padding" Value="8,0" />
+                                    <Setter Property="MinHeight" Value="40" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="loc:SentenceRow">
+                                    <Grid ColumnSpacing="10" Padding="0,4">
+                                        <Grid.ContextFlyout>
+                                            <MenuFlyout Opening="RowMenu_Opening" />
+                                        </Grid.ContextFlyout>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="30" />
+                                            <ColumnDefinition Width="150" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Grid.ColumnSpan="4" Margin="-8,-4" CornerRadius="4" Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                                Opacity="0.16" Visibility="{x:Bind IsActive, Mode=OneWay}" />
+                                        <TextBlock Text="{x:Bind Number, Mode=OneWay}" FontFamily="{StaticResource MonoFont}" TextAlignment="Right" VerticalAlignment="Top" Margin="0,6,0,0"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="{x:Bind loc:Ui.Collapsed(IsActive), Mode=OneWay}" />
+                                        <TextBlock Text="{x:Bind Number, Mode=OneWay}" FontFamily="{StaticResource MonoFont}" TextAlignment="Right" VerticalAlignment="Top" Margin="0,6,0,0"
+                                                   Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" Visibility="{x:Bind IsActive, Mode=OneWay}" />
+                                        <TextBlock Grid.Column="1" Text="{x:Bind TimeText, Mode=OneWay}" FontFamily="{StaticResource MonoFont}" FontSize="12" Margin="0,8,0,0"
+                                                   VerticalAlignment="Top" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <Button Grid.Column="2" MinWidth="120" VerticalAlignment="Top" Padding="8,4" Click="SpeakerRow_Click"
+                                                Background="{ThemeResource SubtleFillColorTransparentBrush}" BorderBrush="Transparent"
+                                                Visibility="{x:Bind ShowsSpeaker, Mode=OneWay}"
+                                                loc:Localize.ToolTip="Bu satırı söyleyen kişiyi değiştir" loc:Localize.AutomationName="Konuşmacıyı değiştir">
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <Ellipse Width="8" Height="8" Fill="{x:Bind SpeakerBrush, Mode=OneWay}" Visibility="{x:Bind HasSpeaker, Mode=OneWay}" VerticalAlignment="Center" />
+                                                <TextBlock Text="{x:Bind SpeakerText, Mode=OneWay}" FontSize="12" VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Button>
+                                        <StackPanel Grid.Column="3" Spacing="2">
+                                            <TextBox Text="{x:Bind Text, Mode=OneWay}" TextWrapping="Wrap" AcceptsReturn="False" MaxHeight="96"
+                                                     Background="Transparent" BorderThickness="0" Padding="6,5"
+                                                     loc:Localize.PlaceholderText="Cümle" loc:Localize.AutomationName="Cümle"
+                                                     GotFocus="LineText_GotFocus" LostFocus="LineText_LostFocus" TextChanged="LineText_TextChanged" KeyDown="LineText_KeyDown" />
+                                            <Grid ColumnSpacing="6" Visibility="{x:Bind HasTranslation, Mode=OneWay}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <FontIcon Glyph="&#xF2B7;" FontSize="12" Margin="6,0,0,0" VerticalAlignment="Center"
+                                                          Foreground="{ThemeResource TextFillColorSecondaryBrush}" loc:Localize.AutomationName="Çeviri" />
+                                                <TextBox Grid.Column="1" Text="{x:Bind TranslationText, Mode=OneWay}" TextWrapping="Wrap" AcceptsReturn="False" MaxHeight="76"
+                                                         Background="Transparent" BorderThickness="0" Padding="4,4" FontSize="13"
+                                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                         loc:Localize.PlaceholderText="Çeviri" loc:Localize.AutomationName="Çeviri"
+                                                         GotFocus="TranslationText_GotFocus" LostFocus="TranslationText_LostFocus"
+                                                         TextChanged="TranslationText_TextChanged" KeyDown="TranslationText_KeyDown" />
+                                                <FontIcon Grid.Column="2" Glyph="&#xE81C;" FontSize="13" VerticalAlignment="Center" Margin="0,0,4,0"
+                                                          Foreground="{ThemeResource SystemFillColorCautionBrush}" Visibility="{x:Bind IsStale, Mode=OneWay}"
+                                                          loc:Localize.ToolTip="Orijinal metin değişti; çeviri eski olabilir. “Çevir…” ile yenile."
+                                                          loc:Localize.AutomationName="Çeviri eski" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                            
+                        </ListView>
+
+                        <!-- Empty state -->
+                        <StackPanel x:Name="EmptyState" Grid.RowSpan="3" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8"
+                                    Visibility="{x:Bind loc:Ui.Collapsed(Vm.HasSentences), Mode=OneWay}">
+                            <FontIcon Glyph="&#xE7F0;" FontSize="36" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="EmptyTitle" Style="{StaticResource SubtitleTextBlockStyle}" HorizontalAlignment="Center" />
+                            <TextBlock x:Name="EmptyDetail" loc:Localize.Text="Araç çubuğundan “Altyazı üret”e bas." HorizontalAlignment="Center"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <!-- Status bar -->
+        <Grid Grid.Row="4" Padding="16,10" ColumnSpacing="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid VerticalAlignment="Center">
+                <ProgressBar x:Name="Progress" Width="120" Maximum="1" Visibility="Collapsed" VerticalAlignment="Center" />
+                <FontIcon x:Name="DoneIcon" Glyph="&#xE930;" FontSize="16" Foreground="{ThemeResource SystemFillColorSuccessBrush}" Visibility="Collapsed" />
+                <FontIcon x:Name="FailIcon" Glyph="&#xE783;" FontSize="16" Foreground="{ThemeResource SystemFillColorCriticalBrush}" Visibility="Collapsed" />
+            </Grid>
+            <TextBlock x:Name="StatusLabel" Grid.Column="1" Text="{x:Bind Vm.StatusText, Mode=OneWay}" VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis" MaxLines="2" TextWrapping="Wrap" />
+            <StackPanel x:Name="NoticePanel" Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"
+                        Visibility="{x:Bind loc:Ui.VisibleIfText(Vm.ModelNoticeText), Mode=OneWay}">
+                <FontIcon Glyph="&#xE946;" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock x:Name="NoticeText" Text="{x:Bind Vm.ModelNoticeText, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="320" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8">
+                <ComboBox x:Name="FormatBox" MinWidth="90" SelectionChanged="FormatBox_SelectionChanged" loc:Localize.AutomationName="Biçim" />
+                <ComboBox x:Name="ExportLanguageBox" MinWidth="150" SelectionChanged="ExportLanguageBox_SelectionChanged"
+                          loc:Localize.AutomationName="Dil" loc:Localize.ToolTip="Dışa aktarılan altyazıda orijinal mi, çeviri mi kullanılsın" />
+                <Button x:Name="ExportButton" Click="Export_Click" IsEnabled="{x:Bind Vm.CanExport, Mode=OneWay}" loc:Localize.AutomationName="Dışa aktar…">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE74E;" FontSize="14" />
+                        <TextBlock loc:Localize.Text="Dışa aktar…" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

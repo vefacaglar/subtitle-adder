@@ -129,18 +129,18 @@
         }
       }
     },
-    "Hız %@ · Doğruluk %@" : {
+    "Hız %lld/5 · Doğruluk %lld/5" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Speed %@ · Accuracy %@"
+            "value" : "Speed %lld/5 · Accuracy %lld/5"
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Hız %@ · Doğruluk %@"
+            "value" : "Hız %lld/5 · Doğruluk %lld/5"
           }
         }
       }
