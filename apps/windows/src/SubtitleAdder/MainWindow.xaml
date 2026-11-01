@@ -235,16 +235,13 @@
                     <Border x:Name="PlayerBorder" Grid.ColumnSpan="3" CornerRadius="8" Background="Black">
                         <Grid x:Name="PlayerGrid" SizeChanged="PlayerGrid_SizeChanged"
                               PointerEntered="PlayerGrid_PointerEntered" PointerExited="PlayerGrid_PointerExited">
-                            <MediaPlayerElement x:Name="PlayerElement" AreTransportControlsEnabled="True" Stretch="Uniform" RequestedTheme="Dark"
-                                                loc:Localize.AutomationName="Video">
-                                <MediaPlayerElement.TransportControls>
-                                    <loc:PreviewTransportControls x:Name="PreviewControls" IsCompact="True"
-                                                                  ShowAndHideAutomatically="False" Opacity="0" IsHitTestVisible="False" />
-                                </MediaPlayerElement.TransportControls>
-                            </MediaPlayerElement>
+                            <MediaPlayerElement x:Name="PlayerElement" AreTransportControlsEnabled="False" Stretch="Uniform" RequestedTheme="Dark"
+                                                Tapped="PlayerElement_Tapped" loc:Localize.AutomationName="Video" />
                             <Grid x:Name="OverlayArea" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
                                 <loc:OverlayLabel x:Name="Overlay" />
                             </Grid>
+                            <loc:PreviewTransportControls x:Name="PreviewControls" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                                                          Margin="0,0,0,14" />
                             <Border x:Name="DisplayPicker" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10" Padding="10,4,4,4"
                                     CornerRadius="8" Background="#CC1C1C1E" BorderBrush="#40FFFFFF" BorderThickness="1" RequestedTheme="Dark">
                                 <StackPanel Orientation="Horizontal" Spacing="4">
