@@ -143,6 +143,132 @@ private func profile(_ presetID: String, model: String? = nil, url: String? = ni
         #expect(broken.providers.isEmpty && broken.activeProviderID == nil)
     }
 
+    // MARK: Damaged and unreadable files
+
+    private func asideFiles(_ fixture: Fixture) -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: fixture.folder.path)) ?? []
+        return names.filter { $0.hasPrefix("translation-providers.corrupt-") && $0.hasSuffix(".json") }.sorted()
+            .map { fixture.folder.appending(path: $0) }
+    }
+
+    private func write(_ text: String, to fixture: Fixture) throws {
+        try FileManager.default.createDirectory(at: fixture.folder, withIntermediateDirectories: true)
+        try text.write(to: fixture.fileURL, atomically: true, encoding: .utf8)
+    }
+
+    @Test func oneBadEntryIsSkippedAndTheOthersSurvive() throws {
+        let fixture = Fixture()
+        let good = UUID(), other = UUID()
+        let text = """
+        {"activeProviderId": "\(other.uuidString)", "providers": [
+          {"id": "\(good.uuidString)", "name": "Birinci", "presetId": "lan", "baseUrl": "http://a:1", "model": "m1"},
+          {"id": "not-a-uuid", "name": "Bozuk", "presetId": "openai", "baseUrl": "https://api.openai.com/v1"},
+          {"id": "\(other.uuidString)", "name": "İkinci", "presetId": "groq", "baseUrl": "https://g/v1", "asyncTranslation": false}
+        ]}
+        """
+        try write(text, to: fixture)
+        fixture.secrets.set("sk-keep", for: TranslationProviderStore.secretAccount(for: good))
+
+        let store = fixture.store()
+        #expect(store.providers.map(\.name) == ["Birinci", "İkinci"])
+        #expect(store.activeProviderID == other)
+        #expect(store.apiKey(for: good) == "sk-keep")
+        #expect(try fixture.fileText() == text, "loading never touches the file")
+        #expect(asideFiles(fixture).isEmpty)
+
+        // The first save keeps the original aside, then replaces the file with what was readable plus the edit.
+        store.updateModel("m2", for: other)
+        let aside = asideFiles(fixture)
+        #expect(aside.count == 1)
+        #expect(try aside.first.map { try String(contentsOf: $0, encoding: .utf8) } == text)
+        #expect(aside.first?.lastPathComponent.range(of: #"^translation-providers\.corrupt-\d{8}-\d{6}\.json$"#, options: .regularExpression) != nil)
+        let reopened = fixture.store()
+        #expect(reopened.providers.map(\.name) == ["Birinci", "İkinci"])
+        #expect(reopened.providers[1].model == "m2")
+        #expect(reopened.apiKey(for: good) == "sk-keep", "the keychain keys of the kept providers are untouched")
+
+        // Only the first save after the damage is preceded by a copy.
+        store.updateModel("m3", for: other)
+        #expect(asideFiles(fixture).count == 1)
+    }
+
+    @Test func aTruncatedFileIsSetAsideBeforeTheFirstSave() throws {
+        let fixture = Fixture()
+        let id = UUID()
+        let truncated = #"{"activeProviderId": null, "providers": [{"id": "\#(id.uuidString)", "name": "Yarım", "presetId": "lan", "baseUr"#
+        try write(truncated, to: fixture)
+
+        let store = fixture.store()
+        #expect(store.providers.isEmpty)
+        #expect(try fixture.fileText() == truncated)
+
+        let added = store.add(profile("openai"), key: "sk-new")
+        #expect(try asideFiles(fixture).map { try String(contentsOf: $0, encoding: .utf8) } == [truncated])
+        let reopened = fixture.store()
+        #expect(reopened.providers == [added])
+        #expect(reopened.apiKey(for: added.id) == "sk-new")
+        #expect(asideFiles(fixture).count == 1, "the valid file written since is not set aside again")
+    }
+
+    @Test func aMalformedActiveIdIsDroppedAndTheFileIsKeptAside() throws {
+        let fixture = Fixture()
+        let id = UUID()
+        let text = #"{"activeProviderId": 42, "providers": [{"id": "\#(id.uuidString)", "name": "Tek", "presetId": "lan", "baseUrl": "http://a:1"}]}"#
+        try write(text, to: fixture)
+        let store = fixture.store()
+        #expect(store.providers.map(\.id) == [id])
+        #expect(store.activeProviderID == nil)
+        store.setActive(id)
+        #expect(asideFiles(fixture).count == 1)
+    }
+
+    @Test func aMissingFileIsSavedWithoutAnyCopy() {
+        let fixture = Fixture()
+        let store = fixture.store()
+        store.add(profile("lan", url: "http://a:1"), key: "")
+        #expect(FileManager.default.fileExists(atPath: fixture.fileURL.path))
+        #expect(asideFiles(fixture).isEmpty)
+    }
+
+    @Test func aCleanFileIsRewrittenWithoutAnyCopy() throws {
+        let fixture = Fixture()
+        let store = fixture.store()
+        store.add(profile("lan", url: "http://a:1"), key: "")
+        let reopened = fixture.store()
+        reopened.add(profile("openai"), key: "")
+        #expect(asideFiles(fixture).isEmpty)
+    }
+
+    @Test(.enabled(if: getuid() != 0, "root ignores file permissions"))
+    func anUnreadableFileIsNeverOverwrittenAndIsMergedOnceItCanBeRead() throws {
+        let fixture = Fixture()
+        let onDisk = fixture.store()
+        let first = onDisk.add(profile("lan", url: "http://a:1"), key: "", setActive: true)
+        let original = try fixture.fileText()
+
+        chmod(fixture.fileURL.path, 0o000)
+        defer { chmod(fixture.fileURL.path, 0o644) }
+        let blind = fixture.store()
+        #expect(blind.providers.isEmpty, "the entries cannot be seen")
+
+        // An edit while the file cannot be read stays in memory; the file is not replaced.
+        let second = blind.add(profile("openai"), key: "sk-2", setActive: false)
+        #expect(blind.providers == [second])
+        chmod(fixture.fileURL.path, 0o644)
+        #expect(try fixture.fileText() == original, "an unreadable file must never be replaced by this store's view")
+        #expect(asideFiles(fixture).isEmpty)
+
+        // Once it can be read again the next save merges what is on disk with the edit.
+        blind.updateModel("gpt-4.1", for: second.id)
+        #expect(blind.providers.map(\.id) == [first.id, second.id])
+        #expect(blind.activeProviderID == first.id)
+        let reopened = fixture.store()
+        #expect(reopened.providers.map(\.id) == [first.id, second.id])
+        #expect(reopened.providers[1].model == "gpt-4.1")
+        #expect(reopened.activeProviderID == first.id)
+        #expect(asideFiles(fixture).isEmpty)
+    }
+
     // MARK: Editing
 
     @Test func addTrimsAndNamesAfterThePresetWhenBlank() {
