@@ -1,100 +1,15 @@
 import EngineKit
 import Foundation
 
-/// What the connection test says, with the styling it needs (success or error).
-struct ExternalConnectionNotice: Equatable, Sendable {
-    var message: LocalizedMessage
-    var isError: Bool
-}
-
-/// External LLM server on the local network: the settings, the connection test and the background ("async")
-/// translation of the lines transcribed so far.
+/// The external server (a cloud provider or a LAN server, see `SubtitleViewModel+Providers.swift`) translating in the
+/// background ("async") the lines transcribed so far.
 extension SubtitleViewModel {
-    // MARK: - Settings
-
-    /// The server the engine translates with, or `nil` for a local model: enabled and the address usable.
-    var externalLLM: ExternalLLM? {
-        guard externalLlmEnabled else { return nil }
-        let server = ExternalLLM(url: externalLlmUrl, model: externalLlmModel)
-        return server.normalizedURL == nil ? nil : server
-    }
-
-    /// Translation goes to the external server in the background while transcription is still running.
-    var isExternalAsyncActive: Bool { isExternalLLMActive && externalLlmAsync }
-
-    /// What the toolbar's translation-model menu shows: the local model's name, or the external server's model.
-    var translationModelTitle: String {
-        guard isExternalLLMActive else { return ModelLabel.name(for: translationModel) }
-        let name = externalLlmModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let shown = name.isEmpty ? L("Harici LLM") : name
-        return isExternalAsyncActive ? L("Harici: %@ (Asenkron)", shown) : L("Harici: %@", shown)
-    }
-
     /// The client with the launch settings as they are right now. Translation that starts later (a queued background
     /// task, the next batch) keeps the settings its decision was made under instead of whatever Settings says by then.
     func pinningLaunchSettings(_ engine: EngineClient) -> EngineClient {
         var pinned = engine
         pinned.launchSettings = launchState.settings
         return pinned
-    }
-
-    // MARK: - Connection test
-
-    /// Asks the server for its models (see `ExternalLLMServer.testConnection`), keeps the suitable ones and reports the
-    /// result. An empty model field takes the first one found. Also what "Uzaktaki modelleri listele" runs.
-    /// A cancelled probe changes nothing.
-    func testExternalConnection() async {
-        let address = externalLlmUrl
-        let testID = UUID()
-        connectionTestID = testID
-        isTestingExternalConnection = true
-        let result = await ExternalLLMServer.testConnection(rawURL: address, fetch: externalFetch)
-        // A newer test, or an address changed meanwhile, makes this answer obsolete.
-        guard connectionTestID == testID else { return }
-        isTestingExternalConnection = false
-        guard address == externalLlmUrl else { return }
-        switch result {
-        case .cancelled:
-            // The window that asked went away; the server wasn't heard from, so the earlier notice and list stand.
-            return
-        case .invalidAddress:
-            externalModels = []
-            externalConnection = ExternalConnectionNotice(
-                message: .key("Lütfen geçerli bir sunucu adresi girin."), isError: true
-            )
-        case .unauthorized(let status):
-            externalModels = []
-            externalConnection = ExternalConnectionNotice(
-                message: LocalizedMessage("external-unauthorized:\(status)") {
-                    ExternalLLMServer.unauthorizedMessage(status: status)
-                },
-                isError: true
-            )
-        case .unreachable(let reason):
-            externalModels = []
-            externalConnection = ExternalConnectionNotice(
-                message: LocalizedMessage("external-unreachable:\(reason)") { L("Sunucuya ulaşılamadı: %@", reason) },
-                isError: true
-            )
-        case .reachable(let host, let latency, let models):
-            externalModels = models
-            if externalLlmModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let first = models.first {
-                externalLlmModel = first
-            }
-            externalConnection = ExternalConnectionNotice(
-                message: LocalizedMessage("external-ok:\(host):\(latency):\(models.count)") {
-                    L("Bağlantı başarılı (%@ · %lld ms · %lld uygun model bulundu)", host, latency, models.count)
-                },
-                isError: false
-            )
-        }
-    }
-
-    /// Fills the list of the server's models once an external server is in use and nothing is known about it yet; the
-    /// toolbar menu shows what is there when opened, so this runs ahead of time (launch, switching the server on).
-    func refreshExternalModelsIfNeeded() async {
-        guard isExternalLLMActive, externalModels.isEmpty, !isTestingExternalConnection else { return }
-        await testExternalConnection()
     }
 
     // MARK: - Background translation

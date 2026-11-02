@@ -50,6 +50,30 @@ public enum ExternalLLMServer {
         return url
     }
 
+    /// Whether `host` (a URL host, IPv6 without brackets) names this computer or a machine on the local network:
+    /// `localhost`, `.local` / `.lan` / `.home.arpa` names, a bare host name (no dot), loopback, link-local and private
+    /// IPv4 ranges (including the 100.64/10 block overlay networks such as Tailscale use) and IPv6 loopback, link-local
+    /// and unique-local addresses. Anything else is taken to be on the internet.
+    public static func isLocalNetworkHost(_ host: String) -> Bool {
+        let host = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if host.isEmpty { return false }
+        if host.contains(":") {
+            return host == "::1" || host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd")
+        }
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
+        if octets.count == 4, octets.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }) {
+            let n = octets.compactMap { Int($0) }
+            guard n.count == 4, n.allSatisfy({ (0...255).contains($0) }) else { return false }
+            switch (n[0], n[1]) {
+            case (10, _), (127, _), (192, 168), (169, 254): return true
+            case (172, 16...31), (100, 64...127): return true
+            default: return false
+            }
+        }
+        if !host.contains(".") { return true }
+        return ["localhost", "local", "lan"].contains { host.hasSuffix("." + $0) } || host.hasSuffix(".home.arpa")
+    }
+
     /// Model ids from an Ollama `/api/tags` (`models[].name`) or OpenAI `/v1/models` (`data[].id`) response, in order,
     /// de-duplicated case-insensitively, without embedding-only models (they can't translate).
     public static func parseSuitableModels(_ data: Data) -> [String] {
