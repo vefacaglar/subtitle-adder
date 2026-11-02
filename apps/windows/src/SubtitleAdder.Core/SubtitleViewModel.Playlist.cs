@@ -212,7 +212,7 @@ public sealed partial class SubtitleViewModel
         var preExtractedDoneIds = new HashSet<Guid>();
         var pendingTranslations = new List<Task>();
         using var audioExtractSemaphore = new SemaphoreSlim(1, 1);
-        using var translationSemaphore = new SemaphoreSlim(1, 1);
+        var translationSemaphore = _translationExecutionGate;
 
         Task EnsureAudioExtractionStarted(PlaylistItem item)
         {
@@ -327,9 +327,15 @@ public sealed partial class SubtitleViewModel
                     continue;
                 }
 
-                // Step 3 (Stage 3 — Pipelined Translation + Auto-Save):
-                // Hand off translation and saving of this item to Stage 3 in the background and immediately
-                // advance Stage 2 to transcribe the next video in the playlist!
+                // Step 3 (Stage 3 — Single-Concurrency Pipelined Translation + Auto-Save):
+                // Ensure any previous item's Stage 3 translation has completed before starting this item's translation,
+                // guaranteeing at most 1 LLM translation ever runs at a time across the entire application.
+                if (pendingTranslations.Any(t => !t.IsCompleted))
+                {
+                    await Task.WhenAll(pendingTranslations).ConfigureAwait(true);
+                }
+                pendingTranslations.RemoveAll(t => t.IsCompleted);
+
                 var itemSnapshot = nextItem;
                 var sentencesSnapshot = _sentences.ToList();
                 var preTranslatedSnapshot = new Dictionary<Guid, TranslationEntry>(_translations);

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using SubtitleAdder.EngineKit;
@@ -10,6 +11,19 @@ namespace SubtitleAdder.Core;
 /// </summary>
 public sealed class VideoCardViewModel
 {
+    private static readonly ConcurrentDictionary<string, string?> SidecarCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public static void InvalidateSidecarCache(string? videoPath = null)
+    {
+        if (string.IsNullOrWhiteSpace(videoPath))
+        {
+            SidecarCache.Clear();
+            return;
+        }
+        SidecarCache.TryRemove(videoPath, out _);
+    }
+
     public VideoCardViewModel(VideoUserStats stats, IReadOnlyList<string>? customListNames = null)
     {
         Stats = stats;
@@ -85,10 +99,22 @@ public sealed class VideoCardViewModel
 
     private static string? FindVideoSubtitleFile(string? videoPath)
     {
+        if (string.IsNullOrWhiteSpace(videoPath)) return null;
+        if (SidecarCache.TryGetValue(videoPath, out var cached))
+        {
+            return cached;
+        }
+
+        var found = FindVideoSubtitleFileUncached(videoPath);
+        SidecarCache[videoPath] = found;
+        return found;
+    }
+
+    private static string? FindVideoSubtitleFileUncached(string videoPath)
+    {
         if (SubtitleParser.FindSidecarSubtitle(videoPath) is { } exact)
             return exact;
 
-        if (string.IsNullOrWhiteSpace(videoPath)) return null;
         try
         {
             var dir = Path.GetDirectoryName(videoPath);
@@ -392,6 +418,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
         if (IsLoggedIn && ActiveVideoPath is { } activePath)
         {
             _profileManager.RecordWatch(activePath);
+            return;
         }
 
         RefreshActiveVideoStats();
@@ -410,8 +437,6 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     {
         if (!IsLoggedIn || ActiveVideoPath is not { } activePath) return;
         _profileManager.ToggleLike(activePath);
-        RefreshActiveVideoStats();
-        RefreshFeed();
     }
 
     /// <summary>Sets the star rating (<c>0..5</c>) of the currently open video.</summary>
@@ -419,8 +444,6 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     {
         if (!IsLoggedIn || ActiveVideoPath is not { } activePath) return;
         _profileManager.SetRating(activePath, stars);
-        RefreshActiveVideoStats();
-        RefreshFeed();
     }
 
     /// <summary>Toggles the like status of a specific video path from a feed card.</summary>
@@ -428,8 +451,6 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     {
         if (!IsLoggedIn || string.IsNullOrWhiteSpace(videoPath)) return;
         _profileManager.ToggleLike(videoPath);
-        RefreshActiveVideoStats();
-        RefreshFeed();
     }
 
     /// <summary>Sets the star rating (<c>0..5</c>) of a specific video path from a feed card.</summary>
@@ -437,21 +458,13 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     {
         if (!IsLoggedIn || string.IsNullOrWhiteSpace(videoPath)) return;
         _profileManager.SetRating(videoPath, stars);
-        RefreshActiveVideoStats();
-        RefreshFeed();
     }
 
     /// <summary>Clears watch history for the active profile while preserving favorites, ratings, and custom lists.</summary>
     public bool ClearWatchHistory()
     {
         if (!IsLoggedIn) return false;
-        var ok = _profileManager.ClearWatchHistory();
-        if (ok)
-        {
-            RefreshActiveVideoStats();
-            RefreshFeed();
-        }
-        return ok;
+        return _profileManager.ClearWatchHistory();
     }
 
     // MARK: - Custom User Lists ("Listelerim")
@@ -460,42 +473,30 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     public UserVideoList? CreateCustomList(string name)
     {
         if (!IsLoggedIn) return null;
-        var created = _profileManager.CreateCustomList(name);
-        if (created is not null)
-        {
-            SyncFromProfileManager();
-        }
-        return created;
+        return _profileManager.CreateCustomList(name);
     }
 
     /// <summary>Renames an existing custom video list in the active profile.</summary>
     public bool RenameCustomList(string listId, string newName)
     {
         if (!IsLoggedIn) return false;
-        var ok = _profileManager.RenameCustomList(listId, newName);
-        if (ok) SyncFromProfileManager();
-        return ok;
+        return _profileManager.RenameCustomList(listId, newName);
     }
 
     /// <summary>Deletes a custom video list from the active profile.</summary>
     public bool DeleteCustomList(string listId)
     {
         if (!IsLoggedIn) return false;
-        var ok = _profileManager.DeleteCustomList(listId);
-        if (ok)
+        if (string.Equals(_activeCustomListId, listId, StringComparison.OrdinalIgnoreCase))
         {
-            if (string.Equals(_activeCustomListId, listId, StringComparison.OrdinalIgnoreCase))
+            _activeCustomListId = null;
+            if (_activeFilter == VideoFeedFilter.CustomList)
             {
-                _activeCustomListId = null;
-                if (_activeFilter == VideoFeedFilter.CustomList)
-                {
-                    _activeFilter = VideoFeedFilter.All;
-                    OnPropertyChanged(nameof(ActiveFilter));
-                }
+                _activeFilter = VideoFeedFilter.All;
+                OnPropertyChanged(nameof(ActiveFilter));
             }
-            SyncFromProfileManager();
         }
-        return ok;
+        return _profileManager.DeleteCustomList(listId);
     }
 
     /// <summary>Activates a specific custom list filter tab in the video platform hub.</summary>
@@ -516,9 +517,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     {
         if (!IsLoggedIn || string.IsNullOrWhiteSpace(listId) || string.IsNullOrWhiteSpace(videoPath))
             return false;
-        var nowInList = _profileManager.ToggleVideoInCustomList(listId, videoPath);
-        SyncFromProfileManager();
-        return nowInList;
+        return _profileManager.ToggleVideoInCustomList(listId, videoPath);
     }
 
     /// <summary>Toggles membership of the currently open player video in custom list <paramref name="listId"/>.</summary>
@@ -580,14 +579,29 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
             return;
         }
 
+        var listNamesByPath = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var list in CustomLists)
+        {
+            foreach (var vp in list.VideoPaths)
+            {
+                var norm = LocalProfileManager.NormalizeVideoPath(vp);
+                if (norm.Length == 0) continue;
+                if (!listNamesByPath.TryGetValue(norm, out var names))
+                {
+                    names = [];
+                    listNamesByPath[norm] = names;
+                }
+                names.Add(list.Name);
+            }
+        }
+
         var statsList = _profileManager.GetFeed(_activeFilter, _searchQuery, _discoveredPaths, _activeCustomListId);
         FeedItems = statsList
             .Select(s =>
             {
-                var listNames = _profileManager
-                    .GetCustomListsContaining(s.VideoPath)
-                    .Select(l => l.Name)
-                    .ToList();
+                var listNames = listNamesByPath.TryGetValue(s.VideoPath, out var names)
+                    ? (IReadOnlyList<string>)names
+                    : [];
                 return new VideoCardViewModel(s, listNames);
             })
             .ToList();

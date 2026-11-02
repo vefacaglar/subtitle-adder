@@ -760,6 +760,7 @@ public sealed class VideoPlatformHubView : Grid
     private readonly TextBlock _emptyStateSubtitle;
     private readonly Dictionary<string, BitmapImage> _thumbnailImageCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _thumbnailLoadingPaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _thumbnailExtractGate = new(1, 1);
     private readonly List<RenderedVideoCard> _renderedCards = [];
     private bool _showExplicitSignInCard;
     private bool _refreshQueued;
@@ -2267,7 +2268,12 @@ public sealed class VideoPlatformHubView : Grid
 
         try
         {
-            var bytes = item.ThumbnailBytes ?? _vm.GetEncryptedThumbnail(item.VideoPath);
+            var bytes = item.ThumbnailBytes;
+            if (bytes is null || bytes.Length == 0)
+            {
+                var pathCopy = item.VideoPath;
+                bytes = await Task.Run(() => _vm.GetEncryptedThumbnail(pathCopy));
+            }
             if (bytes is { Length: > 0 })
             {
                 await ApplyAndCacheThumbnailBytesAsync(item.VideoPath, bytes, targetImage);
@@ -2279,25 +2285,32 @@ public sealed class VideoPlatformHubView : Grid
                 return;
             }
 
-            var file = await StorageFile.GetFileFromPathAsync(item.VideoPath);
-            using var thumb = await file.GetThumbnailAsync(ThumbnailMode.VideosView, 240, ThumbnailOptions.UseCurrentScale);
-            if (thumb is null || thumb.Size == 0)
+            byte[]? capturedBytes = null;
+            await _thumbnailExtractGate.WaitAsync();
+            try
             {
-                return;
+                var file = await StorageFile.GetFileFromPathAsync(item.VideoPath);
+                using var thumb = await file.GetThumbnailAsync(ThumbnailMode.VideosView, 240, ThumbnailOptions.UseCurrentScale);
+                if (thumb is not null && thumb.Size > 0)
+                {
+                    capturedBytes = new byte[thumb.Size];
+                    using var reader = new DataReader(thumb.GetInputStreamAt(0));
+                    await reader.LoadAsync((uint)thumb.Size);
+                    reader.ReadBytes(capturedBytes);
+                }
+            }
+            finally
+            {
+                _thumbnailExtractGate.Release();
             }
 
-            var capturedBytes = new byte[thumb.Size];
-            using (var reader = new DataReader(thumb.GetInputStreamAt(0)))
-            {
-                await reader.LoadAsync((uint)thumb.Size);
-                reader.ReadBytes(capturedBytes);
-            }
-
-            if (capturedBytes.Length > 0)
+            if (capturedBytes is { Length: > 0 })
             {
                 if (_vm.IsLoggedIn)
                 {
-                    _vm.SaveEncryptedThumbnail(item.VideoPath, capturedBytes);
+                    var pathToSave = item.VideoPath;
+                    var bytesToSave = capturedBytes;
+                    _ = Task.Run(() => _vm.SaveEncryptedThumbnail(pathToSave, bytesToSave));
                 }
                 await ApplyAndCacheThumbnailBytesAsync(item.VideoPath, capturedBytes, targetImage);
             }

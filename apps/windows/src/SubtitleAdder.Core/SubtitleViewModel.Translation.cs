@@ -81,7 +81,10 @@ public sealed partial class SubtitleViewModel
         Status = initialFraction is { } initF
             ? new JobStatus.Working(Label(EngineStage.Translating, initF, JobPurpose.Translation), initF)
             : new JobStatus.Working(LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);
-        StartJob(new HashSet<string> { model }, token => engine.Translate(contextualRequest, target, source, model, token), engineEvent =>
+        StartJob(
+            new HashSet<string> { model },
+            token => SerializeTranslationStream(engine.Translate(contextualRequest, target, source, model, token), token),
+            engineEvent =>
         {
             switch (engineEvent)
             {
@@ -148,6 +151,24 @@ public sealed partial class SubtitleViewModel
         return true;
     }
 
+    private async IAsyncEnumerable<EngineEvent> SerializeTranslationStream(
+        IAsyncEnumerable<EngineEvent> innerStream,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+    {
+        await _translationExecutionGate.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            await foreach (var ev in innerStream.WithCancellation(token).ConfigureAwait(false))
+            {
+                yield return ev;
+            }
+        }
+        finally
+        {
+            _translationExecutionGate.Release();
+        }
+    }
+
     private async Task PumpPartialTranslationsExternallyAsync(
         IEngineClient engine,
         HashSet<Guid> queuedAsyncUids,
@@ -155,13 +176,15 @@ public sealed partial class SubtitleViewModel
     {
         while (!token.IsCancellationRequested)
         {
+            if (_translationExecutionGate.CurrentCount == 0) break;
+
             List<Sentence>? batch = null;
             var target = "";
             string? source = null;
             var model = "";
             await _ui.InvokeAsync(() =>
             {
-                if (token.IsCancellationRequested || _sentences.Count <= 2) return;
+                if (token.IsCancellationRequested || _sentences.Count <= 2 || _translationExecutionGate.CurrentCount == 0) return;
                 target = _translationTarget;
                 source = TranslationSource;
                 model = _translationModel;
@@ -191,22 +214,32 @@ public sealed partial class SubtitleViewModel
         CancellationToken token)
     {
         if (batch.Count == 0 || source == target) return;
-        var alreadyTranslatedCount = 0;
-        IReadOnlyList<Sentence> contextualRequest = batch;
-        await _ui.InvokeAsync(() =>
-        {
-            if (token.IsCancellationRequested) return;
-            contextualRequest = WithTranslationContext(_sentences, batch);
-            alreadyTranslatedCount = _translations.Count;
-            if (alreadyTranslatedCount > 0 && _sentences.Count > 0)
-            {
-                AsyncTranslationFraction = Math.Clamp((double)alreadyTranslatedCount / _sentences.Count, 0.0, 0.99);
-            }
-            IsAsyncTranslating = true;
-        }).ConfigureAwait(false);
 
         try
         {
+            await _translationExecutionGate.WaitAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        try
+        {
+            var alreadyTranslatedCount = 0;
+            IReadOnlyList<Sentence> contextualRequest = batch;
+            await _ui.InvokeAsync(() =>
+            {
+                if (token.IsCancellationRequested) return;
+                contextualRequest = WithTranslationContext(_sentences, batch);
+                alreadyTranslatedCount = _translations.Count;
+                if (alreadyTranslatedCount > 0 && _sentences.Count > 0)
+                {
+                    AsyncTranslationFraction = Math.Clamp((double)alreadyTranslatedCount / _sentences.Count, 0.0, 0.99);
+                }
+                IsAsyncTranslating = true;
+            }).ConfigureAwait(false);
+
             await foreach (var engineEvent in engine.Translate(contextualRequest, target, source, model, token).ConfigureAwait(false))
             {
                 if (token.IsCancellationRequested) return;
@@ -254,6 +287,10 @@ public sealed partial class SubtitleViewModel
         catch (Exception)
         {
             // Any lines not translated in the partial background pass are picked up by the final TranslateCore call.
+        }
+        finally
+        {
+            _translationExecutionGate.Release();
         }
     }
 

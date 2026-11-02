@@ -202,9 +202,14 @@ public sealed class MediaLibraryIndex
         var now = DateTimeOffset.UtcNow;
         if (string.IsNullOrEmpty(normalized) || !Directory.Exists(normalized))
         {
-            RemoveDirectoryFromCache(normalized);
-            if (persist) SaveToDisk();
-            IndexChanged?.Invoke(this, EventArgs.Empty);
+            // Only remove the directory from the SSD index if its drive root is actually connected (folder deleted).
+            // If an external HDD is unplugged, preserve its cached index until the drive is reconnected.
+            if (!string.IsNullOrEmpty(normalized) && IsDriveRootReady(normalized, rootCache: null))
+            {
+                RemoveDirectoryFromCache(normalized);
+                if (persist) SaveToDisk();
+                IndexChanged?.Invoke(this, EventArgs.Empty);
+            }
             return new DirectorySnapshot(normalized, [], [], now);
         }
 
@@ -329,8 +334,8 @@ public sealed class MediaLibraryIndex
     /// </summary>
     public IReadOnlyList<IndexedMediaFile> Search(string query, int maxResults = 100)
     {
-        if (string.IsNullOrWhiteSpace(query) || maxResults <= 0) return [];
-        var trimmed = query.Trim();
+        if (maxResults <= 0) return [];
+        var trimmed = (query ?? "").Trim();
 
         List<IndexedMediaFile> candidates;
         lock (_syncRoot)
@@ -338,7 +343,19 @@ public sealed class MediaLibraryIndex
             candidates = _filesByPath.Values.ToList();
         }
 
-        return candidates
+        var rootCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        var available = candidates.Where(file => IsDriveRootReady(file.FullPath, rootCache));
+
+        if (trimmed.Length == 0)
+        {
+            return available
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .ThenBy(file => file.FileName, StringComparer.OrdinalIgnoreCase)
+                .Take(maxResults)
+                .ToList();
+        }
+
+        return available
             .Select(file => (File: file, Score: ComputeMatchScore(file, trimmed)))
             .Where(x => x.Score > 0)
             .OrderByDescending(x => x.Score)
@@ -347,6 +364,29 @@ public sealed class MediaLibraryIndex
             .Take(maxResults)
             .Select(x => x.File)
             .ToList();
+    }
+
+    private static bool IsDriveRootReady(string path, Dictionary<string, bool>? rootCache)
+    {
+        try
+        {
+            var root = Path.GetPathRoot(path);
+            if (string.IsNullOrWhiteSpace(root)) return true;
+            if (rootCache is not null && rootCache.TryGetValue(root, out var cached))
+            {
+                return cached;
+            }
+
+            var ready = root.StartsWith(@"\\", StringComparison.Ordinal)
+                ? Directory.Exists(root)
+                : new DriveInfo(root).IsReady;
+            rootCache?.TryAdd(root, ready);
+            return ready;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static int ComputeMatchScore(IndexedMediaFile file, string query)

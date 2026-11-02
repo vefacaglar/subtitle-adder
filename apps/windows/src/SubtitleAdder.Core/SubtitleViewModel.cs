@@ -80,6 +80,11 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public const string OfflineModeDefaultsKey = "offlineMode";
     public const string AutoSaveSubtitleDefaultsKey = "autoSaveSubtitle";
     public const string AutoPlayVideoDefaultsKey = "autoPlayVideo";
+    public const string VideoCacheMaxSizeGbDefaultsKey = "videoCacheMaxSizeGb";
+    public const int DefaultVideoCacheMaxSizeGb = EncryptedVideoCacheStore.DefaultMaxSizeGb;
+    public const int MinVideoCacheMaxSizeGb = EncryptedVideoCacheStore.MinMaxSizeGb;
+    public const int MaxVideoCacheMaxSizeGb = EncryptedVideoCacheStore.MaxMaxSizeGb;
+    public const int MaxConcurrentTranslations = 1;
     public const string ExternalLlmEnabledDefaultsKey = "externalLlmEnabled";
     public const string ExternalLlmUrlDefaultsKey = "externalLlmUrl";
     public const string ExternalLlmModelDefaultsKey = "externalLlmModel";
@@ -88,6 +93,8 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private readonly ISettingsStore _settings;
     private readonly IUiDispatcher _ui;
     private readonly LanguageState _languageState;
+    private readonly EncryptedVideoCacheStore _videoCacheStore;
+    private readonly SemaphoreSlim _translationExecutionGate = new(MaxConcurrentTranslations, MaxConcurrentTranslations);
 
     private string _language;
     private string _model;
@@ -99,6 +106,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private bool _offlineMode;
     private bool _autoSaveSubtitle;
     private bool _autoPlayVideo;
+    private int _videoCacheMaxSizeGb;
     private bool _externalLlmEnabled;
     private string _externalLlmUrl;
     private string _externalLlmModel;
@@ -126,12 +134,18 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private Guid _jobId = Guid.NewGuid();  // only the current job may change the state
     private readonly HashSet<string> _sessionTempFiles = new(StringComparer.OrdinalIgnoreCase);
 
-    public SubtitleViewModel(ModelCatalog catalog, ISettingsStore settings, IUiDispatcher? dispatcher = null, LanguageState? languageState = null)
+    public SubtitleViewModel(
+        ModelCatalog catalog,
+        ISettingsStore settings,
+        IUiDispatcher? dispatcher = null,
+        LanguageState? languageState = null,
+        EncryptedVideoCacheStore? videoCacheStore = null)
     {
         Catalog = catalog;
         _settings = settings;
         _ui = dispatcher ?? ImmediateDispatcher.Instance;
         _languageState = languageState ?? LanguageState.Shared;
+        _videoCacheStore = videoCacheStore ?? EncryptedVideoCacheStore.Shared;
 
         var savedLanguage = settings.GetString(LanguageDefaultsKey) ?? "";
         // The old version accepted free text; a code not in the list falls back to automatic.
@@ -150,6 +164,9 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         OfflineState.Shared.Enabled = _offlineMode;
         _autoSaveSubtitle = settings.GetBool(AutoSaveSubtitleDefaultsKey) ?? true;
         _autoPlayVideo = settings.GetBool(AutoPlayVideoDefaultsKey) ?? true;
+        var savedCacheGb = settings.GetInt(VideoCacheMaxSizeGbDefaultsKey) ?? DefaultVideoCacheMaxSizeGb;
+        _videoCacheMaxSizeGb = Math.Clamp(savedCacheGb, MinVideoCacheMaxSizeGb, MaxVideoCacheMaxSizeGb);
+        _videoCacheStore.MaxCacheSizeGb = _videoCacheMaxSizeGb;
         _externalLlmEnabled = settings.GetBool(ExternalLlmEnabledDefaultsKey) ?? false;
         _externalLlmUrl = settings.GetString(ExternalLlmUrlDefaultsKey) ?? "";
         _externalLlmModel = settings.GetString(ExternalLlmModelDefaultsKey) ?? "";
@@ -347,6 +364,54 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             if (!SetProperty(ref _autoPlayVideo, value)) return;
             _settings.SetBool(AutoPlayVideoDefaultsKey, value);
         }
+    }
+
+    /// <summary>Per-profile AES-256-GCM encrypted SSD video cache store used by <see cref="BufferedVideoStream"/>.</summary>
+    public EncryptedVideoCacheStore VideoCacheStore => _videoCacheStore;
+
+    /// <summary>Maximum disk quota in gigabytes for the AES-256-GCM encrypted video cache; persistent, defaults to 20 GB.</summary>
+    public int VideoCacheMaxSizeGb
+    {
+        get => _videoCacheMaxSizeGb;
+        set
+        {
+            var clamped = Math.Clamp(value, MinVideoCacheMaxSizeGb, MaxVideoCacheMaxSizeGb);
+            if (!SetProperty(ref _videoCacheMaxSizeGb, clamped)) return;
+            _settings.SetInt(VideoCacheMaxSizeGbDefaultsKey, clamped);
+            _videoCacheStore.MaxCacheSizeGb = clamped;
+            OnPropertyChanged(nameof(VideoCacheUsedBytes));
+            OnPropertyChanged(nameof(VideoCacheUsageText));
+        }
+    }
+
+    /// <summary>Total bytes currently occupied by encrypted <c>.vcache</c> video chunks on disk.</summary>
+    public long VideoCacheUsedBytes => _videoCacheStore.GetTotalUsedBytes();
+
+    /// <summary>Localized summary of current encrypted video cache usage vs. configured GB limit.</summary>
+    public string VideoCacheUsageText =>
+        L("Şifreli önbellek kullanımı: %@ / %lld GB", FormatByteSize(VideoCacheUsedBytes), (long)_videoCacheMaxSizeGb);
+
+    /// <summary>Deletes all encrypted video cache chunks on disk and refreshes usage properties.</summary>
+    public void ClearVideoCache()
+    {
+        _videoCacheStore.ClearAll();
+        OnPropertyChanged(nameof(VideoCacheUsedBytes));
+        OnPropertyChanged(nameof(VideoCacheUsageText));
+    }
+
+    /// <summary>Formats a byte count as human-readable MB or GB.</summary>
+    public static string FormatByteSize(long bytes)
+    {
+        if (bytes <= 0) return "0 MB";
+        var mb = bytes / (1024.0 * 1024.0);
+        if (mb < 1024.0)
+        {
+            return mb < 1.0
+                ? string.Create(CultureInfo.CurrentUICulture, $"{mb:0.##} MB")
+                : string.Create(CultureInfo.CurrentUICulture, $"{mb:0.#} MB");
+        }
+        var gb = mb / 1024.0;
+        return string.Create(CultureInfo.CurrentUICulture, $"{gb:0.##} GB");
     }
 
     /// <summary>Uses an external LAN OpenAI-compatible LLM server (LM Studio, Ollama, llama-server) on another machine for translation.</summary>
@@ -1253,7 +1318,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                         {
                             AsyncTranslationFraction = Math.Clamp((double)_translations.Count / _sentences.Count, 0.0, 0.99);
                         }
-                        if (asyncTranslationTask.IsCompleted)
+                        if (asyncTranslationTask.IsCompleted && _translationExecutionGate.CurrentCount > 0)
                         {
                             var hasUnqueued = _sentences
                                 .Take(_sentences.Count - 1)
