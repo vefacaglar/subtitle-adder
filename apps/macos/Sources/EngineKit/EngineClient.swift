@@ -143,6 +143,18 @@ public struct EngineClient: Sendable {
         return args
     }
 
+    /// Extracts the 16 kHz mono WAV of a video without transcribing it (`extract-audio --json`): `.stage` events
+    /// for `extracting_audio`, then a `.result` whose `audio` is the WAV path (`sentences` and `outputs` are empty,
+    /// `language` is `"?"`). If the stream is cancelled, the engine is stopped.
+    public func extractAudio(video: URL, outDir: URL) -> AsyncThrowingStream<EngineEvent, Error> {
+        stream(Self.extractAudioArguments(video: video, outDir: outDir), stdin: nil)
+    }
+
+    /// Arguments `extractAudio` would pass; exposed for tests.
+    static func extractAudioArguments(video: URL, outDir: URL) -> [String] {
+        ["extract-audio", video.path, "--out-dir", outDir.path, "--json"]
+    }
+
     /// Translates the sentences to the target language with a local translation model (or the external LLM when the
     /// launch settings configure one); emits stage events and `.translation` once per batch (a growing prefix of the
     /// sentences, the last one complete). If the source language is `nil`, the model detects it itself (NLLB does not accept that).
