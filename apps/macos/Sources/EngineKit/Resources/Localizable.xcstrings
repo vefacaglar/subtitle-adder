@@ -96,6 +96,54 @@
           }
         }
       }
+    },
+    "Yerel Ağ (Ollama / LM Studio)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yerel Ağ (Ollama / LM Studio)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local LAN (Ollama / LM Studio)"
+          }
+        }
+      }
+    },
+    "Özel (OpenAI Uyumlu)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Özel (OpenAI Uyumlu)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Custom (OpenAI Compatible)"
+          }
+        }
+      }
+    },
+    "API anahtarı geçersiz veya yetkisiz (HTTP %lld).": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API anahtarı geçersiz veya yetkisiz (HTTP %lld)."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid or unauthorized API key (HTTP %lld)."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

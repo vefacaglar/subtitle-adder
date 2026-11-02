@@ -1,0 +1,342 @@
+import EngineKit
+import Foundation
+import Observation
+
+/// A saved translation provider (a cloud API or a server on the local network). The API key is deliberately not a
+/// field: it lives in the `SecretStore` under `TranslationProviderStore.secretAccount(for:)`.
+///
+/// The JSON shape is the Windows app's (`translation-providers.json`) minus the key: camelCase, `presetId` and
+/// `baseUrl` spelled that way on disk.
+public struct TranslationProviderProfile: Sendable, Equatable, Identifiable, Codable {
+    public var id: UUID
+    /// Name shown in lists; falls back to the preset's name when saved blank.
+    public var name: String
+    /// `TranslationProviderPreset.id`; `"custom"` for an address the user typed.
+    public var presetID: String
+    public var baseURL: String
+    /// Model sent to the provider; empty lets the engine take the first one the server lists.
+    public var model: String
+    /// Translate in the background while transcription is still running.
+    public var asyncTranslation: Bool
+    /// Models the provider reported on its last successful connection test.
+    public var discoveredModels: [String]
+
+    public init(
+        id: UUID = UUID(), name: String = "", presetID: String = TranslationProviderPreset.customID,
+        baseURL: String = "", model: String = "", asyncTranslation: Bool = true, discoveredModels: [String] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.presetID = presetID
+        self.baseURL = baseURL
+        self.model = model
+        self.asyncTranslation = asyncTranslation
+        self.discoveredModels = discoveredModels
+    }
+
+    /// A new profile filled from a preset: its name, address and first suggested model.
+    public init(preset: TranslationProviderPreset) {
+        self.init(name: preset.name, presetID: preset.id, baseURL: preset.baseURL, model: preset.defaultModel)
+    }
+
+    public var preset: TranslationProviderPreset { .preset(id: presetID) }
+
+    /// What the model picker offers: the chosen model first, then the ones the provider reported, then the preset's
+    /// suggestions (not for a LAN server that reported its own, whose suggestions are likely not installed), without
+    /// duplicates (case-insensitive).
+    public var availableModels: [String] {
+        var result: [String] = []
+        var seen = Set<String>()
+        func add(_ model: String) {
+            let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, seen.insert(trimmed.lowercased()).inserted { result.append(trimmed) }
+        }
+        add(model)
+        discoveredModels.forEach(add)
+        let preset = self.preset
+        if discoveredModels.isEmpty || preset.id != "lan" { preset.suggestedModels.forEach(add) }
+        return result
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, model, asyncTranslation, discoveredModels
+        case presetID = "presetId"
+        case baseURL = "baseUrl"
+    }
+
+    /// Lenient like the Windows reader: every field but the id has a default, unknown keys (the Windows file also
+    /// carries a plain-text `apiKey`) are ignored and never written back.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        presetID = try container.decodeIfPresent(String.self, forKey: .presetID) ?? TranslationProviderPreset.customID
+        baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
+        model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
+        asyncTranslation = try container.decodeIfPresent(Bool.self, forKey: .asyncTranslation) ?? true
+        discoveredModels = try container.decodeIfPresent([String].self, forKey: .discoveredModels) ?? []
+    }
+}
+
+/// The provider an engine launch should translate with, ready for `EngineLaunchSettings`.
+public struct ActiveExternalLLM: Sendable, Equatable {
+    public var llm: ExternalLLM
+    /// Translate in the background while transcription is still running.
+    public var asyncTranslation: Bool
+
+    public init(llm: ExternalLLM, asyncTranslation: Bool) {
+        self.llm = llm
+        self.asyncTranslation = asyncTranslation
+    }
+}
+
+/// The translation providers the user saved and which one is active (none means the local models), persisted in
+/// `translation-providers.json` in the app data folder. API keys never touch that file: they are kept in the
+/// `SecretStore` (the keychain) under `translation-provider.<uuid>` and removed with their provider.
+@MainActor
+@Observable
+public final class TranslationProviderStore {
+    public nonisolated static let fileName = "translation-providers.json"
+
+    /// `<Application Support>/SubtitleAdder/translation-providers.json`.
+    public nonisolated static var defaultFileURL: URL { AppDataDirectory.file(fileName) }
+
+    /// UserDefaults flag set once the legacy single-server settings were looked at.
+    public nonisolated static let migrationDefaultsKey = "translationProvidersMigrated"
+
+    public private(set) var providers: [TranslationProviderProfile] = []
+    /// The provider translation goes through; `nil` translates with a local model.
+    public private(set) var activeProviderID: UUID?
+
+    @ObservationIgnored private let fileURL: URL
+    @ObservationIgnored private let secrets: any SecretStore
+
+    /// Loads the file if it exists; a missing or unreadable one starts empty. `secrets` and `fileURL` are
+    /// injectable for tests.
+    public init(fileURL: URL = TranslationProviderStore.defaultFileURL, secrets: any SecretStore = KeychainSecretStore()) {
+        self.fileURL = fileURL
+        self.secrets = secrets
+        load()
+    }
+
+    public var activeProvider: TranslationProviderProfile? {
+        providers.first { $0.id == activeProviderID }
+    }
+
+    // MARK: - Editing
+
+    /// Saves a new provider with its key (blank for none) and, unless told otherwise, makes it the active one.
+    /// Returns the profile as stored (trimmed, a blank name replaced by the preset's). A keychain write that fails
+    /// leaves the provider without a key, which `maskedKey(for:)` shows as `nil`.
+    @discardableResult
+    public func add(_ profile: TranslationProviderProfile, key: String, setActive: Bool = true) -> TranslationProviderProfile {
+        let stored = normalized(profile)
+        if let index = providers.firstIndex(where: { $0.id == stored.id }) {
+            providers[index] = stored
+        } else {
+            providers.append(stored)
+        }
+        storeKey(key, for: stored.id)
+        if setActive { activeProviderID = stored.id }
+        save()
+        return stored
+    }
+
+    /// Replaces the provider with the same id. `key` `nil` keeps the stored key, a string replaces it (blank removes
+    /// it). Returns `false` for an unknown id.
+    @discardableResult
+    public func update(_ profile: TranslationProviderProfile, key: String? = nil) -> Bool {
+        guard let index = providers.firstIndex(where: { $0.id == profile.id }) else { return false }
+        providers[index] = normalized(profile)
+        if let key { storeKey(key, for: profile.id) }
+        save()
+        return true
+    }
+
+    /// Removes the provider and its key; when it was the active one, translation goes back to the local models.
+    public func remove(_ id: UUID) {
+        let before = providers.count
+        providers.removeAll { $0.id == id }
+        secrets.remove(Self.secretAccount(for: id))
+        guard providers.count != before else { return }
+        if activeProviderID == id { activeProviderID = nil }
+        save()
+    }
+
+    /// Makes a provider the active one, or `nil` the local models. An unknown id counts as `nil`.
+    public func setActive(_ id: UUID?) {
+        let resolved = id.flatMap { id in providers.contains { $0.id == id } ? id : nil }
+        guard resolved != activeProviderID else { return }
+        activeProviderID = resolved
+        save()
+    }
+
+    /// Changes only the model of a provider (what the toolbar picker does).
+    public func updateModel(_ model: String, for id: UUID) {
+        let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = providers.firstIndex(where: { $0.id == id }), providers[index].model != model else { return }
+        providers[index].model = model
+        save()
+    }
+
+    /// Replaces the models a provider reported. Only call it with the result of a successful connection test: a
+    /// failed one says nothing about the provider's models. A provider without a chosen model takes the first.
+    public func setDiscoveredModels(_ models: [String], for id: UUID) {
+        guard let index = providers.firstIndex(where: { $0.id == id }) else { return }
+        var seen = Set<String>()
+        let cleaned = models
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+        providers[index].discoveredModels = cleaned
+        if providers[index].model.isEmpty, let first = cleaned.first { providers[index].model = first }
+        save()
+    }
+
+    // MARK: - Keys
+
+    /// Keychain account of a provider's API key.
+    public nonisolated static func secretAccount(for id: UUID) -> String {
+        "translation-provider.\(id.uuidString)"
+    }
+
+    /// The provider's API key, empty when none is stored.
+    public func apiKey(for id: UUID) -> String {
+        secrets.string(for: Self.secretAccount(for: id)) ?? ""
+    }
+
+    /// Replaces (blank removes) the key of an existing provider. `false` when the keychain refused it.
+    @discardableResult
+    public func setKey(_ key: String, for id: UUID) -> Bool {
+        guard providers.contains(where: { $0.id == id }) else { return false }
+        return storeKey(key, for: id)
+    }
+
+    /// The key as shown in lists, `nil` when there is none (the app says "Anahtar yok").
+    public func maskedKey(for id: UUID) -> String? {
+        Self.mask(apiKey(for: id))
+    }
+
+    /// Shortest keys show nothing, medium ones their last four characters, long ones also the first three:
+    /// `sk-1234567890` becomes `sk-••••7890`. `nil` for an empty key.
+    public nonisolated static func mask(_ key: String) -> String? {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key.isEmpty { return nil }
+        if key.count <= 4 { return "••••" }
+        if key.count <= 8 { return "••••" + key.suffix(4) }
+        return key.prefix(3) + "••••" + key.suffix(4)
+    }
+
+    // MARK: - Models and the engine
+
+    /// `TranslationProviderProfile.availableModels` of the provider with this id; empty for an unknown id.
+    public func availableModels(for id: UUID) -> [String] {
+        providers.first { $0.id == id }?.availableModels ?? []
+    }
+
+    /// The active provider as the engine needs it, with its key from the secret store; `nil` for local models or when
+    /// the provider's address is blank or unusable.
+    public var activeExternalLLM: ActiveExternalLLM? {
+        guard let provider = activeProvider else { return nil }
+        let llm = ExternalLLM(
+            url: provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
+            model: provider.model.trimmingCharacters(in: .whitespacesAndNewlines),
+            apiKey: apiKey(for: provider.id).trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        guard llm.normalizedURL != nil else { return nil }
+        return ActiveExternalLLM(llm: llm, asyncTranslation: provider.asyncTranslation)
+    }
+
+    // MARK: - Migration
+
+    /// One-time import of the single LAN server the app used to keep in `UserDefaults` (`externalLlmEnabled`,
+    /// `externalLlmUrl`, `externalLlmModel`, `externalLlmAsync`): when there is no providers file yet and an address
+    /// was saved, it becomes a `lan` provider without a key, active if the server was switched on. The legacy keys
+    /// are left alone, and the flag `migrationDefaultsKey` makes sure this decides only once. Returns whether a
+    /// provider was created.
+    @discardableResult
+    public func migrateLegacyIfNeeded(defaults: UserDefaults = .standard) -> Bool {
+        guard !defaults.bool(forKey: Self.migrationDefaultsKey) else { return false }
+        defer { defaults.set(true, forKey: Self.migrationDefaultsKey) }
+        guard providers.isEmpty, !FileManager.default.fileExists(atPath: fileURL.path) else { return false }
+        let url = (defaults.string(forKey: "externalLlmUrl") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !url.isEmpty else { return false }
+        let profile = TranslationProviderProfile(
+            name: TranslationProviderPreset.preset(id: "lan").name,
+            presetID: "lan",
+            baseURL: url,
+            model: (defaults.string(forKey: "externalLlmModel") ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+            asyncTranslation: defaults.bool(forKey: "externalLlmAsync")
+        )
+        providers.append(profile)
+        activeProviderID = defaults.bool(forKey: "externalLlmEnabled") ? profile.id : nil
+        save()
+        return true
+    }
+
+    // MARK: - Storage
+
+    private func normalized(_ profile: TranslationProviderProfile) -> TranslationProviderProfile {
+        var profile = profile
+        profile.presetID = profile.presetID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if profile.presetID.isEmpty { profile.presetID = TranslationProviderPreset.customID }
+        profile.name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if profile.name.isEmpty { profile.name = profile.preset.name }
+        profile.baseURL = profile.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        profile.model = profile.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return profile
+    }
+
+    @discardableResult
+    private func storeKey(_ key: String, for id: UUID) -> Bool {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = Self.secretAccount(for: id)
+        guard !key.isEmpty else {
+            secrets.remove(account)
+            return true
+        }
+        return secrets.set(key, for: account)
+    }
+
+    /// What goes to disk: the Windows file's two top-level fields.
+    private struct PersistedState: Codable {
+        var activeProviderId: UUID?
+        var providers: [TranslationProviderProfile]
+
+        init(activeProviderId: UUID?, providers: [TranslationProviderProfile]) {
+            self.activeProviderId = activeProviderId
+            self.providers = providers
+        }
+
+        private enum CodingKeys: String, CodingKey { case activeProviderId, providers }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            activeProviderId = try container.decodeIfPresent(UUID.self, forKey: .activeProviderId)
+            providers = try container.decodeIfPresent([TranslationProviderProfile].self, forKey: .providers) ?? []
+        }
+
+        /// A missing active provider is written as `null`, as the Windows app does.
+        func encode(to encoder: any Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(activeProviderId, forKey: .activeProviderId)
+            try container.encode(providers, forKey: .providers)
+        }
+    }
+
+    private func load() {
+        guard let data = try? Data(contentsOf: fileURL),
+              let state = try? JSONDecoder().decode(PersistedState.self, from: data)
+        else { return }
+        providers = state.providers
+        activeProviderID = state.activeProviderId.flatMap { id in providers.contains { $0.id == id } ? id : nil }
+    }
+
+    /// Atomic write; if the disk refuses it the state stays in memory for this session.
+    private func save() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(PersistedState(activeProviderId: activeProviderID, providers: providers)) else { return }
+        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: fileURL, options: .atomic)
+    }
+}

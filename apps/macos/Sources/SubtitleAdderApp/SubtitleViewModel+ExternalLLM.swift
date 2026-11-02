@@ -40,7 +40,7 @@ extension SubtitleViewModel {
 
     // MARK: - Connection test
 
-    /// Asks the server for its models (`/api/tags`, then `/v1/models`), keeps the suitable ones and reports the
+    /// Asks the server for its models (see `ExternalLLMServer.testConnection`), keeps the suitable ones and reports the
     /// result. An empty model field takes the first one found. Also what "Uzaktaki modelleri listele" runs.
     /// A cancelled probe changes nothing.
     func testExternalConnection() async {
@@ -61,6 +61,14 @@ extension SubtitleViewModel {
             externalModels = []
             externalConnection = ExternalConnectionNotice(
                 message: .key("Lütfen geçerli bir sunucu adresi girin."), isError: true
+            )
+        case .unauthorized(let status):
+            externalModels = []
+            externalConnection = ExternalConnectionNotice(
+                message: LocalizedMessage("external-unauthorized:\(status)") {
+                    ExternalLLMServer.unauthorizedMessage(status: status)
+                },
+                isError: true
             )
         case .unreachable(let reason):
             externalModels = []

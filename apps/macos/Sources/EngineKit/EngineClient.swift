@@ -82,7 +82,7 @@ public struct EngineClient: Sendable {
     }
 
     /// Environment for the engine process: the parent's plus `SUBTITLE_ENGINE_LANG`, `SUBTITLE_ENGINE_OFFLINE`
-    /// and, with an external LLM, `SUBTITLE_ENGINE_EXTERNAL_LLM_URL` / `_MODEL` (removed otherwise).
+    /// and, with an external LLM, `SUBTITLE_ENGINE_EXTERNAL_LLM_URL` / `_MODEL` / `_API_KEY` (removed otherwise).
     func processEnvironment(
         language: UILanguage,
         settings: EngineLaunchSettings = EngineLaunchState.shared.settings,
@@ -141,6 +141,18 @@ public struct EngineClient: Sendable {
             if let speakers = options.speakers { args += ["--speakers", String(speakers)] }
         }
         return args
+    }
+
+    /// Extracts the 16 kHz mono WAV of a video without transcribing it (`extract-audio --json`): `.stage` events
+    /// for `extracting_audio`, then a `.result` whose `audio` is the WAV path (`sentences` and `outputs` are empty,
+    /// `language` is `"?"`). If the stream is cancelled, the engine is stopped.
+    public func extractAudio(video: URL, outDir: URL) -> AsyncThrowingStream<EngineEvent, Error> {
+        stream(Self.extractAudioArguments(video: video, outDir: outDir), stdin: nil)
+    }
+
+    /// Arguments `extractAudio` would pass; exposed for tests.
+    static func extractAudioArguments(video: URL, outDir: URL) -> [String] {
+        ["extract-audio", video.path, "--out-dir", outDir.path, "--json"]
     }
 
     /// Translates the sentences to the target language with a local translation model (or the external LLM when the

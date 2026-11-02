@@ -95,7 +95,7 @@ import Testing
     // MARK: - Connection test
 
     @Test func connectionTestListsModelsAndFillsAnEmptyModelField() async {
-        let (vm, _, _) = makeModel(fetch: { _, _ in Self.tagsBody(["gemma4:e4b", "nomic-embed-text", "qwen3:8b"]) })
+        let (vm, _, _) = makeModel(fetch: { _ in (Self.tagsBody(["gemma4:e4b", "nomic-embed-text", "qwen3:8b"]), 200) })
         vm.externalLlmEnabled = true
         vm.externalLlmUrl = "10.0.0.2:11434/v1"
         await vm.testExternalConnection()
@@ -109,7 +109,7 @@ import Testing
     }
 
     @Test func connectionTestKeepsAModelTheUserTyped() async {
-        let (vm, _, _) = makeModel(fetch: { _, _ in Self.tagsBody(["a", "b"]) })
+        let (vm, _, _) = makeModel(fetch: { _ in (Self.tagsBody(["a", "b"]), 200) })
         vm.externalLlmUrl = "10.0.0.2:11434"
         vm.externalLlmModel = "custom"
         await vm.testExternalConnection()
@@ -118,7 +118,7 @@ import Testing
 
     @Test func connectionTestReportsAnUnreachableServerAndABadAddress() async {
         struct Down: Error, LocalizedError { var errorDescription: String? { "timed out" } }
-        let (vm, _, _) = makeModel(fetch: { _, _ in throw Down() })
+        let (vm, _, _) = makeModel(fetch: { _ in throw Down() })
         vm.externalLlmUrl = "10.0.0.9:11434"
         vm.externalModels = ["stale"]
         await vm.testExternalConnection()
@@ -132,10 +132,20 @@ import Testing
         #expect(vm.externalConnection?.message.text == "Lütfen geçerli bir sunucu adresi girin.")
     }
 
+    @Test func connectionTestReportsARefusedKey() async {
+        let (vm, _, _) = makeModel(fetch: { _ in (Data(), 401) })
+        vm.externalLlmUrl = "10.0.0.2:11434"
+        vm.externalModels = ["stale"]
+        await vm.testExternalConnection()
+        #expect(vm.externalConnection?.isError == true)
+        #expect(vm.externalConnection?.message.text.contains("(HTTP 401)") == true)
+        #expect(vm.externalModels.isEmpty)
+    }
+
     @Test func aCancelledConnectionTestChangesNothing() async throws {
-        let (vm, _, _) = makeModel(fetch: { _, _ in
+        let (vm, _, _) = makeModel(fetch: { _ in
             try await Task.sleep(for: .seconds(30))
-            return Data()
+            return (Data(), 200)
         })
         vm.externalLlmUrl = "10.0.0.2:11434"
         let test = Task { await vm.testExternalConnection() }
@@ -155,9 +165,9 @@ import Testing
             var count: Int { lock.lock(); defer { lock.unlock() }; return value }
         }
         let counter = Counter()
-        let (vm, _, _) = makeModel(fetch: { _, _ in
+        let (vm, _, _) = makeModel(fetch: { _ in
             counter.hit()
-            return Self.tagsBody(["gemma4:e4b"])
+            return (Self.tagsBody(["gemma4:e4b"]), 200)
         })
         vm.externalLlmUrl = "10.0.0.2:11434"
         await vm.refreshExternalModelsIfNeeded()
@@ -172,7 +182,7 @@ import Testing
     }
 
     @Test func editingTheAddressClearsTheOldResult() async {
-        let (vm, _, _) = makeModel(fetch: { _, _ in Self.tagsBody(["a"]) })
+        let (vm, _, _) = makeModel(fetch: { _ in (Self.tagsBody(["a"]), 200) })
         vm.externalLlmUrl = "10.0.0.2:11434"
         await vm.testExternalConnection()
         #expect(vm.externalConnection != nil && !vm.externalModels.isEmpty)
