@@ -83,6 +83,64 @@
             "problemMatcher": []
         },
         {
+            "label": "macOS: release (.app)",
+            "detail": "Full macOS release: Swift release build + PyInstaller engine, assembled and signed as build/Subtitle Adder.app (scripts/package-macos.sh).",
+            "type": "shell",
+            "command": "\"${workspaceFolder}/scripts/package-macos.sh\"",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}"
+                }
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "macOS: release (.app, quick)",
+            "detail": "Same as 'macOS: release (.app)' but reuses the already built engine (build/engine-dist); use when only Swift code changed.",
+            "type": "shell",
+            "command": "\"${workspaceFolder}/scripts/package-macos.sh\"",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}",
+                    "SKIP_ENGINE_BUILD": "1"
+                }
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "macOS: release DMG",
+            "detail": "Full macOS release plus build/Subtitle Adder.dmg (ad-hoc signed unless SIGN_IDENTITY is set).",
+            "type": "shell",
+            "command": "MAKE_DMG=1 \"${workspaceFolder}/scripts/package-macos.sh\"",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}"
+                }
+            },
+            "problemMatcher": [],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
             "label": "Run app",
             "type": "shell",
             "command": "swift run SubtitleAdderApp",

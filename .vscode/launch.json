@@ -84,10 +84,11 @@
             "name": "Subtitle Adder (macOS, release)",
             "type": "swift",
             "request": "launch",
-            "program": "${workspaceFolder}/apps/macos/.build/release/SubtitleAdderApp",
-            "cwd": "${workspaceFolder}/apps/macos",
+            "configuration": "release",
+            "program": "${workspaceFolder}/build/Subtitle Adder.app/Contents/MacOS/SubtitleAdderApp",
+            "cwd": "${workspaceFolder}",
             "args": [],
-            "preLaunchTask": "Prepare release (engine + app)"
+            "preLaunchTask": "macOS: release (.app)"
         }
     ]
 }
