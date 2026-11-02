@@ -1,5 +1,6 @@
 import EngineKit
 import Foundation
+import LibraryKit
 import Observation
 
 @MainActor
@@ -80,47 +81,14 @@ final class SubtitleViewModel {
             publishLaunchSettings()
         }
     }
-    /// External LLM server on the local network (Settings > Harici LLM sunucusu): translation goes there instead of a
-    /// local model. All four settings are persistent; the three that matter to the engine reach it through the launch
-    /// settings.
-    var externalLlmEnabled: Bool {
-        didSet {
-            guard externalLlmEnabled != oldValue else { return }
-            defaults.set(externalLlmEnabled, forKey: Self.externalLlmEnabledDefaultsKey)
-            publishLaunchSettings()
-        }
-    }
-    /// Address of the server as typed (IP and port, with or without `http://`).
-    var externalLlmUrl: String {
-        didSet {
-            guard externalLlmUrl != oldValue else { return }
-            defaults.set(externalLlmUrl, forKey: Self.externalLlmUrlDefaultsKey)
-            // Models and the test result belong to the old address.
-            externalModels = []
-            externalConnection = nil
-            publishLaunchSettings()
-        }
-    }
-    /// Model name on the server; empty lets the engine pick the first one the server lists.
-    var externalLlmModel: String {
-        didSet {
-            guard externalLlmModel != oldValue else { return }
-            defaults.set(externalLlmModel, forKey: Self.externalLlmModelDefaultsKey)
-            publishLaunchSettings()
-        }
-    }
-    /// With an external LLM, translate partial lines in the background while the video is still being transcribed.
-    var externalLlmAsync: Bool {
-        didSet {
-            guard externalLlmAsync != oldValue else { return }
-            defaults.set(externalLlmAsync, forKey: Self.externalLlmAsyncDefaultsKey)
-        }
-    }
-    /// Models the server listed in the last connection test, without embedding-only ones.
-    var externalModels: [String] = []
-    /// Result of the last connection test, shown under the address field.
-    var externalConnection: ExternalConnectionNotice?
-    var isTestingExternalConnection = false
+    /// Translation providers (cloud APIs, servers on the local network) and which one is active; the source of truth
+    /// for the external LLM. Change it only through the provider methods in `SubtitleViewModel+Providers.swift`, which
+    /// also hand the result to the engine launcher.
+    let providerStore: TranslationProviderStore
+    /// Result of the last connection test per provider, shown under its row in Settings.
+    var providerNotices: [UUID: ExternalConnectionNotice] = [:]
+    /// Providers whose connection test is running.
+    var testingProviders: Set<UUID> = []
     /// Background translation (external LLM, async mode) is under way while the video is still being transcribed, or
     /// its last batch is being awaited. An explicit flag: the status label isn't parsed to find out.
     var isAsyncTranslating = false {
@@ -240,7 +208,8 @@ final class SubtitleViewModel {
     @ObservationIgnored var asyncFailed = false
     /// Transcription is over and the status shows the background translation (label and fraction follow it).
     @ObservationIgnored var asyncShownInStatus = false
-    @ObservationIgnored var connectionTestID = UUID()
+    /// The running connection test of each provider; a newer test (or an edit) makes an older answer obsolete.
+    @ObservationIgnored var providerTestIDs: [UUID: UUID] = [:]
 
     var job: Task<Void, Never>?
     var jobID = UUID()  // only the current job may change the state
@@ -283,10 +252,6 @@ final class SubtitleViewModel {
     private static let displayModeDefaultsKey = "subtitleDisplayMode"
     static let offlineModeDefaultsKey = "offlineMode"
     private static let autoSaveDefaultsKey = "autoSaveSubtitle"
-    private static let externalLlmEnabledDefaultsKey = "externalLlmEnabled"
-    private static let externalLlmUrlDefaultsKey = "externalLlmUrl"
-    private static let externalLlmModelDefaultsKey = "externalLlmModel"
-    private static let externalLlmAsyncDefaultsKey = "externalLlmAsync"
     private static let diarizeDefaultsKey = "diarizeSpeakers"
     private static let speakerCountDefaultsKey = "speakerCount"
     static let sideBySideLayoutDefaultsKey = "sideBySideLayout"
@@ -295,11 +260,15 @@ final class SubtitleViewModel {
         catalog: ModelCatalog,
         defaults: UserDefaults = .standard,
         launchState: EngineLaunchState = .shared,
-        externalFetch: ExternalLLMServer.Fetch? = nil
+        externalFetch: ExternalLLMServer.Fetch? = nil,
+        providerStore: TranslationProviderStore? = nil
     ) {
         self.catalog = catalog
         self.defaults = defaults
         self.launchState = launchState
+        // The app passes the real store (file + keychain); anything else gets one that lives and dies with this model, so
+        // tests never touch the user's providers or keychain.
+        self.providerStore = providerStore ?? Self.makeEphemeralProviderStore()
         self.externalFetch = externalFetch ?? ExternalLLMServer.urlSessionFetch()
         let savedLanguage = defaults.string(forKey: Self.languageDefaultsKey) ?? ""
         // The old version accepted free text; a code not in the list falls back to automatic.
@@ -318,19 +287,18 @@ final class SubtitleViewModel {
         speakerCount = savedCount >= 2 ? savedCount : 0
         offlineMode = defaults.object(forKey: Self.offlineModeDefaultsKey) as? Bool ?? true
         autoSaveSubtitle = defaults.object(forKey: Self.autoSaveDefaultsKey) as? Bool ?? true
-        externalLlmEnabled = defaults.bool(forKey: Self.externalLlmEnabledDefaultsKey)
-        externalLlmUrl = defaults.string(forKey: Self.externalLlmUrlDefaultsKey) ?? ""
-        externalLlmModel = defaults.string(forKey: Self.externalLlmModelDefaultsKey) ?? ""
-        externalLlmAsync = defaults.bool(forKey: Self.externalLlmAsyncDefaultsKey)
         sideBySideLayout = defaults.bool(forKey: Self.sideBySideLayoutDefaultsKey)
+        // Once: the single LAN server of earlier versions becomes the first provider.
+        self.providerStore.migrateLegacyIfNeeded(defaults: defaults)
         reconcileModelSelection()
         reconcileTranslationTarget()
         publishLaunchSettings()
     }
 
-    /// Hands the offline and external LLM settings to the engine launcher; read at every engine launch.
+    /// Hands the offline and external LLM settings to the engine launcher; read at every engine launch. The active
+    /// provider's key is read from the keychain here, so this runs when something changed, not on every view update.
     func publishLaunchSettings() {
-        launchState.settings = EngineLaunchSettings(offline: offlineMode, externalLLM: externalLLM)
+        launchState.settings = EngineLaunchSettings(offline: offlineMode, externalLLM: providerStore.activeExternalLLM?.llm)
     }
 
     var hasTranslations: Bool { !translations.isEmpty }

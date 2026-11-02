@@ -19,6 +19,13 @@ public struct ExternalLLM: Sendable, Equatable {
 
     /// The address the engine receives, or `nil` when `url` is blank.
     public var normalizedURL: String? { ExternalLLMServer.normalizeBaseURL(url) }
+
+    /// Whether the server is this computer or on the local network. When it is not (OpenAI, OpenRouter, ...) the text to
+    /// translate travels over the internet to a third party. Judged by the address alone, whatever the provider is called.
+    public var isOnLocalNetwork: Bool {
+        guard let host = normalizedURL.flatMap({ URL(string: $0)?.host() }) else { return false }
+        return ExternalLLMServer.isLocalNetworkHost(host)
+    }
 }
 
 /// App settings that reach the engine through environment variables on every launch.
