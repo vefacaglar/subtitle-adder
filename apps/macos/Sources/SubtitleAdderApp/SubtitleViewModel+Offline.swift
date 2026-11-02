@@ -10,8 +10,9 @@ extension SubtitleViewModel {
         return offlineRetry != nil
     }
 
-    /// Whether the engine translates through an external LLM server (then no local translation model is needed).
-    var isExternalLLMActive: Bool { externalLLM?.normalizedURL != nil }
+    /// Whether the engine translates through an external LLM server (then no local translation model is needed): a
+    /// provider is active and its address is usable.
+    var isExternalLLMActive: Bool { activeExternalProvider != nil }
 
     /// Call at the start of every job that may download models, with the ids of the models the job needs.
     /// In offline mode, a catalog model that isn't downloaded sets a failed status and remembers `retry` (the entry point

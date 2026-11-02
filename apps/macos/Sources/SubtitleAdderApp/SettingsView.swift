@@ -7,15 +7,23 @@ struct SettingsView: View {
     @Bindable var vm: SubtitleViewModel
     let catalog: ModelCatalog
     @Bindable var language: AppLanguage
+    /// Other windows open Settings on a given tab by storing it first (see `SettingsTab`).
+    @AppStorage(SettingsTab.storageKey) private var storedTab = SettingsTab.general.rawValue
 
     var body: some View {
-        TabView {
-            GeneralSettingsTab(vm: vm, catalog: catalog, language: language)
+        TabView(selection: Binding(get: { SettingsTab.stored(storedTab) }, set: { storedTab = $0.rawValue })) {
+            GeneralSettingsTab(vm: vm, language: language)
                 .tabItem { Label(L("Genel"), systemImage: "gearshape") }
+                .tag(SettingsTab.general)
+            TranslationSettingsTab(vm: vm, catalog: catalog)
+                .tabItem { Label(L("Çeviri"), systemImage: "translate") }
+                .tag(SettingsTab.translation)
             AppearanceSettingsTab()
                 .tabItem { Label(L("Görünüm"), systemImage: "paintbrush") }
+                .tag(SettingsTab.appearance)
             ModelsSettingsTab(catalog: catalog)
                 .tabItem { Label(L("Modeller"), systemImage: "square.stack.3d.up") }
+                .tag(SettingsTab.models)
         }
         .scenePadding()
     }
@@ -23,7 +31,6 @@ struct SettingsView: View {
 
 private struct GeneralSettingsTab: View {
     @Bindable var vm: SubtitleViewModel
-    let catalog: ModelCatalog
     @Bindable var language: AppLanguage
 
     var body: some View {
@@ -55,23 +62,8 @@ private struct GeneralSettingsTab: View {
                     }
                 }
                 .disabled(vm.availableModels.isEmpty)
-                Picker(L("Varsayılan çeviri modeli"), selection: $vm.translationModel) {
-                    ForEach(catalog.llamaTranslationModels) { model in
-                        Text(ModelLabel.name(for: model.id)).tag(model.id)
-                    }
-                    if !catalog.llamaTranslationModels.isEmpty, !catalog.classicTranslationModels.isEmpty {
-                        Divider()
-                    }
-                    ForEach(catalog.classicTranslationModels) { model in
-                        Text(ModelLabel.name(for: model.id)).tag(model.id)
-                    }
-                }
-                .disabled(catalog.translationModels.isEmpty)
-                Text(L("“Çevir…” düğmesi bu modeli kullanır; seçim sonraki açılışlarda da korunur."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             } header: {
-                Text(L("Altyazı ve çeviri"))
+                Text(L("Altyazı"))
             }
 
             Section {
@@ -94,80 +86,16 @@ private struct GeneralSettingsTab: View {
             } header: {
                 Text(L("Gizlilik"))
             } footer: {
-                Text(L("Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez. Ses ve metin hiçbir durumda dışarı gönderilmez."))
+                if let provider = vm.activeCloudProviderName {
+                    // A cloud provider gets the text whatever this switch says; only the audio is never sent.
+                    Text(L("Açıkken eksik modeller indirilmez. Ses hiçbir durumda dışarı gönderilmez; ancak etkin çeviri sağlayıcısı (%@) bir bulut hizmeti olduğundan çevrilecek metin, çevrimdışı modda bile ona gönderilir.", provider))
+                } else {
+                    Text(L("Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez. Ses ve metin hiçbir durumda dışarı gönderilmez."))
+                }
             }
-
-            externalLLMSection
         }
         .formStyle(.grouped)
         .frame(width: 560, height: 620)
-        // The server's models may have changed since the last visit.
-        .task {
-            if vm.isExternalLLMActive, !vm.isTestingExternalConnection { await vm.testExternalConnection() }
-        }
-    }
-
-    /// Translation on another computer of the local network (LM Studio, Ollama, llama-server).
-    private var externalLLMSection: some View {
-        Section {
-            Toggle(L("Ağdaki başka bir cihazın LLM sunucusunu kullan"), isOn: $vm.externalLlmEnabled)
-            Group {
-                TextField(
-                    L("Sunucu adresi (IP ve port)"), text: $vm.externalLlmUrl, prompt: Text(verbatim: "http://192.168.1.50:11434")
-                )
-                .autocorrectionDisabled()
-                LabeledContent {
-                    HStack(spacing: 8) {
-                        if vm.isTestingExternalConnection { ProgressView().controlSize(.small) }
-                        Button(L("Bağlantıyı test et")) { Task { await vm.testExternalConnection() } }
-                            .disabled(vm.isTestingExternalConnection)
-                            .help(L("Sunucuya ping at ve modelleri getir"))
-                    }
-                } label: {
-                    if let connection = vm.externalConnection {
-                        Label(
-                            connection.message.text,
-                            systemImage: connection.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(connection.isError ? Color.red : Color.green)
-                    }
-                }
-                HStack(spacing: 4) {
-                    TextField(
-                        L("Uzak model adı (isteğe bağlı)"), text: $vm.externalLlmModel, prompt: Text(verbatim: "gemma4:e4b")
-                    )
-                    .autocorrectionDisabled()
-                    Menu {
-                        ForEach(vm.externalModels, id: \.self) { name in
-                            Button(name) { vm.externalLlmModel = name }
-                        }
-                        if !vm.externalModels.isEmpty { Divider() }
-                        Button(L("Uzaktaki modelleri listele")) { Task { await vm.testExternalConnection() } }
-                    } label: {
-                        Label(L("Uzaktaki modelleri listele"), systemImage: "list.bullet")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .labelStyle(.iconOnly)
-                    .fixedSize()
-                    .help(L("Uzaktaki modelleri listele"))
-                }
-                Toggle(L("Asenkron çeviri (Sadece harici LLM ile)"), isOn: $vm.externalLlmAsync)
-            }
-            .disabled(!vm.externalLlmEnabled)
-            if vm.externalLlmEnabled {
-                Text(L("Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(L("Açıkken bu bilgisayar konuşmayı metne dökerken harici cihaz aynı anda çeviri yapar; kapalıyken sıralı çevrilir."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            Text(L("Harici LLM sunucusu (Yerel ağ)"))
-        } footer: {
-            Text(L("Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır.") + " " + L("Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"))
-        }
     }
 }
 
