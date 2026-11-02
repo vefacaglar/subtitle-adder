@@ -66,7 +66,7 @@ public sealed partial class MainWindow : Window
         _player.Ticked += () =>
         {
             SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
-            PreviewControls.Synchronize(_player.CurrentTime, _player.Duration, _player.IsPlaying, _player.IsMuted, _player.Volume);
+            PreviewControls.Synchronize(_player.CurrentTime, _player.Duration, _player.IsPlaying, _player.IsMuted, _player.Volume, _player.BufferedRatio);
             if (_player.IsPlaying && _player.Duration > 0 && Math.Abs(_player.CurrentTime - _lastProgressRecordedTime) >= 5.0)
             {
                 _lastProgressRecordedTime = _player.CurrentTime;
@@ -256,16 +256,23 @@ public sealed partial class MainWindow : Window
 
     private void OnVideoChanged()
     {
-        _player.Load(Vm.IsPlaylistRunning ? null : Vm.Video, autoPlay: !Vm.IsPlaylistRunning && Vm.AutoPlayVideo);
-        FileExplorerPane.ActiveVideoPath = Vm.Video;
-        _ = ExplorerVm.SyncToVideoPathAsync(Vm.Video);
-        _lastProgressRecordedTime = -1;
-        PlatformVm.OnVideoOpened(Vm.Video);
+        var currentVideo = Vm.Video;
+        _player.Load(Vm.IsPlaylistRunning ? null : currentVideo, autoPlay: !Vm.IsPlaylistRunning && Vm.AutoPlayVideo);
+        FileExplorerPane.ActiveVideoPath = currentVideo;
         Title = Vm.WindowTitle;
-        TitleFile.Text = Vm.Video is null ? "" : "— " + Vm.WindowTitle;
-        DropZone.Visibility = Vm.Video is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
-        WorkArea.Visibility = Vm.Video is not null || Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
+        TitleFile.Text = currentVideo is null ? "" : "— " + Vm.WindowTitle;
+        DropZone.Visibility = currentVideo is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
+        WorkArea.Visibility = currentVideo is not null || Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
         UpdatePickers();
+        _lastProgressRecordedTime = -1;
+        _ = ExplorerVm.SyncToVideoPathAsync(currentVideo);
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (string.Equals(Vm.Video, currentVideo, StringComparison.OrdinalIgnoreCase))
+            {
+                PlatformVm.OnVideoOpened(currentVideo);
+            }
+        });
     }
 
     private void UpdateStatus()

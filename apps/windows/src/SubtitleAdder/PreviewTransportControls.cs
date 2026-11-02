@@ -96,7 +96,7 @@ public sealed class PreviewTransportControls : Grid
         Grid.SetColumn(_elapsedText, 0);
         timelineRow.Children.Add(_elapsedText);
 
-        _seek = new SleekScrubber(trackRestHeight: 4, trackHoverHeight: 6, thumbSize: 11);
+        _seek = new SleekScrubber(trackRestHeight: 3.5, trackHoverHeight: 5.5, thumbSize: 12, showBufferBar: true);
         _seek.ValueChanged += ratio =>
         {
             if (_duration > 0) SeekRequested?.Invoke(ratio * _duration);
@@ -250,7 +250,7 @@ public sealed class PreviewTransportControls : Grid
         _volumeIcon.Foreground = new SolidColorBrush(ColorHelper.FromArgb(_muteHovered ? (byte)0xFF : (byte)0xD8, 0xFF, 0xFF, 0xFF));
     }
 
-    public void Synchronize(double position, double duration, bool isPlaying = false, bool isMuted = false, double volume = 1.0)
+    public void Synchronize(double position, double duration, bool isPlaying = false, bool isMuted = false, double volume = 1.0, double bufferedRatio = 0.0)
     {
         _duration = double.IsFinite(duration) ? Math.Max(0, duration) : 0;
         _position = PlaybackTimeline.Clamp(position, _duration);
@@ -259,9 +259,11 @@ public sealed class PreviewTransportControls : Grid
         _volume = Math.Clamp(double.IsFinite(volume) ? volume : 1.0, 0.0, 1.0);
 
         _seek.IsInteractive = _duration > 0;
+        var playbackRatio = _duration > 0 ? Math.Clamp(_position / _duration, 0.0, 1.0) : 0.0;
+        _seek.SetBufferedRatio(_duration > 0 ? Math.Max(playbackRatio, Math.Clamp(bufferedRatio, 0.0, 1.0)) : 0.0);
         if (!_seek.IsScrubbing)
         {
-            _seek.SetRatio(_duration > 0 ? Math.Clamp(_position / _duration, 0.0, 1.0) : 0.0);
+            _seek.SetRatio(playbackRatio);
         }
 
         var hours = _duration >= 3600;
@@ -302,30 +304,35 @@ public sealed class PreviewTransportControls : Grid
     }
 
     /// <summary>
-    /// Minimalist macOS-style pill track with a luminous white fill and a circular thumb that fades in on hover/drag.
+    /// Minimalist macOS/YouTube-style pill track with a thicker buffered RAM segment, luminous white playback fill,
+    /// and a circular thumb that fades in on hover/drag.
     /// </summary>
     private sealed class SleekScrubber : Grid
     {
         private readonly Border _track;
+        private readonly Border _bufferBar;
         private readonly Border _fill;
         private readonly Ellipse _thumb;
         private readonly double _restHeight;
         private readonly double _hoverHeight;
         private readonly double _thumbSize;
+        private readonly bool _showBufferBar;
         private bool _hovered;
 
         public double Ratio { get; private set; }
+        public double BufferedRatio { get; private set; }
         public bool IsScrubbing { get; private set; }
         public bool IsInteractive { get; set; } = true;
 
         public event Action<double>? ValueChanged;
         public event Action? ScrubbingChanged;
 
-        public SleekScrubber(double trackRestHeight, double trackHoverHeight, double thumbSize)
+        public SleekScrubber(double trackRestHeight, double trackHoverHeight, double thumbSize, bool showBufferBar = false)
         {
             _restHeight = trackRestHeight;
             _hoverHeight = trackHoverHeight;
             _thumbSize = thumbSize;
+            _showBufferBar = showBufferBar;
 
             Height = 18;
             Background = new SolidColorBrush(Colors.Transparent);
@@ -334,16 +341,28 @@ public sealed class PreviewTransportControls : Grid
             {
                 Height = _restHeight,
                 CornerRadius = new CornerRadius(_restHeight / 2),
-                Background = new SolidColorBrush(ColorHelper.FromArgb(0x38, 0xFF, 0xFF, 0xFF)),
+                Background = new SolidColorBrush(ColorHelper.FromArgb(0x2E, 0xFF, 0xFF, 0xFF)),
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
             };
 
+            var loadedHeight = _showBufferBar ? _restHeight + 2.0 : _restHeight;
+            _bufferBar = new Border
+            {
+                Height = loadedHeight,
+                CornerRadius = new CornerRadius(loadedHeight / 2),
+                Background = new SolidColorBrush(ColorHelper.FromArgb(0x78, 0xFF, 0xFF, 0xFF)),
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Width = 0,
+                Visibility = _showBufferBar ? Visibility.Visible : Visibility.Collapsed,
+            };
+
             _fill = new Border
             {
-                Height = _restHeight,
-                CornerRadius = new CornerRadius(_restHeight / 2),
-                Background = new SolidColorBrush(ColorHelper.FromArgb(0xF0, 0xFF, 0xFF, 0xFF)),
+                Height = loadedHeight,
+                CornerRadius = new CornerRadius(loadedHeight / 2),
+                Background = new SolidColorBrush(ColorHelper.FromArgb(0xF5, 0xFF, 0xFF, 0xFF)),
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Left,
                 Width = 0,
@@ -362,6 +381,7 @@ public sealed class PreviewTransportControls : Grid
             };
 
             Children.Add(_track);
+            Children.Add(_bufferBar);
             Children.Add(_fill);
             Children.Add(_thumb);
 
@@ -380,14 +400,25 @@ public sealed class PreviewTransportControls : Grid
             UpdateLayoutFromRatio();
         }
 
+        public void SetBufferedRatio(double bufferedRatio)
+        {
+            var clamped = Math.Clamp(double.IsFinite(bufferedRatio) ? bufferedRatio : 0.0, 0.0, 1.0);
+            if (Math.Abs(BufferedRatio - clamped) < 0.0005) return;
+            BufferedRatio = clamped;
+            UpdateLayoutFromRatio();
+        }
+
         private void UpdateHoverState()
         {
             var active = (_hovered || IsScrubbing) && IsInteractive;
             var h = active ? _hoverHeight : _restHeight;
+            var loadedH = _showBufferBar ? h + 2.0 : h;
             _track.Height = h;
             _track.CornerRadius = new CornerRadius(h / 2);
-            _fill.Height = h;
-            _fill.CornerRadius = new CornerRadius(h / 2);
+            _bufferBar.Height = loadedH;
+            _bufferBar.CornerRadius = new CornerRadius(loadedH / 2);
+            _fill.Height = loadedH;
+            _fill.CornerRadius = new CornerRadius(loadedH / 2);
             _thumb.Opacity = active ? 1 : 0;
         }
 
@@ -396,6 +427,8 @@ public sealed class PreviewTransportControls : Grid
             var w = ActualWidth;
             if (w <= 0) return;
             var fillWidth = Math.Clamp(w * Ratio, 0, w);
+            var bufferWidth = _showBufferBar ? Math.Clamp(w * Math.Max(Ratio, BufferedRatio), fillWidth, w) : 0;
+            _bufferBar.Width = bufferWidth;
             _fill.Width = fillWidth;
             var thumbLeft = Math.Clamp(fillWidth - (_thumbSize / 2), 0, Math.Max(0, w - _thumbSize));
             _thumb.Margin = new Thickness(thumbLeft, 0, 0, 0);

@@ -17,6 +17,11 @@ namespace SubtitleAdder;
 /// </summary>
 public sealed class FileExplorerPane : Grid
 {
+    private sealed record RenderedMediaRow(string FullPath, FontIcon Icon, TextBlock FileNameText)
+    {
+        public bool IsHighlighted { get; set; }
+    }
+
     private readonly DropDownButton _quickLocationsButton;
     private readonly TextBlock _currentFolderText;
     private readonly MenuFlyout _quickLocationsFlyout;
@@ -30,10 +35,14 @@ public sealed class FileExplorerPane : Grid
     private readonly TextBlock _emptyStateText;
     private readonly ProgressRing _scanRing;
     private readonly TextBlock _statusText;
+    private readonly List<RenderedMediaRow> _renderedMediaRows = [];
+    private readonly List<string> _renderedFolderPaths = [];
+    private readonly List<(string FullPath, long SizeBytes, string? SidecarBadge)> _renderedFileSignatures = [];
 
     private FileExplorerViewModel _viewModel;
     private bool _updatingSearchBox;
     private string? _activeVideoPath;
+    private string? _renderedCurrentFolder;
 
     /// <summary>Raised when the user clicks a media file or chooses "Oynat" from its context menu.</summary>
     public event Action<string>? FileSelected;
@@ -225,12 +234,12 @@ public sealed class FileExplorerPane : Grid
 
         RefreshLocalization();
         SyncHeaderAndStatus();
-        RebuildListItems();
+        RebuildListItems(force: true);
     }
 
     public FileExplorerViewModel ViewModel => _viewModel;
 
-    /// <summary>Optional path of the currently loaded video so the explorer can highlight it and sync its folder.</summary>
+    /// <summary>Optional path of the currently loaded video so the explorer can highlight it in-place without rebuilding rows.</summary>
     public string? ActiveVideoPath
     {
         get => _activeVideoPath;
@@ -238,7 +247,7 @@ public sealed class FileExplorerPane : Grid
         {
             if (string.Equals(_activeVideoPath, value, StringComparison.OrdinalIgnoreCase)) return;
             _activeVideoPath = value;
-            RebuildListItems();
+            UpdateActiveVideoHighlight();
         }
     }
 
@@ -250,7 +259,7 @@ public sealed class FileExplorerPane : Grid
         _viewModel = viewModel;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         SyncHeaderAndStatus();
-        RebuildListItems();
+        RebuildListItems(force: true);
     }
 
     /// <summary>Updates all tooltips, placeholders, and localized labels after a UI language switch.</summary>
@@ -277,7 +286,7 @@ public sealed class FileExplorerPane : Grid
         _emptyStateText.Text = L("Bu klasörde medya dosyası bulunamadı");
 
         SyncHeaderAndStatus();
-        RebuildListItems();
+        RebuildListItems(force: true);
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -315,7 +324,7 @@ public sealed class FileExplorerPane : Grid
             case nameof(FileExplorerViewModel.Folders):
             case nameof(FileExplorerViewModel.Files):
                 SyncHeaderAndStatus();
-                RebuildListItems();
+                RebuildListItems(force: false);
                 break;
 
             case "" or null:
@@ -339,24 +348,89 @@ public sealed class FileExplorerPane : Grid
         _scanRing.IsActive = _viewModel.IsScanning;
         _scanRing.Visibility = _viewModel.IsScanning ? Visibility.Visible : Visibility.Collapsed;
         _statusText.Text = _viewModel.StatusSummary;
-    }
-
-    private void RebuildListItems()
-    {
-        _listView.Items.Clear();
-
-        foreach (var folder in _viewModel.Folders)
-        {
-            _listView.Items.Add(CreateFolderListViewItem(folder));
-        }
-
-        foreach (var file in _viewModel.Files)
-        {
-            _listView.Items.Add(CreateMediaFileListViewItem(file));
-        }
 
         var isEmpty = _viewModel.Folders.Count == 0 && _viewModel.Files.Count == 0 && !_viewModel.IsScanning;
         _emptyStatePanel.Visibility = isEmpty ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateActiveVideoHighlight()
+    {
+        if (_renderedMediaRows.Count == 0) return;
+
+        var activeBrush = GetThemeBrush("AccentTextFillColorPrimaryBrush", Colors.DodgerBlue);
+        var inactiveBrush = GetThemeBrush("TextFillColorSecondaryBrush", Colors.Gray);
+
+        foreach (var row in _renderedMediaRows)
+        {
+            var isCurrentVideo = !string.IsNullOrWhiteSpace(_activeVideoPath) &&
+                                 string.Equals(_activeVideoPath, row.FullPath, StringComparison.OrdinalIgnoreCase);
+            if (row.IsHighlighted == isCurrentVideo) continue;
+
+            row.IsHighlighted = isCurrentVideo;
+            row.Icon.Foreground = isCurrentVideo ? activeBrush : inactiveBrush;
+            row.FileNameText.FontWeight = isCurrentVideo ? FontWeights.SemiBold : FontWeights.Normal;
+        }
+    }
+
+    private bool HasSameRenderedRows(IReadOnlyList<ExplorerFolderItem> folders, IReadOnlyList<IndexedMediaFile> files)
+    {
+        if (!string.Equals(_renderedCurrentFolder, _viewModel.CurrentFolder, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (_renderedFolderPaths.Count != folders.Count || _renderedFileSignatures.Count != files.Count)
+            return false;
+
+        for (var i = 0; i < folders.Count; i++)
+        {
+            if (!string.Equals(_renderedFolderPaths[i], folders[i].FullPath, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        for (var i = 0; i < files.Count; i++)
+        {
+            var sig = _renderedFileSignatures[i];
+            var file = files[i];
+            if (!string.Equals(sig.FullPath, file.FullPath, StringComparison.OrdinalIgnoreCase) ||
+                sig.SizeBytes != file.SizeBytes ||
+                !string.Equals(sig.SidecarBadge, file.SidecarBadge, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void RebuildListItems(bool force = false)
+    {
+        var folders = _viewModel.Folders;
+        var files = _viewModel.Files;
+
+        var isEmpty = folders.Count == 0 && files.Count == 0 && !_viewModel.IsScanning;
+        _emptyStatePanel.Visibility = isEmpty ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!force && HasSameRenderedRows(folders, files))
+        {
+            UpdateActiveVideoHighlight();
+            return;
+        }
+
+        _listView.Items.Clear();
+        _renderedMediaRows.Clear();
+        _renderedFolderPaths.Clear();
+        _renderedFileSignatures.Clear();
+        _renderedCurrentFolder = _viewModel.CurrentFolder;
+
+        foreach (var folder in folders)
+        {
+            _renderedFolderPaths.Add(folder.FullPath);
+            _listView.Items.Add(CreateFolderListViewItem(folder));
+        }
+
+        foreach (var file in files)
+        {
+            _renderedFileSignatures.Add((file.FullPath, file.SizeBytes, file.SidecarBadge));
+            _listView.Items.Add(CreateMediaFileListViewItem(file));
+        }
     }
 
     private ListViewItem CreateFolderListViewItem(ExplorerFolderItem folder)
@@ -511,6 +585,11 @@ public sealed class FileExplorerPane : Grid
             Grid.SetColumn(badge, 2);
             row.Children.Add(badge);
         }
+
+        _renderedMediaRows.Add(new RenderedMediaRow(file.FullPath, icon, fileNameText)
+        {
+            IsHighlighted = isCurrentVideo,
+        });
 
         var flyout = new MenuFlyout();
 

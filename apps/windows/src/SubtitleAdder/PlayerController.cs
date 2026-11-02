@@ -1,15 +1,18 @@
+using System.IO;
 using Microsoft.UI.Dispatching;
 using SubtitleAdder.Core;
 using SubtitleAdder.EngineKit;
 using Windows.Media.Core;
 using Windows.Media.Playback;
-using Windows.Storage;
+using Windows.Storage.Streams;
 
 namespace SubtitleAdder;
 
 /// <summary>
 /// Preview player (port of PlayerModel): wraps <see cref="MediaPlayer"/>, tracks the ~10 Hz playback time and the
 /// line currently playing. MediaPlayer events arrive on worker threads; everything here is marshalled to the UI thread.
+/// Uses <see cref="BufferedVideoStream"/> (chunked 8 MB sequential read-ahead RAM cache) so mechanical HDDs are not
+/// thrashed by continuous small random reads and video switching/seeking responds instantaneously.
 /// </summary>
 public sealed class PlayerController : IDisposable
 {
@@ -18,7 +21,9 @@ public sealed class PlayerController : IDisposable
     private readonly SemaphoreSlim _sourceGate = new(1, 1);
     private IReadOnlyList<Sentence> _sentences = [];
     private int _loadGeneration;
-    private MediaSource? _source;   // disposed when replaced so the old file is not kept open
+    private MediaSource? _source;                   // disposed when replaced so the old file is not kept open
+    private IRandomAccessStream? _randomAccessStream;
+    private BufferedVideoStream? _bufferedStream;   // 8 MB chunked RAM read-ahead cache
     private volatile bool _mediaReady;
     private volatile bool _disposed;
     private readonly PlaybackTimeline _timeline = new();
@@ -63,6 +68,10 @@ public sealed class PlayerController : IDisposable
 
     public double CurrentTime => _timeline.Position;
     public double Duration => _timeline.Duration;
+    public double BufferedRatio =>
+        !_disposed && _bufferedStream is { } stream && Duration > 0
+            ? stream.GetBufferedRatio(CurrentTime / Duration)
+            : 0.0;
     public bool IsPlaying { get; private set; }
     public bool IsMuted => !_disposed && Player.IsMuted;
     public double Volume => _disposed ? 1.0 : Player.Volume;
@@ -93,51 +102,79 @@ public sealed class PlayerController : IDisposable
         VideoSizeChanged?.Invoke();
         UpdateActive();
 
-        // Run Media Foundation pause, old-source teardown, and new-source creation off the UI thread
-        // so switching videos or closing never blocks window responsiveness.
+        // Run Media Foundation source swap and RAM read-ahead stream creation off the UI thread
+        // so switching videos in the left sidebar responds instantaneously.
         _ = Task.Run(() => SwitchSourceAsync(path, generation));
     }
 
     private async Task SwitchSourceAsync(string? path, int generation)
     {
         await _sourceGate.WaitAsync().ConfigureAwait(false);
+        MediaSource? oldSource = null;
+        IRandomAccessStream? oldRandomStream = null;
+        BufferedVideoStream? oldBufferedStream = null;
         try
         {
             if (_disposed) return;
+
+            oldSource = _source;
+            oldRandomStream = _randomAccessStream;
+            oldBufferedStream = _bufferedStream;
+            _source = null;
+            _randomAccessStream = null;
+            _bufferedStream = null;
+
+            if (path is null || _disposed || generation != Volatile.Read(ref _loadGeneration))
+            {
+                try
+                {
+                    Player.Pause();
+                    Player.Source = null;
+                }
+                catch
+                {
+                }
+                return;
+            }
+
+            MediaSource? newSource = null;
+            IRandomAccessStream? newRandomStream = null;
+            BufferedVideoStream? newBufferedStream = null;
+
             try
             {
-                Player.Pause();
-                Player.Source = null;
+                if (File.Exists(path))
+                {
+                    newBufferedStream = new BufferedVideoStream(path);
+                    newRandomStream = newBufferedStream.AsRandomAccessStream();
+                    newSource = MediaSource.CreateFromStream(newRandomStream, BufferedVideoStream.GetMimeType(path));
+                }
+                else
+                {
+                    newSource = MediaSource.CreateFromUri(new Uri(path));
+                }
             }
             catch
             {
-                // Ignore if player is already shutting down.
-            }
-            if (_source is { } oldSource)
-            {
-                _source = null;
-                try { oldSource.Dispose(); } catch { }
-            }
-            if (path is null || _disposed || generation != Volatile.Read(ref _loadGeneration)) return;
-
-            MediaSource source;
-            try
-            {
-                var file = await StorageFile.GetFileFromPathAsync(path);
-                source = MediaSource.CreateFromStorageFile(file);
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.COMException)
-            {
-                source = MediaSource.CreateFromUri(new Uri(path));
+                try { newRandomStream?.Dispose(); } catch { }
+                try { newBufferedStream?.Dispose(); } catch { }
+                newRandomStream = null;
+                newBufferedStream = null;
+                newSource = MediaSource.CreateFromUri(new Uri(path));
             }
 
             if (_disposed || generation != Volatile.Read(ref _loadGeneration))
             {
-                try { source.Dispose(); } catch { }
+                try { newSource?.Dispose(); } catch { }
+                try { newRandomStream?.Dispose(); } catch { }
+                try { newBufferedStream?.Dispose(); } catch { }
                 return;
             }
-            _source = source;
-            Player.Source = source;
+
+            _bufferedStream = newBufferedStream;
+            _randomAccessStream = newRandomStream;
+            _source = newSource;
+            Player.Source = newSource;
         }
         catch (Exception error)
         {
@@ -150,6 +187,15 @@ public sealed class PlayerController : IDisposable
         finally
         {
             _sourceGate.Release();
+            if (oldSource is not null || oldRandomStream is not null || oldBufferedStream is not null)
+            {
+                _ = Task.Run(() =>
+                {
+                    try { oldSource?.Dispose(); } catch { }
+                    try { oldRandomStream?.Dispose(); } catch { }
+                    try { oldBufferedStream?.Dispose(); } catch { }
+                });
+            }
         }
     }
 
@@ -247,17 +293,23 @@ public sealed class PlayerController : IDisposable
         _timer.Stop();
         var player = Player;
         // Media Foundation pipeline/decoder teardown can block for up to a second on the UI thread;
-        // dispose the agile WinRT MediaPlayer and MediaSource on the thread pool after detaching from XAML.
+        // dispose the agile WinRT MediaPlayer, MediaSource, and RAM cache stream on the thread pool after detaching from XAML.
         _ = Task.Run(async () =>
         {
             await _sourceGate.WaitAsync().ConfigureAwait(false);
             try
             {
                 var source = _source;
+                var randomStream = _randomAccessStream;
+                var bufferedStream = _bufferedStream;
                 _source = null;
+                _randomAccessStream = null;
+                _bufferedStream = null;
                 player.Pause();
                 player.Source = null;
                 source?.Dispose();
+                randomStream?.Dispose();
+                bufferedStream?.Dispose();
                 player.Dispose();
             }
             catch
