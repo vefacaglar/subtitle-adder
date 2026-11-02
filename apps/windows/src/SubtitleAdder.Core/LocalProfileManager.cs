@@ -86,7 +86,7 @@ public sealed record VideoUserStats
 /// so moving or renaming a video file automatically migrates its history, likes, ratings, and custom list memberships.
 /// Passwords are never stored in plaintext; they are salted and hashed with PBKDF2-HMAC-SHA256.
 /// </summary>
-public sealed class LocalProfileManager
+public sealed class LocalProfileManager : IDisposable
 {
     private const int SaltByteLength = 16;
     private const int HashByteLength = 32;
@@ -108,8 +108,10 @@ public sealed class LocalProfileManager
     private readonly Lock _sync = new();
     private readonly Dictionary<string, ProfileEntry> _profiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, byte[]> _sessionVaultKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly string _instanceId = Guid.NewGuid().ToString("N");
     private readonly string _mutexName;
-    private readonly FileSystemWatcher? _watcher;
+    private readonly StateSyncBroker _broker;
+    private readonly IDisposable _brokerSubscription;
     private ProfileEntry? _activeProfile;
     private string? _activeUsername;
     private bool _rememberMe = true;
@@ -118,13 +120,22 @@ public sealed class LocalProfileManager
     private string? _rememberedProtectedKeyBase64;
     private string? _lastSyncedJson;
 
-    public LocalProfileManager(string? filePath = null)
+    public LocalProfileManager(string? filePath = null, StateSyncBroker? broker = null)
     {
         FilePath = string.IsNullOrWhiteSpace(filePath) ? DefaultPath : Path.GetFullPath(filePath);
         var pathHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(FilePath.ToUpperInvariant())))[..16];
         _mutexName = $@"Local\SubtitleAdder.Profiles.{pathHash}";
+        _broker = broker ?? StateSyncBroker.Shared;
         LoadFromDisk();
-        _watcher = TryStartWatcher();
+        _brokerSubscription = _broker.Subscribe(StateSyncTopics.All, OnBrokerEvent);
+    }
+
+    /// <summary>Underlying Pub/Sub state synchronization broker used by this profile manager.</summary>
+    public StateSyncBroker Broker => _broker;
+
+    public void Dispose()
+    {
+        _brokerSubscription.Dispose();
     }
 
     /// <summary>Default storage path: <c>%LOCALAPPDATA%\SubtitleAdder\profiles.json</c>.</summary>
@@ -407,6 +418,8 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ProfileLogin, username: cleanUser);
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -457,6 +470,8 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ProfileLogin, username: cleanUser);
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -492,7 +507,11 @@ public sealed class LocalProfileManager
             LastError = null;
         }
 
-        if (changed) StateChanged?.Invoke(this, EventArgs.Empty);
+        if (changed)
+        {
+            PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ProfileLogout);
+            StateChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     /// <summary>Deletes a profile and all of its watch history/ratings/lists after verifying its password.</summary>
@@ -536,6 +555,8 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ProfileDeleted, username: cleanUser);
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -574,6 +595,14 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(
+            StateSyncTopics.Profiles,
+            StateSyncEventKind.VideoWatched,
+            videoPath: normalized,
+            viewCount: updated.ViewCount,
+            positionSeconds: updated.LastPositionSeconds,
+            durationSeconds: updated.DurationSeconds);
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return updated;
     }
@@ -599,17 +628,30 @@ public sealed class LocalProfileManager
             var cleanPosition = Math.Max(0, double.IsFinite(positionSeconds) ? positionSeconds : existing.LastPositionSeconds);
             if (cleanDuration > 0 && cleanPosition > cleanDuration) cleanPosition = cleanDuration;
 
+            var changedSignificantly =
+                Math.Abs(cleanPosition - existing.LastPositionSeconds) >= 0.5 ||
+                Math.Abs(cleanDuration - existing.DurationSeconds) >= 0.5;
+
             updated = existing with
             {
                 LastPositionSeconds = cleanPosition,
                 DurationSeconds = cleanDuration,
-                UpdatedAtUtc = now,
+                UpdatedAtUtc = changedSignificantly ? now : existing.UpdatedAtUtc,
             };
             _activeProfile.Videos[key] = updated;
-            SaveToDiskLocked();
+            if (changedSignificantly)
+            {
+                SaveToDiskLocked();
+            }
         }
 
-        StateChanged?.Invoke(this, EventArgs.Empty);
+        // Broadcast lightweight watch-progress event to other instances in memory; never invoke StateChanged (zero UI flicker).
+        PublishBrokerEvent(
+            StateSyncTopics.WatchProgress,
+            StateSyncEventKind.ProgressUpdated,
+            videoPath: normalized,
+            positionSeconds: updated.LastPositionSeconds,
+            durationSeconds: updated.DurationSeconds);
         return updated;
     }
 
@@ -651,6 +693,7 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -678,6 +721,7 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return newLiked;
     }
@@ -705,6 +749,14 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(
+            StateSyncTopics.Profiles,
+            StateSyncEventKind.VideoWatched,
+            videoPath: normalized,
+            viewCount: updated.ViewCount,
+            positionSeconds: updated.LastPositionSeconds,
+            durationSeconds: updated.DurationSeconds);
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return updated;
     }
@@ -733,6 +785,14 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(
+            StateSyncTopics.Profiles,
+            StateSyncEventKind.VideoWatched,
+            videoPath: normalized,
+            viewCount: updated.ViewCount,
+            positionSeconds: updated.LastPositionSeconds,
+            durationSeconds: updated.DurationSeconds);
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return updated;
     }
@@ -787,10 +847,21 @@ public sealed class LocalProfileManager
             SyncFromDiskLocked();
             if (_activeProfile is null) return false;
             var (key, _) = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
-            _activeProfile.Thumbnails[key] = Convert.ToBase64String(thumbnailBytes);
+            var encoded = Convert.ToBase64String(thumbnailBytes);
+            if (_activeProfile.Thumbnails.TryGetValue(key, out var existingEncoded) &&
+                string.Equals(existingEncoded, encoded, StringComparison.Ordinal))
+            {
+                return true;
+            }
+            _activeProfile.Thumbnails[key] = encoded;
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(
+            StateSyncTopics.Thumbnail,
+            StateSyncEventKind.ThumbnailCaptured,
+            videoPath: normalized,
+            payloadBase64: Convert.ToBase64String(thumbnailBytes));
         return true;
     }
 
@@ -843,6 +914,7 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return created;
     }
@@ -876,6 +948,7 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -895,6 +968,7 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -931,6 +1005,7 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -965,6 +1040,7 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -1008,6 +1084,7 @@ public sealed class LocalProfileManager
             SaveToDiskLocked();
         }
 
+        PublishBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged);
         StateChanged?.Invoke(this, EventArgs.Empty);
         return nowInList;
     }
@@ -1794,39 +1871,87 @@ public sealed class LocalProfileManager
         }
     }
 
-    private FileSystemWatcher? TryStartWatcher()
+    private void PublishBrokerEvent(
+        string topic,
+        StateSyncEventKind kind,
+        string? username = null,
+        string? videoPath = null,
+        int? viewCount = null,
+        double? positionSeconds = null,
+        double? durationSeconds = null,
+        string? payloadBase64 = null)
     {
-        try
+        _broker.Publish(topic, new StateSyncEvent
         {
-            var dir = Path.GetDirectoryName(FilePath);
-            var fileName = Path.GetFileName(FilePath);
-            if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(fileName)) return null;
-            Directory.CreateDirectory(dir);
-            var watcher = new FileSystemWatcher(dir, fileName)
-            {
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
-                EnableRaisingEvents = true,
-            };
-            void OnFileEvent(object sender, FileSystemEventArgs e)
-            {
-                var updated = false;
-                lock (_sync)
-                {
-                    updated = SyncFromDiskLocked(force: false);
-                }
-                if (updated)
-                {
-                    StateChanged?.Invoke(this, EventArgs.Empty);
-                }
-            }
-            watcher.Changed += OnFileEvent;
-            watcher.Created += OnFileEvent;
-            watcher.Renamed += (s, e) => OnFileEvent(s, e);
-            return watcher;
+            Topic = topic,
+            Kind = kind,
+            SenderInstanceId = _instanceId,
+            ScopePath = FilePath,
+            Username = username ?? _activeUsername,
+            VideoPath = videoPath,
+            ViewCount = viewCount,
+            PositionSeconds = positionSeconds,
+            DurationSeconds = durationSeconds,
+            PayloadBase64 = payloadBase64,
+        });
+    }
+
+    private void OnBrokerEvent(StateSyncEvent evt)
+    {
+        if (string.Equals(evt.SenderInstanceId, _instanceId, StringComparison.Ordinal) ||
+            !string.Equals(evt.ScopePath, FilePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
         }
-        catch
+
+        // Silent in-memory updates for watch-progress and thumbnail topics (never rebuild UI cards!)
+        if (string.Equals(evt.Topic, StateSyncTopics.WatchProgress, StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            if (string.IsNullOrWhiteSpace(evt.VideoPath)) return;
+            lock (_sync)
+            {
+                if (_activeProfile is null) return;
+                var normalized = NormalizeVideoPath(evt.VideoPath);
+                if (normalized.Length == 0) return;
+                var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
+                var cleanDuration = SanitizeSeconds(evt.DurationSeconds ?? 0, existing.DurationSeconds);
+                var cleanPosition = Math.Max(0, evt.PositionSeconds ?? existing.LastPositionSeconds);
+                if (cleanDuration > 0 && cleanPosition > cleanDuration) cleanPosition = cleanDuration;
+                _activeProfile.Videos[key] = existing with
+                {
+                    LastPositionSeconds = cleanPosition,
+                    DurationSeconds = cleanDuration,
+                    UpdatedAtUtc = evt.TimestampUtc,
+                };
+            }
+            return;
+        }
+
+        if (string.Equals(evt.Topic, StateSyncTopics.Thumbnail, StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(evt.VideoPath) || string.IsNullOrWhiteSpace(evt.PayloadBase64)) return;
+            lock (_sync)
+            {
+                if (_activeProfile is null) return;
+                var normalized = NormalizeVideoPath(evt.VideoPath);
+                if (normalized.Length == 0) return;
+                var (key, _) = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
+                _activeProfile.Thumbnails[key] = evt.PayloadBase64;
+            }
+            return;
+        }
+
+        if (string.Equals(evt.Topic, StateSyncTopics.Profiles, StringComparison.OrdinalIgnoreCase))
+        {
+            var updated = false;
+            lock (_sync)
+            {
+                updated = SyncFromDiskLocked(force: false);
+            }
+            if (updated)
+            {
+                StateChanged?.Invoke(this, EventArgs.Empty);
+            }
         }
     }
 

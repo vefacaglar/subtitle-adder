@@ -758,7 +758,28 @@ public sealed class VideoPlatformHubView : Grid
     private readonly Border _emptyStateCard;
     private readonly TextBlock _emptyStateTitle;
     private readonly TextBlock _emptyStateSubtitle;
+    private readonly Dictionary<string, BitmapImage> _thumbnailImageCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _thumbnailLoadingPaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<RenderedVideoCard> _renderedCards = [];
     private bool _showExplicitSignInCard;
+    private bool _refreshQueued;
+
+    private sealed class RenderedVideoCard
+    {
+        public required string VideoPath { get; init; }
+        public required bool IsLoggedIn { get; init; }
+        public required Border CardBorder { get; init; }
+        public required Image ThumbImage { get; init; }
+        public required TextBlock ViewsPillText { get; init; }
+        public required Border DurationPill { get; init; }
+        public required TextBlock DurationPillText { get; init; }
+        public required Border ProgressTrack { get; init; }
+        public required Border ProgressFill { get; init; }
+        public required TextBlock TitleText { get; init; }
+        public required TextBlock FolderText { get; init; }
+        public required StackPanel BadgesRow { get; init; }
+        public required StackPanel ActionsRow { get; init; }
+    }
 
     /// <summary>Fired when the user clicks a video card in the platform feed to open and play it immediately.</summary>
     public event Action<string>? VideoSelected;
@@ -1424,14 +1445,38 @@ public sealed class VideoPlatformHubView : Grid
         }
     }
 
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e) => SafeRefresh();
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        // Ignore player-only engagement bar properties so active playback never triggers a hub refresh.
+        if (e.PropertyName is
+            nameof(VideoPlatformViewModel.ActiveVideoPath) or
+            nameof(VideoPlatformViewModel.HasActiveVideo) or
+            nameof(VideoPlatformViewModel.ActiveVideoViewCount) or
+            nameof(VideoPlatformViewModel.ActiveVideoIsLiked) or
+            nameof(VideoPlatformViewModel.ActiveVideoRating) or
+            nameof(VideoPlatformViewModel.ActiveVideoViewsText) or
+            nameof(VideoPlatformViewModel.ActiveVideoLikeText) or
+            nameof(VideoPlatformViewModel.RememberMe) or
+            nameof(VideoPlatformViewModel.AuthError))
+        {
+            return;
+        }
+        SafeRefresh();
+    }
+
     private void OnLocalizationChanged(object? sender, EventArgs e) => SafeRefresh();
 
     private void SafeRefresh()
     {
-        if (DispatcherQueue is { } dq && !dq.HasThreadAccess)
+        if (DispatcherQueue is { } dq)
         {
-            dq.TryEnqueue(Refresh);
+            if (_refreshQueued) return;
+            _refreshQueued = true;
+            dq.TryEnqueue(() =>
+            {
+                _refreshQueued = false;
+                Refresh();
+            });
             return;
         }
         Refresh();
@@ -1638,11 +1683,12 @@ public sealed class VideoPlatformHubView : Grid
 
     private void RebuildFeedCards()
     {
-        _cardsPanel.Children.Clear();
         var items = _vm.FeedItems;
 
         if (items.Count == 0)
         {
+            _cardsPanel.Children.Clear();
+            _renderedCards.Clear();
             _emptyStateCard.Visibility = Visibility.Visible;
             if (!string.IsNullOrWhiteSpace(_vm.SearchQuery))
             {
@@ -1667,13 +1713,44 @@ public sealed class VideoPlatformHubView : Grid
         }
 
         _emptyStateCard.Visibility = Visibility.Collapsed;
+        var loggedIn = _vm.IsLoggedIn;
+
+        // Fast path: if the displayed video paths and auth state are in the same order, update cards in-place
+        // without clearing _cardsPanel.Children so thumbnails and layout never flicker.
+        if (_renderedCards.Count == items.Count)
+        {
+            var sameSequence = true;
+            for (var i = 0; i < items.Count; i++)
+            {
+                if (_renderedCards[i].IsLoggedIn != loggedIn ||
+                    !string.Equals(_renderedCards[i].VideoPath, items[i].VideoPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    sameSequence = false;
+                    break;
+                }
+            }
+
+            if (sameSequence)
+            {
+                for (var i = 0; i < items.Count; i++)
+                {
+                    UpdateVideoCardInPlace(_renderedCards[i], items[i]);
+                }
+                return;
+            }
+        }
+
+        _cardsPanel.Children.Clear();
+        _renderedCards.Clear();
         foreach (var item in items)
         {
-            _cardsPanel.Children.Add(BuildVideoCard(item));
+            var rendered = BuildVideoCard(item);
+            _renderedCards.Add(rendered);
+            _cardsPanel.Children.Add(rendered.CardBorder);
         }
     }
 
-    private Border BuildVideoCard(VideoCardViewModel item)
+    private RenderedVideoCard BuildVideoCard(VideoCardViewModel item)
     {
         var card = new Border
         {
@@ -1713,8 +1790,15 @@ public sealed class VideoPlatformHubView : Grid
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        if (_thumbnailImageCache.TryGetValue(item.VideoPath, out var cachedBitmap))
+        {
+            thumbImage.Source = cachedBitmap;
+        }
+        else
+        {
+            _ = LoadOrCaptureCardThumbnailAsync(item, thumbImage);
+        }
         thumbGrid.Children.Add(thumbImage);
-        _ = LoadOrCaptureCardThumbnailAsync(item, thumbImage);
 
         var playCircle = new Border
         {
@@ -1796,6 +1880,13 @@ public sealed class VideoPlatformHubView : Grid
             thumbGrid.Children.Add(noSubBadge);
         }
 
+        var viewsPillText = new TextBlock
+        {
+            Text = item.ViewsText,
+            FontSize = 10.5,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Colors.White),
+        };
         var viewsPill = new Border
         {
             Margin = new Thickness(0, 7, 7, 0),
@@ -1804,54 +1895,46 @@ public sealed class VideoPlatformHubView : Grid
             Background = new SolidColorBrush(ColorHelper.FromArgb(0xC8, 0x00, 0x00, 0x00)),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
-            Child = new TextBlock
-            {
-                Text = item.ViewsText,
-                FontSize = 10.5,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(Colors.White),
-            },
+            Child = viewsPillText,
         };
         thumbGrid.Children.Add(viewsPill);
 
-        if (!string.IsNullOrEmpty(item.DurationText))
+        var durationPillText = new TextBlock
         {
-            var durationPill = new Border
-            {
-                Margin = new Thickness(0, 0, 7, 9),
-                Padding = new Thickness(5, 1, 5, 1),
-                CornerRadius = new CornerRadius(4),
-                Background = new SolidColorBrush(ColorHelper.FromArgb(0xD0, 0x00, 0x00, 0x00)),
-                HorizontalAlignment = HorizontalAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Bottom,
-                Child = new TextBlock
-                {
-                    Text = item.DurationText,
-                    FontSize = 10.5,
-                    Foreground = new SolidColorBrush(Colors.White),
-                },
-            };
-            thumbGrid.Children.Add(durationPill);
-        }
+            Text = item.DurationText,
+            FontSize = 10.5,
+            Foreground = new SolidColorBrush(Colors.White),
+        };
+        var durationPill = new Border
+        {
+            Margin = new Thickness(0, 0, 7, 9),
+            Padding = new Thickness(5, 1, 5, 1),
+            CornerRadius = new CornerRadius(4),
+            Background = new SolidColorBrush(ColorHelper.FromArgb(0xD0, 0x00, 0x00, 0x00)),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Visibility = string.IsNullOrEmpty(item.DurationText) ? Visibility.Collapsed : Visibility.Visible,
+            Child = durationPillText,
+        };
+        thumbGrid.Children.Add(durationPill);
 
-        if (item.HasProgress)
+        var progressFill = new Border
         {
-            var progressTrack = new Border
-            {
-                Height = 4,
-                Background = new SolidColorBrush(ColorHelper.FromArgb(0x55, 0xFF, 0xFF, 0xFF)),
-                VerticalAlignment = VerticalAlignment.Bottom,
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                Child = new Border
-                {
-                    Height = 4,
-                    Width = Math.Clamp(192 * item.ProgressRatio, 4, 192),
-                    Background = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0xFF, 0x2E, 0x4C)),
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                },
-            };
-            thumbGrid.Children.Add(progressTrack);
-        }
+            Height = 4,
+            Width = Math.Clamp(192 * item.ProgressRatio, 4, 192),
+            Background = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0xFF, 0x2E, 0x4C)),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        var progressTrack = new Border
+        {
+            Height = 4,
+            Background = new SolidColorBrush(ColorHelper.FromArgb(0x55, 0xFF, 0xFF, 0xFF)),
+            VerticalAlignment = VerticalAlignment.Bottom,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Visibility = item.HasProgress ? Visibility.Visible : Visibility.Collapsed,
+            Child = progressFill,
+        };
+        thumbGrid.Children.Add(progressTrack);
 
         var thumbBorder = new Border
         {
@@ -1909,6 +1992,72 @@ public sealed class VideoPlatformHubView : Grid
             Spacing = 6,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        detailsStack.Children.Add(badgesRow);
+
+        // Engagement actions row on card: Play button, Heart (Favorite) button, 5-star rating buttons, and "+ Listeye ekle"
+        var actionsRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Margin = new Thickness(0, 4, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        detailsStack.Children.Add(actionsRow);
+
+        Grid.SetColumn(detailsStack, 1);
+        layout.Children.Add(detailsStack);
+
+        card.Child = layout;
+
+        var rendered = new RenderedVideoCard
+        {
+            VideoPath = item.VideoPath,
+            IsLoggedIn = _vm.IsLoggedIn,
+            CardBorder = card,
+            ThumbImage = thumbImage,
+            ViewsPillText = viewsPillText,
+            DurationPill = durationPill,
+            DurationPillText = durationPillText,
+            ProgressTrack = progressTrack,
+            ProgressFill = progressFill,
+            TitleText = titleText,
+            FolderText = folderText,
+            BadgesRow = badgesRow,
+            ActionsRow = actionsRow,
+        };
+        PopulateCardBadgesAndActions(rendered, item);
+        return rendered;
+    }
+
+    private void UpdateVideoCardInPlace(RenderedVideoCard rendered, VideoCardViewModel item)
+    {
+        rendered.ViewsPillText.Text = item.ViewsText;
+        rendered.DurationPillText.Text = item.DurationText;
+        rendered.DurationPill.Visibility = string.IsNullOrEmpty(item.DurationText) ? Visibility.Collapsed : Visibility.Visible;
+        rendered.ProgressTrack.Visibility = item.HasProgress ? Visibility.Visible : Visibility.Collapsed;
+        rendered.ProgressFill.Width = Math.Clamp(192 * item.ProgressRatio, 4, 192);
+        rendered.TitleText.Text = item.Title;
+        rendered.FolderText.Text = item.FolderDisplay;
+
+        if (rendered.ThumbImage.Source is null)
+        {
+            if (_thumbnailImageCache.TryGetValue(item.VideoPath, out var cachedBitmap))
+            {
+                rendered.ThumbImage.Source = cachedBitmap;
+            }
+            else
+            {
+                _ = LoadOrCaptureCardThumbnailAsync(item, rendered.ThumbImage);
+            }
+        }
+
+        PopulateCardBadgesAndActions(rendered, item);
+    }
+
+    private void PopulateCardBadgesAndActions(RenderedVideoCard rendered, VideoCardViewModel item)
+    {
+        var badgesRow = rendered.BadgesRow;
+        badgesRow.Children.Clear();
 
         badgesRow.Children.Add(new TextBlock
         {
@@ -1985,16 +2134,8 @@ public sealed class VideoPlatformHubView : Grid
                 ColorHelper.FromArgb(0xFF, 0x8C, 0xB8, 0xFF)));
         }
 
-        detailsStack.Children.Add(badgesRow);
-
-        // Engagement actions row on card: Play button, Heart (Favorite) button, 5-star rating buttons, and "+ Listeye ekle"
-        var actionsRow = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            Margin = new Thickness(0, 4, 0, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        var actionsRow = rendered.ActionsRow;
+        actionsRow.Children.Clear();
 
         var playButton = new Button
         {
@@ -2107,28 +2248,33 @@ public sealed class VideoPlatformHubView : Grid
             };
             actionsRow.Children.Add(addToListBtn);
         }
-
-        detailsStack.Children.Add(actionsRow);
-
-        Grid.SetColumn(detailsStack, 1);
-        layout.Children.Add(detailsStack);
-
-        card.Child = layout;
-        return card;
     }
 
     private async Task LoadOrCaptureCardThumbnailAsync(VideoCardViewModel item, Image targetImage)
     {
+        if (string.IsNullOrWhiteSpace(item.VideoPath)) return;
+
+        if (_thumbnailImageCache.TryGetValue(item.VideoPath, out var existingBmp))
+        {
+            targetImage.Source = existingBmp;
+            return;
+        }
+
+        if (!_thumbnailLoadingPaths.Add(item.VideoPath))
+        {
+            return;
+        }
+
         try
         {
             var bytes = item.ThumbnailBytes ?? _vm.GetEncryptedThumbnail(item.VideoPath);
             if (bytes is { Length: > 0 })
             {
-                await ApplyThumbnailBytesToImageAsync(bytes, targetImage);
+                await ApplyAndCacheThumbnailBytesAsync(item.VideoPath, bytes, targetImage);
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(item.VideoPath) || !File.Exists(item.VideoPath))
+            if (!File.Exists(item.VideoPath))
             {
                 return;
             }
@@ -2153,16 +2299,20 @@ public sealed class VideoPlatformHubView : Grid
                 {
                     _vm.SaveEncryptedThumbnail(item.VideoPath, capturedBytes);
                 }
-                await ApplyThumbnailBytesToImageAsync(capturedBytes, targetImage);
+                await ApplyAndCacheThumbnailBytesAsync(item.VideoPath, capturedBytes, targetImage);
             }
         }
         catch
         {
             // Ignore thumbnail extraction errors for unsupported or inaccessible files.
         }
+        finally
+        {
+            _thumbnailLoadingPaths.Remove(item.VideoPath);
+        }
     }
 
-    private static async Task ApplyThumbnailBytesToImageAsync(byte[] bytes, Image targetImage)
+    private async Task ApplyAndCacheThumbnailBytesAsync(string videoPath, byte[] bytes, Image targetImage)
     {
         using var stream = new InMemoryRandomAccessStream();
         using (var writer = new DataWriter(stream))
@@ -2179,7 +2329,17 @@ public sealed class VideoPlatformHubView : Grid
             DecodePixelWidth = 192,
         };
         await bmp.SetSourceAsync(stream);
+        _thumbnailImageCache[videoPath] = bmp;
         targetImage.Source = bmp;
+
+        foreach (var card in _renderedCards)
+        {
+            if (card.ThumbImage.Source is null &&
+                string.Equals(card.VideoPath, videoPath, StringComparison.OrdinalIgnoreCase))
+            {
+                card.ThumbImage.Source = bmp;
+            }
+        }
     }
 
     private static Border MakeBadge(string text, Windows.UI.Color bg, Windows.UI.Color fg) =>

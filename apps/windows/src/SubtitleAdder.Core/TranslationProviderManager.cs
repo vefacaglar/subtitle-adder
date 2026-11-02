@@ -162,20 +162,25 @@ public sealed partial class TranslationProviderManager : ObservableObject
 
     public static TranslationProviderManager Shared { get; } = new();
 
+    private readonly string _instanceId = Guid.NewGuid().ToString("N");
     private readonly Lock _lock = new();
     private readonly HttpClient _http;
+    private readonly StateSyncBroker _broker;
+    private readonly IDisposable _brokerSubscription;
     private List<TranslationProviderProfile> _providers = [];
     private Guid? _activeProviderId;
     private bool _isTesting;
 
-    public TranslationProviderManager(string? filePath = null, HttpMessageHandler? httpHandler = null)
+    public TranslationProviderManager(string? filePath = null, HttpMessageHandler? httpHandler = null, StateSyncBroker? broker = null)
     {
-        FilePath = filePath ?? DefaultFilePath;
+        FilePath = Path.GetFullPath(filePath ?? DefaultFilePath);
+        _broker = broker ?? StateSyncBroker.Shared;
         _http = httpHandler is not null
             ? new HttpClient(httpHandler) { Timeout = TimeSpan.FromSeconds(8) }
             : new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
         LoadFromDisk();
         SyncToEngineState();
+        _brokerSubscription = _broker.Subscribe(StateSyncTopics.Providers, OnBrokerEvent);
     }
 
     public string FilePath { get; }
@@ -969,11 +974,32 @@ public sealed partial class TranslationProviderManager : ObservableObject
                 Providers = _providers,
             };
             var json = JsonSerializer.Serialize(state, JsonOptions);
-            AtomicFileStore.WriteAllTextAtomic(FilePath, json);
+            if (AtomicFileStore.WriteAllTextAtomic(FilePath, json))
+            {
+                _broker.Publish(StateSyncTopics.Providers, new StateSyncEvent
+                {
+                    Topic = StateSyncTopics.Providers,
+                    Kind = StateSyncEventKind.ProvidersUpdated,
+                    SenderInstanceId = _instanceId,
+                    ScopePath = FilePath,
+                });
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Keep state in memory for the current session if disk write fails.
         }
+    }
+
+    private void OnBrokerEvent(StateSyncEvent evt)
+    {
+        if (string.Equals(evt.SenderInstanceId, _instanceId, StringComparison.Ordinal) ||
+            !string.Equals(evt.ScopePath, FilePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        LoadFromDisk();
+        SyncToEngineState();
+        NotifyStateChanged();
     }
 }

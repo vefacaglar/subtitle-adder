@@ -65,15 +65,20 @@ public sealed class MediaLibraryIndex
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
 
+    private readonly string _instanceId = Guid.NewGuid().ToString("N");
     private readonly Lock _syncRoot = new();
     private readonly Lock _fileWriteLock = new();
+    private readonly StateSyncBroker _broker;
+    private readonly IDisposable _brokerSubscription;
     private readonly Dictionary<string, DirectoryEntry> _directories = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IndexedMediaFile> _filesByPath = new(StringComparer.OrdinalIgnoreCase);
 
-    public MediaLibraryIndex(string? filePath = null)
+    public MediaLibraryIndex(string? filePath = null, StateSyncBroker? broker = null)
     {
         FilePath = string.IsNullOrWhiteSpace(filePath) ? DefaultPath : Path.GetFullPath(filePath);
+        _broker = broker ?? StateSyncBroker.Shared;
         LoadFromDisk();
+        _brokerSubscription = _broker.Subscribe(StateSyncTopics.MediaIndex, OnBrokerEvent);
     }
 
     public static string DefaultPath { get; } = Path.Combine(
@@ -459,8 +464,28 @@ public sealed class MediaLibraryIndex
             }
 
             var json = JsonSerializer.Serialize(payload, JsonOptions);
-            AtomicFileStore.WriteAllTextAtomic(FilePath, json);
+            if (AtomicFileStore.WriteAllTextAtomic(FilePath, json))
+            {
+                _broker.Publish(StateSyncTopics.MediaIndex, new StateSyncEvent
+                {
+                    Topic = StateSyncTopics.MediaIndex,
+                    Kind = StateSyncEventKind.MediaIndexed,
+                    SenderInstanceId = _instanceId,
+                    ScopePath = FilePath,
+                });
+            }
         }
+    }
+
+    private void OnBrokerEvent(StateSyncEvent evt)
+    {
+        if (string.Equals(evt.SenderInstanceId, _instanceId, StringComparison.Ordinal) ||
+            !string.Equals(evt.ScopePath, FilePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        LoadFromDisk();
+        IndexChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private sealed class PersistedIndex

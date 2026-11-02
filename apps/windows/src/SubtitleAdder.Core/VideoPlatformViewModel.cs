@@ -535,7 +535,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     /// <summary>Feeds SSD-discovered video paths into the platform so they appear under "Keşfet" and instant search.</summary>
     public void SetDiscoveredPaths(IEnumerable<string> paths)
     {
-        _discoveredPaths.Clear();
+        var next = new List<string>();
         if (paths is not null)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -544,10 +544,19 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
                 var norm = LocalProfileManager.NormalizeVideoPath(raw);
                 if (norm.Length > 0 && seen.Add(norm))
                 {
-                    _discoveredPaths.Add(norm);
+                    next.Add(norm);
                 }
             }
         }
+
+        if (next.Count == _discoveredPaths.Count &&
+            next.SequenceEqual(_discoveredPaths, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _discoveredPaths.Clear();
+        _discoveredPaths.AddRange(next);
         RefreshFeed();
     }
 

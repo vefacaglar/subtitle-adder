@@ -67,7 +67,7 @@ public sealed partial class MainWindow : Window
         {
             SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
             PreviewControls.Synchronize(_player.CurrentTime, _player.Duration, _player.IsPlaying, _player.IsMuted, _player.Volume);
-            if (_player.IsPlaying && _player.Duration > 0 && Math.Abs(_player.CurrentTime - _lastProgressRecordedTime) >= 2.0)
+            if (_player.IsPlaying && _player.Duration > 0 && Math.Abs(_player.CurrentTime - _lastProgressRecordedTime) >= 5.0)
             {
                 _lastProgressRecordedTime = _player.CurrentTime;
                 PlatformVm.UpdateActiveVideoProgress(_player.CurrentTime, _player.Duration);

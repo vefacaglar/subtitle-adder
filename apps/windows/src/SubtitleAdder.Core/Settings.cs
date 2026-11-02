@@ -110,16 +110,21 @@ public class InMemorySettingsStore : ISettingsStore
 public sealed class JsonFileSettingsStore : InMemorySettingsStore, IDisposable
 {
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
+    private readonly string _instanceId = Guid.NewGuid().ToString("N");
     private readonly Lock _fileLock = new();   // one writer at a time (timer vs. Flush)
     private readonly Timer _saveTimer;
     private readonly TimeSpan _saveDelay;
+    private readonly StateSyncBroker _broker;
+    private readonly IDisposable _brokerSubscription;
     private bool _dirty;   // guarded by SyncRoot
 
-    public JsonFileSettingsStore(string? path = null, TimeSpan? saveDelay = null) : base(Load(path ??= DefaultPath))
+    public JsonFileSettingsStore(string? path = null, TimeSpan? saveDelay = null, StateSyncBroker? broker = null) : base(Load(path ??= DefaultPath))
     {
-        FilePath = path;
+        FilePath = Path.GetFullPath(path);
         _saveDelay = saveDelay ?? TimeSpan.FromMilliseconds(300);
+        _broker = broker ?? StateSyncBroker.Shared;
         _saveTimer = new Timer(_ => Flush(), null, Timeout.Infinite, Timeout.Infinite);
+        _brokerSubscription = _broker.Subscribe(StateSyncTopics.Settings, OnBrokerEvent);
     }
     public static string DefaultPath { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SubtitleAdder", "settings.json");
@@ -168,12 +173,40 @@ public sealed class JsonFileSettingsStore : InMemorySettingsStore, IDisposable
                 _dirty = false;
                 json = Snapshot().ToJsonString(WriteOptions);
             }
-            AtomicFileStore.WriteAllTextAtomic(FilePath, json);
+            if (AtomicFileStore.WriteAllTextAtomic(FilePath, json))
+            {
+                _broker.Publish(StateSyncTopics.Settings, new StateSyncEvent
+                {
+                    Topic = StateSyncTopics.Settings,
+                    Kind = StateSyncEventKind.SettingsUpdated,
+                    SenderInstanceId = _instanceId,
+                    ScopePath = FilePath,
+                });
+            }
+        }
+    }
+
+    private void OnBrokerEvent(StateSyncEvent evt)
+    {
+        if (string.Equals(evt.SenderInstanceId, _instanceId, StringComparison.Ordinal) ||
+            !string.Equals(evt.ScopePath, FilePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        var reloaded = Load(FilePath);
+        lock (SyncRoot)
+        {
+            Values.Clear();
+            foreach (var (k, v) in reloaded)
+            {
+                Values[k] = v;
+            }
         }
     }
 
     public void Dispose()
     {
+        _brokerSubscription.Dispose();
         _saveTimer.Dispose();
         Flush();
     }

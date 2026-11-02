@@ -262,6 +262,155 @@ public sealed class LocalProfileTests : IDisposable
     }
 
     [Fact]
+    public async Task SilentBackgroundUpdates_PlaybackProgressAndThumbnailsAndUnchangedDiscoveredPathsNeverRebuildFeedItems()
+    {
+        var video1 = Path.Combine(_tempDir, "Playing_Movie.mp4");
+        var manager = new LocalProfileManager(_profilesPath);
+        using var vm = new VideoPlatformViewModel(manager);
+        Assert.True(vm.TryRegister("emre", "pass123"));
+
+        vm.SetDiscoveredPaths([video1]);
+        vm.OnVideoOpened(video1);
+
+        var initialFeedInstance = vm.FeedItems;
+        var stateChangedCount = 0;
+        var feedPropertyChangedCount = 0;
+        manager.StateChanged += (_, _) => Interlocked.Increment(ref stateChangedCount);
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(VideoPlatformViewModel.FeedItems))
+            {
+                Interlocked.Increment(ref feedPropertyChangedCount);
+            }
+        };
+
+        // 1. Periodic playback progress updates while watching a video must never fire StateChanged or replace FeedItems
+        vm.UpdateActiveVideoProgress(15.0, 300.0);
+        vm.UpdateActiveVideoProgress(30.0, 300.0);
+        vm.UpdateActiveVideoProgress(45.0, 300.0);
+
+        // 2. Saving encrypted thumbnails from video cards must never fire StateChanged or replace FeedItems
+        var thumbBytes = Encoding.UTF8.GetBytes("SAMPLE_THUMBNAIL_BYTES");
+        Assert.True(vm.SaveEncryptedThumbnail(video1, thumbBytes));
+        Assert.True(vm.SaveEncryptedThumbnail(video1, thumbBytes));
+
+        // 3. Passing the identical discovered paths list must be a no-op and not replace FeedItems
+        vm.SetDiscoveredPaths([video1]);
+
+        // Wait briefly to confirm FileSystemWatcher self-write suppression also prevents any delayed callback
+        await Task.Delay(120);
+
+        Assert.Equal(0, stateChangedCount);
+        Assert.Equal(0, feedPropertyChangedCount);
+        Assert.Same(initialFeedInstance, vm.FeedItems);
+        Assert.Equal(45.0, manager.GetStats(video1)?.LastPositionSeconds);
+        Assert.Equal(thumbBytes, vm.GetEncryptedThumbnail(video1));
+    }
+
+    [Fact]
+    public async Task StateSyncBroker_FiveConcurrentInstancesCommunicateViaNamedPipeAndAutoElectNewLeaderOnFailover()
+    {
+        var channelScope = $"test-broker-5-instances-{Guid.NewGuid():N}";
+        var brokers = Enumerable.Range(0, 5).Select(_ => new StateSyncBroker(channelScope)).ToList();
+        var managers = new List<LocalProfileManager>();
+
+        try
+        {
+            foreach (var b in brokers)
+            {
+                Assert.True(await b.WaitUntilReadyAsync(TimeSpan.FromSeconds(5)));
+            }
+
+            // Wait briefly for all 4 clients to finish registering in the leader's client table
+            var leader = brokers.Single(b => b.IsLeader);
+            var deadline = Environment.TickCount64 + 3000;
+            while (leader.ConnectedClientCount < 4 && Environment.TickCount64 < deadline)
+            {
+                await Task.Delay(20);
+            }
+            Assert.Equal(4, leader.ConnectedClientCount);
+            Assert.Equal(4, brokers.Count(b => b.IsConnectedToLeader));
+
+            // Create 5 LocalProfileManager instances, each bound to its own StateSyncBroker node
+            for (var i = 0; i < 5; i++)
+            {
+                managers.Add(new LocalProfileManager(_profilesPath, brokers[i]));
+            }
+
+            var ep1 = Path.Combine(_tempDir, "Episode_01.mp4");
+            var ep2 = Path.Combine(_tempDir, "Episode_02.mp4");
+
+            // Instance 0 registers and logs in -> broadcast over Named Pipe hub to Instances 1..4
+            Assert.True(managers[0].Register("five_window_user", "Pass!12345"));
+            await WaitUntilAsync(() => managers.All(m => m.IsLoggedIn && m.CurrentUsername == "five_window_user"));
+
+            // Instance 2 watches ep1 and likes it -> broadcast over Named Pipe hub to all 5 instances
+            managers[2].RecordWatch(ep1, positionSeconds: 10, durationSeconds: 100);
+            managers[2].SetLiked(ep1, true);
+            await WaitUntilAsync(() => managers.All(m => m.GetStats(ep1) is { ViewCount: 1, IsLiked: true }));
+
+            // Instance 3 updates watch-progress and thumbnail -> delivered silently in memory to all 5 without firing StateChanged
+            var stateChangedEvents = 0;
+            foreach (var m in managers)
+            {
+                m.StateChanged += (_, _) => Interlocked.Increment(ref stateChangedEvents);
+            }
+
+            var sampleThumb = Encoding.UTF8.GetBytes("ENCRYPTED_THUMB_FROM_INSTANCE_3");
+            managers[3].UpdatePlaybackProgress(ep1, positionSeconds: 77, durationSeconds: 100);
+            managers[3].SetThumbnail(ep1, sampleThumb);
+
+            await WaitUntilAsync(() => managers.All(m =>
+                m.GetStats(ep1)?.LastPositionSeconds == 77 &&
+                m.GetThumbnail(ep1) is { Length: > 0 }));
+            Assert.Equal(0, stateChangedEvents);
+
+            // Simulate closing the Leader window: dispose the current Leader broker & manager
+            var leaderIndex = brokers.IndexOf(leader);
+            managers[leaderIndex].Dispose();
+            managers.RemoveAt(leaderIndex);
+            leader.Dispose();
+            brokers.RemoveAt(leaderIndex);
+
+            // Verify automatic leader failover among the remaining 4 instances
+            await WaitUntilAsync(() =>
+                brokers.Count(b => b.IsLeader) == 1 &&
+                brokers.Count(b => b.IsConnectedToLeader) == 3,
+                timeoutMs: 5000);
+
+            var newLeader = brokers.Single(b => b.IsLeader);
+            await WaitUntilAsync(() => newLeader.ConnectedClientCount == 3, timeoutMs: 3000);
+
+            // One of the remaining client instances records a watch on ep2 and creates a custom list -> all 4 remaining instances receive it
+            var clientManager = managers.First(m => !m.Broker.IsLeader);
+            clientManager.RecordWatch(ep2, positionSeconds: 25, durationSeconds: 120);
+            var sharedList = clientManager.CreateCustomList("Beş Pencere Ortak Liste");
+            Assert.NotNull(sharedList);
+            Assert.True(clientManager.AddVideoToCustomList(sharedList.Id, ep2));
+
+            await WaitUntilAsync(() => managers.All(m =>
+                m.GetStats(ep2)?.ViewCount == 1 &&
+                m.GetCustomLists().Any(l => l.Name == "Beş Pencere Ortak Liste" && l.VideoPaths.Contains(ep2))));
+        }
+        finally
+        {
+            foreach (var m in managers) m.Dispose();
+            foreach (var b in brokers) b.Dispose();
+        }
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs = 3000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (condition()) return;
+            await Task.Delay(15);
+        }
+        Assert.True(condition());
+    }
+
+    [Fact]
     public void MultipleProfiles_HaveCompletelyIsolatedHistoryLikesRatingsAndCustomLists()
     {
         var videoA = Path.Combine(_tempDir, "ep1.mp4");
