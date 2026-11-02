@@ -21,6 +21,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -37,6 +38,41 @@ BatchFn = Callable[[list[Sentence]], None]
 EXTERNAL_LLM_URL_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_URL"
 EXTERNAL_LLM_MODEL_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL"
 EXTERNAL_LLM_API_KEY_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY"
+
+# https://opencode.ai/v2/docs/console/go/ — chat and model discovery have separate routes.
+OPENCODE_GO_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
+
+
+def _is_opencode_go_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    return (
+        not parsed.query and not parsed.fragment
+        and parsed.scheme == "https" and parsed.netloc.lower() == "opencode.ai"
+        and parsed.path.rstrip("/") in {
+            "/zen/go/v1", "/zen/go/v1/chat/completions",
+            "/inference/go/v1", "/inference/go/openai/v1",
+            "/inference/go/openai/v1/chat/completions",
+        }
+    )
+
+
+def _http_error_detail(exc: Exception, api_key: str | None) -> str:
+    """Preserve the gateway's explanation without dumping response/request payloads or credentials."""
+    detail = str(exc)
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            payload = json.loads(exc.read(8192).decode("utf-8"))
+            error = payload.get("error", payload) if isinstance(payload, dict) else None
+            message = error.get("message") if isinstance(error, dict) else error
+            if isinstance(message, str) and message.strip():
+                detail = f"HTTP {exc.code}: {message}"
+        except (ValueError, OSError):
+            pass
+        finally:
+            exc.close()
+    if api_key:
+        detail = detail.replace(api_key, "[redacted]")
+    return " ".join(detail.split())[:1000]
 
 
 def external_llm_url() -> str | None:
@@ -71,6 +107,8 @@ def normalize_external_chat_url(raw_url: str) -> str:
         host = None
     if not host:
         raise ModelError(t("external_llm_url_empty"))
+    if _is_opencode_go_url(url):
+        return f"{OPENCODE_GO_BASE_URL}/chat/completions"
     lower = url.lower()
     if lower.endswith(("/v1/chat/completions", "/chat/completions", "/api/chat")):
         return url
@@ -80,6 +118,8 @@ def normalize_external_chat_url(raw_url: str) -> str:
 
 
 def _external_models_url(chat_url: str) -> str | None:
+    if _is_opencode_go_url(chat_url):
+        return "https://opencode.ai/inference/go/v1/models"
     lower = chat_url.lower()
     if lower.endswith("/chat/completions"):
         return chat_url[: -len("/chat/completions")] + "/models"
@@ -696,6 +736,7 @@ class LlamaTranslator:
         self._external_model = (resolved_external_model or "").strip() or None
         self._external_api_key = (resolved_external_api_key or "").strip() or None
         self._resolved_external_model: str | None = self._external_model
+        self._session_id = uuid.uuid4().hex
         self._process: subprocess.Popen | None = None
         self._stderr_file = None
         self._port: int | None = None
@@ -804,6 +845,8 @@ class LlamaTranslator:
         }
         if self._external_api_key:
             headers["Authorization"] = f"Bearer {self._external_api_key}"
+        if self._external_chat_url and _is_opencode_go_url(self._external_chat_url):
+            headers["x-opencode-session"] = self._session_id
         return headers
 
     def _discover_external_model(self) -> str:
@@ -873,6 +916,7 @@ class LlamaTranslator:
                     and http_exc.code in (400, 422)
                     and "chat_template_kwargs" in body
                 ):
+                    http_exc.close()
                     retry_body = {k: v for k, v in body.items() if k != "chat_template_kwargs"}
                     retry_req = urllib.request.Request(
                         url,
@@ -885,9 +929,10 @@ class LlamaTranslator:
                 else:
                     raise
         except Exception as exc:
+            detail = _http_error_detail(exc, self._external_api_key)
             if self._external_chat_url is not None:
-                raise ModelError(t("external_llm_unreachable", url=url, error=str(exc))) from exc
-            raise ModelError(t("llama_unavailable", error=str(exc))) from exc
+                raise ModelError(t("external_llm_unreachable", url=url, error=detail)) from exc
+            raise ModelError(t("llama_unavailable", error=detail)) from exc
         choices = data.get("choices") or []
         if choices:
             if choices[0].get("finish_reason") == "length":

@@ -58,10 +58,10 @@ public sealed class TranslationProviderTests : IDisposable
 
         var openCode = TranslationProviderManager.GetPreset("opencode-go");
         Assert.Equal("OpenCode Go", openCode.Name);
-        Assert.Equal("https://opencode.ai/zen/go/v1", openCode.BaseUrl);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1", openCode.BaseUrl);
         Assert.True(openCode.RequiresApiKey);
-        Assert.Contains("glm-5", openCode.SuggestedModels);
-        Assert.Contains("qwen3-235b", openCode.SuggestedModels);
+        Assert.Contains("glm-5.3-flash", openCode.SuggestedModels);
+        Assert.Contains("deepseek-v4.1-flash", openCode.SuggestedModels);
     }
 
     [Fact]
@@ -83,7 +83,7 @@ public sealed class TranslationProviderTests : IDisposable
         Assert.Equal(openCode.Id, manager.ActiveProviderId);
         Assert.True(manager.IsExternalProviderActive);
         Assert.True(ExternalLlmState.Shared.Enabled);
-        Assert.Equal("https://opencode.ai/zen/go/v1", ExternalLlmState.Shared.Url);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1", ExternalLlmState.Shared.Url);
         Assert.Equal("kimi-k2.5", ExternalLlmState.Shared.Model);
         Assert.Equal("sk-oc-1234567890", ExternalLlmState.Shared.ApiKey);
         Assert.Equal("sk-••••7890", openCode.MaskedApiKey);
@@ -191,9 +191,9 @@ public sealed class TranslationProviderTests : IDisposable
         Assert.True(success);
         Assert.Contains("glm-5", models);
         Assert.Equal(2, requests.Count);
-        Assert.Equal("https://opencode.ai/zen/go/v1/models", requests[0].Url);
+        Assert.Equal("https://opencode.ai/inference/go/v1/models", requests[0].Url);
         Assert.Equal("Bearer sk-opencode-secret", requests[0].Auth);
-        Assert.Equal("https://opencode.ai/zen/go/v1/chat/completions", requests[1].Url);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1/chat/completions", requests[1].Url);
         Assert.Equal("Bearer sk-opencode-secret", requests[1].Auth);
         Assert.Equal("POST", requests[1].Method);
     }
@@ -234,7 +234,7 @@ public sealed class TranslationProviderTests : IDisposable
         Assert.Equal("gemma4:e4b", vm.ExternalLlmModel);
         Assert.Equal("OpenCode Go", vm.ActiveProviderName);
         Assert.Equal("deepseek-v4.1-flash", vm.ActiveProviderModel);
-        Assert.Equal("https://opencode.ai/zen/go/v1", ExternalLlmState.Shared.Url);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1", ExternalLlmState.Shared.Url);
         Assert.Equal("deepseek-v4.1-flash", ExternalLlmState.Shared.Model);
         Assert.Equal("oc_sk_test_123456", ExternalLlmState.Shared.ApiKey);
 
@@ -351,6 +351,40 @@ public sealed class TranslationProviderTests : IDisposable
         Assert.False((await manager.TestAndFetchModelsAsync(provider.Id)).Success);
         Assert.Equal(new[] { "saved-model", "other-model" }, manager.ActiveProvider!.DiscoveredModels);
         Assert.Equal("saved-model", manager.ActiveProvider.Model);
+    }
+
+    [Theory]
+    [InlineData("https://opencode.ai/zen/go/v1")]
+    [InlineData("https://opencode.ai/zen/go/v1/chat/completions")]
+    [InlineData("https://opencode.ai/inference/go/openai/v1")]
+    public async Task OpenCodeV2RoutesSavedProfilesAndShowsGatewayRejection(string savedUrl)
+    {
+        var requests = new List<(string Url, string Session)>();
+        using var handler = new FakeHttpHandler(req =>
+        {
+            requests.Add((req.RequestUri!.ToString(), Assert.Single(req.Headers.GetValues("x-opencode-session"))));
+            Assert.Equal("SubtitleAdder/1.0", req.Headers.UserAgent.ToString());
+            Assert.Equal("Bearer sk-private", req.Headers.Authorization!.ToString());
+            return req.Method == HttpMethod.Get
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("""{"error":{"message":"Global region required (sk-private)"}}"""),
+                };
+        });
+        var manager = new TranslationProviderManager(_filePath, handler);
+        var provider = manager.AddProvider("opencode-go", baseUrl: savedUrl, apiKey: "sk-private", model: "deepseek-v4.1-flash");
+        var result = await manager.TestAndFetchModelsAsync(provider.Id);
+        Assert.False(result.Success);
+        Assert.Contains("HTTP 400: Global region required", result.Message);
+        Assert.DoesNotContain("sk-private", result.Message);
+        Assert.Equal("https://opencode.ai/inference/go/v1/models", requests[0].Url);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1/chat/completions", requests[1].Url);
+        Assert.Equal(requests[0].Session, requests[1].Session);
+        var unchanged = Assert.Single(manager.Providers);
+        Assert.Equal(savedUrl, unchanged.BaseUrl);
+        Assert.Equal("deepseek-v4.1-flash", unchanged.Model);
+        Assert.Equal("sk-private", unchanged.ApiKey);
     }
 
     private sealed class DeferredHttpHandler(TaskCompletionSource<HttpResponseMessage> response) : HttpMessageHandler

@@ -151,7 +151,8 @@ def _translate(args: argparse.Namespace) -> int:
     on_stage("loading_model", None)
     translator = create_translator(args.model)
     try:
-        on_stage("translating", 0.0)
+        # No completed batch yet: a remote request can be waiting on the gateway/model.
+        on_stage("translating", None)
         import inspect
 
         translate_kwargs: dict = {

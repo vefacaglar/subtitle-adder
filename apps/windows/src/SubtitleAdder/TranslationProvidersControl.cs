@@ -118,7 +118,7 @@ public sealed class TranslationProvidersControl : StackPanel
         _urlBox = new TextBox
         {
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            PlaceholderText = "https://opencode.ai/zen/go/v1",
+            PlaceholderText = "https://opencode.ai/inference/go/openai/v1",
         };
         urlPanel.Children.Add(_urlLabel);
         urlPanel.Children.Add(_urlBox);

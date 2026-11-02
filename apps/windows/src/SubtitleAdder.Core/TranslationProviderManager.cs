@@ -90,6 +90,8 @@ public sealed record TranslationProviderProfile
 /// </summary>
 public sealed partial class TranslationProviderManager : ObservableObject
 {
+    // https://opencode.ai/v2/docs/console/go/ — discovery uses /inference/go/v1/models.
+    private const string OpenCodeGoBaseUrl = "https://opencode.ai/inference/go/openai/v1";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -102,9 +104,9 @@ public sealed partial class TranslationProviderManager : ObservableObject
         new(
             Id: "opencode-go",
             RawName: "OpenCode Go",
-            BaseUrl: "https://opencode.ai/zen/go/v1",
+            BaseUrl: OpenCodeGoBaseUrl,
             RequiresApiKey: true,
-            SuggestedModels: ["glm-5", "kimi-k2.5", "minimax-m2.5", "deepseek-v3", "qwen3-235b"]),
+            SuggestedModels: ["glm-5.3-flash", "kimi-k3.1-pro", "minimax-m3.1-flash", "deepseek-v4.1-flash", "deepseek-v4-pro"]),
         new(
             Id: "openrouter",
             RawName: "OpenRouter",
@@ -845,7 +847,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
                     }
                     else
                     {
-                        lastError = $"HTTP {statusCode}";
+                        lastError = await ReadProviderErrorAsync(resp, apiKey, cancellationToken).ConfigureAwait(true);
                     }
                 }
                 catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -874,10 +876,12 @@ public sealed partial class TranslationProviderManager : ObservableObject
         }
     }
 
-    private static HttpRequestMessage CreateRequest(HttpMethod method, string url, string? apiKey)
+    private HttpRequestMessage CreateRequest(HttpMethod method, string url, string? apiKey)
     {
         var req = new HttpRequestMessage(method, url);
         req.Headers.TryAddWithoutValidation("User-Agent", "SubtitleAdder/1.0");
+        if (IsOpenCodeGoUrl(url) || url == "https://opencode.ai/inference/go/v1/models")
+            req.Headers.TryAddWithoutValidation("x-opencode-session", _instanceId);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         var trimmedKey = (apiKey ?? "").Trim();
         if (trimmedKey.Length > 0)
@@ -887,9 +891,32 @@ public sealed partial class TranslationProviderManager : ObservableObject
         return req;
     }
 
+    private static async Task<string> ReadProviderErrorAsync(HttpResponseMessage response, string? apiKey, CancellationToken cancellationToken)
+    {
+        var detail = $"HTTP {(int)response.StatusCode}";
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            var bytes = new byte[8192];
+            var count = await stream.ReadAtLeastAsync(bytes, bytes.Length, throwOnEndOfStream: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+            using var json = JsonDocument.Parse(bytes.AsMemory(0, count));
+            var error = json.RootElement;
+            if (error.ValueKind == JsonValueKind.Object && error.TryGetProperty("error", out var nested)) error = nested;
+            if (error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var message)) error = message;
+            if (error.ValueKind == JsonValueKind.String) detail += $": {error.GetString()}";
+        }
+        catch (JsonException) { }
+        catch (IOException) { }
+        if (!string.IsNullOrEmpty(apiKey)) detail = detail.Replace(apiKey, "[redacted]", StringComparison.Ordinal);
+        detail = detail.Replace('\r', ' ').Replace('\n', ' ');
+        return detail[..Math.Min(detail.Length, 1000)];
+    }
+
     internal static IReadOnlyList<string> BuildCandidateModelEndpoints(string resolvedUrl)
     {
         var clean = resolvedUrl.TrimEnd('/');
+        if (IsOpenCodeGoUrl(clean))
+            return ["https://opencode.ai/inference/go/v1/models"];
         var endpoints = new List<string>();
 
         void AddUnique(string candidate)
@@ -926,6 +953,8 @@ public sealed partial class TranslationProviderManager : ObservableObject
     internal static string BuildChatCompletionsEndpoint(string resolvedUrl)
     {
         var clean = resolvedUrl.TrimEnd('/');
+        if (IsOpenCodeGoUrl(clean))
+            return $"{OpenCodeGoBaseUrl}/chat/completions";
         if (clean.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase) ||
             clean.EndsWith("/api/chat", StringComparison.OrdinalIgnoreCase))
         {
@@ -938,6 +967,13 @@ public sealed partial class TranslationProviderManager : ObservableObject
         }
         return $"{clean}/v1/chat/completions";
     }
+
+    private static bool IsOpenCodeGoUrl(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        uri.Query.Length == 0 && uri.Fragment.Length == 0 &&
+        uri.Scheme == "https" && uri.Authority.Equals("opencode.ai", StringComparison.OrdinalIgnoreCase) &&
+        uri.AbsolutePath.TrimEnd('/') is "/zen/go/v1" or "/zen/go/v1/chat/completions" or
+            "/inference/go/v1" or "/inference/go/openai/v1" or "/inference/go/openai/v1/chat/completions";
 
     private static List<string> MergeModels(
         IEnumerable<string> discovered,
