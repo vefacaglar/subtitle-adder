@@ -24,6 +24,86 @@ public enum SubtitleParser {
             .first { fileManager.fileExists(atPath: $0.path) }
     }
 
+    // MARK: Folder listings
+
+    /// The extension of the subtitle file a folder listing offers for a video, for the badge in the file sidebar and on
+    /// the video cards: the first of `extensions` (srt, vtt, ass, ssa, json) for which `fileNames` holds
+    /// `<stem>.<ext>` or `<stem>.<anything>.<ext>` (so `Film.tr.srt` counts, unlike for `findSidecar(for:)`, which
+    /// auto-loads). Case-insensitive, names compared after NFC normalization; the result is lower-case, without the dot.
+    /// To check many videos against one listing, build a `SubtitleBadgeLookup` once instead.
+    public static func subtitleBadgeExtension(forVideoStem stem: String, in fileNames: [String]) -> String? {
+        SubtitleBadgeLookup(fileNames: fileNames).badgeExtension(forVideoStem: stem)
+    }
+
+    /// A folder listing prepared for repeated `subtitleBadgeExtension` queries: only the subtitle names are kept, each
+    /// normalized once.
+    public struct SubtitleBadgeLookup: Sendable {
+        /// Folded names with a subtitle extension, by that (lower-case) extension.
+        private let namesByExtension: [String: [String]]
+
+        public init(fileNames: [String]) {
+            var grouped: [String: [String]] = [:]
+            for name in fileNames {
+                // Cheap extension test first: most of a media folder is not subtitles.
+                guard let dot = name.lastIndex(of: "."),
+                      case let ext = name[name.index(after: dot)...].lowercased(),
+                      SubtitleParser.extensions.contains(ext)
+                else { continue }
+                grouped[ext, default: []].append(SubtitleParser.foldedName(name))
+            }
+            namesByExtension = grouped
+        }
+
+        public func badgeExtension(forVideoStem stem: String) -> String? {
+            let stem = SubtitleParser.foldedName(stem)
+            guard !stem.isEmpty else { return nil }
+            let prefix = stem + "."
+            for ext in SubtitleParser.extensions {
+                let suffix = "." + ext
+                let matches = namesByExtension[ext, default: []].contains { name in
+                    let base = name.dropLast(suffix.count)
+                    return base == stem[...] || (base.hasPrefix(prefix) && base.count > prefix.count)
+                }
+                if matches { return ext }
+            }
+            return nil
+        }
+    }
+
+    /// The video or audio file a subtitle belongs to: `<stem>.<media extension>` in the same folder, and when there is
+    /// none, the stem without one trailing dot suffix of 3 to 6 characters including the dot (a language tag:
+    /// `Episode01.tr.srt` finds `Episode01.mp4`). One directory listing, so case differences don't matter; extensions
+    /// are tried in `MediaFileTypes.mediaExtensions` order.
+    public static func findCompanionVideo(for subtitle: URL, fileManager: FileManager = .default) -> URL? {
+        let folder = subtitle.deletingLastPathComponent()
+        let stem = subtitle.deletingPathExtension().lastPathComponent
+        guard !stem.isEmpty, let names = try? fileManager.contentsOfDirectory(atPath: folder.path) else { return nil }
+        // Sorted, so that on a case-sensitive volume holding both `Film.mp4` and `Film.MP4` the choice is stable.
+        var byFoldedName: [String: String] = [:]
+        for name in names.sorted() where MediaFileTypes.isMedia(URL(filePath: name)) {
+            let folded = foldedName(name)
+            if byFoldedName[folded] == nil { byFoldedName[folded] = name }
+        }
+        var stems = [stem]
+        if let dot = stem.lastIndex(of: "."), dot != stem.startIndex, (3...6).contains(stem.distance(from: dot, to: stem.endIndex)) {
+            stems.append(String(stem[..<dot]))
+        }
+        for candidate in stems {
+            for ext in MediaFileTypes.mediaExtensions {
+                if let name = byFoldedName[foldedName(candidate + "." + ext)] {
+                    return folder.appending(path: name, directoryHint: .notDirectory)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// File names compare equal when they match after NFC normalization and lower-casing (APFS keeps the case and
+    /// the normalization a name was created with, but looks names up without regard to either).
+    static func foldedName(_ name: String) -> String {
+        name.precomposedStringWithCanonicalMapping.lowercased().precomposedStringWithCanonicalMapping
+    }
+
     /// Reads a file (BOM-aware UTF-8/UTF-16, strict UTF-8, then Windows-1254) and parses its lines.
     public static func parseFile(at url: URL) throws -> [Sentence] {
         parse(decode(try Data(contentsOf: url)), extension: url.pathExtension)
