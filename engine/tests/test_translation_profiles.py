@@ -60,7 +60,7 @@ def test_chat_translation_and_retry_keep_model_roles_and_context(model, roles, s
         assert [m["role"] for m in messages] == roles
         assert "[1] Hello." in messages[-1]["content"]
         assert messages[-1]["content"].endswith("/no_think") == soft_switch
-        assert "subtitle translator" in messages[0]["content"]
+        assert translate.build_system_prompt("tr", "en") in messages[0]["content"]
     assert "previous attempt" in calls[1][-1]["content"]
 
 

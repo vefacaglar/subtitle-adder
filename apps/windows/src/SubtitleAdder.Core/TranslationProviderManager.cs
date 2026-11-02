@@ -90,6 +90,8 @@ public sealed record TranslationProviderProfile
 /// </summary>
 public sealed partial class TranslationProviderManager : ObservableObject
 {
+    // https://opencode.ai/v2/docs/console/go/ — discovery uses /inference/go/v1/models.
+    private const string OpenCodeGoBaseUrl = "https://opencode.ai/inference/go/openai/v1";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -102,9 +104,9 @@ public sealed partial class TranslationProviderManager : ObservableObject
         new(
             Id: "opencode-go",
             RawName: "OpenCode Go",
-            BaseUrl: "https://opencode.ai/zen/go/v1",
+            BaseUrl: OpenCodeGoBaseUrl,
             RequiresApiKey: true,
-            SuggestedModels: ["glm-5", "kimi-k2.5", "minimax-m2.5", "deepseek-v3", "qwen3-235b"]),
+            SuggestedModels: ["glm-5.3-flash", "kimi-k3.1-pro", "minimax-m3.1-flash", "deepseek-v4.1-flash", "deepseek-v4-pro"]),
         new(
             Id: "openrouter",
             RawName: "OpenRouter",
@@ -424,6 +426,31 @@ public sealed partial class TranslationProviderManager : ObservableObject
     }
 
     /// <summary>
+    /// Returns true if <paramref name="url"/> belongs to a remote cloud provider endpoint (OpenCode Go, OpenRouter,
+    /// OpenAI, DeepSeek, Groq, Gemini) and must therefore never overwrite the local LAN server configuration.
+    /// </summary>
+    public static bool IsCloudProviderUrl(string? url)
+    {
+        var trimmed = (url ?? "").Trim();
+        if (trimmed.Length == 0) return false;
+        foreach (var preset in Presets)
+        {
+            if (!string.Equals(preset.Id, "lan", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(preset.BaseUrl) &&
+                trimmed.StartsWith(preset.BaseUrl.Trim().TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return trimmed.Contains("opencode.ai", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.Contains("openrouter.ai", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.Contains("api.openai.com", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.Contains("api.deepseek.com", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.Contains("api.groq.com", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.Contains("generativelanguage.googleapis.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// Migrates or synchronizes existing LAN/Ollama settings from <paramref name="viewModel"/> into saved providers on startup
     /// so upgrading users never lose their active Ollama configuration or models.
     /// </summary>
@@ -436,15 +463,14 @@ public sealed partial class TranslationProviderManager : ObservableObject
         var vmAsync = viewModel.ExternalLlmAsync;
         var vmEnabled = viewModel.ExternalLlmEnabled;
 
-        if (!string.IsNullOrWhiteSpace(vmUrl))
+        if (!string.IsNullOrWhiteSpace(vmUrl) && !IsCloudProviderUrl(vmUrl))
         {
             TranslationProviderProfile? lanProfile = null;
             var changed = false;
             lock (_lock)
             {
                 lanProfile = _providers.FirstOrDefault(p =>
-                    string.Equals(p.PresetId, "lan", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(p.BaseUrl.Trim().TrimEnd('/'), vmUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+                    string.Equals(p.PresetId, "lan", StringComparison.OrdinalIgnoreCase));
 
                 if (lanProfile is null && (_providers.Count == 0 || vmEnabled))
                 {
@@ -517,6 +543,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
 
     /// <summary>
     /// Keeps the saved LAN/Ollama provider synchronized when the user edits the LAN LLM section in Settings.
+    /// Never overwrites the LAN provider with a cloud provider URL.
     /// </summary>
     public void SyncFromLegacyLanSettings(SubtitleViewModel? viewModel)
     {
@@ -526,17 +553,15 @@ public sealed partial class TranslationProviderManager : ObservableObject
         var vmAsync = viewModel.ExternalLlmAsync;
         var vmEnabled = viewModel.ExternalLlmEnabled;
 
-        if (vmEnabled && !string.IsNullOrWhiteSpace(vmUrl))
+        if (!string.IsNullOrWhiteSpace(vmUrl) && !IsCloudProviderUrl(vmUrl))
         {
-            Guid targetId;
             lock (_lock)
             {
-                var existing = (_activeProviderId is { } activeId
-                        ? _providers.FirstOrDefault(p => p.Id == activeId && string.Equals(p.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
-                        : null)
-                    ?? _providers.FirstOrDefault(p =>
-                        string.Equals(p.PresetId, "lan", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(p.BaseUrl.Trim().TrimEnd('/'), vmUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+                var existing = _providers.FirstOrDefault(p =>
+                    string.Equals(p.PresetId, "lan", StringComparison.OrdinalIgnoreCase));
+                var activeIsCloud = _activeProviderId is { } curActiveId &&
+                    _providers.FirstOrDefault(p => p.Id == curActiveId) is { } curActive &&
+                    !string.Equals(curActive.PresetId, "lan", StringComparison.OrdinalIgnoreCase);
 
                 if (existing is not null)
                 {
@@ -551,11 +576,17 @@ public sealed partial class TranslationProviderManager : ObservableObject
                         AsyncTranslation = vmAsync,
                         DiscoveredModels = discovered,
                     };
-                    _activeProviderId = existing.Id;
-                    targetId = existing.Id;
+                    if (vmEnabled && !activeIsCloud)
+                    {
+                        _activeProviderId = existing.Id;
+                    }
+                    else if (!vmEnabled && _activeProviderId == existing.Id)
+                    {
+                        _activeProviderId = null;
+                    }
                     SaveToDiskLocked();
                 }
-                else
+                else if (vmEnabled)
                 {
                     var preset = GetPreset("lan");
                     var created = new TranslationProviderProfile
@@ -570,18 +601,19 @@ public sealed partial class TranslationProviderManager : ObservableObject
                         DiscoveredModels = viewModel.ExternalLlmModels.Count > 0 ? [.. viewModel.ExternalLlmModels] : [],
                     };
                     _providers.Add(created);
-                    _activeProviderId = created.Id;
-                    targetId = created.Id;
+                    if (!activeIsCloud)
+                    {
+                        _activeProviderId = created.Id;
+                    }
                     SaveToDiskLocked();
                 }
             }
             SyncToEngineState();
             NotifyStateChanged();
-            _ = targetId;
         }
         else if (!vmEnabled)
         {
-            if (ActiveProvider is not null)
+            if (ActiveProvider is { } active && string.Equals(active.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
             {
                 SetActiveProvider(null);
             }
@@ -590,6 +622,8 @@ public sealed partial class TranslationProviderManager : ObservableObject
 
     /// <summary>
     /// Synchronizes the active provider into both <see cref="ExternalLlmState.Shared"/> and <paramref name="viewModel"/>.
+    /// When a non-LAN cloud provider is active, preserves <see cref="SubtitleViewModel.ExternalLlmUrl"/> and
+    /// <see cref="SubtitleViewModel.ExternalLlmModel"/> so the user's local LAN address (<c>mac-studio.local</c>) is never overwritten.
     /// </summary>
     public void ApplyToViewModel(SubtitleViewModel? viewModel)
     {
@@ -598,27 +632,41 @@ public sealed partial class TranslationProviderManager : ObservableObject
         var active = ActiveProvider;
         if (active is not null && !string.IsNullOrWhiteSpace(active.BaseUrl))
         {
-            viewModel.ActiveProviderName = string.Equals(active.PresetId, "lan", StringComparison.OrdinalIgnoreCase)
-                ? null
-                : active.Name;
-            viewModel.ExternalLlmUrl = active.BaseUrl.Trim();
-            if (!string.IsNullOrWhiteSpace(active.Model))
+            var isLan = string.Equals(active.PresetId, "lan", StringComparison.OrdinalIgnoreCase);
+            if (isLan)
             {
-                viewModel.ExternalLlmModel = active.Model.Trim();
+                viewModel.ActiveProviderName = null;
+                viewModel.ActiveProviderModel = null;
+                viewModel.ActiveProviderAsync = false;
+                if (!IsCloudProviderUrl(active.BaseUrl))
+                {
+                    viewModel.ExternalLlmUrl = active.BaseUrl.Trim();
+                }
+                if (!string.IsNullOrWhiteSpace(active.Model))
+                {
+                    viewModel.ExternalLlmModel = active.Model.Trim();
+                }
+                viewModel.ExternalLlmAsync = active.AsyncTranslation;
+                viewModel.ExternalLlmEnabled = true;
             }
-            viewModel.ExternalLlmAsync = active.AsyncTranslation;
-            viewModel.ExternalLlmEnabled = true;
-            if (active.DiscoveredModels.Count > 0 &&
-                !string.Equals(active.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
+            else
             {
-                viewModel.SetExternalLlmModels(active.DiscoveredModels);
+                viewModel.ActiveProviderName = active.Name;
+                viewModel.ActiveProviderModel = active.Model.Trim();
+                viewModel.ActiveProviderAsync = active.AsyncTranslation;
             }
+            ExternalLlmState.Shared.Enabled = true;
+            ExternalLlmState.Shared.Url = active.BaseUrl.Trim();
+            ExternalLlmState.Shared.Model = active.Model.Trim();
             ExternalLlmState.Shared.ApiKey = active.ApiKey.Trim();
         }
         else
         {
             viewModel.ActiveProviderName = null;
+            viewModel.ActiveProviderModel = null;
+            viewModel.ActiveProviderAsync = false;
             viewModel.ExternalLlmEnabled = false;
+            ExternalLlmState.Shared.Enabled = false;
             ExternalLlmState.Shared.ApiKey = "";
         }
     }
@@ -649,7 +697,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
             profile.Model,
             cancellationToken).ConfigureAwait(true);
 
-        if (models.Count > 0)
+        if (success && models.Count > 0)
         {
             var updated = false;
             lock (_lock)
@@ -799,7 +847,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
                     }
                     else
                     {
-                        lastError = $"HTTP {statusCode}";
+                        lastError = await ReadProviderErrorAsync(resp, apiKey, cancellationToken).ConfigureAwait(true);
                     }
                 }
                 catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -828,10 +876,12 @@ public sealed partial class TranslationProviderManager : ObservableObject
         }
     }
 
-    private static HttpRequestMessage CreateRequest(HttpMethod method, string url, string? apiKey)
+    private HttpRequestMessage CreateRequest(HttpMethod method, string url, string? apiKey)
     {
         var req = new HttpRequestMessage(method, url);
         req.Headers.TryAddWithoutValidation("User-Agent", "SubtitleAdder/1.0");
+        if (IsOpenCodeGoUrl(url) || url == "https://opencode.ai/inference/go/v1/models")
+            req.Headers.TryAddWithoutValidation("x-opencode-session", _instanceId);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         var trimmedKey = (apiKey ?? "").Trim();
         if (trimmedKey.Length > 0)
@@ -841,9 +891,32 @@ public sealed partial class TranslationProviderManager : ObservableObject
         return req;
     }
 
+    private static async Task<string> ReadProviderErrorAsync(HttpResponseMessage response, string? apiKey, CancellationToken cancellationToken)
+    {
+        var detail = $"HTTP {(int)response.StatusCode}";
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            var bytes = new byte[8192];
+            var count = await stream.ReadAtLeastAsync(bytes, bytes.Length, throwOnEndOfStream: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+            using var json = JsonDocument.Parse(bytes.AsMemory(0, count));
+            var error = json.RootElement;
+            if (error.ValueKind == JsonValueKind.Object && error.TryGetProperty("error", out var nested)) error = nested;
+            if (error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var message)) error = message;
+            if (error.ValueKind == JsonValueKind.String) detail += $": {error.GetString()}";
+        }
+        catch (JsonException) { }
+        catch (IOException) { }
+        if (!string.IsNullOrEmpty(apiKey)) detail = detail.Replace(apiKey, "[redacted]", StringComparison.Ordinal);
+        detail = detail.Replace('\r', ' ').Replace('\n', ' ');
+        return detail[..Math.Min(detail.Length, 1000)];
+    }
+
     internal static IReadOnlyList<string> BuildCandidateModelEndpoints(string resolvedUrl)
     {
         var clean = resolvedUrl.TrimEnd('/');
+        if (IsOpenCodeGoUrl(clean))
+            return ["https://opencode.ai/inference/go/v1/models"];
         var endpoints = new List<string>();
 
         void AddUnique(string candidate)
@@ -880,6 +953,8 @@ public sealed partial class TranslationProviderManager : ObservableObject
     internal static string BuildChatCompletionsEndpoint(string resolvedUrl)
     {
         var clean = resolvedUrl.TrimEnd('/');
+        if (IsOpenCodeGoUrl(clean))
+            return $"{OpenCodeGoBaseUrl}/chat/completions";
         if (clean.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase) ||
             clean.EndsWith("/api/chat", StringComparison.OrdinalIgnoreCase))
         {
@@ -892,6 +967,13 @@ public sealed partial class TranslationProviderManager : ObservableObject
         }
         return $"{clean}/v1/chat/completions";
     }
+
+    private static bool IsOpenCodeGoUrl(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        uri.Query.Length == 0 && uri.Fragment.Length == 0 &&
+        uri.Scheme == "https" && uri.Authority.Equals("opencode.ai", StringComparison.OrdinalIgnoreCase) &&
+        uri.AbsolutePath.TrimEnd('/') is "/zen/go/v1" or "/zen/go/v1/chat/completions" or
+            "/inference/go/v1" or "/inference/go/openai/v1" or "/inference/go/openai/v1/chat/completions";
 
     private static List<string> MergeModels(
         IEnumerable<string> discovered,

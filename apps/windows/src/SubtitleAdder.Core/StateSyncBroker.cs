@@ -46,6 +46,7 @@ public enum StateSyncEventKind
 /// </summary>
 public sealed record StateSyncEvent
 {
+    public string EventId { get; init; } = Guid.NewGuid().ToString("N");
     public string Topic { get; init; } = StateSyncTopics.Profiles;
     public required StateSyncEventKind Kind { get; init; }
     public required string SenderInstanceId { get; init; }
@@ -63,23 +64,81 @@ public sealed record StateSyncEvent
     public DateTimeOffset TimestampUtc { get; init; } = DateTimeOffset.UtcNow;
 }
 
+public sealed record StateSyncBatchBlobDto(
+    string Key,
+    byte[] EncryptedBlob,
+    long UpdatedTicks);
+
+public sealed record StateSyncListItemDto(
+    string ListId,
+    string ItemHash,
+    int Ord,
+    byte[] EncryptedPathBlob);
+
 /// <summary>
-/// Shared background Pub/Sub communication broker and engine that coordinates all state updates across 1..N running
-/// <c>SubtitleAdder</c> instances without <see cref="FileSystemWatcher"/> polling.
+/// Centralized IPC write request submitted by an application window (<see cref="LocalProfileManager"/>)
+/// over Named Pipe to the shared <see cref="StateSyncBroker"/> Data Worker.
+/// Carries a unique <see cref="RequestId"/> so reconnections and retries are 100% idempotent.
+/// </summary>
+public sealed record StateSyncWriteRequest
+{
+    public string RequestId { get; init; } = Guid.NewGuid().ToString("N");
+    public required string SenderInstanceId { get; init; }
+    public required string DbPath { get; init; }
+    public required string Kind { get; init; }
+    public string Username { get; init; } = "";
+    public string Key { get; init; } = "";
+    public string SecondaryKey { get; init; } = "";
+    public int Ord { get; init; }
+    public byte[]? Blob { get; init; }
+    public byte[]? SecondaryBlob { get; init; }
+    public long UpdatedTicks { get; init; }
+    public int ViewCount { get; init; } = -1;
+    public int ViewCountDelta { get; init; }
+    public string? SaltBase64 { get; init; }
+    public string? PasswordHashBase64 { get; init; }
+    public int Iterations { get; init; }
+    public DateTimeOffset CreatedAtUtc { get; init; }
+    public List<StateSyncBatchBlobDto>? BatchVideos { get; init; }
+    public List<StateSyncBatchBlobDto>? BatchProgress { get; init; }
+    public List<StateSyncListItemDto>? BatchListItems { get; init; }
+    public List<StateSyncEvent>? PostCommitEvents { get; init; }
+}
+
+/// <summary>
+/// Acknowledgment sent by the centralized Data Worker back to the requesting window after SQLite transaction commit.
+/// </summary>
+public sealed record StateSyncWriteAck
+{
+    public required string RequestId { get; init; }
+    public bool Committed { get; init; }
+    public bool IsDuplicate { get; init; }
+    public string? Error { get; init; }
+}
+
+/// <summary>
+/// Shared background Pub/Sub communication broker and centralized SQLite Data Worker engine that coordinates all
+/// state updates and database writes across 1..N running <c>SubtitleAdder</c> instances without <see cref="FileSystemWatcher"/> polling.
 /// <para>
 /// Lifecycle ("Last Window Closes the Engine"):
 /// <list type="bullet">
-/// <item><description>The first application instance that opens starts the shared background Pub/Sub Engine (<c>SubtitleAdder.StateBroker.&lt;Hash&gt;</c>).</description></item>
+/// <item><description>The first application instance that opens starts the shared background Pub/Sub &amp; Data Worker Engine (<c>SubtitleAdder.StateBroker.&lt;Hash&gt;</c>).</description></item>
 /// <item><description>Subsequent instances (2nd, 3rd, 4th, 5th+) register their active instance slot and connect to the running Engine over Named Pipes.</description></item>
-/// <item><description>If the 1st instance (or any other instance) closes while other instances are still open (<see cref="HasOtherActiveInstances"/> is <c>true</c>), the Engine stays alive so remaining windows continue communicating without interruption.</description></item>
-/// <item><description>Only when the very last open instance closes (<see cref="ActiveInstanceCount"/> drops to <c>0</c>) does that last instance shut down the Engine (<see cref="ClosedEngineOnDispose"/> = <c>true</c>) and clean up lock/slot resources.</description></item>
+/// <item><description>If the 1st instance (or any other instance) closes while other instances are still open (<see cref="HasOtherActiveInstances"/> is <c>true</c>), the Engine and its SQLite Data Worker stay alive so remaining windows continue writing and communicating without interruption.</description></item>
+/// <item><description>Only when the very last open instance closes (<see cref="ActiveInstanceCount"/> drops to <c>0</c>) does that last instance flush all pending SQLite writes, dispose the Data Worker stores, and shut down the Engine (<see cref="ClosedEngineOnDispose"/> = <c>true</c>).</description></item>
 /// </list>
 /// </para>
 /// </summary>
 public sealed class StateSyncBroker : IDisposable
 {
     private static readonly ConcurrentDictionary<string, StateSyncEngine> EnginesByScope = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, StateSyncBroker> ActiveBrokersById = new(StringComparer.Ordinal);
     private static int _totalActiveInProcessBrokers;
+
+    static StateSyncBroker()
+    {
+        SqliteProfileStore.BeforeFlushPathHook = FlushInProcessPendingWritesForDbPath;
+    }
 
     public static StateSyncBroker Shared { get; } = new();
 
@@ -101,6 +160,12 @@ public sealed class StateSyncBroker : IDisposable
 
     private sealed record SubscriptionEntry(string Topic, Action<StateSyncEvent> Handler);
 
+    private sealed class PendingWriteEntry(StateSyncWriteRequest request)
+    {
+        public StateSyncWriteRequest Request { get; } = request;
+        public TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
     private readonly string _scopeHash;
     private readonly string _pipeName;
     private readonly string _instancesDir;
@@ -108,6 +173,9 @@ public sealed class StateSyncBroker : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _inProcessSubscribers = new();
     private readonly ConcurrentQueue<string> _pendingOutboundLines = new();
+    private readonly ConcurrentDictionary<string, PendingWriteEntry> _pendingWriteRequests = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _seenEventIds = new(StringComparer.Ordinal);
+    private readonly ConcurrentQueue<string> _seenEventIdOrder = new();
     private readonly Lock _clientWriteLock = new();
 
     private FileStream? _instanceSlotStream;
@@ -132,6 +200,7 @@ public sealed class StateSyncBroker : IDisposable
 
         _instanceSlotStream = TryCreateInstanceSlotFile(_instancesDir, InstanceId);
         Interlocked.Increment(ref _totalActiveInProcessBrokers);
+        ActiveBrokersById[InstanceId] = this;
 
         _engine = AcquireOrStartEngine(_scopeHash, _pipeName, baseDir, _instancesDir, InstanceId);
         _ = Task.Run(() => RunClientLoopAsync(_cts.Token));
@@ -173,6 +242,12 @@ public sealed class StateSyncBroker : IDisposable
     /// </summary>
     public bool ClosedEngineOnDispose => _closedEngineOnDispose;
 
+    /// <summary>Number of unacknowledged IPC write requests currently tracked by this broker instance for retry on reconnect.</summary>
+    public int PendingWriteRequestCount => _pendingWriteRequests.Count;
+
+    /// <summary>Returns the centralized SQLite Data Worker store owned by the shared <see cref="StateSyncEngine"/> for <paramref name="dbPath"/>.</summary>
+    internal SqliteProfileStore GetDataWorkerStore(string dbPath) => _engine.GetOrCreateStore(dbPath);
+
     /// <summary>Waits until this broker instance is connected to the shared Pub/Sub Engine.</summary>
     public async Task<bool> WaitUntilReadyAsync(TimeSpan timeout)
     {
@@ -197,6 +272,114 @@ public sealed class StateSyncBroker : IDisposable
         var id = Guid.NewGuid();
         _inProcessSubscribers[id] = new SubscriptionEntry(normalizedTopic, handler);
         return new SubscriptionToken(this, id);
+    }
+
+    /// <summary>
+    /// Submits a database write request to the centralized <see cref="StateSyncEngine"/> Data Worker over Named Pipe IPC.
+    /// Tracks the request by <see cref="StateSyncWriteRequest.RequestId"/> until acknowledged so any pipe reconnection
+    /// automatically resends unacknowledged requests with the same <c>RequestId</c>.
+    /// </summary>
+    public void SubmitWriteRequest(StateSyncWriteRequest request)
+    {
+        if (_disposed || request is null) return;
+        var normalized = string.IsNullOrWhiteSpace(request.RequestId)
+            ? request with { RequestId = Guid.NewGuid().ToString("N") }
+            : request;
+
+        _pendingWriteRequests.TryAdd(normalized.RequestId, new PendingWriteEntry(normalized));
+
+        if (_engine.IsRunning && (_engine.IsHostingPipeServer || ActiveInstanceCount >= 1))
+        {
+            _engine.EnqueueWriteRequestOnEngine(normalized, onAck: HandleWriteAck, fromFallbackFlush: false);
+            return;
+        }
+
+        try
+        {
+            var wireLine = "W:" + JsonSerializer.Serialize(normalized, JsonOptions);
+            TrySendToEnginePipe(wireLine);
+        }
+        catch
+        {
+            // Kept in _pendingWriteRequests and automatically resent on pipe connect/reconnect.
+        }
+    }
+
+    /// <summary>
+    /// Forces any unacknowledged write requests on this broker to be resent over the Named Pipe with their original <c>RequestId</c>.
+    /// </summary>
+    public void ResendPendingWriteRequests()
+    {
+        foreach (var (_, entry) in _pendingWriteRequests)
+        {
+            try
+            {
+                var wireLine = "W:" + JsonSerializer.Serialize(entry.Request, JsonOptions);
+                if (!TrySendToEnginePipe(wireLine))
+                {
+                    break;
+                }
+            }
+            catch
+            {
+                break;
+            }
+        }
+    }
+
+    public Task<bool> FlushPendingWritesAsync(string dbPath)
+    {
+        if (_disposed) return Task.FromResult(false);
+        PushPendingWritesToEngineForDbPath(dbPath);
+        return _engine.GetOrCreateStore(dbPath).FlushAsync();
+    }
+
+    public bool FlushPendingWrites(string dbPath, TimeSpan? timeout = null)
+    {
+        if (_disposed) return false;
+        PushPendingWritesToEngineForDbPath(dbPath);
+        return _engine.GetOrCreateStore(dbPath).Flush(timeout);
+    }
+
+    private void PushPendingWritesToEngineForDbPath(string dbPath)
+    {
+        var full = Path.GetFullPath(dbPath);
+        foreach (var (_, entry) in _pendingWriteRequests)
+        {
+            if (string.Equals(Path.GetFullPath(entry.Request.DbPath), full, StringComparison.OrdinalIgnoreCase) &&
+                !_engine.HasEnqueuedRequest(entry.Request.RequestId))
+            {
+                _engine.EnqueueWriteRequestOnEngine(entry.Request, onAck: HandleWriteAck, fromFallbackFlush: true);
+            }
+        }
+    }
+
+    private static void FlushInProcessPendingWritesForDbPath(string dbPath)
+    {
+        var full = Path.GetFullPath(dbPath);
+        foreach (var (_, broker) in ActiveBrokersById)
+        {
+            if (!broker._disposed)
+            {
+                broker.PushPendingWritesToEngineForDbPath(full);
+            }
+        }
+    }
+
+    private void HandleWriteAck(StateSyncWriteAck ack)
+    {
+        if (ack is null || string.IsNullOrEmpty(ack.RequestId)) return;
+        if (ack.Committed)
+        {
+            if (_pendingWriteRequests.TryRemove(ack.RequestId, out var entry))
+            {
+                entry.Completion.TrySetResult(true);
+            }
+        }
+        else if (_pendingWriteRequests.TryGetValue(ack.RequestId, out var failedEntry))
+        {
+            failedEntry.Completion.TrySetResult(false);
+        }
     }
 
     /// <summary>Publishes a state sync event on a specific <paramref name="topic"/> to all local and remote subscribers.</summary>
@@ -239,6 +422,7 @@ public sealed class StateSyncBroker : IDisposable
 
     private void FlushPendingOutboundLines()
     {
+        ResendPendingWriteRequests();
         while (_pendingOutboundLines.TryDequeue(out var line))
         {
             if (!TrySendToEnginePipe(line))
@@ -251,6 +435,19 @@ public sealed class StateSyncBroker : IDisposable
 
     private void DispatchToLocalSubscribers(StateSyncEvent syncEvent)
     {
+        if (!string.IsNullOrEmpty(syncEvent.EventId))
+        {
+            if (!_seenEventIds.TryAdd(syncEvent.EventId, 0))
+            {
+                return;
+            }
+            _seenEventIdOrder.Enqueue(syncEvent.EventId);
+            while (_seenEventIdOrder.Count > 2048 && _seenEventIdOrder.TryDequeue(out var oldId))
+            {
+                _seenEventIds.TryRemove(oldId, out _);
+            }
+        }
+
         var eventTopic = syncEvent.Topic ?? StateSyncTopics.Profiles;
         foreach (var (_, sub) in _inProcessSubscribers)
         {
@@ -321,6 +518,22 @@ public sealed class StateSyncBroker : IDisposable
                     if (line is null) break;
                     if (string.IsNullOrWhiteSpace(line)) continue;
 
+                    if (line.StartsWith("A:", StringComparison.Ordinal))
+                    {
+                        try
+                        {
+                            var ack = JsonSerializer.Deserialize<StateSyncWriteAck>(line.AsSpan(2), JsonOptions);
+                            if (ack is not null)
+                            {
+                                HandleWriteAck(ack);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                        continue;
+                    }
+
                     StateSyncEvent? evt = null;
                     try
                     {
@@ -377,7 +590,24 @@ public sealed class StateSyncBroker : IDisposable
     public void Dispose()
     {
         if (_disposed) return;
+
+        // Ensure any pending write requests from this window are handed off to the centralized Engine before closing.
+        foreach (var (_, entry) in _pendingWriteRequests)
+        {
+            try
+            {
+                if (!_engine.HasEnqueuedRequest(entry.Request.RequestId))
+                {
+                    _engine.EnqueueWriteRequestOnEngine(entry.Request, onAck: null, fromFallbackFlush: true);
+                }
+            }
+            catch
+            {
+            }
+        }
+
         _disposed = true;
+        ActiveBrokersById.TryRemove(InstanceId, out _);
 
         Interlocked.Decrement(ref _totalActiveInProcessBrokers);
         try { _cts.Cancel(); } catch { }
@@ -468,7 +698,7 @@ public sealed class StateSyncBroker : IDisposable
     }
 
     /// <summary>
-    /// Decoupled background Named Pipe Hub Engine shared by all open <see cref="StateSyncBroker"/> instances
+    /// Decoupled background Named Pipe Hub &amp; SQLite Data Worker Engine shared by all open <see cref="StateSyncBroker"/> instances
     /// on the same channel. Stays alive across window closes and only shuts down when the last open instance closes.
     /// </summary>
     private sealed class StateSyncEngine
@@ -482,6 +712,9 @@ public sealed class StateSyncBroker : IDisposable
         private readonly ConcurrentDictionary<string, byte> _registeredInstances = new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<Guid, NamedPipeServerStream> _allServerStreams = new();
         private readonly ConcurrentDictionary<Guid, ConnectedClientSession> _connectedClients = new();
+        private readonly ConcurrentDictionary<string, SqliteProfileStore> _storesByDbPath = new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, byte> _fallbackFlushedRequestIds = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, byte> _enqueuedRequestIds = new(StringComparer.Ordinal);
         private readonly Lock _lifecycleLock = new();
 
         private FileStream? _leaderLockStream;
@@ -509,6 +742,164 @@ public sealed class StateSyncBroker : IDisposable
         public bool IsRunning => _isRunning;
         public bool IsHostingPipeServer => _isHostingPipeServer;
         public int ConnectedClientCount => _connectedClients.Count;
+
+        public SqliteProfileStore GetOrCreateStore(string dbPath)
+        {
+            var full = Path.GetFullPath(dbPath);
+            return _storesByDbPath.GetOrAdd(
+                full,
+                path =>
+                {
+                    var store = new SqliteProfileStore(path)
+                    {
+                        PostCommitBroadcastHandler = BroadcastPostCommitEvents,
+                    };
+                    return store;
+                });
+        }
+
+        public bool HasEnqueuedRequest(string requestId) =>
+            !string.IsNullOrEmpty(requestId) && _enqueuedRequestIds.ContainsKey(requestId);
+
+        public void EnqueueWriteRequestOnEngine(
+            StateSyncWriteRequest request,
+            Action<StateSyncWriteAck>? onAck,
+            bool fromFallbackFlush = false)
+        {
+            if (request is null || string.IsNullOrWhiteSpace(request.DbPath)) return;
+
+            var reqId = request.RequestId ?? "";
+            if (fromFallbackFlush)
+            {
+                if (!string.IsNullOrEmpty(reqId) && !_enqueuedRequestIds.TryAdd(reqId, 0))
+                {
+                    return;
+                }
+                if (!string.IsNullOrEmpty(reqId))
+                {
+                    _fallbackFlushedRequestIds[reqId] = 0;
+                }
+            }
+            else if (!string.IsNullOrEmpty(reqId))
+            {
+                _enqueuedRequestIds.TryAdd(reqId, 0);
+                // If an explicit synchronous Flush already pushed this exact pipe message milliseconds ago,
+                // acknowledge the pipe copy without re-enqueuing the same message twice from the fallback.
+                if (_fallbackFlushedRequestIds.TryRemove(reqId, out _))
+                {
+                    onAck?.Invoke(new StateSyncWriteAck
+                    {
+                        RequestId = reqId,
+                        Committed = true,
+                        IsDuplicate = false,
+                    });
+                    return;
+                }
+            }
+
+            var store = GetOrCreateStore(request.DbPath);
+            if (!Enum.TryParse<SqliteProfileStore.WriteKind>(request.Kind, ignoreCase: true, out var writeKind))
+            {
+                onAck?.Invoke(new StateSyncWriteAck
+                {
+                    RequestId = reqId,
+                    Committed = false,
+                    IsDuplicate = false,
+                    Error = $"Unknown WriteKind '{request.Kind}'.",
+                });
+                return;
+            }
+
+            IReadOnlyList<(string Key, byte[] EncryptedBlob, long UpdatedTicks)>? batchVideos = null;
+            if (request.BatchVideos is { Count: > 0 } bv)
+            {
+                var list = new List<(string Key, byte[] EncryptedBlob, long UpdatedTicks)>(bv.Count);
+                foreach (var v in bv) list.Add((v.Key, v.EncryptedBlob, v.UpdatedTicks));
+                batchVideos = list;
+            }
+
+            IReadOnlyList<(string Key, byte[] EncryptedBlob, long UpdatedTicks)>? batchProgress = null;
+            if (request.BatchProgress is { Count: > 0 } bp)
+            {
+                var list = new List<(string Key, byte[] EncryptedBlob, long UpdatedTicks)>(bp.Count);
+                foreach (var p in bp) list.Add((p.Key, p.EncryptedBlob, p.UpdatedTicks));
+                batchProgress = list;
+            }
+
+            IReadOnlyList<SqliteProfileStore.ListItemRow>? batchListItems = null;
+            if (request.BatchListItems is { Count: > 0 } bli)
+            {
+                var list = new List<SqliteProfileStore.ListItemRow>(bli.Count);
+                foreach (var li in bli) list.Add(new SqliteProfileStore.ListItemRow(li.ListId, li.ItemHash, li.Ord, li.EncryptedPathBlob));
+                batchListItems = list;
+            }
+
+            var writeItem = new SqliteProfileStore.WriteItem(
+                Kind: writeKind,
+                Username: request.Username,
+                Key: request.Key,
+                SecondaryKey: request.SecondaryKey,
+                Ord: request.Ord,
+                Blob: request.Blob,
+                SecondaryBlob: request.SecondaryBlob,
+                UpdatedTicks: request.UpdatedTicks,
+                ViewCount: request.ViewCount,
+                ViewCountDelta: request.ViewCountDelta,
+                RequestId: reqId,
+                SaltBase64: request.SaltBase64,
+                PasswordHashBase64: request.PasswordHashBase64,
+                Iterations: request.Iterations,
+                CreatedAtUtc: request.CreatedAtUtc,
+                BatchVideos: batchVideos,
+                BatchProgress: batchProgress,
+                BatchListItems: batchListItems,
+                PostCommitEvents: request.PostCommitEvents,
+                OnCompleted: (committed, isDuplicate, error) =>
+                {
+                    var ack = new StateSyncWriteAck
+                    {
+                        RequestId = reqId,
+                        Committed = committed,
+                        IsDuplicate = isDuplicate,
+                        Error = error,
+                    };
+                    onAck?.Invoke(ack);
+                    if (ActiveBrokersById.TryGetValue(request.SenderInstanceId, out var senderBroker))
+                    {
+                        senderBroker.HandleWriteAck(ack);
+                    }
+                });
+
+            store.EnqueueItem(writeItem);
+        }
+
+        private void BroadcastPostCommitEvents(IReadOnlyList<StateSyncEvent> events)
+        {
+            if (events is null || events.Count == 0) return;
+            foreach (var evt in events)
+            {
+                if (evt is null) continue;
+                // 1. Deliver to in-process brokers registered on this Engine first (records EventId in _seenEventIds
+                // and updates in-memory state before any NamedPipe echo arrives).
+                foreach (var instanceId in _registeredInstances.Keys)
+                {
+                    if (ActiveBrokersById.TryGetValue(instanceId, out var broker) && !broker._disposed)
+                    {
+                        broker.DispatchToLocalSubscribers(evt);
+                    }
+                }
+
+                // 2. Broadcast over the Named Pipe to connected clients.
+                try
+                {
+                    var jsonLine = JsonSerializer.Serialize(evt, JsonOptions);
+                    BroadcastToAllClients(jsonLine);
+                }
+                catch
+                {
+                }
+            }
+        }
 
         public bool TryRegisterInstance(string instanceId)
         {
@@ -544,11 +935,11 @@ public sealed class StateSyncBroker : IDisposable
 
                 if (totalRemaining > 0)
                 {
-                    // Other application windows are still open -> keep the Engine running!
+                    // Other application windows are still open -> keep the Engine and SQLite Data Worker running!
                     return false;
                 }
 
-                // This was the LAST open application window -> shut down the Engine now!
+                // This was the LAST open application window -> shut down the Engine and flush/dispose Data Worker now!
                 _isRunning = false;
                 _isHostingPipeServer = false;
             }
@@ -700,6 +1091,27 @@ public sealed class StateSyncBroker : IDisposable
                     if (line is null) break;
                     if (string.IsNullOrWhiteSpace(line)) continue;
 
+                    if (line.StartsWith("W:", StringComparison.Ordinal))
+                    {
+                        StateSyncWriteRequest? writeReq = null;
+                        try
+                        {
+                            writeReq = JsonSerializer.Deserialize<StateSyncWriteRequest>(line.AsSpan(2), JsonOptions);
+                        }
+                        catch
+                        {
+                        }
+
+                        if (writeReq is not null)
+                        {
+                            EnqueueWriteRequestOnEngine(
+                                writeReq,
+                                onAck: ack => SendLineToClient(streamId, "A:" + JsonSerializer.Serialize(ack, JsonOptions)),
+                                fromFallbackFlush: false);
+                        }
+                        continue;
+                    }
+
                     BroadcastToOtherClients(line, excludeClientId: streamId);
                 }
             }
@@ -712,6 +1124,48 @@ public sealed class StateSyncBroker : IDisposable
                 _connectedClients.TryRemove(streamId, out _);
                 _allServerStreams.TryRemove(streamId, out _);
                 try { server.Dispose(); } catch { }
+            }
+        }
+
+        private void SendLineToClient(Guid clientId, string wireLine)
+        {
+            if (!_connectedClients.TryGetValue(clientId, out var session)) return;
+            var bytes = Encoding.UTF8.GetBytes(wireLine + "\n");
+            try
+            {
+                lock (session.WriteLock)
+                {
+                    if (session.Stream.IsConnected)
+                    {
+                        session.Stream.Write(bytes, 0, bytes.Length);
+                    }
+                }
+            }
+            catch
+            {
+                _connectedClients.TryRemove(clientId, out _);
+            }
+        }
+
+        private void BroadcastToAllClients(string jsonLine)
+        {
+            var bytes = Encoding.UTF8.GetBytes(jsonLine + "\n");
+            foreach (var (clientId, session) in _connectedClients)
+            {
+                try
+                {
+                    lock (session.WriteLock)
+                    {
+                        if (session.Stream.IsConnected)
+                        {
+                            session.Stream.Write(bytes, 0, bytes.Length);
+                        }
+                    }
+                }
+                catch
+                {
+                    _connectedClients.TryRemove(clientId, out _);
+                }
             }
         }
 
@@ -741,6 +1195,19 @@ public sealed class StateSyncBroker : IDisposable
         private void ShutdownEngineCore()
         {
             try { _cts.Cancel(); } catch { }
+
+            foreach (var (_, store) in _storesByDbPath)
+            {
+                try
+                {
+                    store.Flush(TimeSpan.FromSeconds(5));
+                    store.Dispose();
+                }
+                catch
+                {
+                }
+            }
+            _storesByDbPath.Clear();
 
             var heldLock = Interlocked.Exchange(ref _leaderLockStream, null);
             if (heldLock is not null)

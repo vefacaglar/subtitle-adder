@@ -364,6 +364,19 @@
                             </Grid>
                         </Border>
 
+                        <Border Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <StackPanel Spacing="4" VerticalAlignment="Center">
+                                    <TextBlock loc:Localize.Text="Arayüz yazı tipi" Style="{StaticResource CardTitleStyle}" />
+                                    <TextBlock loc:Localize.Text="Uygulamayı yeniden açınca uygulanır. Altyazı yazı tipinden bağımsızdır."
+                                               Style="{StaticResource SecondaryTextStyle}" />
+                                </StackPanel>
+                                <ComboBox x:Name="UiFontBox" Grid.Column="1" Style="{StaticResource CardControlStyle}" MaxDropDownHeight="420"
+                                          SelectionChanged="UiFontBox_SelectionChanged" loc:Localize.AutomationName="Arayüz yazı tipi" />
+                            </Grid>
+                        </Border>
+
                         <TextBlock loc:Localize.Text="Video üstündeki altyazı" Style="{StaticResource SectionHeaderStyle}" />
                         <Border CornerRadius="8" Height="120" Margin="0,0,0,4" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                             <Border.Background>
@@ -407,7 +420,7 @@
                                     <StackPanel Orientation="Horizontal" Spacing="8">
                                         <Border x:Name="ColorSwatch" Width="44" Height="20" CornerRadius="4" BorderThickness="1"
                                                 BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" />
-                                        <TextBlock x:Name="ColorHex" FontFamily="Cascadia Mono, Consolas" VerticalAlignment="Center" Margin="0,0,4,0" />
+                                        <TextBlock x:Name="ColorHex" VerticalAlignment="Center" Margin="0,0,4,0" />
                                     </StackPanel>
                                     <Button.Flyout>
                                         <Flyout Placement="Bottom">

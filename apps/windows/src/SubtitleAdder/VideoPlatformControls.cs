@@ -25,6 +25,7 @@ namespace SubtitleAdder;
 public sealed class ProfileStatusButton : Grid
 {
     private VideoPlatformViewModel _vm;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue? _dispatcherQueue;
     private readonly Button _button;
     private readonly FontIcon _statusIcon;
     private readonly TextBlock _statusLabel;
@@ -58,6 +59,7 @@ public sealed class ProfileStatusButton : Grid
     public ProfileStatusButton(VideoPlatformViewModel? viewModel)
     {
         _vm = viewModel ?? VideoPlatformViewModel.Shared;
+        _dispatcherQueue = DispatcherQueue;
 
         _statusIcon = new FontIcon
         {
@@ -278,7 +280,7 @@ public sealed class ProfileStatusButton : Grid
 
     private void SafeRefresh()
     {
-        if (DispatcherQueue is { } dq && !dq.HasThreadAccess)
+        if (_dispatcherQueue is { } dq && !dq.HasThreadAccess)
         {
             dq.TryEnqueue(Refresh);
             return;
@@ -407,6 +409,7 @@ public sealed class ProfileStatusButton : Grid
 public sealed class PlayerEngagementBar : Grid
 {
     private VideoPlatformViewModel _vm;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue? _dispatcherQueue;
     private readonly TextBlock _viewsText;
     private readonly Button _likeButton;
     private readonly FontIcon _likeIcon;
@@ -424,6 +427,7 @@ public sealed class PlayerEngagementBar : Grid
     public PlayerEngagementBar(VideoPlatformViewModel? viewModel)
     {
         _vm = viewModel ?? VideoPlatformViewModel.Shared;
+        _dispatcherQueue = DispatcherQueue;
 
         Padding = new Thickness(12, 6, 12, 6);
         CornerRadius = new CornerRadius(10);
@@ -667,7 +671,7 @@ public sealed class PlayerEngagementBar : Grid
 
     private void SafeRefresh()
     {
-        if (DispatcherQueue is { } dq && !dq.HasThreadAccess)
+        if (_dispatcherQueue is { } dq && !dq.HasThreadAccess)
         {
             dq.TryEnqueue(Refresh);
             return;
@@ -753,6 +757,7 @@ public sealed class VideoPlatformHubView : Grid
     private readonly Button _authRegisterButton;
 
     // Scrollable feed area
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue? _dispatcherQueue;
     private readonly ScrollViewer _feedScroller;
     private readonly StackPanel _cardsPanel;
     private readonly Border _emptyStateCard;
@@ -762,6 +767,14 @@ public sealed class VideoPlatformHubView : Grid
     private readonly HashSet<string> _thumbnailLoadingPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _thumbnailExtractGate = new(1, 1);
     private readonly List<RenderedVideoCard> _renderedCards = [];
+    private readonly Dictionary<string, RenderedVideoCard> _cardByPath = new(StringComparer.OrdinalIgnoreCase);
+    private const int CardPageSize = 40;
+    private int _visibleCardLimit = CardPageSize;
+    private VideoFeedFilter _lastFilter = VideoFeedFilter.All;
+    private string _lastSearchQuery = "";
+    private string? _lastCustomListId;
+    private bool _isActiveTab = true;
+    private bool _dirtyWhileHidden;
     private bool _showExplicitSignInCard;
     private bool _refreshQueued;
 
@@ -792,6 +805,7 @@ public sealed class VideoPlatformHubView : Grid
     public VideoPlatformHubView(VideoPlatformViewModel? viewModel)
     {
         _vm = viewModel ?? VideoPlatformViewModel.Shared;
+        _dispatcherQueue = DispatcherQueue;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
         RowSpacing = 10;
@@ -864,6 +878,16 @@ public sealed class VideoPlatformHubView : Grid
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
             Content = _cardsPanel,
+        };
+        _feedScroller.ViewChanged += (_, _) =>
+        {
+            if (_feedScroller.ScrollableHeight > 0 &&
+                _feedScroller.VerticalOffset >= _feedScroller.ScrollableHeight - 320 &&
+                _visibleCardLimit < _vm.FeedItems.Count)
+            {
+                _visibleCardLimit += CardPageSize;
+                RebuildFeedCards();
+            }
         };
         contentArea.Children.Add(_feedScroller);
 
@@ -1467,9 +1491,29 @@ public sealed class VideoPlatformHubView : Grid
 
     private void OnLocalizationChanged(object? sender, EventArgs e) => SafeRefresh();
 
+    public void SetActiveTab(bool isActive)
+    {
+        _isActiveTab = isActive;
+        if (isActive && _dirtyWhileHidden)
+        {
+            _dirtyWhileHidden = false;
+            SafeRefresh();
+        }
+    }
+
+    public void MarkDirtyWhileHidden()
+    {
+        _dirtyWhileHidden = true;
+    }
+
     private void SafeRefresh()
     {
-        if (DispatcherQueue is { } dq)
+        if (!_isActiveTab)
+        {
+            _dirtyWhileHidden = true;
+            return;
+        }
+        if (_dispatcherQueue is { } dq)
         {
             if (_refreshQueued) return;
             _refreshQueued = true;
@@ -1485,6 +1529,12 @@ public sealed class VideoPlatformHubView : Grid
 
     public void Refresh()
     {
+        if (!_isActiveTab)
+        {
+            _dirtyWhileHidden = true;
+            return;
+        }
+        _dirtyWhileHidden = false;
         var loggedIn = _vm.IsLoggedIn;
         if (loggedIn) _showExplicitSignInCard = false;
 
@@ -1684,9 +1734,18 @@ public sealed class VideoPlatformHubView : Grid
 
     private void RebuildFeedCards()
     {
-        var items = _vm.FeedItems;
+        var allItems = _vm.FeedItems;
+        if (_lastFilter != _vm.ActiveFilter ||
+            !string.Equals(_lastSearchQuery, _vm.SearchQuery, StringComparison.Ordinal) ||
+            !string.Equals(_lastCustomListId, _vm.ActiveCustomListId, StringComparison.OrdinalIgnoreCase))
+        {
+            _lastFilter = _vm.ActiveFilter;
+            _lastSearchQuery = _vm.SearchQuery;
+            _lastCustomListId = _vm.ActiveCustomListId;
+            _visibleCardLimit = CardPageSize;
+        }
 
-        if (items.Count == 0)
+        if (allItems.Count == 0)
         {
             _cardsPanel.Children.Clear();
             _renderedCards.Clear();
@@ -1715,16 +1774,17 @@ public sealed class VideoPlatformHubView : Grid
 
         _emptyStateCard.Visibility = Visibility.Collapsed;
         var loggedIn = _vm.IsLoggedIn;
+        var visibleCount = Math.Min(allItems.Count, _visibleCardLimit);
 
         // Fast path: if the displayed video paths and auth state are in the same order, update cards in-place
         // without clearing _cardsPanel.Children so thumbnails and layout never flicker.
-        if (_renderedCards.Count == items.Count)
+        if (_renderedCards.Count == visibleCount)
         {
             var sameSequence = true;
-            for (var i = 0; i < items.Count; i++)
+            for (var i = 0; i < visibleCount; i++)
             {
                 if (_renderedCards[i].IsLoggedIn != loggedIn ||
-                    !string.Equals(_renderedCards[i].VideoPath, items[i].VideoPath, StringComparison.OrdinalIgnoreCase))
+                    !string.Equals(_renderedCards[i].VideoPath, allItems[i].VideoPath, StringComparison.OrdinalIgnoreCase))
                 {
                     sameSequence = false;
                     break;
@@ -1733,9 +1793,9 @@ public sealed class VideoPlatformHubView : Grid
 
             if (sameSequence)
             {
-                for (var i = 0; i < items.Count; i++)
+                for (var i = 0; i < visibleCount; i++)
                 {
-                    UpdateVideoCardInPlace(_renderedCards[i], items[i]);
+                    UpdateVideoCardInPlace(_renderedCards[i], allItems[i]);
                 }
                 return;
             }
@@ -1743,11 +1803,22 @@ public sealed class VideoPlatformHubView : Grid
 
         _cardsPanel.Children.Clear();
         _renderedCards.Clear();
-        foreach (var item in items)
+        for (var i = 0; i < visibleCount; i++)
         {
-            var rendered = BuildVideoCard(item);
-            _renderedCards.Add(rendered);
-            _cardsPanel.Children.Add(rendered.CardBorder);
+            var item = allItems[i];
+            if (_cardByPath.TryGetValue(item.VideoPath, out var existing) && existing.IsLoggedIn == loggedIn)
+            {
+                UpdateVideoCardInPlace(existing, item);
+                _renderedCards.Add(existing);
+                _cardsPanel.Children.Add(existing.CardBorder);
+            }
+            else
+            {
+                var rendered = BuildVideoCard(item);
+                _cardByPath[item.VideoPath] = rendered;
+                _renderedCards.Add(rendered);
+                _cardsPanel.Children.Add(rendered.CardBorder);
+            }
         }
     }
 

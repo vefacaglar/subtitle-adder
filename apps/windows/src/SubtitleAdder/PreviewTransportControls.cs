@@ -81,7 +81,7 @@ public sealed class PreviewTransportControls : Grid
         timelineRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         timelineRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var monoFont = new FontFamily("Segoe UI Variable Text, Segoe UI");
+        var monoFont = App.Current.UiFont;
         _elapsedText = new TextBlock
         {
             Text = "00:00",
