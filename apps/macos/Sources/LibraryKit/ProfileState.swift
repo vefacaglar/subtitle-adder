@@ -23,12 +23,31 @@ struct ProfileSession: Sendable {
     /// The session stands for the shared "remember me" login (restored from it, or created with remember-me on), so
     /// logging out elsewhere ends it here too. A session started without remember-me never follows the file.
     var remembered: Bool
+
+    /// `contents` holds changes the file does not: playback progress and path migrations found while reading. They are
+    /// written with the next save of the vault (any save writes all of `contents`), or by an explicit flush. Reads never
+    /// write, and an unflushed change is lost if the process ends first.
+    var dirty = false
+    /// The latest unsaved progress per record key. `contents` already reflects it; this is what an external reload of
+    /// the vault re-applies on top of what the other instance wrote.
+    var pendingProgress: [String: PendingProgress] = [:]
+}
+
+/// Playback progress that is in memory but not yet in the file.
+struct PendingProgress: Sendable {
+    let probe: VideoProbe
+    var position: Double
+    var duration: Double
+    var at: Date
 }
 
 /// Why `profiles.json` cannot simply be overwritten.
 enum FileProblem: Equatable, Sendable {
-    /// Unreadable or not valid JSON of the expected shape; a copy is set aside before the next write.
+    /// Not valid JSON of the expected shape; a copy is set aside before the next write.
     case corrupt
+    /// Exists but could not be read (permissions, I/O error). It is never set aside or replaced: writes fail with
+    /// `.fileUnreadable` and every sync reads the file again.
+    case unreadable
     case unsupportedVersion(Int)
 }
 
@@ -43,6 +62,11 @@ struct ProfileState: Sendable {
     var lastSnapshot: ProfileFileSnapshot?
     var lastSignature: FileSignature?
     var fileProblem: FileProblem?
+    /// Bumped whenever a different state of the file was applied; a remembered login is tried once per generation.
+    var syncGeneration = 0
+    var restoreAttemptedGeneration = -1
+    /// When a save of the vault last succeeded or, for a throttled progress save, last failed; throttles progress writes.
+    var lastVaultSaveAttempt: Date?
 
     /// The remembered username as the apps treat it: only while remember-me is on.
     var effectiveRemembered: String? { rememberMe ? rememberedUsername : nil }

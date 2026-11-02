@@ -2,12 +2,16 @@ import Foundation
 
 /// Everything here acts on the unlocked profile. While logged out the calls do nothing and return `nil`, `false`,
 /// zero or an empty list; they throw only when a real write fails.
+///
+/// Every method takes a file URL and fingerprints the file (disk I/O, see `ProfileStore`): call them from a
+/// background task. The reading ones take `fingerprints:` to stay cheap on the main actor.
 extension ProfileStore {
     /// Counts a view: `viewCount + 1`, `lastWatchedAt` now, and the resume point. A `position` or `duration` of 0 (or
-    /// any non-finite value) keeps the stored one; a position past the duration is cut to it.
+    /// any non-finite value) keeps the stored one; a position past the duration is cut to it. Written at once, together
+    /// with any progress and moves still held in memory.
     @discardableResult
     public func recordWatch(_ video: URL, position: Double = 0, duration: Double = 0) throws(ProfileError) -> VideoUserStats? {
-        guard let probe = VideoProbe(video) else { return nil }
+        guard let probe = lookupProbe(for: video) else { return nil }
         return try transact(fallback: nil) { state in
             let now = clock()
             let (key, existing, _) = state.session!.contents.resolveOrCreate(probe, now: now)
@@ -26,41 +30,63 @@ extension ProfileStore {
         }
     }
 
-    /// Stores the resume point and duration without counting a view. Saved only when the position or duration moved by
-    /// half a second or more since the last save (smaller steps change nothing), and never raises
-    /// `ProfileChange.local`, so a player can call it every second without redrawing anything.
+    /// Stores the resume point and duration without counting a view, and never raises `ProfileChange.local`, so a
+    /// player can call it every second without redrawing anything.
+    ///
+    /// The change is applied in memory at once (`stats(for:)` shows it) when the position or duration moved by half a
+    /// second or more since the last one (smaller steps change nothing). It is *written* at most every
+    /// `progressSaveInterval` seconds, because each write encrypts the whole vault, thumbnails included: call
+    /// `flushPlaybackProgress()` on pause, seek, close and quit to put the latest point on disk. Another process sees
+    /// progress only after it is written.
     @discardableResult
     public func updatePlaybackProgress(_ video: URL, position: Double, duration: Double) throws(ProfileError) -> VideoUserStats? {
-        guard let probe = VideoProbe(video) else { return nil }
+        guard let probe = lookupProbe(for: video) else { return nil }
+        syncAndRestore()
 
-        // Fast path: nothing to save, so no file lock and no write.
-        let unchanged: VideoUserStats?? = read { state in
-            guard var contents = state.session?.contents else { return .some(nil) }
+        // In memory only, under the in-process lock: no file lock, no write.
+        let applied: VideoUserStats?? = lock.withLock {
+            guard state.session != nil else { return .some(nil) }
             let now = clock()
-            let resolution = contents.resolve(probe, now: now)
+            let resolution = state.session!.contents.resolve(probe, now: now)
+            if resolution?.migrated == true { state.session!.dirty = true }
             let existing = resolution?.stats ?? VideoUserStats.placeholder(path: probe.path, now: now, fingerprint: probe.fingerprint)
             let (cleanPosition, cleanDuration) = Self.progress(position, duration, existing: existing)
-            if resolution?.migrated != true, !Self.isSignificant(cleanPosition, cleanDuration, existing: existing) {
-                return .some(resolution.flatMap { state.session?.contents.stats(forKey: $0.key) } ?? existing)
-            }
-            return .none
-        }
-        if let unchanged { return unchanged }
-
-        return try transact(fallback: nil) { state in
-            let now = clock()
-            let (key, existing, changed) = state.session!.contents.resolveOrCreate(probe, now: now)
-            let (cleanPosition, cleanDuration) = Self.progress(position, duration, existing: existing)
             guard Self.isSignificant(cleanPosition, cleanDuration, existing: existing) else {
-                return (state.session!.contents.stats(forKey: key), changed ? [.vault, .silent] : [])
+                return .some(resolution.flatMap { state.session!.contents.stats(forKey: $0.key) } ?? existing)
             }
-            var updated = existing
+
+            let (key, current, _) = state.session!.contents.resolveOrCreate(probe, now: now)
+            var updated = current
             updated.lastPositionSeconds = cleanPosition
             updated.durationSeconds = cleanDuration
             updated.updatedAt = now
             state.session!.contents.setVideo(updated, forKey: key)
-            return (state.session!.contents.stats(forKey: key), [.vault, .silent])
+            state.session!.dirty = true
+            state.session!.pendingProgress[key] = PendingProgress(probe: probe, position: cleanPosition, duration: cleanDuration, at: now)
+            return .some(state.session!.contents.stats(forKey: key))
         }
+        guard let applied else { return nil }
+
+        // Throttled write of whatever is pending (this progress, earlier progress, followed moves).
+        try persistDirty(minInterval: Self.progressSaveInterval)
+        return applied
+    }
+
+    /// Writes the playback progress (and followed moves) that is held in memory, now, whatever the throttle says. Call
+    /// it when playback pauses, seeks or stops, when a window closes and on quit. Does nothing (and returns `false`)
+    /// when there is nothing to write. Never raises `ProfileChange.local`. Disk I/O: call it off the main actor, or
+    /// from the termination path where blocking is fine.
+    @discardableResult
+    public func flushPlaybackProgress() throws(ProfileError) -> Bool {
+        try persistDirty(minInterval: 0)
+    }
+
+    /// Writes the moves of renamed or moved files that reads (`stats(for:)`, `feed`, `lists(containing:)`) followed in
+    /// memory, together with any playback progress. A background task can call it after a refresh that followed files;
+    /// otherwise they are saved with the next write. Returns whether anything was written.
+    @discardableResult
+    public func persistPendingMigrations() throws(ProfileError) -> Bool {
+        try persistDirty(minInterval: 0)
     }
 
     /// Flips the favorite flag and returns the new state (`false` while logged out).
@@ -80,13 +106,13 @@ extension ProfileStore {
         try update(video) { $0.rating = min(max(rating, 0), 5) }
     }
 
-    /// The stats of a file, following it first if it was moved or renamed (see `VideoFingerprint`). `nil` while
-    /// logged out or if the profile has never touched the file.
-    public func stats(for video: URL) -> VideoUserStats? {
-        guard let probe = VideoProbe(video) else { return nil }
-        return readMigrating([probe]) { session in
-            session.contents.find(probe).flatMap { session.contents.stats(forKey: $0) }
-        }.flatMap { $0 }
+    /// The stats of a file, following it first if it was moved or renamed (see `VideoFingerprint`; the move is applied
+    /// in memory and saved later, see `ProfileStore`). `nil` while logged out or if the profile has never touched the
+    /// file. `fingerprints` decides how much disk access that costs.
+    public func stats(for video: URL, fingerprints: FingerprintMode = .compute) -> VideoUserStats? {
+        guard let probe = lookupProbe(for: video, mode: fingerprints) else { return nil }
+        guard let contents = readMigrating([probe]) else { return nil }
+        return contents.find(probe).flatMap { contents.stats(forKey: $0) }
     }
 
     /// Resets the watch history: records that are not liked, not rated and in no list are dropped (with their
@@ -112,6 +138,7 @@ extension ProfileStore {
                 }
             }
             state.session!.contents = contents
+            state.session!.pendingProgress = [:]
             return (true, .vault)
         }
     }
@@ -123,7 +150,7 @@ extension ProfileStore {
     /// `ProfileChange.local`.
     @discardableResult
     public func setThumbnail(_ data: Data, for video: URL) throws(ProfileError) -> Bool {
-        guard !data.isEmpty, data.count <= VaultContents.maxThumbnailBytes, let probe = VideoProbe(video) else { return false }
+        guard !data.isEmpty, data.count <= VaultContents.maxThumbnailBytes, let probe = lookupProbe(for: video) else { return false }
         return try transact(fallback: false) { state in
             let now = clock()
             let (key, _, changed) = state.session!.contents.resolveOrCreate(probe, now: now)
@@ -135,8 +162,8 @@ extension ProfileStore {
     }
 
     /// The stored image for a file, if any. Does not follow moved files (a following `stats(for:)` does).
-    public func thumbnail(for video: URL) -> Data? {
-        guard let probe = VideoProbe(video) else { return nil }
+    public func thumbnail(for video: URL, fingerprints: FingerprintMode = .compute) -> Data? {
+        guard let probe = VideoProbe(video, mode: fingerprints) else { return nil }
         return read { $0.session?.contents.thumbnail(for: probe) }
     }
 
@@ -144,7 +171,7 @@ extension ProfileStore {
 
     /// One record edit: find or create the file's record, change it, stamp `updatedAt`, save.
     private func update(_ video: URL, _ change: (inout VideoUserStats) -> Void) throws(ProfileError) -> VideoUserStats? {
-        guard let probe = VideoProbe(video) else { return nil }
+        guard let probe = lookupProbe(for: video) else { return nil }
         return try transact(fallback: nil) { state in
             let now = clock()
             let (key, existing, _) = state.session!.contents.resolveOrCreate(probe, now: now)

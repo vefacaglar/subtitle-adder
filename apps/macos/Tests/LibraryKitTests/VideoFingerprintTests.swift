@@ -65,6 +65,37 @@ import Testing
         #expect(after.hasPrefix("fp:150000:"))
     }
 
+    @Test func cachedFingerprintNeverReadsAFileAndNoticesEdits() throws {
+        let url = try write("cached.bin", count: 150_000)
+        let path = normalized(url)
+        #expect(VideoFingerprint.cachedFingerprint(ofNormalizedPath: path) == nil, "not seen yet: nothing is computed")
+        #expect(VideoFingerprint.cachedFingerprint(ofNormalizedPath: path) == nil, "and still not, after asking")
+
+        let computed = try #require(VideoFingerprint.fingerprint(ofNormalizedPath: path))
+        #expect(VideoFingerprint.cachedFingerprint(ofNormalizedPath: path) == computed)
+
+        var data = try Data(contentsOf: url)
+        data[7] ^= 0xFF
+        try data.write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(9)], ofItemAtPath: url.path)
+        #expect(VideoFingerprint.cachedFingerprint(ofNormalizedPath: path) == nil, "an edited file is not served from the cache")
+
+        #expect(VideoFingerprint.cachedFingerprint(ofNormalizedPath: "") == nil)
+        #expect(VideoFingerprint.cachedFingerprint(ofNormalizedPath: folder.video("missing.bin").path) == nil)
+    }
+
+    @Test func probeModesDecideHowMuchOfTheDiskIsTouched() throws {
+        let url = try write("modes.bin", count: 90_000)
+        let path = normalized(url)
+        #expect(VideoProbe(url, mode: .pathOnly)?.fingerprint == nil)
+        #expect(VideoProbe(url, mode: .cachedOnly)?.fingerprint == nil, "not fingerprinted yet")
+        let full = try #require(VideoProbe(url, mode: .compute))
+        #expect(full.fingerprint == VideoFingerprint.fingerprint(ofNormalizedPath: path))
+        #expect(VideoProbe(url, mode: .cachedOnly)?.fingerprint == full.fingerprint)
+        #expect(VideoProbe(url, mode: .pathOnly)?.fingerprint == nil)
+        #expect(VideoProbe(url, mode: .pathOnly)?.path == path)
+    }
+
     @Test func emptyMissingAndNonRegularFilesFallBackToTheNormalizedPath() throws {
         let empty = folder.video("empty.mp4")
         try Data().write(to: empty)

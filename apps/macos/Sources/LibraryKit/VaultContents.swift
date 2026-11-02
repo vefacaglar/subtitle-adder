@@ -1,18 +1,35 @@
 import Foundation
 
 /// A video as the store looks it up: its normalized path and, if the file is readable, its content fingerprint.
-/// Both are computed before any lock is taken, so a slow disk never stalls other callers.
+/// Probes are built before any lock is taken (`init` is the disk I/O, see `FingerprintMode`), so a slow disk never
+/// stalls other callers; nothing that runs under a lock reads a file.
 struct VideoProbe: Sendable {
     let path: String
     let pathKey: String
     let fingerprint: String?
+    let mode: FingerprintMode
+    /// Fingerprints, by lowercased path, of the recorded paths of the records this probe may take over from another
+    /// location. `VaultContents.resolve` needs them to tell a moved file from a copy; the store fills them in with
+    /// `VaultContents.takeoverPath(for:)` before locking, so resolving itself never touches the disk.
+    private(set) var recordedFingerprints: [String: String] = [:]
 
-    init?(_ url: URL) {
+    init?(_ url: URL, mode: FingerprintMode = .compute) {
         let path = VideoFingerprint.normalizedPath(url)
         guard !path.isEmpty else { return nil }
         self.path = path
+        self.mode = mode
         pathKey = path.lowercased()
-        fingerprint = VideoFingerprint.fingerprint(ofNormalizedPath: path)
+        switch mode {
+        case .compute: fingerprint = VideoFingerprint.fingerprint(ofNormalizedPath: path)
+        case .cachedOnly: fingerprint = VideoFingerprint.cachedFingerprint(ofNormalizedPath: path)
+        case .pathOnly: fingerprint = nil
+        }
+    }
+
+    func withRecordedFingerprint(_ fingerprint: String, forPath recordedPath: String) -> VideoProbe {
+        var copy = self
+        copy.recordedFingerprints[recordedPath.lowercased()] = fingerprint
+        return copy
     }
 }
 
@@ -34,19 +51,30 @@ struct VaultContents: Sendable {
 
     /// Builds the in-memory form from a decrypted payload, repairing what a hand-edited or older vault may get wrong
     /// (ratings out of range, negative counts, empty file names, duplicate list entries). Paths are kept as stored.
+    ///
+    /// No file is read here (this runs under the store's lock): a record without a fingerprint stays keyed by its
+    /// path and gains one the next time its file is looked up (`resolve` counts that as a migration). Records that
+    /// end up under the same key (two paths of one file) are merged, see `merged(_:_:)`.
     init(payload: VaultPayload) {
         for var video in payload.videos {
             let path = video.videoPath.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !path.isEmpty else { continue }
             var fingerprint = video.contentFingerprint?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if fingerprint?.isEmpty ?? true { fingerprint = VideoFingerprint.fingerprint(ofNormalizedPath: path) }
+            if fingerprint?.isEmpty ?? true { fingerprint = nil }
             video.contentFingerprint = fingerprint
             video.videoPath = path
             if video.fileName.trimmingCharacters(in: .whitespaces).isEmpty { video.fileName = PathParts.fileName(of: path) }
             if video.directoryPath.isEmpty { video.directoryPath = PathParts.directory(of: path) }
             video.rating = min(max(video.rating, 0), 5)
             video.viewCount = max(video.viewCount, 0)
-            setVideo(video, forKey: fingerprint ?? path)
+            let key = Self.key(for: fingerprint ?? path)
+            if let existing = videos[key] {
+                setVideo(Self.merged(existing, video), forKey: key)
+                // The path the merged record no longer carries still finds it.
+                for recorded in [existing.videoPath, video.videoPath] { keyByPath[recorded.lowercased()] = key }
+            } else {
+                setVideo(video, forKey: key)
+            }
         }
         for var list in payload.customLists {
             let name = list.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -74,6 +102,32 @@ struct VaultContents: Sendable {
     // MARK: - Records
 
     static func key(for text: String) -> String { text.lowercased() }
+
+    /// Two records for one file (they resolved to the same key) become one: views add up, a favorite stays a favorite,
+    /// the better rating stays, and the resume point and last-watched time are those of the most recent watch.
+    /// Identity (path, name, folder) comes from the record updated last.
+    static func merged(_ a: VideoUserStats, _ b: VideoUserStats) -> VideoUserStats {
+        let newer = a.updatedAt >= b.updatedAt ? a : b
+        // Whichever was watched last supplies the resume point; with no watch on either, the newer record does.
+        let watchedLast: VideoUserStats
+        switch (a.lastWatchedAt, b.lastWatchedAt) {
+        case (let x?, let y?): watchedLast = x >= y ? a : b
+        case (_?, nil): watchedLast = a
+        case (nil, _?): watchedLast = b
+        case (nil, nil): watchedLast = newer
+        }
+        var merged = newer
+        merged.contentFingerprint = newer.contentFingerprint ?? a.contentFingerprint ?? b.contentFingerprint
+        merged.viewCount = a.viewCount + b.viewCount
+        merged.isLiked = a.isLiked || b.isLiked
+        merged.rating = max(a.rating, b.rating)
+        merged.lastWatchedAt = [a.lastWatchedAt, b.lastWatchedAt].compactMap { $0 }.max()
+        merged.lastPositionSeconds = watchedLast.lastPositionSeconds
+        merged.durationSeconds = watchedLast.durationSeconds > 0 ? watchedLast.durationSeconds : max(a.durationSeconds, b.durationSeconds)
+        merged.updatedAt = max(a.updatedAt, b.updatedAt)
+        merged.thumbnail = nil
+        return merged
+    }
 
     mutating func setVideo(_ stats: VideoUserStats, forKey key: String) {
         let key = Self.key(for: key)
@@ -119,6 +173,14 @@ struct VaultContents: Sendable {
         return keyByPath[probe.pathKey]
     }
 
+    /// The recorded path of the record `probe` would take over from another location, whose content the store has to
+    /// fingerprint (outside its locks) before `resolve` can tell a move from a copy; `nil` when there is nothing to check.
+    func takeoverPath(for probe: VideoProbe) -> String? {
+        guard probe.fingerprint != nil, let key = find(probe), let found = videos[key] else { return nil }
+        guard !found.videoPath.isEmpty, found.videoPath.lowercased() != probe.pathKey else { return nil }
+        return found.videoPath
+    }
+
     struct Resolution {
         let key: String
         let stats: VideoUserStats
@@ -139,7 +201,7 @@ struct VaultContents: Sendable {
         // The recorded path still holds the same content: this is a second copy (or a link), not a move. Both paths
         // share the record and neither may take it from the other, or every refresh would flip it back and forth.
         if pathChanged, let fingerprint = probe.fingerprint, !found.videoPath.isEmpty,
-            VideoFingerprint.fingerprint(ofNormalizedPath: found.videoPath) == fingerprint
+            probe.recordedFingerprints[found.videoPath.lowercased()] == fingerprint
         {
             return Resolution(key: foundKey, stats: found, migrated: false)
         }

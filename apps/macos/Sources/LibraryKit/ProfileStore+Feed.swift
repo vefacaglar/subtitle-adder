@@ -5,8 +5,15 @@ extension ProfileStore {
     /// its lists, filtered, ordered and narrowed by `search` (see `VideoUserStats.matches(search:)`).
     ///
     /// Discovered files that were never touched appear as default records and are not persisted. Discovered files that
-    /// moved or were renamed are followed first (history, likes, list entries and the thumbnail go with them).
-    /// While logged out only `.all` returns anything: the discovered files, by name.
+    /// moved or were renamed are followed first (history, likes, list entries and the thumbnail go with them): the
+    /// result reflects the move at once, and it is saved with the next write or `persistPendingMigrations()`; a feed
+    /// never writes. While logged out only `.all` returns anything: the discovered files, by name.
+    ///
+    /// Following moves needs each discovered file's fingerprint, which reads up to 192 KB of a file the first time
+    /// (afterwards one `stat`, cached for the process): with `fingerprints: .compute`, the default, run this from a
+    /// background task. For a refresh on the main actor pass `.cachedOnly` (one `stat` per file) or `.pathOnly` (no
+    /// file access at all; files are matched to records by path only, so a moved file shows as new until a `.compute`
+    /// call has followed it). The usual pattern is `.pathOnly` at once, then `.compute` in the background.
     ///
     /// Ordering, ties broken by file name (ignoring case):
     /// - `.history`: watched; last watched (or updated) first, then view count.
@@ -15,12 +22,16 @@ extension ProfileStore {
     /// - `.topRated`: rating, then view count, then update time.
     /// - `.all`: watched, liked or rated first, then last watched, then view count.
     /// - `.customList`: the list's own order.
-    public func feed(_ filter: VideoFeedFilter = .all, search: String? = nil, discovered: [URL] = []) -> [VideoUserStats] {
+    public func feed(
+        _ filter: VideoFeedFilter = .all, search: String? = nil, discovered: [URL] = [],
+        fingerprints: FingerprintMode = .compute
+    ) -> [VideoUserStats] {
         var seen = Set<String>()
-        let probes = discovered.compactMap(VideoProbe.init).filter { seen.insert($0.pathKey).inserted }
+        let found = discovered.compactMap { VideoProbe($0, mode: fingerprints) }.filter { seen.insert($0.pathKey).inserted }
+        let probes = prepared(found)
         let now = clock()
-        if let items = readMigrating(probes, { FeedBuilder.items(in: $0.contents, filter: filter, probes: probes, now: now) }) {
-            return FeedBuilder.narrowed(items, by: search)
+        if let contents = readMigrating(probes) {
+            return FeedBuilder.narrowed(FeedBuilder.items(in: contents, filter: filter, probes: probes, now: now), by: search)
         }
         guard filter == .all else { return [] }
         let defaults = probes.map { VideoUserStats.placeholder(path: $0.path, now: now, fingerprint: $0.fingerprint) }

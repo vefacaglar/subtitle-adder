@@ -93,6 +93,7 @@ import Testing
         let log = ChangeLog(a)
         defer { log.stop() }
         try b.updatePlaybackProgress(video, position: 60, duration: 100)
+        try b.flushPlaybackProgress()
         try b.setThumbnail(Data("T".utf8), for: video)
         try await Task.sleep(for: .milliseconds(900))
 
