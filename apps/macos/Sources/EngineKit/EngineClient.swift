@@ -82,7 +82,7 @@ public struct EngineClient: Sendable {
     }
 
     /// Environment for the engine process: the parent's plus `SUBTITLE_ENGINE_LANG`, `SUBTITLE_ENGINE_OFFLINE`
-    /// and, with an external LLM, `SUBTITLE_ENGINE_EXTERNAL_LLM_URL` / `_MODEL` (removed otherwise).
+    /// and, with an external LLM, `SUBTITLE_ENGINE_EXTERNAL_LLM_URL` / `_MODEL` / `_API_KEY` (removed otherwise).
     func processEnvironment(
         language: UILanguage,
         settings: EngineLaunchSettings = EngineLaunchState.shared.settings,
