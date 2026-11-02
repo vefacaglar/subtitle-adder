@@ -3297,18 +3297,18 @@
         }
       }
     },
-    "Profil dosyası daha yeni bir sürümle oluşturulmuş (sürüm %lld); bu sürüm ona dokunmaz.": {
+    "Profil dosyası uygulamanın daha yeni veya başka bir sürümü tarafından yazılmış (sürüm %lld); burada açılamaz ve değiştirilmeyecek.": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Profil dosyası daha yeni bir sürümle oluşturulmuş (sürüm %lld); bu sürüm ona dokunmaz."
+            "value": "Profil dosyası uygulamanın daha yeni veya başka bir sürümü tarafından yazılmış (sürüm %lld); burada açılamaz ve değiştirilmeyecek."
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The profile file was created by a newer version (version %lld); this version leaves it alone."
+            "value": "The profile file was written by a newer or different version of the app (file version %lld); it cannot be opened here and will not be modified."
           }
         }
       }

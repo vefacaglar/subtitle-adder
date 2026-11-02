@@ -2,7 +2,8 @@ import CryptoKit
 import Foundation
 
 /// Local profiles with passwords and an encrypted vault per profile (watch history, favorites, ratings, custom lists,
-/// thumbnails), stored in `profiles.json` in the format the Windows app uses.
+/// thumbnails), stored in `profiles.json` (file format version 2 only; a file written by a newer or different version of
+/// the app, such as the Windows app's version 3 with its SQLite `profiles.db`, is refused and never modified).
 ///
 /// **Concurrency.** A `final class` that is `Sendable` by construction: all state lives in one value guarded by an
 /// `NSLock`, and every public method is synchronous. A class rather than an actor because the view model needs cheap

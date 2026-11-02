@@ -1,7 +1,8 @@
 import Foundation
 
-/// `profiles.json`, version 2, in the same shape the Windows app writes: camelCase, nulls omitted, profiles sorted by
-/// username. Lenient on read (unknown fields are ignored, missing ones default), so a file from either app opens in both.
+/// `profiles.json`, version 2: camelCase, nulls omitted, profiles sorted by
+/// username. Lenient on read (unknown fields are ignored, missing ones default). The Windows app has moved on to version 3
+/// (data in a SQLite `profiles.db`), which this app does not read: it only handles version 2 and refuses newer files.
 struct ProfilesDocument: Codable {
     var version = 2
     var rememberMe = true

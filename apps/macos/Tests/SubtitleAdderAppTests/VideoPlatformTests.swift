@@ -81,6 +81,12 @@ import Testing
         // The numbers the user may need are in the text.
         #expect(ProfileError.writeFailed(errno: 13).message.contains("13"))
         #expect(ProfileError.unsupportedFileVersion(9).message.contains("9"))
+        // The text says the file comes from another version of the app and cannot be opened here.
+        let refusal = UILanguage.en.string(
+            "Profil dosyası uygulamanın daha yeni veya başka bir sürümü tarafından yazılmış (sürüm %lld); burada açılamaz ve değiştirilmeyecek.",
+            in: .module, [9]
+        )
+        #expect(refusal.contains("newer or different version") && refusal.contains("cannot be opened here"))
     }
 
     @Test func credentialsWorkRunsOffTheMainThread() async throws {

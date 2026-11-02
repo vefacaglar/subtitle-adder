@@ -22,7 +22,7 @@ public enum ProfileError: Error, Equatable, Sendable {
     case writeFailed(errno: Int32)
     /// `profiles.json` is unreadable or corrupt and a copy of it could not be set aside, so it was not overwritten.
     case corruptFileNotPreserved
-    /// `profiles.json` was written by a newer version of the format and is left alone.
+    /// `profiles.json` was written by a newer or different version of the app (version above 2) and is left alone.
     case unsupportedFileVersion(Int)
     /// `profiles.json` exists but could not be read just now (permissions, an I/O error), so this store does not know
     /// what is in it and refuses to write: replacing it with its own, possibly empty, view would lose the profiles.
