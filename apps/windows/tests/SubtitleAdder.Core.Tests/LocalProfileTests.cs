@@ -366,4 +366,56 @@ public sealed class LocalProfileTests : IDisposable
         Assert.True(vm.RequiresAuthForCurrentTab);
         Assert.Empty(vm.FeedItems);
     }
+
+    [Fact]
+    public void MovingOrRenamingVideoFile_PreservesHistoryLikesRatingsAndCustomLists()
+    {
+        var originalPath = Path.Combine(_tempDir, "video_v1.mp4");
+        var sampleBytes = new byte[150_000];
+        Random.Shared.NextBytes(sampleBytes);
+        File.WriteAllBytes(originalPath, sampleBytes);
+
+        var expectedFp = LocalProfileManager.ComputeVideoId(originalPath);
+        Assert.StartsWith("fp:150000:", expectedFp, StringComparison.Ordinal);
+
+        var manager = new LocalProfileManager(_profilesPath);
+        Assert.True(manager.Register("emre", "pass123"));
+
+        // Watch twice, like, rate 5 stars, and add to custom list at originalPath
+        manager.RecordWatch(originalPath, positionSeconds: 65, durationSeconds: 200);
+        manager.RecordWatch(originalPath, positionSeconds: 120, durationSeconds: 200);
+        manager.SetLiked(originalPath, true);
+        manager.SetRating(originalPath, 5);
+        var favList = manager.CreateCustomList("Arşivim");
+        Assert.NotNull(favList);
+        Assert.True(manager.AddVideoToCustomList(favList.Id, originalPath));
+
+        // Move and rename the video on disk to subfolder/renamed_video.mp4
+        var subFolder = Path.Combine(_tempDir, "subfolder");
+        Directory.CreateDirectory(subFolder);
+        var movedPath = Path.Combine(subFolder, "renamed_video.mp4");
+        File.Move(originalPath, movedPath);
+
+        Assert.Equal(expectedFp, LocalProfileManager.ComputeVideoId(movedPath));
+
+        // Querying GetStats(movedPath) recognizes the file by its fast content fingerprint and migrates its path
+        var migratedStats = manager.GetStats(movedPath);
+        Assert.NotNull(migratedStats);
+        Assert.Equal(expectedFp, migratedStats.ContentFingerprint);
+        Assert.Equal(movedPath, migratedStats.VideoPath);
+        Assert.Equal("renamed_video.mp4", migratedStats.FileName);
+        Assert.Equal(2, migratedStats.ViewCount);
+        Assert.True(migratedStats.IsLiked);
+        Assert.Equal(5, migratedStats.Rating);
+        Assert.Equal(120, migratedStats.LastPositionSeconds);
+
+        // Verify custom list membership and feed items were migrated to movedPath as well
+        Assert.True(manager.IsVideoInCustomList(favList.Id, movedPath));
+        var customListFeed = manager.GetFeed(VideoFeedFilter.CustomList, customListId: favList.Id);
+        Assert.Single(customListFeed);
+        Assert.Equal(movedPath, customListFeed[0].VideoPath);
+        Assert.Equal(2, customListFeed[0].ViewCount);
+        Assert.True(customListFeed[0].IsLiked);
+        Assert.Equal(5, customListFeed[0].Rating);
+    }
 }
