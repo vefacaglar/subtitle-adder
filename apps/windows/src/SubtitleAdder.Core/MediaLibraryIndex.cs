@@ -448,6 +448,7 @@ public sealed class MediaLibraryIndex
 
     private void SaveToDisk()
     {
+        var wrote = false;
         lock (_fileWriteLock)
         {
             PersistedIndex payload;
@@ -464,16 +465,18 @@ public sealed class MediaLibraryIndex
             }
 
             var json = JsonSerializer.Serialize(payload, JsonOptions);
-            if (AtomicFileStore.WriteAllTextAtomic(FilePath, json))
+            wrote = AtomicFileStore.WriteAllTextAtomic(FilePath, json);
+        }
+
+        if (wrote)
+        {
+            _broker.Publish(StateSyncTopics.MediaIndex, new StateSyncEvent
             {
-                _broker.Publish(StateSyncTopics.MediaIndex, new StateSyncEvent
-                {
-                    Topic = StateSyncTopics.MediaIndex,
-                    Kind = StateSyncEventKind.MediaIndexed,
-                    SenderInstanceId = _instanceId,
-                    ScopePath = FilePath,
-                });
-            }
+                Topic = StateSyncTopics.MediaIndex,
+                Kind = StateSyncEventKind.MediaIndexed,
+                SenderInstanceId = _instanceId,
+                ScopePath = FilePath,
+            });
         }
     }
 

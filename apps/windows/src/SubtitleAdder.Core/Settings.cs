@@ -164,6 +164,7 @@ public sealed class JsonFileSettingsStore : InMemorySettingsStore, IDisposable
     /// <summary>Writes pending changes now (synchronously).</summary>
     public void Flush()
     {
+        var wrote = false;
         lock (_fileLock)
         {
             string json;
@@ -173,16 +174,18 @@ public sealed class JsonFileSettingsStore : InMemorySettingsStore, IDisposable
                 _dirty = false;
                 json = Snapshot().ToJsonString(WriteOptions);
             }
-            if (AtomicFileStore.WriteAllTextAtomic(FilePath, json))
+            wrote = AtomicFileStore.WriteAllTextAtomic(FilePath, json);
+        }
+
+        if (wrote)
+        {
+            _broker.Publish(StateSyncTopics.Settings, new StateSyncEvent
             {
-                _broker.Publish(StateSyncTopics.Settings, new StateSyncEvent
-                {
-                    Topic = StateSyncTopics.Settings,
-                    Kind = StateSyncEventKind.SettingsUpdated,
-                    SenderInstanceId = _instanceId,
-                    ScopePath = FilePath,
-                });
-            }
+                Topic = StateSyncTopics.Settings,
+                Kind = StateSyncEventKind.SettingsUpdated,
+                SenderInstanceId = _instanceId,
+                ScopePath = FilePath,
+            });
         }
     }
 
