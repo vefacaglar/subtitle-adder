@@ -223,6 +223,9 @@ final class SubtitleViewModel {
     @ObservationIgnored var asyncFailed = false
     /// Transcription is over and the status shows the background translation (label and fraction follow it).
     @ObservationIgnored var asyncShownInStatus = false
+    /// At most one translation runs at a time in the whole app (the editor's job, the closing pass, the background
+    /// batches, the playlist's stage 3): every `engine.translate` goes through this gate. See `TranslationGate`.
+    @ObservationIgnored let translationGate = TranslationGate()
     /// The running connection test of each provider; a newer test (or an edit) makes an older answer obsolete.
     @ObservationIgnored var providerTestIDs: [UUID: UUID] = [:]
 
@@ -239,7 +242,8 @@ final class SubtitleViewModel {
     /// The item the foreground job (transcription, or translation in sequential mode) belongs to.
     @ObservationIgnored var activePlaylistItemID: UUID?
     @ObservationIgnored var playlistTask: Task<Void, Never>?
-    /// Translate-and-save tasks of the items handed off after recognition, in order (each waits for the one before).
+    /// Translate-and-save tasks of the items handed off after recognition, in order. The run hands an item off only
+    /// after the one before it is over, so at most one of them is unfinished.
     @ObservationIgnored var playlistBackground: [Task<Void, Never>] = []
     /// Audio extraction and scheduling state of the run under way.
     @ObservationIgnored var playlistPipeline: PlaylistPipeline?

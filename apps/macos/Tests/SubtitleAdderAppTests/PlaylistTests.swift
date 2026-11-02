@@ -870,14 +870,25 @@ extension PlaylistTests {
         vm.startPlaylist()
         let task = vm.playlistTask
 
-        // Every video is recognized while the first translation still holds up the other two.
-        #expect(await eventually { has(control, "transcribe-end v3") && vm.playlistBackgroundPending == 3 })
-        #expect(vm.isPlaylistRunning && vm.playlist.allSatisfy { $0.state == .working })
-        #expect(await eventually { if case .working = vm.status { true } else { false } })
+        // Video 2 is recognized while video 1 still translates, then waits for it before its own hand-off (the backlog
+        // is one item at most), so video 3 is not recognized yet.
+        #expect(await eventually { has(control, "transcribe-end v2") && vm.playlist[1].statusMessage.text == "Çeviri hazırlanıyor…" })
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(!has(control, "transcribe-start v3") && vm.playlistBackgroundPending == 1)
         #expect(count(control, "translate-start") == 1)
 
-        // Released in the opposite order: they still go one after the other, in the list's order.
-        control.release("translate-v3", "translate-v2", "translate-v1")
+        // Video 1 is over: video 2 translates and video 3 is recognized, then waits for video 2 the same way.
+        control.release("translate-v1")
+        #expect(await eventually { has(control, "translate-start v2") && has(control, "transcribe-end v3") })
+        #expect(await eventually { vm.playlist[2].statusMessage.text == "Çeviri hazırlanıyor…" })
+        #expect(vm.isPlaylistRunning && vm.playlistBackgroundPending == 1 && count(control, "translate-start") == 2)
+
+        // Video 3 is handed off last; the list is only done once its translation is.
+        control.release("translate-v2")
+        #expect(await eventually { has(control, "translate-start v3") })
+        #expect(await eventually { if case .working = vm.status { true } else { false } })
+
+        control.release("translate-v3")
         await task?.value
 
         #expect(vm.playlist.allSatisfy { $0.state == .completed })

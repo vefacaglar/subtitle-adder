@@ -114,37 +114,45 @@ extension SubtitleViewModel {
             defer { if jobID == id { catalog.activeModels = [] } }
             var failed = false
             do {
-                for try await event in engine.translate(contextualRequest, to: target, from: source, model: model) {
+                // Only one translation runs at a time in the app: while another one holds the gate this job waits with
+                // the status it already has ("Çeviri hazırlanıyor…"); Stop leaves the queue. Held for the engine
+                // process only, not for the save below.
+                do {
+                    try await translationGate.acquire()
+                    defer { translationGate.release() }
                     guard jobID == id, !Task.isCancelled else { return }
-                    switch event {
-                    case .stage(let stage, var fraction):
-                        if stage == .translating, let part = fraction {
-                            fraction = Self.translationProgress(
-                                alreadyDone: alreadyDone, requested: request.count, part: part, total: total
+                    for try await event in engine.translate(contextualRequest, to: target, from: source, model: model) {
+                        guard jobID == id, !Task.isCancelled else { return }
+                        switch event {
+                        case .stage(let stage, var fraction):
+                            if stage == .translating, let part = fraction {
+                                fraction = Self.translationProgress(
+                                    alreadyDone: alreadyDone, requested: request.count, part: part, total: total
+                                )
+                            }
+                            status = .working(
+                                Self.label(for: stage, fraction: fraction, purpose: .translation),
+                                fraction: fraction
                             )
+                        case .translation(let language, let translated):
+                            // A selected retry is one undo step back to what the lines had before it, however many
+                            // batches it applies and even if it is stopped; registered with the first batch.
+                            if selectedRequest != nil, !undoRegistered {
+                                undoRegistered = true
+                                registerTranslationUndo(restoring: baseline, actionName: L("Seçilenleri Yeniden Çevir"))
+                            }
+                            // One event per batch (a growing prefix) plus a final one; each is applied as it arrives.
+                            applyTranslation(
+                                translated, language: language, source: request,
+                                merge: reuseExisting || selectedRequest != nil,
+                                preserveOtherLanguages: selectedRequest != nil, reviewFallback: baseline
+                            )
+                        case .result, .partial:
+                            break
+                        case .error(let message):
+                            failed = true
+                            status = .failed(.verbatim(message))
                         }
-                        status = .working(
-                            Self.label(for: stage, fraction: fraction, purpose: .translation),
-                            fraction: fraction
-                        )
-                    case .translation(let language, let translated):
-                        // A selected retry is one undo step back to what the lines had before it, however many batches
-                        // it applies and even if it is stopped; registered with the first batch.
-                        if selectedRequest != nil, !undoRegistered {
-                            undoRegistered = true
-                            registerTranslationUndo(restoring: baseline, actionName: L("Seçilenleri Yeniden Çevir"))
-                        }
-                        // One event per batch (a growing prefix) plus a final one; each is applied as it arrives.
-                        applyTranslation(
-                            translated, language: language, source: request,
-                            merge: reuseExisting || selectedRequest != nil, preserveOtherLanguages: selectedRequest != nil,
-                            reviewFallback: baseline
-                        )
-                    case .result, .partial:
-                        break
-                    case .error(let message):
-                        failed = true
-                        status = .failed(.verbatim(message))
                     }
                 }
                 // On cancel the stream ends without an error; in that case the status doesn't change.

@@ -53,11 +53,13 @@ final class PlaylistPipeline {
 ///
 /// 1. Audio extraction (CPU): one extraction at a time, at most one item ahead of the one being transcribed.
 /// 2. Speech recognition (the editor's own flow: `openVideo`, `generate`): strictly one item after the other.
-/// 3. Translation and save: handed off without waiting, so item N translates while item N + 1 transcribes. One
-///    translation at a time.
+/// 3. Translation and save: handed off without waiting for it to finish, so item N translates while item N + 1
+///    transcribes. At most one translation runs in the whole app (`translationGate`), and the backlog is bounded: item
+///    N + 1 is handed off only after item N's stage 3 is over, so recognition of item N + 2 can't start before item N
+///    has been translated and saved.
 ///
 /// With an external LLM in async mode the finished lines of the video being transcribed are also translated in the
-/// background during stage 2; stage 3 then only sends what is left.
+/// background during stage 2 (when the gate is free); stage 3 then only sends what is left.
 extension SubtitleViewModel {
     // MARK: - Items
 
@@ -196,7 +198,14 @@ extension SubtitleViewModel {
             activePlaylistItemID = nil
             switch outcome {
             case .ready:
-                handOffToStage3(item, engine: engine, target: target, pipeline: pipeline)
+                // The backlog stays at one item: the previous item's translation and save are over before this one's
+                // start. Recognition of the next item waits behind this as well, as on Windows.
+                if await waitForEarlierTranslations(item) {
+                    handOffToStage3(item, engine: engine, target: target, pipeline: pipeline)
+                } else {
+                    // Stopped while waiting; the loop ends with the cancelled run.
+                    updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
+                }
             case .failed(let message):
                 updatePlaylistItem(item.id, .failed, message, nil)
             case .cancelled:
@@ -410,7 +419,20 @@ extension SubtitleViewModel {
         catalog.activeModels.formUnion(pipeline.translationModelsInUse.keys)
     }
 
-    /// Translates and saves the item in the background, one translation at a time, while the next video transcribes.
+    /// Waits until the translate-and-save tasks handed off for earlier items are over, so the backlog is never more than
+    /// one item (the Windows app's `pendingTranslations` rule). Recognition of the next item hasn't started and doesn't
+    /// until this returns; the earlier item's stage 3 meanwhile runs on, and so does the audio extraction one item
+    /// ahead. The item's row keeps the usual "Çeviri hazırlanıyor…" while it waits. `false` when the run was stopped.
+    private func waitForEarlierTranslations(_ item: PlaylistItem) async -> Bool {
+        if playlistBackgroundPending > 0 {
+            updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
+            for task in playlistBackground { await task.value }
+        }
+        return !Task.isCancelled
+    }
+
+    /// Translates and saves the item in the background while the next video transcribes. The caller has made sure the
+    /// earlier items' stage 3 is over, and the translation itself takes the app-wide gate, so only one runs.
     /// Everything the task needs is captured now: the editor moves on to the next video. Lines the server already
     /// translated while the video was transcribing (`translations`) are not sent again.
     private func handOffToStage3(_ item: PlaylistItem, engine: EngineClient, target: String, pipeline: PlaylistPipeline) {
@@ -435,16 +457,12 @@ extension SubtitleViewModel {
             pipeline.translationModelsInUse[model, default: 0] += 1
             protectPlaylistModels()
         }
-        let previous = playlistBackground.last
         playlistBackgroundPending += 1
         playlistBackground.append(Task {
             defer {
                 playlistBackgroundPending -= 1
                 if !external { releaseTranslationModel(model, in: pipeline) }
             }
-            // One translation at a time, in the order the videos were transcribed. (The live translation while a video
-            // transcribes is not held back by this, as on Windows: the server queues the requests.)
-            await previous?.value
             await translateAndSaveInBackground(
                 item, lines: lines, preTranslated: preTranslated, engine: engine, source: source, target: target,
                 model: model, format: format, external: external, refreshCatalog: refreshCatalog
@@ -508,6 +526,10 @@ extension SubtitleViewModel {
         var engineError: String?
         if !remaining.isEmpty {
             do {
+                // One translation at a time in the whole app (a background batch of the next video, the editor's own
+                // job): wait for the gate with the row's "Çeviri hazırlanıyor…"; a stopped run leaves the queue.
+                try await translationGate.acquire()
+                defer { translationGate.release() }
                 for try await event in engine.translate(request, to: target, from: source, model: model) {
                     guard !Task.isCancelled else { break }
                     switch event {

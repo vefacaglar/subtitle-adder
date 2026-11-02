@@ -43,7 +43,8 @@ extension SubtitleViewModel {
     func startAsyncTranslation(engine: EngineClient) {
         // The lines keep coming, so the share of translated ones moves even when no batch is sent.
         updateAsyncFraction()
-        guard asyncTask == nil, !asyncDraining, !asyncFailed, !nextAsyncBatch().isEmpty else { return }
+        // Another translation holds the gate: nothing starts now, the next snapshot looks again.
+        guard asyncTask == nil, !asyncDraining, !asyncFailed, !translationGate.isBusy, !nextAsyncBatch().isEmpty else { return }
         let run = UUID()
         asyncRunID = run
         asyncTask = Task { await pumpAsyncTranslation(engine: engine, run: run) }
@@ -77,17 +78,27 @@ extension SubtitleViewModel {
 
     /// One batch at a time until nothing is left to send. A failure stops it for the rest of the run (`asyncFailed`):
     /// the final pass translates the lines that are missing and reports the error if the server is really gone.
+    ///
+    /// Each batch holds the app-wide translation gate. The pump never queues for it: if another translation (the
+    /// playlist's stage 3, the editor's job) has the gate, it stops instead of starting a batch, and the lines it
+    /// skipped are picked up by a later snapshot or by the closing pass.
     private func pumpAsyncTranslation(engine: EngineClient, run: UUID) async {
         while !Task.isCancelled, asyncRunID == run {
+            guard translationGate.tryAcquire() else { break }
             let batch = nextAsyncBatch()
             let target = translationTarget
             let source = translationSource
             // Same language in and out can't be translated; the toolbar target is reconciled when the language is known.
-            guard !batch.isEmpty, source != target else { break }
+            guard !batch.isEmpty, source != target else {
+                translationGate.release()
+                break
+            }
             asyncQueued.formUnion(batch.map(\.uid))
             isAsyncTranslating = true
             updateAsyncFraction()
-            guard await translateAsyncBatch(batch, engine: engine, target: target, source: source, run: run) else {
+            let succeeded = await translateAsyncBatch(batch, engine: engine, target: target, source: source, run: run)
+            translationGate.release()
+            guard succeeded else {
                 if !Task.isCancelled, asyncRunID == run {
                     asyncFailed = true
                     asyncShownInStatus = false
