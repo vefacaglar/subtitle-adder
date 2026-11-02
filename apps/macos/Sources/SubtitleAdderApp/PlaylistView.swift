@@ -130,7 +130,8 @@ private struct PlaylistRow: View {
     @ViewBuilder private var statusIcon: some View {
         switch item.state {
         case .pending:
-            Image(systemName: "clock").foregroundStyle(.secondary)
+            // The audio of a waiting video can already be extracted ("Ses hazır · Sırada").
+            Image(systemName: item.isAudioReady ? "waveform" : "clock").foregroundStyle(.secondary)
         case .working:
             ProgressView().controlSize(.small)
         case .completed:
