@@ -196,6 +196,7 @@ extension SubtitleViewModel {
     ) {
         let previous = sentences
         let previousTranslations = translations
+        hasUnsavedEdits = true
         // A change from outside (undo/redo) can invalidate the focused draft.
         if let draft, updated.first(where: { $0.uid == draft.uid })?.text != draft.text {
             self.draft = nil

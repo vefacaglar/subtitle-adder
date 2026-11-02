@@ -261,8 +261,16 @@ final class SubtitleViewModel {
     private(set) var video: URL?
     /// The subtitle file the lines came from (import or sidecar); where "Altyazıyı kaydet" writes when there is no video.
     var loadedSubtitle: URL?
-    /// File name of the last save, shown at the end of the finished status.
-    var savedSubtitleName: String?
+    /// File name of the last save, shown at the end of the finished status. A save (the editor's, auto-save, the playlist's)
+    /// is what sets it, and what it wrote is no longer unsaved work.
+    var savedSubtitleName: String? {
+        didSet { if savedSubtitleName != nil { hasUnsavedEdits = false } }
+    }
+    /// The lines or their translations were edited, or a translation was applied, since they were opened or last saved.
+    /// Opening another file would lose that work, so it asks first (see `requestOpen`).
+    var hasUnsavedEdits = false
+    /// An open request that waits for the user's answer because it would stop the running job or drop edited lines.
+    var pendingOpen: PendingOpen?
     /// Called with the file after every subtitle written next to a video (editor save, auto-save, playlist), so the file
     /// sidebar can rescan that folder.
     @ObservationIgnored var onSubtitleSaved: (@MainActor (URL) -> Void)?
@@ -496,6 +504,7 @@ final class SubtitleViewModel {
         undoManager?.removeAllActions()
         loadedSubtitle = nil
         savedSubtitleName = nil
+        hasUnsavedEdits = false
         video = url
         if let url, let sidecar = SubtitleParser.findSidecar(for: url) {
             loadSubtitleFile(sidecar)
@@ -527,6 +536,7 @@ final class SubtitleViewModel {
         selection = nil
         draft = nil
         savedSubtitleName = nil
+        hasUnsavedEdits = false
         undoManager?.removeAllActions()
         detectedLanguage = nil
         linesSourceLanguage = nil

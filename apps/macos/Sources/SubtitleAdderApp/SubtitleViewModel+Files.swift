@@ -28,6 +28,7 @@ extension SubtitleViewModel {
         catalog.activeModels = []
         loadedSubtitle = url
         savedSubtitleName = nil
+        hasUnsavedEdits = false
         translations = [:]
         translationDraft = nil
         translationLanguage = nil
@@ -75,22 +76,33 @@ extension SubtitleViewModel {
         }
         // The run owns the editor's video and lines until it ends.
         guard !isPlaylistRunning else { return }
-        // The platform has no player or lines of its own: what is dropped on it is opened where it can be seen.
-        if external || workspace == .platform { workspace = .editor }
-        if let video = videos.first { openVideo(video) }
-        if let subtitle {
-            openSubtitle(subtitle, findingVideo: videos.isEmpty && (external || video == nil))
+        // The same video again changes nothing; anything else replaces what the editor holds, which may be a running job
+        // or unsaved edits, so it asks first (see `requestOpen`).
+        let first = videos.first
+        let replaces = subtitle != nil || first.map { !isCurrentVideo($0) } ?? false
+        requestOpen(replacesWork: replaces) { [self] in
+            // The platform has no player or lines of its own: what is dropped on it is opened where it can be seen.
+            if external || workspace == .platform { workspace = .editor }
+            if let first { openVideo(first) }
+            if let subtitle {
+                openSubtitle(subtitle, findingVideo: videos.isEmpty && (external || video == nil))
+            }
         }
     }
 
     /// Opens a subtitle file as the lines of the editor. With `findingVideo` its companion video (`Film.srt` and
     /// `Film.tr.srt` find `Film.mkv`) is opened first, and the subtitle then replaces the sidecar that opening loaded.
-    /// The picker and drops pass whether a video is open: the video someone is working on stays. Returns whether the
-    /// subtitle loaded.
+    /// Without a companion the open video is closed: the subtitle stands alone, and "Altyazıyı kaydet" writes its own
+    /// file instead of the sidecar of a video it has nothing to do with. The picker and drops pass whether a video is
+    /// open: the video someone is working on stays. Returns whether the subtitle loaded.
     @discardableResult
     func openSubtitle(_ url: URL, findingVideo: Bool? = nil) -> Bool {
-        if findingVideo ?? (video == nil), !isPlaylistRunning, let companion = SubtitleParser.findCompanionVideo(for: url) {
-            openVideo(companion)
+        if findingVideo ?? (video == nil), !isPlaylistRunning {
+            if let companion = SubtitleParser.findCompanionVideo(for: url) {
+                openVideo(companion)
+            } else if video != nil {
+                openVideo(nil)
+            }
         }
         return loadSubtitleFile(url)
     }
@@ -182,6 +194,8 @@ extension SubtitleViewModel {
     func exportFinished(_ result: Result<URL, any Error>) {
         switch result {
         case .success:
+            // What the panel wrote is on disk, so leaving the lines loses nothing of it.
+            hasUnsavedEdits = false
             if !isWorking, case .failed(let message) = status, message.id.hasPrefix("save-failed:") {
                 status = .finished
             }

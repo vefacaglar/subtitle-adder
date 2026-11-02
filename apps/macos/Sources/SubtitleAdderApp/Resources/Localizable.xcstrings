@@ -449,6 +449,22 @@
         }
       }
     },
+    "Başka bir dosya açılsın mı?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Başka bir dosya açılsın mı?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open another file?"
+          }
+        }
+      }
+    },
     "Başlangıç": {
       "localizations": {
         "tr": {
@@ -849,6 +865,22 @@
         }
       }
     },
+    "Kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsaved changes will be lost. Continue?"
+          }
+        }
+      }
+    },
     "Kayıtlı anahtar kaydedilince silinecek.": {
       "localizations": {
         "tr": {
@@ -909,6 +941,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "Media player"
+          }
+        }
+      }
+    },
+    "Süren iş durdurulacak ve kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Süren iş durdurulacak ve kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The running job will be stopped and unsaved changes will be lost. Continue?"
+          }
+        }
+      }
+    },
+    "Süren iş durdurulacak. Devam edilsin mi?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Süren iş durdurulacak. Devam edilsin mi?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The running job will be stopped. Continue?"
           }
         }
       }

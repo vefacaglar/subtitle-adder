@@ -7,6 +7,9 @@ import SwiftUI
 struct FileExplorerSidebar: View {
     let model: FileExplorerModel
     let vm: SubtitleViewModel
+    /// Shows the video in the editor, after the user's yes when that stops work (see `SubtitleViewModel.requestOpen`).
+    /// The flag is whether it plays at once even when Settings say not to play on open.
+    let openVideo: (URL, _ startPlaying: Bool) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -106,7 +109,7 @@ struct FileExplorerSidebar: View {
             }
             ForEach(model.files) { file in
                 let isActive = model.isActive(file)
-                Button { play(file) } label: {
+                Button { open(file, startPlaying: false) } label: {
                     MediaRow(file: file, isActive: isActive, showsFolder: model.isOutsideCurrentFolder(file))
                 }
                 .buttonStyle(.plain)
@@ -116,7 +119,7 @@ struct FileExplorerSidebar: View {
                 .help(file.fullPath)
                 .listRowBackground(isActive ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.18)) : nil)
                 .contextMenu {
-                    Button(L("Oynat"), systemImage: "play.fill") { play(file) }
+                    Button(L("Oynat"), systemImage: "play.fill") { open(file, startPlaying: true) }
                         .disabled(vm.isPlaylistRunning)
                     Button(L("Çalma listesine ekle"), systemImage: "text.badge.plus") { addToPlaylist(file) }
                     Divider()
@@ -169,10 +172,10 @@ struct FileExplorerSidebar: View {
 
     // MARK: Actions
 
-    private func play(_ file: IndexedMediaFile) {
+    /// A click opens the video, and Settings decide whether it plays; "Oynat" plays it whatever they say.
+    private func open(_ file: IndexedMediaFile, startPlaying: Bool) {
         guard !vm.isPlaylistRunning else { return }
-        vm.workspace = .editor
-        vm.openVideo(file.url)
+        openVideo(file.url, startPlaying)
     }
 
     private func addToPlaylist(_ file: IndexedMediaFile) {

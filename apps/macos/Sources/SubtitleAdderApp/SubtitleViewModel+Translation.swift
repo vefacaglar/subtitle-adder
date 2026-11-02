@@ -275,6 +275,8 @@ extension SubtitleViewModel {
             )
         }
         translations = entries
+        // A translation that arrived is work the file on disk doesn't have yet (until a save writes it).
+        if !pairs.isEmpty { hasUnsavedEdits = true }
         translationLanguage = language
         translationTarget = language
         // The first translation to arrive switches the video overlay and the export to the translated text.
@@ -345,6 +347,7 @@ extension SubtitleViewModel {
 
     private func replaceTranslations(_ updated: [UUID: TranslationEntry], actionName: String) {
         let previous = translations
+        hasUnsavedEdits = true
         translations = updated
         guard let undoManager else { return }
         undoManager.registerUndo(withTarget: self) { model in
