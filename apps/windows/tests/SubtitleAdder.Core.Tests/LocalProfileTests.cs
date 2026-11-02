@@ -93,6 +93,7 @@ public sealed class LocalProfileTests : IDisposable
         Assert.Null(manager.RecordWatch(videoPath, positionSeconds: 99, durationSeconds: 120));
         Assert.False(manager.ToggleLike(videoPath));
         Assert.Null(manager.SetRating(videoPath, 1));
+        Assert.Null(manager.CreateCustomList("Test List"));
 
         // Log back in and verify nothing was mutated while logged out
         Assert.True(manager.Login("alice", "pw123"));
@@ -133,46 +134,58 @@ public sealed class LocalProfileTests : IDisposable
     }
 
     [Fact]
-    public void MultipleProfiles_HaveCompletelyIsolatedHistoryLikesAndRatings()
+    public void MultipleProfiles_HaveCompletelyIsolatedHistoryLikesRatingsAndCustomLists()
     {
         var videoA = Path.Combine(_tempDir, "ep1.mp4");
         var videoB = Path.Combine(_tempDir, "ep2.mp4");
 
         var manager = new LocalProfileManager(_profilesPath);
 
-        // User 1: watches ep1 3 times, likes it, rates 5 stars
+        // User 1: watches ep1 3 times, likes it, rates 5 stars, creates custom list "Bilim Kurgu"
         Assert.True(manager.Register("user_one", "pass1"));
         manager.RecordWatch(videoA);
         manager.RecordWatch(videoA);
         manager.RecordWatch(videoA);
         manager.SetLiked(videoA, true);
         manager.SetRating(videoA, 5);
+        var u1List = manager.CreateCustomList("Bilim Kurgu");
+        Assert.NotNull(u1List);
+        Assert.True(manager.AddVideoToCustomList(u1List.Id, videoA));
         manager.Logout();
 
-        // User 2: watches ep1 once (dislikes/unliked, rates 2 stars) and watches ep2 twice (likes, rates 4 stars)
+        // User 2: watches ep1 once (unliked, rates 2 stars) and watches ep2 twice (likes, rates 4 stars), creates "Komedi"
         Assert.True(manager.Register("user_two", "pass2"));
         Assert.Null(manager.GetStats(videoA));
+        Assert.Empty(manager.GetCustomLists());
         manager.RecordWatch(videoA);
         manager.SetRating(videoA, 2);
         manager.RecordWatch(videoB);
         manager.RecordWatch(videoB);
         manager.SetLiked(videoB, true);
         manager.SetRating(videoB, 4);
+        var u2List = manager.CreateCustomList("Komedi");
+        Assert.NotNull(u2List);
+        Assert.True(manager.AddVideoToCustomList(u2List.Id, videoB));
         manager.Logout();
 
-        // Verify User 1's isolated state
-        Assert.True(manager.Login("user_one", "pass1"));
-        var u1VideoA = manager.GetStats(videoA);
+        // Verify User 1's isolated state from a fresh manager reload
+        var reloaded = new LocalProfileManager(_profilesPath);
+        Assert.True(reloaded.Login("user_one", "pass1"));
+        var u1VideoA = reloaded.GetStats(videoA);
         Assert.NotNull(u1VideoA);
         Assert.Equal(3, u1VideoA.ViewCount);
         Assert.True(u1VideoA.IsLiked);
         Assert.Equal(5, u1VideoA.Rating);
-        Assert.Null(manager.GetStats(videoB));
+        Assert.Null(reloaded.GetStats(videoB));
+        var u1Lists = reloaded.GetCustomLists();
+        Assert.Single(u1Lists);
+        Assert.Equal("Bilim Kurgu", u1Lists[0].Name);
+        Assert.Equal([videoA], u1Lists[0].VideoPaths);
 
         // Verify User 2's isolated state
-        Assert.True(manager.Login("user_two", "pass2"));
-        var u2VideoA = manager.GetStats(videoA);
-        var u2VideoB = manager.GetStats(videoB);
+        Assert.True(reloaded.Login("user_two", "pass2"));
+        var u2VideoA = reloaded.GetStats(videoA);
+        var u2VideoB = reloaded.GetStats(videoB);
         Assert.NotNull(u2VideoA);
         Assert.Equal(1, u2VideoA.ViewCount);
         Assert.False(u2VideoA.IsLiked);
@@ -181,15 +194,84 @@ public sealed class LocalProfileTests : IDisposable
         Assert.Equal(2, u2VideoB.ViewCount);
         Assert.True(u2VideoB.IsLiked);
         Assert.Equal(4, u2VideoB.Rating);
+        var u2Lists = reloaded.GetCustomLists();
+        Assert.Single(u2Lists);
+        Assert.Equal("Komedi", u2Lists[0].Name);
+        Assert.Equal([videoB], u2Lists[0].VideoPaths);
     }
 
     [Fact]
-    public void VideoPlatformViewModel_FiltersSearchAndEngagementActionsWorkCorrectly()
+    public void CustomListsAndClearWatchHistory_WorkAndPreserveFavoritesAndRatings()
+    {
+        var v1 = Path.Combine(_tempDir, "Sezon_1_Bolum_01.mkv");
+        var v2 = Path.Combine(_tempDir, "Sezon_2_Bolum_05.mkv");
+        var v3 = Path.Combine(_tempDir, "Belgesel_Uzay.mp4");
+
+        var manager = new LocalProfileManager(_profilesPath);
+        using var vm = new VideoPlatformViewModel(manager);
+        Assert.True(vm.TryRegister("emre", "pw123"));
+
+        // Create two custom lists
+        var watchLater = vm.CreateCustomList("Daha Sonra İzle");
+        var bestEpisodes = vm.CreateCustomList("En İyi Bölümler");
+        Assert.NotNull(watchLater);
+        Assert.NotNull(bestEpisodes);
+        Assert.Null(vm.CreateCustomList("daha sonra izle")); // Duplicate name prevented
+
+        // Add v2 (even before watching!) and v3 to custom lists
+        Assert.True(vm.ToggleVideoInCustomList(watchLater.Id, v2));
+        Assert.True(vm.ToggleVideoInCustomList(bestEpisodes.Id, v1));
+        Assert.True(vm.ToggleVideoInCustomList(bestEpisodes.Id, v2));
+
+        // Watch v1 and v2, favorite v1, rate v2 5 stars, watch v3 without liking/rating
+        vm.OnVideoOpened(v1);
+        vm.ToggleActiveVideoLike();
+        vm.OnVideoOpened(v2);
+        vm.SetActiveVideoRating(5);
+        vm.OnVideoOpened(v3);
+
+        // Select custom list "En İyi Bölümler" -> contains v1 and v2 with their custom list badges
+        vm.SelectCustomList(bestEpisodes.Id);
+        Assert.Equal(VideoFeedFilter.CustomList, vm.ActiveFilter);
+        Assert.Equal("En İyi Bölümler", vm.ActiveCustomListName);
+        Assert.Equal(2, vm.FeedItems.Count);
+        var v2Card = vm.FeedItems.First(c => c.VideoPath == v2);
+        Assert.Equal(5, v2Card.Rating);
+        Assert.Contains("Daha Sonra İzle", v2Card.CustomListNames);
+        Assert.Contains("En İyi Bölümler", v2Card.CustomListNames);
+
+        // ClearWatchHistory resets ViewCount and LastWatchedAtUtc while preserving Favorites, Ratings, and Custom Lists
+        Assert.True(vm.ClearWatchHistory());
+        Assert.Equal(0, vm.TotalWatchedVideosCount);
+        Assert.Equal(1, vm.TotalLikedVideosCount);
+        Assert.Equal(1, vm.TotalRatedVideosCount);
+
+        vm.ActiveFilter = VideoFeedFilter.History;
+        Assert.Empty(vm.FeedItems);
+
+        vm.ActiveFilter = VideoFeedFilter.Liked;
+        Assert.Single(vm.FeedItems);
+        Assert.Equal(v1, vm.FeedItems[0].VideoPath);
+        Assert.Equal(0, vm.FeedItems[0].ViewCount);
+
+        vm.ActiveFilter = VideoFeedFilter.TopRated;
+        Assert.Single(vm.FeedItems);
+        Assert.Equal(v2, vm.FeedItems[0].VideoPath);
+        Assert.Equal(5, vm.FeedItems[0].Rating);
+
+        vm.SelectCustomList(bestEpisodes.Id);
+        Assert.Equal(2, vm.FeedItems.Count);
+    }
+
+    [Fact]
+    public void VideoPlatformViewModel_FiltersMultiTokenSearchAndEngagementActionsWorkCorrectly()
     {
         var v1 = Path.Combine(_tempDir, "Alpha_Tutorial.mp4");
         var v2 = Path.Combine(_tempDir, "Beta_Documentary.mkv");
         var v3 = Path.Combine(_tempDir, "Gamma_Clip.mov");
-        var v4Discovered = Path.Combine(_tempDir, "Delta_Unwatched.mp4");
+        var v4Discovered = Path.Combine(_tempDir, "Sezon_2_Bolum_05.mp4");
+        File.WriteAllText(Path.Combine(_tempDir, "Alpha_Tutorial.srt"), "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n");
+        File.WriteAllText(Path.Combine(_tempDir, "Sezon_2_Bolum_05.tr.srt"), "1\n00:00:01,000 --> 00:00:02,000\nSelam\n");
 
         var manager = new LocalProfileManager(_profilesPath);
         using var vm = new VideoPlatformViewModel(manager);
@@ -202,6 +284,17 @@ public sealed class LocalProfileTests : IDisposable
         Assert.Equal("emre", vm.CurrentUsername);
 
         vm.SetDiscoveredPaths([v1, v2, v3, v4Discovered]);
+
+        // Verify subtitle detection on cards (v1 has exact .srt, v4 has .tr.srt, v2 & v3 have no subtitle)
+        var cardV1 = vm.FeedItems.First(c => c.VideoPath == v1);
+        var cardV2 = vm.FeedItems.First(c => c.VideoPath == v2);
+        var cardV4 = vm.FeedItems.First(c => c.VideoPath == v4Discovered);
+        Assert.True(cardV1.HasSubtitle);
+        Assert.Equal("SRT", cardV1.SubtitleBadgeText);
+        Assert.False(cardV2.HasSubtitle);
+        Assert.Null(cardV2.SubtitleBadgeText);
+        Assert.True(cardV4.HasSubtitle);
+        Assert.Equal("SRT", cardV4.SubtitleBadgeText);
 
         // Watch v1 once, like it, rate 3 stars
         vm.OnVideoOpened(v1);
@@ -248,20 +341,29 @@ public sealed class LocalProfileTests : IDisposable
         vm.ActiveFilter = VideoFeedFilter.All;
         Assert.Equal(4, vm.FeedItems.Count);
 
-        // Search query on All
-        vm.SearchQuery = "Delta";
+        // Multi-token search query on All ("sezon 2 bolum" matches "Sezon_2_Bolum_05.mp4")
+        vm.SearchQuery = "sezon 2 bolum";
         Assert.Single(vm.FeedItems);
         Assert.Equal(v4Discovered, vm.FeedItems[0].VideoPath);
 
         vm.SearchQuery = "";
         Assert.Equal(4, vm.FeedItems.Count);
 
-        // Logout clears feed and active video stats
+        // Logout clears active user stats and locks personal tabs while still allowing anonymous SSD search on "All"
         vm.Logout();
         Assert.False(vm.IsLoggedIn);
-        Assert.Empty(vm.FeedItems);
         Assert.Equal(0, vm.ActiveVideoViewCount);
         Assert.False(vm.ActiveVideoIsLiked);
         Assert.Equal(0, vm.ActiveVideoRating);
+        Assert.All(vm.FeedItems, item =>
+        {
+            Assert.Equal(0, item.ViewCount);
+            Assert.False(item.IsLiked);
+            Assert.Equal(0, item.Rating);
+        });
+
+        vm.ActiveFilter = VideoFeedFilter.History;
+        Assert.True(vm.RequiresAuthForCurrentTab);
+        Assert.Empty(vm.FeedItems);
     }
 }

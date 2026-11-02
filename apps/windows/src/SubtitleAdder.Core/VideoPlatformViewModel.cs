@@ -10,7 +10,7 @@ namespace SubtitleAdder.Core;
 /// </summary>
 public sealed class VideoCardViewModel
 {
-    public VideoCardViewModel(VideoUserStats stats)
+    public VideoCardViewModel(VideoUserStats stats, IReadOnlyList<string>? customListNames = null)
     {
         Stats = stats;
         VideoPath = stats.VideoPath;
@@ -28,7 +28,13 @@ public sealed class VideoCardViewModel
         ProgressRatio = stats.ProgressRatio;
         LastWatchedAtUtc = stats.LastWatchedAtUtc;
         UpdatedAtUtc = stats.UpdatedAtUtc;
-        HasSidecarSubtitle = SubtitleParser.FindSidecarSubtitle(stats.VideoPath) is not null;
+        SidecarSubtitlePath = FindVideoSubtitleFile(stats.VideoPath);
+        HasSubtitle = SidecarSubtitlePath is not null;
+        HasSidecarSubtitle = HasSubtitle;
+        SubtitleBadgeText = SidecarSubtitlePath is { } subPath
+            ? Path.GetExtension(subPath).TrimStart('.').ToUpperInvariant()
+            : null;
+        CustomListNames = customListNames ?? [];
     }
 
     public VideoUserStats Stats { get; }
@@ -46,15 +52,26 @@ public sealed class VideoCardViewModel
     public double ProgressRatio { get; }
     public DateTimeOffset? LastWatchedAtUtc { get; }
     public DateTimeOffset UpdatedAtUtc { get; }
+    public string? SidecarSubtitlePath { get; }
+    public bool HasSubtitle { get; }
     public bool HasSidecarSubtitle { get; }
+    public string? SubtitleBadgeText { get; }
+    public IReadOnlyList<string> CustomListNames { get; }
 
+    public bool HasCustomLists => CustomListNames.Count > 0;
     public bool HasProgress => ProgressRatio > 0.01;
+
+    public string SubtitleStatusText => HasSubtitle
+        ? (string.IsNullOrEmpty(SubtitleBadgeText) ? L("Altyazılı") : $"{L("Altyazılı")} ({SubtitleBadgeText})")
+        : L("Altyazı yok");
 
     public string ViewsText => ViewCount > 0
         ? L("%lld görüntüleme", (long)ViewCount)
         : L("Henüz izlenmedi");
 
-    public string LikeButtonText => IsLiked ? L("Beğenildi") : L("Beğen");
+    public string LikeButtonText => IsLiked ? L("Favorilerde") : L("Favorilere ekle");
+
+    public string RatingBadgeText => Rating > 0 ? $"★ {Rating}/5" : "";
 
     public string DurationText => DurationSeconds > 0
         ? PlaybackTimeline.FormatTime(DurationSeconds, DurationSeconds >= 3600)
@@ -63,6 +80,31 @@ public sealed class VideoCardViewModel
     public string LastWatchedText => LastWatchedAtUtc is { } watched
         ? L("Son izleme: %@", watched.ToLocalTime().ToString("g", CultureInfo.CurrentUICulture))
         : L("Henüz izlenmedi");
+
+    private static string? FindVideoSubtitleFile(string? videoPath)
+    {
+        if (SubtitleParser.FindSidecarSubtitle(videoPath) is { } exact)
+            return exact;
+
+        if (string.IsNullOrWhiteSpace(videoPath)) return null;
+        try
+        {
+            var dir = Path.GetDirectoryName(videoPath);
+            var stem = Path.GetFileNameWithoutExtension(videoPath);
+            if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(stem) || !Directory.Exists(dir))
+                return null;
+
+            foreach (var ext in SubtitleParser.Extensions)
+            {
+                var matches = Directory.GetFiles(dir, $"{stem}.*{ext}");
+                if (matches.Length > 0) return matches[0];
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+        }
+        return null;
+    }
 
     private static string FormatFolderDisplay(string directoryPath)
     {
@@ -87,8 +129,10 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
 
     private string? _authError;
     private VideoFeedFilter _activeFilter = VideoFeedFilter.All;
+    private string? _activeCustomListId;
     private string _searchQuery = "";
     private IReadOnlyList<VideoCardViewModel> _feedItems = [];
+    private IReadOnlyList<UserVideoList> _customLists = [];
     private string? _activeVideoPath;
     private int _activeVideoViewCount;
     private bool _activeVideoIsLiked;
@@ -134,9 +178,43 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
         set
         {
             if (!SetProperty(ref _activeFilter, value)) return;
+            OnPropertyChanged(nameof(RequiresAuthForCurrentTab));
+            OnPropertyChanged(nameof(ActiveCustomListName));
             RefreshFeed();
         }
     }
+
+    /// <summary>ID of the selected user-created list when <see cref="ActiveFilter"/> is <see cref="VideoFeedFilter.CustomList"/>.</summary>
+    public string? ActiveCustomListId
+    {
+        get => _activeCustomListId;
+        set
+        {
+            if (!SetProperty(ref _activeCustomListId, value)) return;
+            OnPropertyChanged(nameof(ActiveCustomListName));
+            RefreshFeed();
+        }
+    }
+
+    /// <summary>Name of the currently active custom list, if any.</summary>
+    public string? ActiveCustomListName =>
+        _activeCustomListId is { } id
+            ? _customLists.FirstOrDefault(l => string.Equals(l.Id, id, StringComparison.OrdinalIgnoreCase))?.Name
+            : null;
+
+    /// <summary>Custom video lists created by the currently logged-in user.</summary>
+    public IReadOnlyList<UserVideoList> CustomLists
+    {
+        get => _customLists;
+        private set => SetProperty(ref _customLists, value);
+    }
+
+    /// <summary>
+    /// True when the user is logged out and has selected a personal profile tab (History, Liked, TopRated, MostWatched, CustomList)
+    /// without an active search query. When on "Keşfet" (<see cref="VideoFeedFilter.All"/>) or searching, SSD-indexed videos are shown even when logged out.
+    /// </summary>
+    public bool RequiresAuthForCurrentTab =>
+        !IsLoggedIn && _activeFilter != VideoFeedFilter.All && string.IsNullOrWhiteSpace(_searchQuery);
 
     /// <summary>Search query filtering the video platform feed by file name or folder path.</summary>
     public string SearchQuery
@@ -146,6 +224,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
         {
             var next = value ?? "";
             if (!SetProperty(ref _searchQuery, next)) return;
+            OnPropertyChanged(nameof(RequiresAuthForCurrentTab));
             RefreshFeed();
         }
     }
@@ -250,6 +329,11 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     {
         _profileManager.Logout();
         AuthError = null;
+        _activeCustomListId = null;
+        if (_activeFilter == VideoFeedFilter.CustomList)
+        {
+            _activeFilter = VideoFeedFilter.All;
+        }
         SyncFromProfileManager();
     }
 
@@ -327,7 +411,98 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
         RefreshFeed();
     }
 
-    /// <summary>Feeds SSD-discovered video paths into the platform so they appear under the "All / Keşfet" tab.</summary>
+    /// <summary>Clears watch history for the active profile while preserving favorites, ratings, and custom lists.</summary>
+    public bool ClearWatchHistory()
+    {
+        if (!IsLoggedIn) return false;
+        var ok = _profileManager.ClearWatchHistory();
+        if (ok)
+        {
+            RefreshActiveVideoStats();
+            RefreshFeed();
+        }
+        return ok;
+    }
+
+    // MARK: - Custom User Lists ("Listelerim")
+
+    /// <summary>Creates a new custom video list in the active profile.</summary>
+    public UserVideoList? CreateCustomList(string name)
+    {
+        if (!IsLoggedIn) return null;
+        var created = _profileManager.CreateCustomList(name);
+        if (created is not null)
+        {
+            SyncFromProfileManager();
+        }
+        return created;
+    }
+
+    /// <summary>Renames an existing custom video list in the active profile.</summary>
+    public bool RenameCustomList(string listId, string newName)
+    {
+        if (!IsLoggedIn) return false;
+        var ok = _profileManager.RenameCustomList(listId, newName);
+        if (ok) SyncFromProfileManager();
+        return ok;
+    }
+
+    /// <summary>Deletes a custom video list from the active profile.</summary>
+    public bool DeleteCustomList(string listId)
+    {
+        if (!IsLoggedIn) return false;
+        var ok = _profileManager.DeleteCustomList(listId);
+        if (ok)
+        {
+            if (string.Equals(_activeCustomListId, listId, StringComparison.OrdinalIgnoreCase))
+            {
+                _activeCustomListId = null;
+                if (_activeFilter == VideoFeedFilter.CustomList)
+                {
+                    _activeFilter = VideoFeedFilter.All;
+                    OnPropertyChanged(nameof(ActiveFilter));
+                }
+            }
+            SyncFromProfileManager();
+        }
+        return ok;
+    }
+
+    /// <summary>Activates a specific custom list filter tab in the video platform hub.</summary>
+    public void SelectCustomList(string listId)
+    {
+        if (string.IsNullOrWhiteSpace(listId)) return;
+        _activeCustomListId = listId;
+        _activeFilter = VideoFeedFilter.CustomList;
+        OnPropertyChanged(nameof(ActiveCustomListId));
+        OnPropertyChanged(nameof(ActiveFilter));
+        OnPropertyChanged(nameof(ActiveCustomListName));
+        OnPropertyChanged(nameof(RequiresAuthForCurrentTab));
+        RefreshFeed();
+    }
+
+    /// <summary>Toggles membership of <paramref name="videoPath"/> in custom list <paramref name="listId"/>.</summary>
+    public bool ToggleVideoInCustomList(string listId, string videoPath)
+    {
+        if (!IsLoggedIn || string.IsNullOrWhiteSpace(listId) || string.IsNullOrWhiteSpace(videoPath))
+            return false;
+        var nowInList = _profileManager.ToggleVideoInCustomList(listId, videoPath);
+        SyncFromProfileManager();
+        return nowInList;
+    }
+
+    /// <summary>Toggles membership of the currently open player video in custom list <paramref name="listId"/>.</summary>
+    public bool ToggleActiveVideoInCustomList(string listId)
+    {
+        if (!IsLoggedIn || ActiveVideoPath is not { } activePath) return false;
+        return ToggleVideoInCustomList(listId, activePath);
+    }
+
+    /// <summary>Returns true if <paramref name="videoPath"/> belongs to custom list <paramref name="listId"/>.</summary>
+    public bool IsVideoInCustomList(string listId, string? videoPath) =>
+        IsLoggedIn && _profileManager.IsVideoInCustomList(listId, videoPath);
+
+    /// <summary>Feeds SSD-discovered video paths into the platform so they appear under "Keşfet" and instant search.</summary>
     public void SetDiscoveredPaths(IEnumerable<string> paths)
     {
         _discoveredPaths.Clear();
@@ -346,18 +521,37 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
         RefreshFeed();
     }
 
-    /// <summary>Rebuilds <see cref="FeedItems"/> and active video stats from <see cref="ProfileManager"/>.</summary>
+    /// <summary>Rebuilds <see cref="FeedItems"/>, <see cref="CustomLists"/>, and active video stats from <see cref="ProfileManager"/>.</summary>
     public void RefreshFeed()
     {
         RefreshActiveVideoStats();
+        CustomLists = IsLoggedIn ? _profileManager.GetCustomLists() : [];
+
         if (!IsLoggedIn)
         {
-            FeedItems = [];
+            if (_activeFilter == VideoFeedFilter.All || !string.IsNullOrWhiteSpace(_searchQuery))
+            {
+                var anonStats = _profileManager.GetFeed(VideoFeedFilter.All, _searchQuery, _discoveredPaths);
+                FeedItems = anonStats.Select(s => new VideoCardViewModel(s, [])).ToList();
+            }
+            else
+            {
+                FeedItems = [];
+            }
             return;
         }
 
-        var statsList = _profileManager.GetFeed(_activeFilter, _searchQuery, _discoveredPaths);
-        FeedItems = statsList.Select(s => new VideoCardViewModel(s)).ToList();
+        var statsList = _profileManager.GetFeed(_activeFilter, _searchQuery, _discoveredPaths, _activeCustomListId);
+        FeedItems = statsList
+            .Select(s =>
+            {
+                var listNames = _profileManager
+                    .GetCustomListsContaining(s.VideoPath)
+                    .Select(l => l.Name)
+                    .ToList();
+                return new VideoCardViewModel(s, listNames);
+            })
+            .ToList();
     }
 
     private void RefreshActiveVideoStats()
@@ -387,12 +581,14 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
         OnPropertyChanged(nameof(CurrentUsername));
         OnPropertyChanged(nameof(RegisteredUsernames));
         OnPropertyChanged(nameof(HasActiveVideo));
+        OnPropertyChanged(nameof(RequiresAuthForCurrentTab));
         OnPropertyChanged(nameof(ProfileStatusText));
         OnPropertyChanged(nameof(ProfileSummaryText));
         OnPropertyChanged(nameof(TotalWatchedVideosCount));
         OnPropertyChanged(nameof(TotalLikedVideosCount));
         OnPropertyChanged(nameof(TotalRatedVideosCount));
         OnPropertyChanged(nameof(TotalViewsCount));
+        OnPropertyChanged(nameof(ActiveCustomListName));
         RefreshFeed();
     }
 
