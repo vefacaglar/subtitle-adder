@@ -218,6 +218,10 @@ final class SubtitleViewModel {
     @ObservationIgnored var asyncRunID = UUID()
     /// Set once transcription is over: the running batch finishes, no new one starts.
     @ObservationIgnored var asyncDraining = false
+    /// Speech recognition is finished (the engine moved on to `diarizing` or `segmenting`): every line is final, so
+    /// the batch holdback and the minimum batch size no longer apply and the tail can be translated while speaker
+    /// analysis still runs. Cleared when the run starts or is cancelled.
+    @ObservationIgnored var asyncTranscriptionComplete = false
     /// A batch failed (server unreachable, error event): no further batch starts in this run, so a dead server
     /// isn't retried on every snapshot. The final translation pass picks up the lines and reports the error.
     @ObservationIgnored var asyncFailed = false
@@ -554,6 +558,11 @@ final class SubtitleViewModel {
                         let download = downloadPhases.update(stage: stage, fraction: fraction)
                         let purpose: JobPurpose = download == .diarization ? .diarization : .transcription
                         status = .working(Self.label(for: stage, fraction: fraction, purpose: purpose), fraction: fraction)
+                        if stage == .diarizing || stage == .segmenting {
+                            // Recognition is done: even a short final batch can translate while speakers are analysed.
+                            asyncTranscriptionComplete = true
+                            if asyncTranslate { startAsyncTranslation(engine: asyncEngine) }
+                        }
                     case .partial(let language, let snapshot):
                         applyPartial(language: language, sentences: snapshot)
                         if asyncTranslate { startAsyncTranslation(engine: asyncEngine) }
