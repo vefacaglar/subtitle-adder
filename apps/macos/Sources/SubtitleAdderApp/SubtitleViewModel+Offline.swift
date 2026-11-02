@@ -23,9 +23,7 @@ extension SubtitleViewModel {
         guard offlineMode else { return false }
         // A job that translates (its list carries the translation model) would send the text to the internet.
         if modelIDs.contains(translationModel), let provider = activeCloudProviderName {
-            status = .failed(LocalizedMessage("\(Self.offlineCloudPrefix)\(provider)") {
-                L("Çevrimdışı mod açık: çeviri internetteki bir sağlayıcıya (%@) gönderilemez. Çevrimdışı modu kapat ya da yerel bir model veya sunucu seç.", provider)
-            })
+            status = .failed(Self.offlineCloudMessage(provider))
             offlineRetry = retry
             return true
         }
@@ -64,6 +62,13 @@ extension SubtitleViewModel {
     }
 
     private static let offlineCloudPrefix = "offline-cloud:"
+
+    /// Offline mode keeps the text from going to the cloud provider named `provider`.
+    static func offlineCloudMessage(_ provider: String) -> LocalizedMessage {
+        LocalizedMessage("\(offlineCloudPrefix)\(provider)") {
+            L("Çevrimdışı mod açık: çeviri internetteki bir sağlayıcıya (%@) gönderilemez. Çevrimdışı modu kapat ya da yerel bir model veya sunucu seç.", provider)
+        }
+    }
 
     /// Turns offline mode off (persisted) and runs the blocked job again, which downloads the missing model.
     func goOnlineAndRetry() {

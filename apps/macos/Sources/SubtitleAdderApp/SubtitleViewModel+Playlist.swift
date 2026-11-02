@@ -201,7 +201,10 @@ extension SubtitleViewModel {
                 // The backlog stays at one item: the previous item's translation and save are over before this one's
                 // start. Recognition of the next item waits behind this as well, as on Windows.
                 if await waitForEarlierTranslations(item) {
-                    handOffToStage3(item, engine: engine, target: target, pipeline: pipeline)
+                    let handoff = handOffToStage3(item, engine: engine, target: target, pipeline: pipeline)
+                    // A local translation model next to the recognition model makes a smaller Mac swap: there this item's
+                    // translation is over before the next item's recognition starts.
+                    if !translationMayOverlapRecognition(external: handoff.external) { await handoff.task.value }
                 } else {
                     // Stopped while waiting; the loop ends with the cancelled run.
                     updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
@@ -435,7 +438,12 @@ extension SubtitleViewModel {
     /// earlier items' stage 3 is over, and the translation itself takes the app-wide gate, so only one runs.
     /// Everything the task needs is captured now: the editor moves on to the next video. Lines the server already
     /// translated while the video was transcribing (`translations`) are not sent again.
-    private func handOffToStage3(_ item: PlaylistItem, engine: EngineClient, target: String, pipeline: PlaylistPipeline) {
+    ///
+    /// Returns the task and whether the item goes to an external provider (which costs this Mac no memory).
+    @discardableResult
+    private func handOffToStage3(
+        _ item: PlaylistItem, engine: EngineClient, target: String, pipeline: PlaylistPipeline
+    ) -> (task: Task<Void, Never>, external: Bool) {
         let lines = sentences
         let preTranslated = translations
         let source = translationSource
@@ -458,7 +466,7 @@ extension SubtitleViewModel {
             protectPlaylistModels()
         }
         playlistBackgroundPending += 1
-        playlistBackground.append(Task {
+        let task = Task {
             defer {
                 playlistBackgroundPending -= 1
                 if !external { releaseTranslationModel(model, in: pipeline) }
@@ -467,7 +475,50 @@ extension SubtitleViewModel {
                 item, lines: lines, preTranslated: preTranslated, engine: engine, source: source, target: target,
                 model: model, format: format, external: external, refreshCatalog: refreshCatalog
             )
-        })
+        }
+        playlistBackground.append(task)
+        return (task, external)
+    }
+
+    /// Physical memory from which a local translation model (a GGUF through llama.cpp, MADLAD) may run while the next
+    /// video is being recognized (24 GiB). Whisper large-v3, the translation model and the audio extraction together
+    /// make an 8 or 16 GB Mac swap, which makes both slower than running them one after the other.
+    nonisolated static let localTranslationOverlapMemory: UInt64 = 24 * 1024 * 1024 * 1024
+
+    /// Whether the translation of an item may run while the next item is recognized: always for an external provider
+    /// (the work happens on another machine), for a local model only on a Mac with enough memory.
+    func translationMayOverlapRecognition(external: Bool) -> Bool {
+        external || physicalMemory >= Self.localTranslationOverlapMemory
+    }
+
+    /// The client a stage-3 translation launches with, checked at the moment it really starts (it may have waited for the
+    /// gate for minutes since the hand-off pinned its settings). Offline mode is as it is now, not as it was; a cloud
+    /// provider can't be reached once offline mode is on; and the key of the server chosen at hand-off is read again off
+    /// the main thread. `problem` says why the translation must not start.
+    private func startingTranslation(
+        _ pinned: EngineClient, external: Bool
+    ) async -> (engine: EngineClient, problem: LocalizedMessage?) {
+        var engine = pinned
+        var settings = pinned.launchSettings ?? launchState.settings
+        settings.offline = offlineMode
+        if external, var llm = settings.externalLLM {
+            // The provider the hand-off chose is recognized by its address; it may have been renamed or removed since.
+            let provider = providerStore.providers.first {
+                ExternalLLMServer.normalizeBaseURL($0.baseURL) == llm.normalizedURL
+            }
+            if offlineBlocksServer(llm.url) {
+                return (engine, Self.offlineCloudMessage(provider?.name ?? llm.url))
+            }
+            if let provider {
+                await loadProviderKeys([provider.id])
+                let key = providerKey(for: provider.id)
+                if key == .unreadable { return (engine, Self.keyUnreadableMessage(provider.name)) }
+                llm.apiKey = key.value
+                settings.externalLLM = llm
+            }
+        }
+        engine.launchSettings = settings
+        return (engine, nil)
     }
 
     private func releaseTranslationModel(_ model: String, in pipeline: PlaylistPipeline) {
@@ -524,13 +575,23 @@ extension SubtitleViewModel {
         }
         let request = Self.withTranslationContext(lines, requested: remaining)
         var engineError: String?
+        var startProblem: LocalizedMessage?
+        var engine = engine
         if !remaining.isEmpty {
             do {
                 // One translation at a time in the whole app (a background batch of the next video, the editor's own
                 // job): wait for the gate with the row's "Çeviri hazırlanıyor…"; a stopped run leaves the queue.
                 try await translationGate.acquire()
                 defer { translationGate.release() }
-                for try await event in engine.translate(request, to: target, from: source, model: model) {
+                // The hand-off pinned the launch settings, possibly minutes ago: now that the translation really starts,
+                // offline mode and the provider's key are looked at again.
+                let start = await startingTranslation(engine, external: external)
+                engine = start.engine
+                startProblem = start.problem
+                let events = startProblem == nil
+                    ? engine.translate(request, to: target, from: source, model: model)
+                    : AsyncThrowingStream<EngineEvent, Error> { $0.finish() }
+                for try await event in events {
                     guard !Task.isCancelled else { break }
                     switch event {
                     case .stage(let stage, var fraction):
@@ -564,6 +625,10 @@ extension SubtitleViewModel {
             updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
             return
         }
+        if let startProblem {
+            updatePlaylistItem(item.id, .failed, startProblem, nil)
+            return
+        }
         if let engineError {
             updatePlaylistItem(item.id, .failed, .verbatim(engineError), nil)
             return
@@ -590,7 +655,8 @@ extension SubtitleViewModel {
         let url = item.videoURL.deletingLastPathComponent().appendingPathComponent(name, isDirectory: false)
         do {
             // A folder that is gone makes the write throw: the item fails instead of reporting a save that didn't happen.
-            try Data(text.utf8).write(to: url, options: .atomic)
+            // The write itself (a slow or network disk) is not done on the main actor.
+            try await Self.write(Data(text.utf8), to: url)
         } catch {
             let reason = error.localizedDescription
             updatePlaylistItem(

@@ -153,7 +153,7 @@ extension SubtitleViewModel {
         guard let url = subtitleSaveURL() else { return nil }
         guard let text = await render(as: exportFormat, translated: useTranslation) else { return nil }
         do {
-            try Data(text.utf8).write(to: url, options: .atomic)
+            try await Self.write(Data(text.utf8), to: url)
         } catch {
             reportSaveFailure(error)
             return nil
@@ -162,6 +162,12 @@ extension SubtitleViewModel {
         onSubtitleSaved?(url)
         if !isWorking, status != .finished { status = .finished }
         return url
+    }
+
+    /// Writes `data` to `url` atomically on a background thread: a slow, network or sleeping disk must not block the
+    /// main actor.
+    nonisolated static func write(_ data: Data, to url: URL) async throws {
+        try await Task.detached(priority: .utility) { try data.write(to: url, options: .atomic) }.value
     }
 
     /// Shows "Dosya kaydedilemedi: …" in the status bar; used by every place that writes a subtitle file.
