@@ -3,6 +3,7 @@ import contextlib
 import gc
 import hashlib
 import inspect
+import json
 import os
 import time
 from collections.abc import Callable
@@ -53,20 +54,90 @@ class PipelineResult:
     outputs: list[Path]
 
 
+SOURCE_MARKER_SUFFIX = ".source.json"
+SOURCE_MARKER_VERSION = 1
+
+
+def _source_marker_path(wav_path: Path) -> Path:
+    return wav_path.with_name(wav_path.name + SOURCE_MARKER_SUFFIX)
+
+
+def _source_identity(video: Path) -> dict | None:
+    """Identity of the source video (resolved path, size, mtime_ns), or None if it cannot be determined."""
+    try:
+        try:
+            resolved = str(video.resolve())
+        except (OSError, RuntimeError):
+            resolved = os.path.abspath(video)
+        info = video.stat()
+        return {"source": resolved, "size": info.st_size, "mtime_ns": info.st_mtime_ns}
+    except (OSError, ValueError):
+        return None
+
+
+def _wav_matches_source(wav_path: Path, identity: dict | None) -> bool:
+    """True when `wav_path` was extracted from exactly the video described by `identity`.
+
+    The WAV name depends only on the video's file stem, so a WAV left in `out_dir` by another video with the same
+    stem, by an earlier version of the video, or by an engine without a marker must never be reused.
+    """
+    if identity is None:
+        return False
+    try:
+        if not wav_path.is_file():
+            return False
+        wav_size = wav_path.stat().st_size
+        if wav_size <= 44:
+            return False
+        marker = json.loads(_source_marker_path(wav_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(marker, dict) or marker.get("version") != SOURCE_MARKER_VERSION:
+        return False
+    # `wav_size` ties the marker to this exact WAV (a torn write by a concurrent extraction of another video
+    # would leave a marker whose WAV has a different size).
+    return marker.get("wav_size") == wav_size and all(marker.get(key) == value for key, value in identity.items())
+
+
+def _write_source_marker(wav_path: Path, identity: dict | None, wav_size: int) -> None:
+    """Atomically writes the identity marker next to `wav_path`; on failure the WAV is simply not reused later."""
+    marker_path = _source_marker_path(wav_path)
+    tmp_marker = marker_path.with_name(f"{marker_path.name}.{os.getpid()}.tmp")
+    try:
+        if identity is None:
+            return
+        payload = {"version": SOURCE_MARKER_VERSION, **identity, "wav_size": wav_size}
+        tmp_marker.write_text(json.dumps(payload), encoding="utf-8")
+        tmp_marker.replace(marker_path)
+    except (OSError, ValueError, TypeError):
+        with contextlib.suppress(OSError):
+            tmp_marker.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            marker_path.unlink(missing_ok=True)
+
+
 def extract_video_audio(
     video: Path,
     out_dir: Path,
     on_stage: StageFn = lambda stage, fraction: None,
 ) -> Path:
-    """Extracts 16 kHz mono WAV audio for `video` into `out_dir`, reusing an existing WAV if present.
+    """Extracts 16 kHz mono WAV audio for `video` into `out_dir`, reusing a WAV that came from the same video.
 
     Writes to a PID-scoped temporary file first and atomically renames it to `<safe_stem>.wav` so a
     concurrent or subsequent `transcribe` process never reads a partially written WAV file.
+
+    The WAV name only depends on the file stem, so an identity marker `<safe_stem>.wav.source.json` (resolved
+    source path, size and `st_mtime_ns` of the video, plus the WAV size) is written next to it after a successful
+    extraction. An existing WAV is reused only when the marker matches the current video; a missing or
+    mismatched marker (another video with the same stem, a replaced/re-encoded video, a WAV left by an older
+    engine) means the audio is extracted again and both files are overwritten.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     safe_stem = _safe_out_stem(video, out_dir)
     wav_path = out_dir / f"{safe_stem}.wav"
-    if wav_path.is_file() and wav_path.stat().st_size > 44:
+    # Taken before extraction: a video modified while it is decoded then fails the check next time.
+    identity = _source_identity(video)
+    if _wav_matches_source(wav_path, identity):
         on_stage("extracting_audio", 1.0)
         return wav_path
 
@@ -79,14 +150,25 @@ def extract_video_audio(
         extracted = extract_audio(video, tmp_path, **extract_kwargs)
         if tmp_path.is_file():
             try:
-                tmp_path.replace(wav_path)
-                return wav_path
+                wav_size = tmp_path.stat().st_size
             except OSError:
-                if wav_path.is_file() and wav_path.stat().st_size > 44:
+                wav_size = -1  # never matches a real WAV, so the result is simply not reused
+            # The old marker describes the WAV about to be replaced; drop it first so a crash between the
+            # rename and the new marker can never pair another video's marker with this audio.
+            with contextlib.suppress(OSError):
+                _source_marker_path(wav_path).unlink(missing_ok=True)
+            try:
+                tmp_path.replace(wav_path)
+            except OSError:
+                # Another process may have just produced the WAV for this very video.
+                if _wav_matches_source(wav_path, identity):
                     with contextlib.suppress(OSError):
                         tmp_path.unlink(missing_ok=True)
                     return wav_path
+                # The target is locked or belongs to another video: use our own audio as is.
                 return tmp_path
+            _write_source_marker(wav_path, identity, wav_size)
+            return wav_path
         return extracted
     except BaseException:
         with contextlib.suppress(OSError):
