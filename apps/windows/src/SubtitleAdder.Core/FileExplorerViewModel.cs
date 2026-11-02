@@ -238,6 +238,19 @@ public sealed partial class FileExplorerViewModel : ObservableObject
 
         if (string.Equals(_currentFolder, normalizedDir, StringComparison.OrdinalIgnoreCase))
         {
+            if (_currentFolderFiles.Count > 0 || _currentFolderSubdirectories.Count > 0)
+            {
+                var existing = _currentFolderFiles.FirstOrDefault(f =>
+                    string.Equals(f.FullPath, videoPath, StringComparison.OrdinalIgnoreCase));
+                if (existing is not null)
+                {
+                    var sidecarPath = SubtitleParser.FindSidecarSubtitle(videoPath);
+                    if (existing.HasSidecarSubtitle == (sidecarPath is not null))
+                    {
+                        return;
+                    }
+                }
+            }
             await RefreshAsync();
         }
         else
