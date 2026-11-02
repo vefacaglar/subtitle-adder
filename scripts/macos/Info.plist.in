@@ -21,6 +21,8 @@
     <string>Çeviriyi yerel ağdaki bir LLM sunucusuna yaptırmak için gerekir. / Needed to translate with an LLM server on your local network.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHumanReadableCopyright</key><string>MIT License</string>
+    <!-- Opening files: both lists are Viewer / Alternate, so the app shows up in "Open With" and as a choice under
+         "Get Info > Open with" without taking over the system defaults of other apps. -->
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
@@ -29,8 +31,115 @@
             <key>LSHandlerRank</key><string>Alternate</string>
             <key>LSItemContentTypes</key>
             <array>
+                <!-- Everything the system treats as audio or video, and the common containers by name so they are
+                     covered even where a third-party UTI (for mkv, webm) is not declared as audiovisual. -->
                 <string>public.audiovisual-content</string>
+                <string>public.movie</string>
+                <string>public.mpeg-4</string>
+                <string>com.apple.quicktime-movie</string>
+                <string>com.apple.m4v-video</string>
+                <string>org.matroska.mkv</string>
+                <string>org.webmproject.webm</string>
+                <string>public.avi</string>
+                <string>public.mpeg</string>
+                <string>public.mpeg-2-transport-stream</string>
+                <string>public.avchd-mpeg-2-transport-stream</string>
+                <string>com.microsoft.windows-media-wmv</string>
+                <string>public.3gpp</string>
+                <string>com.adobe.flash.video</string>
             </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Altyazı / Subtitle</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>app.subtitleadder.srt</string>
+                <string>org.w3.webvtt</string>
+                <string>app.subtitleadder.ass</string>
+                <string>app.subtitleadder.ssa</string>
+            </array>
+        </dict>
+    </array>
+    <!-- Types the system has no (or, on older systems, may have no) declaration for. SubRip and SubStation Alpha are
+         dynamic types without this; WebVTT, Matroska and WebM are declared by recent systems and repeated here as a
+         fallback. -->
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>app.subtitleadder.srt</string>
+            <key>UTTypeDescription</key><string>SubRip subtitles</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.plain-text</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>srt</string></array>
+                <key>public.mime-type</key>
+                <array><string>application/x-subrip</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>app.subtitleadder.ass</string>
+            <key>UTTypeDescription</key><string>Advanced SubStation Alpha subtitles</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.plain-text</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>ass</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>app.subtitleadder.ssa</string>
+            <key>UTTypeDescription</key><string>SubStation Alpha subtitles</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.plain-text</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>ssa</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>org.w3.webvtt</string>
+            <key>UTTypeDescription</key><string>WebVTT subtitles</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.plain-text</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>vtt</string></array>
+                <key>public.mime-type</key>
+                <array><string>text/vtt</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>org.matroska.mkv</string>
+            <key>UTTypeDescription</key><string>Matroska video</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.movie</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>mkv</string></array>
+                <key>public.mime-type</key>
+                <array><string>video/x-matroska</string></array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key><string>org.webmproject.webm</string>
+            <key>UTTypeDescription</key><string>WebM video</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.movie</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array><string>webm</string></array>
+                <key>public.mime-type</key>
+                <array><string>video/webm</string></array>
+            </dict>
         </dict>
     </array>
 </dict>
