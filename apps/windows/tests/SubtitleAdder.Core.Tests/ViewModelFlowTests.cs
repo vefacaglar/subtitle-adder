@@ -937,38 +937,44 @@ public class ViewModelTranslationTests
             vm.AddToPlaylist([video1, video2, video3, video4], defaultSourceLanguage: "en");
             var runTask = vm.RunPlaylistAsync();
 
-            // Stage 2 starts transcribing Video 1 while Stage 1 starts lookahead audio extraction for Video 2.
-            await Make.Eventually(() => engine.TranscribeCalls.Count == 1 && engine.ExtractAudioCalls.Count == 1, "video 1 ASR + video 2 audio extract");
-            Assert.Equal(video1, engine.TranscribeCalls[0].Video);
-            Assert.Equal(video2, engine.ExtractAudioCalls[0].Video);
+            // Step 1: ONLY Video 1 starts audio extraction first (strictly 1 audio extraction at a time;
+            // Video 2 does NOT start extracting until Video 1's audio extraction completes).
+            await Make.Eventually(() => engine.ExtractAudioCalls.Count == 1, "video 1 audio extract starts alone");
+            Assert.Equal(video1, engine.ExtractAudioCalls[0].Video);
+            Assert.Empty(engine.TranscribeCalls);
 
-            // Stage 1 finishes pre-extracting Video 2 -> Video 2 becomes "Ses hazır · Sırada", and Stage 1 starts Video 3!
+            // Finish Video 1 audio extraction -> Video 1 enters Stage 2 (ASR) AND only Video 2 starts lookahead audio extraction!
             engine.FinishExtractAudio(0,
+                new EngineEvent.Stage(EngineStage.ExtractingAudio, 1.0),
+                Make.Result("?", Path.Combine(rootDir, "Video1.wav")));
+
+            await Make.Eventually(() => engine.TranscribeCalls.Count == 1 && engine.ExtractAudioCalls.Count == 2, "video 1 ASR + video 2 single lookahead audio extract");
+            Assert.Equal(video1, engine.TranscribeCalls[0].Video);
+            Assert.Equal(video2, engine.ExtractAudioCalls[1].Video);
+
+            // Stage 1 finishes pre-extracting Video 2 -> Video 2 becomes "Ses hazır · Sırada",
+            // and Video 3 does NOT start extracting while Video 1 is still transcribing (MaxAudioLookahead == 1).
+            engine.FinishExtractAudio(1,
                 new EngineEvent.Stage(EngineStage.ExtractingAudio, 0.5),
                 Make.Result("?", Path.Combine(rootDir, "Video2.wav")));
-            await Make.Eventually(() => vm.Playlist[1].StatusText == "Ses hazır · Sırada" && engine.ExtractAudioCalls.Count == 2, "video 2 audio ready + video 3 extract started");
+            await Make.Eventually(() => vm.Playlist[1].StatusText == "Ses hazır · Sırada", "video 2 audio ready");
             Assert.Equal(1.0, vm.Playlist[1].Fraction);
-            Assert.Equal(video3, engine.ExtractAudioCalls[1].Video);
-
-            // Stage 1 finishes pre-extracting Video 3 while Video 1 is still transcribing.
-            engine.FinishExtractAudio(1,
-                new EngineEvent.Stage(EngineStage.ExtractingAudio, 1.0),
-                Make.Result("?", Path.Combine(rootDir, "Video3.wav")));
-            await Make.Eventually(() => vm.Playlist[2].StatusText == "Ses hazır · Sırada", "video 3 audio ready");
+            Assert.Equal(2, engine.ExtractAudioCalls.Count);
 
             // Now Video 1 finishes Stage 2 (ASR):
             // - Video 1 immediately moves to Stage 3 (Translation)
-            // - Video 2 immediately moves to Stage 2 (ASR) without waiting for Video 1's translation
-            // - Video 4 immediately starts Stage 1 (Lookahead Audio Extraction)!
+            // - Video 2 (audio already ready) immediately moves to Stage 2 (ASR) without waiting for Video 1's translation
+            // - Video 3 immediately starts Stage 1 (single Lookahead Audio Extraction)!
             engine.FinishTranscribe(0, Make.Result("en", "", new Sentence(1, 0, 1, "Line one")));
             await Make.Eventually(() =>
                 engine.TranslateCalls.Count == 1 &&
                 engine.TranscribeCalls.Count == 2 &&
                 engine.ExtractAudioCalls.Count == 3,
-                "concurrent 3-stage pipeline across videos 1..4");
+                "concurrent 3-stage pipeline across videos 1..3 (1 translate + 1 ASR + 1 audio extract)");
+            Assert.Equal(video3, engine.ExtractAudioCalls[2].Video);
 
             // Emit live progress across all 3 active hardware stages simultaneously:
-            // Video 1: Translating (50%), Video 2: Transcribing (30%), Video 3: Audio ready (100%), Video 4: Extracting audio (40%)
+            // Video 1: Translating (50%), Video 2: Transcribing (30%), Video 3: Extracting audio (40%), Video 4: Pending ("Sırada")
             engine.TranslateCalls[0].Channel.Writer.TryWrite(new EngineEvent.Stage(EngineStage.Translating, 0.5));
             engine.TranscribeCalls[1].Channel.Writer.TryWrite(new EngineEvent.Stage(EngineStage.Transcribing, 0.3));
             engine.ExtractAudioCalls[2].Channel.Writer.TryWrite(new EngineEvent.Stage(EngineStage.ExtractingAudio, 0.4));
@@ -976,9 +982,9 @@ public class ViewModelTranslationTests
             await Make.Eventually(() =>
                 vm.Playlist[0].StatusText == SubtitleViewModel.LabelText(EngineStage.Translating, 0.5, JobPurpose.Translation) &&
                 vm.Playlist[1].StatusText == SubtitleViewModel.LabelText(EngineStage.Transcribing, 0.3, JobPurpose.Transcription) &&
-                vm.Playlist[2].StatusText == "Ses hazır · Sırada" &&
-                vm.Playlist[3].StatusText == SubtitleViewModel.LabelText(EngineStage.ExtractingAudio, 0.4, JobPurpose.Transcription),
-                "all 4 playlist rows showing live concurrent stage statuses");
+                vm.Playlist[2].StatusText == SubtitleViewModel.LabelText(EngineStage.ExtractingAudio, 0.4, JobPurpose.Transcription) &&
+                vm.Playlist[3].StatusText == "Sırada",
+                "all 4 playlist rows showing live concurrent stage statuses with single audio extraction");
 
             // Complete Video 1 translation -> Video1.srt saved while Video 2 is still transcribing!
             var req1 = engine.TranslateCalls[0].Sentences;
@@ -986,13 +992,21 @@ public class ViewModelTranslationTests
             await Make.Eventually(() => vm.Playlist[0].State == PlaylistItemState.Completed, "video 1 completed while video 2 still transcribing");
             Assert.Equal("Satır bir", await File.ReadAllTextAsync(Path.Combine(rootDir, "Video1.srt")));
 
-            // Complete Video 4 audio extraction, Video 2..4 transcriptions and translations.
-            engine.FinishExtractAudio(2, Make.Result("?", Path.Combine(rootDir, "Video4.wav")));
+            // Suppose Video 2 finishes ASR BEFORE Video 3 finishes audio extraction:
+            // Video 2 moves to Translation, and Video 3 waits for its own audio extraction to finish before starting ASR or Video 4's audio extraction!
             engine.FinishTranscribe(1, Make.Result("en", "", new Sentence(1, 0, 1, "Line two")));
+            await Make.Eventually(() => engine.TranslateCalls.Count == 2, "video 2 translate started");
+            Assert.Equal(2, engine.TranscribeCalls.Count);
+            Assert.Equal(3, engine.ExtractAudioCalls.Count);
 
-            await Make.Eventually(() => engine.TranslateCalls.Count == 2 && engine.TranscribeCalls.Count == 3, "video 2 translate + video 3 transcribe");
+            // Now finish Video 3 audio extraction -> Video 3 starts ASR and Video 4 starts single lookahead audio extraction!
+            engine.FinishExtractAudio(2, Make.Result("?", Path.Combine(rootDir, "Video3.wav")));
+            await Make.Eventually(() => engine.TranscribeCalls.Count == 3 && engine.ExtractAudioCalls.Count == 4, "video 3 transcribe + video 4 audio extract");
+            Assert.Equal(video4, engine.ExtractAudioCalls[3].Video);
+
             var req2 = engine.TranslateCalls[1].Sentences;
             engine.FinishTranslate(1, new EngineEvent.Translation("tr", [new Sentence(req2[0].Id, req2[0].Start, req2[0].End, "Satır iki")]));
+            engine.FinishExtractAudio(3, Make.Result("?", Path.Combine(rootDir, "Video4.wav")));
             engine.FinishTranscribe(2, Make.Result("en", "", new Sentence(1, 0, 1, "Line three")));
 
             await Make.Eventually(() => engine.TranslateCalls.Count == 3 && engine.TranscribeCalls.Count == 4, "video 3 translate + video 4 transcribe");

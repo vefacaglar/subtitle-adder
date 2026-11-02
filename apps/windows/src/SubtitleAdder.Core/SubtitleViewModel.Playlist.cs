@@ -38,7 +38,7 @@ public sealed record PlaylistItem(
 /// </summary>
 public sealed partial class SubtitleViewModel
 {
-    private const int MaxAudioLookahead = 2;
+    private const int MaxAudioLookahead = 1;
 
     private IReadOnlyList<PlaylistItem> _playlist = [];
     private bool _isPlaylistRunning;
@@ -214,6 +214,32 @@ public sealed partial class SubtitleViewModel
         using var audioExtractSemaphore = new SemaphoreSlim(1, 1);
         using var translationSemaphore = new SemaphoreSlim(1, 1);
 
+        Task EnsureAudioExtractionStarted(PlaylistItem item)
+        {
+            if (preExtractTasks.TryGetValue(item.Id, out var existingTask))
+            {
+                return existingTask;
+            }
+            if (SubtitleParser.FindSidecarSubtitle(item.VideoPath) is not null)
+            {
+                preExtractedDoneIds.Add(item.Id);
+                var completed = Task.CompletedTask;
+                preExtractTasks[item.Id] = completed;
+                return completed;
+            }
+            var task = PreExtractAudioForItemAsync(
+                engine,
+                audioExtractSemaphore,
+                item.Id,
+                item.VideoPath,
+                outDir,
+                stage2StartedIds,
+                preExtractedDoneIds,
+                token);
+            preExtractTasks[item.Id] = task;
+            return task;
+        }
+
         void ScheduleLookahead()
         {
             if (token.IsCancellationRequested) return;
@@ -226,16 +252,7 @@ public sealed partial class SubtitleViewModel
             {
                 if (preExtractTasks.ContainsKey(candidate.Id)) continue;
                 if (SubtitleParser.FindSidecarSubtitle(candidate.VideoPath) is not null) continue;
-                preExtractTasks[candidate.Id] = PreExtractAudioForItemAsync(
-                    engine,
-                    audioExtractSemaphore,
-                    candidate.Id,
-                    candidate.VideoPath,
-                    outDir,
-                    stage2StartedIds,
-                    preExtractedDoneIds,
-                    ScheduleLookahead,
-                    token);
+                _ = EnsureAudioExtractionStarted(candidate);
             }
         }
 
@@ -249,16 +266,13 @@ public sealed partial class SubtitleViewModel
                     (i.State is PlaylistItemState.Pending or PlaylistItemState.Failed || preExtractTasks.ContainsKey(i.Id)));
                 if (nextItem is null) break;
 
-                stage2StartedIds.Add(nextItem.Id);
-                _activePlaylistItemId = nextItem.Id;
-
-                // Kick off Stage 1 CPU audio extraction for up to 2 upcoming videos while Stage 2 processes nextItem.
-                ScheduleLookahead();
-
-                // Wait for Stage 1's pre-extraction task for nextItem if one is currently in flight so we never double-extract.
-                if (preExtractTasks.TryGetValue(nextItem.Id, out var preExtractTask) && !preExtractTask.IsCompleted)
+                // Step 0 (Stage 1 — Single-Concurrency Audio Extraction):
+                // Ensure nextItem's audio extraction is 100% finished BEFORE starting lookahead extraction for the
+                // following video (item[i + 1]) and BEFORE entering Stage 2 GPU ASR, so 2 audio extractions never run at once.
+                var extractTask = EnsureAudioExtractionStarted(nextItem);
+                if (!extractTask.IsCompleted)
                 {
-                    await preExtractTask.ConfigureAwait(true);
+                    await extractTask.ConfigureAwait(true);
                 }
 
                 if (token.IsCancellationRequested)
@@ -266,6 +280,13 @@ public sealed partial class SubtitleViewModel
                     UpdatePlaylistItem(nextItem.Id, PlaylistItemState.Pending, LocalizedMessage.Key("Sırada"), null);
                     break;
                 }
+
+                stage2StartedIds.Add(nextItem.Id);
+                _activePlaylistItemId = nextItem.Id;
+
+                // Now that nextItem's audio is extracted and nextItem is entering Stage 2 (GPU ASR),
+                // start lookahead audio extraction for at most 1 upcoming video (item[i + 1]).
+                ScheduleLookahead();
 
                 UpdatePlaylistItem(
                     nextItem.Id,
@@ -375,7 +396,6 @@ public sealed partial class SubtitleViewModel
         string outDir,
         HashSet<Guid> stage2StartedIds,
         HashSet<Guid> preExtractedDoneIds,
-        Action onCompletedScheduleNext,
         CancellationToken token)
     {
         try
@@ -442,7 +462,6 @@ public sealed partial class SubtitleViewModel
                             LocalizedMessage.Key("Ses hazır · Sırada"),
                             1.0);
                     }
-                    onCompletedScheduleNext();
                 }).ConfigureAwait(false);
             }
         }
