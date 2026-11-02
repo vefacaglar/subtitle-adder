@@ -505,4 +505,77 @@ def test_opencode_session_is_stable_and_isolated_from_other_translators():
     assert "x-opencode-session" not in translator("http://localhost:1234/v1")._request_headers()
 
 
+@pytest.mark.parametrize("url,model,disabled", [
+    ("https://opencode.ai/zen/go/v1", "deepseek-v4.1-flash", True),
+    ("https://opencode.ai/inference/go/openai/v1", "deepseek-v4-pro", True),
+    ("https://api.deepseek.com/v1", "deepseek-flash", True),
+    ("https://opencode.ai/inference/go/openai/v1", "glm-5.3-flash", False),
+    ("http://localhost:1234/v1", "deepseek-v4.1-flash", False),
+    ("https://proxy.example/v1", "deepseek-v4.1-flash", False),
+])
+def test_deepseek_subtitles_disable_thinking_only_on_supported_gateways(monkeypatch, capsys, url, model, disabled):
+    calls = []
+    secret = "sk-private-test"
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self):
+            return json.dumps({"choices": [{"finish_reason": "stop", "message": {
+                "content": "[1] Merhaba.", "reasoning_content": "private reasoning text"
+            }}]}).encode()
+
+    def urlopen(req, timeout):
+        calls.append(json.loads(req.data))
+        return Response()
+
+    monkeypatch.setattr(translate.urllib.request, "urlopen", urlopen)
+    client = translate.LlamaTranslator("madlad-3b", external_url=url, external_model=model, external_api_key=secret)
+    assert client._complete([{"role": "user", "content": "private subtitle text"}]) == "[1] Merhaba."
+    assert calls[0].get("thinking") == ({"type": "disabled"} if disabled else None)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "request_start" in captured.err and "request_complete" in captured.err
+    for private in (secret, "private subtitle text", "private reasoning text", "Merhaba"):
+        assert private not in captured.err
+
+
+def test_pending_request_reports_wait_then_completion(monkeypatch):
+    import threading
+    waited = threading.Event()
+    events = []
+
+    def diagnostic(event, **fields):
+        events.append(event)
+        if event == "request_waiting": waited.set()
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self):
+            assert waited.wait(2), "pending request should report that it is waiting"
+            return b'{"choices":[{"finish_reason":"stop","message":{"content":"[1] Merhaba."}}]}'
+
+    monkeypatch.setattr(translate, "_HTTP_TRACE_INTERVAL", 0.01)
+    monkeypatch.setattr(translate, "_translation_diagnostic", diagnostic)
+    monkeypatch.setattr(translate.urllib.request, "urlopen", lambda *a, **kw: Response())
+    client = translate.LlamaTranslator("madlad-3b", external_url="https://opencode.ai/zen/go/v1", external_model="deepseek-v4.1-flash")
+    client._complete([{"role": "user", "content": "test"}])
+    assert events[0] == "request_start"
+    assert "request_waiting" in events
+    assert events[-1] == "request_complete"
+
+
+def test_request_failure_diagnostics_do_not_dump_error_body(monkeypatch, capsys):
+    def reject(req, timeout):
+        raise translate.urllib.error.HTTPError(req.full_url, 429, "Rate limit", {}, io.BytesIO(b'{"error":{"message":"private response detail"}}'))
+    monkeypatch.setattr(translate.urllib.request, "urlopen", reject)
+    client = translate.LlamaTranslator("madlad-3b", external_url="https://opencode.ai/zen/go/v1", external_model="deepseek-v4.1-flash")
+    with pytest.raises(models.ModelError):
+        client._complete([{"role": "user", "content": "private subtitle"}])
+    trace = capsys.readouterr().err
+    assert '"http_status": 429' in trace
+    assert "private" not in trace
+
+
 

@@ -456,8 +456,12 @@ public sealed partial class SubtitleViewModel
                 }
             }
         }
-        catch (Exception)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
+        }
+        catch (Exception error)
+        {
+            DiagnosticLog.Write("Translation", $"Background batch failed; final pass will retry: {error.Message}");
             // Any lines not translated in the partial background pass are picked up by the final TranslateCore call.
         }
         finally

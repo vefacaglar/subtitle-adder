@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -41,6 +42,13 @@ EXTERNAL_LLM_API_KEY_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY"
 
 # https://opencode.ai/v2/docs/console/go/ — chat and model discovery have separate routes.
 OPENCODE_GO_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
+_HTTP_TRACE_INTERVAL = 15.0
+
+
+def _translation_diagnostic(event: str, **fields) -> None:
+    # stderr is continuously drained by EngineClient. Never log prompts, responses or headers.
+    with contextlib.suppress(OSError):
+        print("[translation] " + json.dumps({"event": event, **fields}), file=sys.stderr, flush=True)
 
 
 def _is_opencode_go_url(url: str) -> bool:
@@ -737,6 +745,7 @@ class LlamaTranslator:
         self._external_api_key = (resolved_external_api_key or "").strip() or None
         self._resolved_external_model: str | None = self._external_model
         self._session_id = uuid.uuid4().hex
+        self._request_count = 0
         self._process: subprocess.Popen | None = None
         self._stderr_file = None
         self._port: int | None = None
@@ -872,6 +881,44 @@ class LlamaTranslator:
         self._resolved_external_model = self._info.id
         return self._resolved_external_model
 
+    def _post_completion(self, url: str, body: dict, headers: dict[str, str]) -> dict:
+        self._request_count += 1
+        request_id = self._request_count
+        started = time.monotonic()
+        finished = threading.Event()
+
+        def waiting() -> None:
+            while not finished.wait(_HTTP_TRACE_INTERVAL):
+                _translation_diagnostic("request_waiting", request=request_id,
+                                        seconds=round(time.monotonic() - started, 1))
+
+        _translation_diagnostic("request_start", request=request_id,
+                                host=urlsplit(url).hostname,
+                                model=(body.get("model") or self._info.id).replace(self._external_api_key or "\0", "[redacted]"))
+        heartbeat = threading.Thread(target=waiting, daemon=True)
+        heartbeat.start()
+        try:
+            req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=300.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            choice = (data.get("choices") or [{}])[0]
+            msg = choice.get("message") or data.get("message") or {}
+            finish = choice.get("finish_reason") or data.get("done_reason")
+            _translation_diagnostic("request_complete", request=request_id,
+                                    seconds=round(time.monotonic() - started, 2),
+                                    truncated=finish == "length",
+                                    content_chars=len(msg.get("content") or ""),
+                                    reasoning_chars=len(msg.get("reasoning_content") or ""))
+            return data
+        except Exception as exc:
+            _translation_diagnostic("request_failed", request=request_id,
+                                    seconds=round(time.monotonic() - started, 2),
+                                    http_status=exc.code if isinstance(exc, urllib.error.HTTPError) else None)
+            raise
+        finally:
+            finished.set()
+            heartbeat.join(timeout=1)
+
     def _complete(self, messages: list[dict[str, str]]) -> str:
         if self._completion_fn is not None:
             return self._completion_fn(messages)
@@ -889,6 +936,13 @@ class LlamaTranslator:
                 "stream": False,
                 **profile.generation_options(ollama=url.lower().endswith("/api/chat")),
             }
+            # DeepSeek enables high-effort thinking by default. Its reasoning consumes the same
+            # short output budget as subtitles and can cause empty/truncated results and retries.
+            # Use the documented switch only on supported official gateways, never on LAN/GGUF.
+            if (_is_opencode_go_url(url) or urlsplit(url).netloc.lower() == "api.deepseek.com") and re.fullmatch(
+                r"deepseek-(?:v4(?:\.1)?-(?:flash|pro)|flash)", model.casefold()
+            ):
+                body["thinking"] = {"type": "disabled"}
         else:
             if self._process is None or self._process.poll() is not None:
                 self._start_server(gpu_layers=0 if self._device == "cpu" else 99)
@@ -899,17 +953,9 @@ class LlamaTranslator:
                 **profile_for_model(self._info.id).generation_options(ollama=False),
             }
         headers = self._request_headers()
-        payload = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers=headers,
-            method="POST",
-        )
         try:
             try:
-                with urllib.request.urlopen(req, timeout=300.0) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                data = self._post_completion(url, body, headers)
             except urllib.error.HTTPError as http_exc:
                 if (
                     self._external_chat_url is not None
@@ -918,14 +964,7 @@ class LlamaTranslator:
                 ):
                     http_exc.close()
                     retry_body = {k: v for k, v in body.items() if k != "chat_template_kwargs"}
-                    retry_req = urllib.request.Request(
-                        url,
-                        data=json.dumps(retry_body).encode("utf-8"),
-                        headers=headers,
-                        method="POST",
-                    )
-                    with urllib.request.urlopen(retry_req, timeout=300.0) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
+                    data = self._post_completion(url, retry_body, headers)
                 else:
                     raise
         except Exception as exc:
@@ -985,6 +1024,7 @@ class LlamaTranslator:
 
         processed = 0
         for start, batch in _translation_batches(pending, LLM_BATCH_SIZE):
+            _translation_diagnostic("batch_start", offset=start, count=len(batch), total=len(pending))
             if cached_chunks and all(
                 sentence.id in cached_chunks
                 and not _looks_untranslated(sentence.text, cached_chunks[sentence.id], source, target)
@@ -1054,6 +1094,7 @@ class LlamaTranslator:
                         break
                     if attempt == 1:
                         break
+                    _translation_diagnostic("batch_retry", offset=start, invalid_lines=len(invalid))
                     if specialized:
                         continue  # Keep the model's supported single-turn translation template on retry.
                     # Retry the whole thought, not an isolated fragment with a different interpretation.
@@ -1070,6 +1111,7 @@ class LlamaTranslator:
                 for offset, (_, sentence) in enumerate(batch, 1):
                     if offset in accepted:
                         continue
+                    _translation_diagnostic("line_recovery", offset=start + offset - 1)
                     before = (context_lines + batch_texts[:offset - 1])[-LLM_CONTEXT_LINES:]
                     after = (batch_texts[offset:] + following_lines)[:LLM_CONTEXT_LINES]
                     if profile.name == "translategemma":
@@ -1111,6 +1153,7 @@ class LlamaTranslator:
                     _save_temp_checkpoint(checkpoint_path, cached_chunks)
 
             processed += len(batch)
+            _translation_diagnostic("batch_complete", processed=processed, total=len(pending))
             if on_batch is not None:
                 last_index = batch[-1][0]
                 on_batch(result_sentences[: last_index + 1])
