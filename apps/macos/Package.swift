@@ -16,14 +16,18 @@ let package = Package(
     targets: [
         // Runs the Python engine as a subprocess and turns the JSON event stream into Swift types.
         .target(name: "EngineKit", resources: [.process("Resources")]),
+        // UI-free app data: media index, local profiles and their encrypted vault, translation providers, secrets.
+        // No strings of its own: errors are typed and the app localizes them.
+        .target(name: "LibraryKit", dependencies: ["EngineKit"]),
         .executableTarget(
             name: "SubtitleAdderApp",
-            dependencies: ["EngineKit"],
+            dependencies: ["EngineKit", "LibraryKit"],
             resources: [.process("Resources")],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", infoPlist])]
         ),
         .testTarget(name: "EngineKitTests", dependencies: ["EngineKit"]),
+        .testTarget(name: "LibraryKitTests", dependencies: ["LibraryKit"]),
         // View model behavior (undo of edits), via @testable import of the executable target.
-        .testTarget(name: "SubtitleAdderAppTests", dependencies: ["SubtitleAdderApp", "EngineKit"]),
+        .testTarget(name: "SubtitleAdderAppTests", dependencies: ["SubtitleAdderApp", "EngineKit", "LibraryKit"]),
     ]
 )
