@@ -28,6 +28,32 @@ def _emit(payload: dict) -> None:
     sys.stdout.flush()
 
 
+def _extract_audio(args: argparse.Namespace) -> int:
+    def on_stage(stage: str, fraction: float | None) -> None:
+        if args.json:
+            _emit({"event": "stage", "stage": stage, "fraction": fraction})
+        elif fraction is None:
+            print(f"… {stage}", file=sys.stderr)
+
+    audio = pipeline.extract_video_audio(
+        args.video.resolve(),
+        args.out_dir.resolve(),
+        on_stage=on_stage,
+    )
+    if args.json:
+        _emit({
+            "event": "result",
+            "language": "?",
+            "duration": 0.0,
+            "audio": str(audio),
+            "outputs": [],
+            "sentences": [],
+        })
+    else:
+        print(f"-> {audio}")
+    return 0
+
+
 def _transcribe(args: argparse.Namespace) -> int:
     if args.speakers is not None and not args.diarize:
         raise ValueError(t("speakers_needs_diarize"))
@@ -217,6 +243,12 @@ def build_parser() -> argparse.ArgumentParser:
     lang_parent.add_argument("--lang", dest="sub_lang", default=None, metavar="tr|en", help=_LANG_HELP)
     p.add_argument("--version", action="version", version=f"%(prog)s protocol {PROTOCOL_VERSION}")
     sub = p.add_subparsers(dest="command", required=True)
+
+    ea = sub.add_parser("extract-audio", parents=[lang_parent], help="extract 16 kHz mono WAV audio from a video")
+    ea.add_argument("video", type=Path)
+    ea.add_argument("-o", "--out-dir", type=Path, default=Path("output"))
+    ea.add_argument("--json", action="store_true", help="write a JSON event stream to stdout")
+    ea.set_defaults(handler=_extract_audio)
 
     t = sub.add_parser("transcribe", parents=[lang_parent], help="generate subtitles from a video")
     t.add_argument("video", type=Path)

@@ -6,6 +6,11 @@ namespace SubtitleAdder.EngineKit;
 /// </summary>
 public interface IEngineClient
 {
+    /// <inheritdoc cref="EngineClient.ExtractAudio"/>
+    IAsyncEnumerable<EngineEvent> ExtractAudio(
+        string video, string outDir, CancellationToken cancellationToken = default) =>
+        AsyncEnumerable.Empty<EngineEvent>();
+
     /// <inheritdoc cref="EngineClient.Transcribe"/>
     IAsyncEnumerable<EngineEvent> Transcribe(
         string video, string outDir, TranscribeOptions? options = null, CancellationToken cancellationToken = default);
