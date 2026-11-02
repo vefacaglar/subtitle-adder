@@ -322,13 +322,16 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         {
             if (!IsExternalLlmActive) return ModelLabel.Name(_translationModel);
             var activeProviderName = _activeProviderName ?? TranslationProviderManager.Shared.ActiveProvider?.Name?.Trim();
-            var modelText = !string.IsNullOrWhiteSpace(_externalLlmModel) ? _externalLlmModel.Trim() : L("Harici LLM");
             if (!string.IsNullOrWhiteSpace(activeProviderName))
             {
-                return !string.IsNullOrWhiteSpace(_externalLlmModel)
-                    ? $"{activeProviderName}: {modelText}"
+                var cloudModel = !string.IsNullOrWhiteSpace(_activeProviderModel)
+                    ? _activeProviderModel.Trim()
+                    : (!string.IsNullOrWhiteSpace(ExternalLlmState.Shared.Model) ? ExternalLlmState.Shared.Model.Trim() : null);
+                return !string.IsNullOrWhiteSpace(cloudModel)
+                    ? $"{activeProviderName}: {cloudModel}"
                     : activeProviderName;
             }
+            var modelText = !string.IsNullOrWhiteSpace(_externalLlmModel) ? _externalLlmModel.Trim() : L("Harici LLM");
             return IsExternalAsyncActive ? L("Harici: %@ (Asenkron)", modelText) : L("Harici: %@", modelText);
         }
     }
@@ -467,7 +470,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         set
         {
             if (!SetProperty(ref _externalLlmEnabled, value)) return;
-            ExternalLlmState.Shared.Enabled = value;
+            if (string.IsNullOrWhiteSpace(_activeProviderName))
+            {
+                ExternalLlmState.Shared.Enabled = value;
+            }
             _settings.SetBool(ExternalLlmEnabledDefaultsKey, value);
             OnPropertyChanged(nameof(IsExternalLlmActive));
             OnPropertyChanged(nameof(IsExternalAsyncActive));
@@ -483,7 +489,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         {
             var next = value ?? "";
             if (!SetProperty(ref _externalLlmUrl, next)) return;
-            ExternalLlmState.Shared.Url = next;
+            if (string.IsNullOrWhiteSpace(_activeProviderName))
+            {
+                ExternalLlmState.Shared.Url = next;
+            }
             _settings.SetString(ExternalLlmUrlDefaultsKey, next);
             OnPropertyChanged(nameof(IsExternalLlmActive));
             OnPropertyChanged(nameof(IsExternalAsyncActive));
@@ -499,7 +508,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         {
             var next = value ?? "";
             if (!SetProperty(ref _externalLlmModel, next)) return;
-            ExternalLlmState.Shared.Model = next;
+            if (string.IsNullOrWhiteSpace(_activeProviderName))
+            {
+                ExternalLlmState.Shared.Model = next;
+            }
             _settings.SetString(ExternalLlmModelDefaultsKey, next);
             OnPropertyChanged(nameof(TranslationModelName));
         }
@@ -521,13 +533,20 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         }
     }
 
-    /// <summary>True when external LAN LLM mode is enabled and a server URL is configured.</summary>
-    public bool IsExternalLlmActive => _externalLlmEnabled && !string.IsNullOrWhiteSpace(_externalLlmUrl);
+    /// <summary>True when either an external cloud provider or the local LAN LLM server is active.</summary>
+    public bool IsExternalLlmActive =>
+        !string.IsNullOrWhiteSpace(_activeProviderName) ||
+        (_externalLlmEnabled && !string.IsNullOrWhiteSpace(_externalLlmUrl));
 
-    /// <summary>True ONLY when external LAN LLM mode is active AND optional asynchronous translation is enabled.</summary>
-    public bool IsExternalAsyncActive => IsExternalLlmActive && _externalLlmAsync;
+    /// <summary>True ONLY when external LLM mode is active AND optional asynchronous translation is enabled for the active provider.</summary>
+    public bool IsExternalAsyncActive =>
+        !string.IsNullOrWhiteSpace(_activeProviderName)
+            ? _activeProviderAsync
+            : (IsExternalLlmActive && _externalLlmAsync);
 
     private string? _activeProviderName;
+    private string? _activeProviderModel;
+    private bool _activeProviderAsync;
 
     public string? ActiveProviderName
     {
@@ -536,6 +555,30 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         {
             var next = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
             if (!SetProperty(ref _activeProviderName, next)) return;
+            OnPropertyChanged(nameof(IsExternalLlmActive));
+            OnPropertyChanged(nameof(IsExternalAsyncActive));
+            OnPropertyChanged(nameof(TranslationModelName));
+        }
+    }
+
+    public string? ActiveProviderModel
+    {
+        get => _activeProviderModel;
+        set
+        {
+            var next = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+            if (!SetProperty(ref _activeProviderModel, next)) return;
+            OnPropertyChanged(nameof(TranslationModelName));
+        }
+    }
+
+    public bool ActiveProviderAsync
+    {
+        get => _activeProviderAsync;
+        set
+        {
+            if (!SetProperty(ref _activeProviderAsync, value)) return;
+            OnPropertyChanged(nameof(IsExternalAsyncActive));
             OnPropertyChanged(nameof(TranslationModelName));
         }
     }

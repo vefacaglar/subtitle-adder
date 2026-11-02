@@ -228,6 +228,7 @@ public sealed class LocalProfileManager : IDisposable
     {
         get
         {
+            SqlStore.TryDrainWhenHealthyNonBlocking();
             lock (_sync)
             {
                 EnsureSyncedIfChangedLocked();
@@ -241,6 +242,7 @@ public sealed class LocalProfileManager : IDisposable
     {
         get
         {
+            SqlStore.TryDrainWhenHealthyNonBlocking();
             lock (_sync)
             {
                 EnsureSyncedIfChangedLocked();
@@ -254,6 +256,7 @@ public sealed class LocalProfileManager : IDisposable
     {
         get
         {
+            SqlStore.TryDrainWhenHealthyNonBlocking();
             lock (_sync)
             {
                 EnsureSyncedIfChangedLocked();
@@ -268,6 +271,7 @@ public sealed class LocalProfileManager : IDisposable
     /// </summary>
     public bool TryGetActiveProfileVaultKey(out string username, out byte[] vaultKey)
     {
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -294,6 +298,7 @@ public sealed class LocalProfileManager : IDisposable
     {
         get
         {
+            SqlStore.TryDrainWhenHealthyNonBlocking();
             lock (_sync)
             {
                 EnsureSyncedIfChangedLocked();
@@ -310,6 +315,7 @@ public sealed class LocalProfileManager : IDisposable
     {
         get
         {
+            SqlStore.TryDrainWhenHealthyNonBlocking();
             lock (_sync)
             {
                 EnsureSyncedIfChangedLocked();
@@ -324,6 +330,7 @@ public sealed class LocalProfileManager : IDisposable
     {
         get
         {
+            SqlStore.TryDrainWhenHealthyNonBlocking();
             lock (_sync)
             {
                 EnsureSyncedIfChangedLocked();
@@ -338,6 +345,7 @@ public sealed class LocalProfileManager : IDisposable
     {
         get
         {
+            SqlStore.TryDrainWhenHealthyNonBlocking();
             lock (_sync)
             {
                 EnsureSyncedIfChangedLocked();
@@ -352,6 +360,7 @@ public sealed class LocalProfileManager : IDisposable
     {
         get
         {
+            SqlStore.TryDrainWhenHealthyNonBlocking();
             lock (_sync)
             {
                 EnsureSyncedIfChangedLocked();
@@ -526,6 +535,7 @@ public sealed class LocalProfileManager : IDisposable
             return false;
         }
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             using var crossLock = AcquireCrossProcessMutex();
@@ -604,6 +614,7 @@ public sealed class LocalProfileManager : IDisposable
             return false;
         }
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             using var crossLock = AcquireCrossProcessMutex();
@@ -646,6 +657,7 @@ public sealed class LocalProfileManager : IDisposable
     public void Logout()
     {
         var changed = false;
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             using var crossLock = AcquireCrossProcessMutex();
@@ -693,6 +705,7 @@ public sealed class LocalProfileManager : IDisposable
             return false;
         }
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             using var crossLock = AcquireCrossProcessMutex();
@@ -751,6 +764,7 @@ public sealed class LocalProfileManager : IDisposable
 
         var reqId = string.IsNullOrWhiteSpace(requestId) ? Guid.NewGuid().ToString("N") : requestId.Trim();
         VideoUserStats updated;
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -824,6 +838,7 @@ public sealed class LocalProfileManager : IDisposable
 
         VideoUserStats updated;
         var changedSignificantly = false;
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -883,6 +898,7 @@ public sealed class LocalProfileManager : IDisposable
     /// </summary>
     public bool ClearWatchHistory()
     {
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -956,6 +972,7 @@ public sealed class LocalProfileManager : IDisposable
         if (normalized.Length == 0) return false;
 
         bool newLiked;
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -989,6 +1006,7 @@ public sealed class LocalProfileManager : IDisposable
         if (normalized.Length == 0) return null;
 
         VideoUserStats updated;
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1032,6 +1050,7 @@ public sealed class LocalProfileManager : IDisposable
         var clamped = Math.Clamp(rating, 0, 5);
 
         VideoUserStats updated;
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1116,6 +1135,7 @@ public sealed class LocalProfileManager : IDisposable
 
         VideoUserStats? result;
         var migrated = false;
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1148,6 +1168,7 @@ public sealed class LocalProfileManager : IDisposable
         if (normalized.Length == 0 || thumbnailBytes is null || thumbnailBytes.Length == 0)
             return false;
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1200,6 +1221,7 @@ public sealed class LocalProfileManager : IDisposable
         var normalized = NormalizeVideoPath(videoPath);
         if (normalized.Length == 0) return null;
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1217,6 +1239,7 @@ public sealed class LocalProfileManager : IDisposable
         if (cleanName.Length == 0) return null;
 
         UserVideoList created;
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1253,6 +1276,7 @@ public sealed class LocalProfileManager : IDisposable
         var cleanName = (newName ?? "").Trim();
         if (string.IsNullOrWhiteSpace(listId) || cleanName.Length == 0) return false;
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1289,6 +1313,7 @@ public sealed class LocalProfileManager : IDisposable
     {
         if (string.IsNullOrWhiteSpace(listId)) return false;
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1318,6 +1343,7 @@ public sealed class LocalProfileManager : IDisposable
         var normalized = NormalizeVideoPath(videoPath);
         if (string.IsNullOrWhiteSpace(listId) || normalized.Length == 0) return false;
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1326,7 +1352,7 @@ public sealed class LocalProfileManager : IDisposable
             if (idx < 0) return false;
 
             // Ensure video fingerprint is recorded so future file renames/moves migrate this custom list entry too.
-            _ = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow, persistNewVideoRowIfCreated: true);
+            _ = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow, persistNewVideoRowIfCreated: false);
 
             var existing = _activeProfile.CustomLists[idx];
             if (existing.VideoPaths.Any(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase)))
@@ -1361,6 +1387,7 @@ public sealed class LocalProfileManager : IDisposable
         var normalized = NormalizeVideoPath(videoPath);
         if (string.IsNullOrWhiteSpace(listId) || normalized.Length == 0) return false;
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1402,11 +1429,12 @@ public sealed class LocalProfileManager : IDisposable
         if (string.IsNullOrWhiteSpace(listId) || normalized.Length == 0) return false;
 
         bool nowInList;
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
             if (_activeProfile is null) return false;
-            _ = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow, persistNewVideoRowIfCreated: true);
+            _ = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow, persistNewVideoRowIfCreated: false);
 
             var idx = _activeProfile.CustomLists.FindIndex(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
             if (idx < 0) return false;
@@ -1459,6 +1487,7 @@ public sealed class LocalProfileManager : IDisposable
     /// <summary>Returns all custom lists created by the active profile, or an empty list when logged out.</summary>
     public IReadOnlyList<UserVideoList> GetCustomLists()
     {
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1473,6 +1502,7 @@ public sealed class LocalProfileManager : IDisposable
         var normalized = NormalizeVideoPath(videoPath);
         if (normalized.Length == 0) return [];
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1493,6 +1523,7 @@ public sealed class LocalProfileManager : IDisposable
         var normalized = NormalizeVideoPath(videoPath);
         if (string.IsNullOrWhiteSpace(listId) || normalized.Length == 0) return false;
 
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -1517,6 +1548,7 @@ public sealed class LocalProfileManager : IDisposable
         IEnumerable<string>? additionalDiscoveredPaths = null,
         string? customListId = null)
     {
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
@@ -2590,6 +2622,16 @@ public sealed class LocalProfileManager : IDisposable
             {
                 paths.Add(norm);
             }
+            if (!entry.Videos.ContainsKey(norm))
+            {
+                var fp = TryGetCachedFingerprint(norm) ?? TryComputeFingerprintOnly(norm);
+                var memKey = fp ?? norm;
+                if (!entry.Videos.ContainsKey(memKey) &&
+                    !entry.Videos.Values.Any(v => string.Equals(v.VideoPath, norm, StringComparison.OrdinalIgnoreCase)))
+                {
+                    entry.Videos[memKey] = VideoUserStats.CreateDefault(norm, DateTimeOffset.UtcNow, fp, computeFingerprintFromDisk: false);
+                }
+            }
         }
 
         var dbLists = store.LoadCustomLists(entry.Username);
@@ -2617,6 +2659,7 @@ public sealed class LocalProfileManager : IDisposable
 
     private void LoadFromDisk()
     {
+        SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             SyncFromDiskLocked(force: true);

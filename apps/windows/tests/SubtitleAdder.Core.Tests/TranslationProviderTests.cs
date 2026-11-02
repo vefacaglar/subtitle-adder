@@ -198,6 +198,63 @@ public sealed class TranslationProviderTests : IDisposable
         Assert.Equal("POST", requests[1].Method);
     }
 
+    [Fact]
+    public void CloudProvidersNeverOverwriteUserLanSettingsOnViewModelOrLanProfile()
+    {
+        var manager = new TranslationProviderManager(_filePath);
+        var (vm, _, _) = Make.ViewModel();
+        vm.ExternalLlmEnabled = true;
+        vm.ExternalLlmUrl = "http://mac-studio.local:11434";
+        vm.ExternalLlmModel = "gemma4:e4b";
+        vm.ExternalLlmAsync = true;
+
+        // 1. Initial migration creates a LAN profile from the user's mac-studio settings
+        manager.EnsureMigratedFromViewModel(vm);
+        var lanProfile = Assert.Single(manager.Providers, p => p.PresetId == "lan");
+        Assert.Equal("http://mac-studio.local:11434", lanProfile.BaseUrl);
+        Assert.Equal("gemma4:e4b", lanProfile.Model);
+
+        // 2. User adds and activates OpenCode Go and OpenRouter cloud providers
+        var openCode = manager.AddProvider(
+            presetId: "opencode-go",
+            apiKey: "oc_sk_test_123456",
+            model: "deepseek-v4.1-flash",
+            setActive: true);
+        var openRouter = manager.AddProvider(
+            presetId: "openrouter",
+            apiKey: "sk-or-test-654321",
+            model: "google/gemma-3-27b-it",
+            setActive: false);
+
+        // 3. ApplyToViewModel and SyncFromLegacyLanSettings while OpenCode Go is active
+        manager.ApplyToViewModel(vm);
+        manager.SyncFromLegacyLanSettings(vm);
+
+        Assert.Equal("http://mac-studio.local:11434", vm.ExternalLlmUrl);
+        Assert.Equal("gemma4:e4b", vm.ExternalLlmModel);
+        Assert.Equal("OpenCode Go", vm.ActiveProviderName);
+        Assert.Equal("deepseek-v4.1-flash", vm.ActiveProviderModel);
+        Assert.Equal("https://opencode.ai/zen/go/v1", ExternalLlmState.Shared.Url);
+        Assert.Equal("deepseek-v4.1-flash", ExternalLlmState.Shared.Model);
+        Assert.Equal("oc_sk_test_123456", ExternalLlmState.Shared.ApiKey);
+
+        // 4. Switch to OpenRouter and repeat
+        manager.SetActiveProvider(openRouter.Id);
+        manager.ApplyToViewModel(vm);
+        manager.SyncFromLegacyLanSettings(vm);
+
+        Assert.Equal("http://mac-studio.local:11434", vm.ExternalLlmUrl);
+        Assert.Equal("gemma4:e4b", vm.ExternalLlmModel);
+        Assert.Equal("OpenRouter", vm.ActiveProviderName);
+        Assert.Equal("google/gemma-3-27b-it", vm.ActiveProviderModel);
+        Assert.Equal("https://openrouter.ai/api/v1", ExternalLlmState.Shared.Url);
+
+        // 5. Verify the LAN profile's BaseUrl and Model were never overwritten by cloud URLs
+        var preservedLan = Assert.Single(manager.Providers, p => p.Id == lanProfile.Id);
+        Assert.Equal("http://mac-studio.local:11434", preservedLan.BaseUrl);
+        Assert.Equal("gemma4:e4b", preservedLan.Model);
+    }
+
     private sealed class FakeHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

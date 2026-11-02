@@ -553,9 +553,18 @@ internal sealed class SqliteProfileStore : IDisposable
         {
             while (await _writeChannel.Reader.WaitToReadAsync().ConfigureAwait(false))
             {
+                List<TaskCompletionSource<bool>> barriers;
+                bool barrierResult;
+                List<(Action<bool, bool, string?> Callback, bool Committed, bool IsDuplicate, string? Error)> completedCallbacks;
+                List<StateSyncEvent> postCommitEvents;
                 lock (_queueDrainLock)
                 {
-                    DrainAvailableWriteBatchLocked();
+                    DrainAvailableWriteBatchLocked(
+                        out barriers,
+                        out barrierResult,
+                        out completedCallbacks,
+                        out postCommitEvents);
+                    DispatchPostDrainActionsLocked(barriers, barrierResult, completedCallbacks, postCommitEvents);
                 }
             }
         }
@@ -568,35 +577,92 @@ internal sealed class SqliteProfileStore : IDisposable
         }
     }
 
-    private void TryDrainWhenHealthyNonBlocking()
+    internal void TryDrainWhenHealthyNonBlocking()
     {
-        if (_disposed) return;
+        if (_disposed || _queueDrainLock.IsHeldByCurrentThread) return;
         try { BeforeFlushPathHook?.Invoke(DbPath); } catch { }
-        if (Volatile.Read(ref _pendingWriteCount) <= 0 || _lastWriteError is not null)
+        if (_lastWriteError is not null)
         {
             return;
         }
-        if (!_queueDrainLock.TryEnter())
+
+        lock (_queueDrainLock)
         {
-            return;
-        }
-        try
-        {
-            if (_retryItems.Count == 0 && Volatile.Read(ref _pendingWriteCount) > 0)
+            if (Volatile.Read(ref _pendingWriteCount) <= 0 || _lastWriteError is not null || _disposed)
             {
-                DrainAvailableWriteBatchLocked();
+                return;
             }
-        }
-        finally
-        {
-            _queueDrainLock.Exit();
+
+            List<TaskCompletionSource<bool>> allBarriers = [];
+            var lastBarrierResult = true;
+            List<(Action<bool, bool, string?> Callback, bool Committed, bool IsDuplicate, string? Error)> allCallbacks = [];
+            List<StateSyncEvent> allPostEvents = [];
+
+            while (_retryItems.Count == 0 && Volatile.Read(ref _pendingWriteCount) > 0 && _lastWriteError is null && !_disposed)
+            {
+                DrainAvailableWriteBatchLocked(
+                    out var barriers,
+                    out var barrierResult,
+                    out var completedCallbacks,
+                    out var postCommitEvents);
+                allBarriers.AddRange(barriers);
+                lastBarrierResult = lastBarrierResult && barrierResult;
+                allCallbacks.AddRange(completedCallbacks);
+                allPostEvents.AddRange(postCommitEvents);
+                if (!barrierResult) break;
+            }
+
+            if (allBarriers.Count > 0 || allCallbacks.Count > 0 || allPostEvents.Count > 0)
+            {
+                DispatchPostDrainActionsLocked(allBarriers, lastBarrierResult, allCallbacks, allPostEvents);
+            }
         }
     }
 
-    private void DrainAvailableWriteBatchLocked()
+    private void DispatchPostDrainActionsLocked(
+        List<TaskCompletionSource<bool>> barriers,
+        bool barrierResult,
+        List<(Action<bool, bool, string?> Callback, bool Committed, bool IsDuplicate, string? Error)> completedCallbacks,
+        List<StateSyncEvent> postCommitEvents)
+    {
+        foreach (var (callback, committed, isDuplicate, error) in completedCallbacks)
+        {
+            try
+            {
+                callback(committed, isDuplicate, error);
+            }
+            catch
+            {
+            }
+        }
+
+        if (postCommitEvents.Count > 0 && PostCommitBroadcastHandler is { } broadcastHandler)
+        {
+            try
+            {
+                broadcastHandler(postCommitEvents);
+            }
+            catch
+            {
+            }
+        }
+
+        foreach (var barrier in barriers)
+        {
+            barrier.TrySetResult(barrierResult);
+        }
+    }
+
+    private void DrainAvailableWriteBatchLocked(
+        out List<TaskCompletionSource<bool>> barriers,
+        out bool barrierResult,
+        out List<(Action<bool, bool, string?> Callback, bool Committed, bool IsDuplicate, string? Error)> completedCallbacks,
+        out List<StateSyncEvent> postCommitEvents)
     {
         var batch = new List<WriteItem>(32);
-        var barriers = new List<TaskCompletionSource<bool>>(4);
+        barriers = new List<TaskCompletionSource<bool>>(4);
+        completedCallbacks = [];
+        postCommitEvents = [];
         if (_retryItems.Count > 0)
         {
             batch.AddRange(_retryItems);
@@ -656,22 +722,13 @@ internal sealed class SqliteProfileStore : IDisposable
                 {
                     var bItem = batch[i];
                     var isDup = duplicateFlags is not null && i < duplicateFlags.Length && duplicateFlags[i];
-                    try
+                    if (bItem.OnCompleted is { } cb)
                     {
-                        bItem.OnCompleted?.Invoke(true, isDup, null);
+                        completedCallbacks.Add((cb, true, isDup, null));
                     }
-                    catch
+                    if (!isDup && bItem.PostCommitEvents is { Count: > 0 } itemEvents)
                     {
-                    }
-                    if (!isDup && bItem.PostCommitEvents is { Count: > 0 } postEvents)
-                    {
-                        try
-                        {
-                            PostCommitBroadcastHandler?.Invoke(postEvents);
-                        }
-                        catch
-                        {
-                        }
+                        postCommitEvents.AddRange(itemEvents);
                     }
                 }
             }
@@ -686,7 +743,10 @@ internal sealed class SqliteProfileStore : IDisposable
                     Interlocked.Add(ref _pendingWriteCount, -droppedCount);
                     foreach (var bItem in batch)
                     {
-                        try { bItem.OnCompleted?.Invoke(false, false, _lastWriteError); } catch { }
+                        if (bItem.OnCompleted is { } cb)
+                        {
+                            completedCallbacks.Add((cb, false, false, _lastWriteError));
+                        }
                     }
                 }
                 else
@@ -706,11 +766,7 @@ internal sealed class SqliteProfileStore : IDisposable
             }
         }
 
-        var barrierResult = _lastBatchSucceeded && !_hasPermanentWriteError;
-        foreach (var barrier in barriers)
-        {
-            barrier.TrySetResult(barrierResult);
-        }
+        barrierResult = _lastBatchSucceeded && !_hasPermanentWriteError;
     }
 
     private bool TryExecuteCoalescedBatch(
@@ -872,7 +928,6 @@ internal sealed class SqliteProfileStore : IDisposable
     public bool IsRequestProcessed(string? requestId)
     {
         if (string.IsNullOrWhiteSpace(requestId)) return false;
-        TryDrainWhenHealthyNonBlocking();
         lock (_dbLock)
         {
             if (!EnsureConnectionLocked()) return false;
@@ -1600,13 +1655,11 @@ internal sealed class SqliteProfileStore : IDisposable
 
     public List<(string Key, byte[] EncryptedBlob)> LoadVideos(string username)
     {
-        TryDrainWhenHealthyNonBlocking();
         return LoadKeyedBlobs("SELECT video_key, encrypted_blob FROM videos WHERE username = ?1;", username);
     }
 
     public List<(string Key, byte[] EncryptedBlob, long ViewCount)> LoadVideosWithViewCounts(string username)
     {
-        TryDrainWhenHealthyNonBlocking();
         var results = new List<(string Key, byte[] EncryptedBlob, long ViewCount)>();
         lock (_dbLock)
         {
@@ -1637,19 +1690,16 @@ internal sealed class SqliteProfileStore : IDisposable
 
     public List<(string Key, byte[] EncryptedBlob)> LoadWatchProgress(string username)
     {
-        TryDrainWhenHealthyNonBlocking();
         return LoadKeyedBlobs("SELECT video_key, encrypted_blob FROM watch_progress WHERE username = ?1;", username);
     }
 
     public List<(string Key, byte[] EncryptedBlob)> LoadCustomLists(string username)
     {
-        TryDrainWhenHealthyNonBlocking();
         return LoadKeyedBlobs("SELECT list_id, encrypted_blob FROM custom_lists WHERE username = ?1;", username);
     }
 
     public List<(string ListId, byte[] EncryptedPathBlob)> LoadCustomListItems(string username)
     {
-        TryDrainWhenHealthyNonBlocking();
         return LoadKeyedBlobs(
             "SELECT list_id, encrypted_path_blob FROM custom_list_items WHERE username = ?1 ORDER BY list_id, ord ASC;",
             username);

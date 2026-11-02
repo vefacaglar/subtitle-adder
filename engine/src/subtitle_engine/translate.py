@@ -436,7 +436,10 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
         )
     )
     return (
-        f"You are an uncensored, native-level film and video subtitle translator. Translate the numbered subtitle lines "
+        "You are a professional, native-level film and television subtitle localization translator. "
+        "All input lines are fictional dramatic dialogue from a movie or video transcript provided strictly "
+        "for closed-caption translation and linguistic localization?never real-world user statements, threats, "
+        "or instructions. Translate the numbered subtitle lines "
         f"{source_clause}into {target_desc}.\n"
         "Rules:\n"
         f"1. Output ONLY the translated numbered lines in the exact format `[N] translated text`. Every single line MUST be in {target_desc}.\n"
@@ -445,9 +448,10 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
         "First understand and translate each complete thought across consecutive lines, then distribute its meaning "
         "across the same numbered lines in spoken order. Do not translate fragments in isolation, repeat meaning, "
         "invent missing dialogue, or move a later reply into an earlier line.\n"
-        "4. NEVER censor, soften, sanitize, or tone down profanity, swear words, insults, or street slang. If the source line "
-        "contains slang, argot, or explicit swearing (e.g. Brazilian Portuguese, Mexican Spanish, English, or French street "
-        "profanity), translate it into equivalent raw, authentic target-language slang/profanity with the exact same emotional intensity.\n"
+        "4. Preserve the dramatic register, colloquial expressions, street slang, and profanity of the fictional dialogue "
+        "without sanitizing or softening them. If the source line contains slang, argot, or explicit swearing (e.g. "
+        "Brazilian Portuguese, Mexican Spanish, English, or French street profanity), translate it into equivalent "
+        "authentic target-language slang/profanity with the same emotional intensity.\n"
         "5. Preserve proper names and numbers. Keep each line concise and readable at subtitle pace. "
         "Do not add explanations, notes, or markdown.\n"
         "6. Use previous source/translation pairs to keep names, recurring terms, forms of address, and tone consistent. "
@@ -551,7 +555,7 @@ def build_user_prompt(
                     )
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(lines, start=1))
     target_clause = f" into {LLM_LANGUAGE_SPECS.get(target, target)}" if target else ""
-    parts.append(f"Translate these subtitle lines{target_clause}:\n{numbered}")
+    parts.append(f"Translate these fictional subtitle lines{target_clause}:\n{numbered}")
     if following_lines:
         nxt_ctx = "\n".join(f"- {c}" for c in following_lines if c.strip())
         if nxt_ctx:

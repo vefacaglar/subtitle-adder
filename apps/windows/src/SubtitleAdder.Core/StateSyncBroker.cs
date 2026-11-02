@@ -288,6 +288,12 @@ public sealed class StateSyncBroker : IDisposable
 
         _pendingWriteRequests.TryAdd(normalized.RequestId, new PendingWriteEntry(normalized));
 
+        if (_engine.IsRunning && (_engine.IsHostingPipeServer || ActiveInstanceCount >= 1))
+        {
+            _engine.EnqueueWriteRequestOnEngine(normalized, onAck: HandleWriteAck, fromFallbackFlush: false);
+            return;
+        }
+
         try
         {
             var wireLine = "W:" + JsonSerializer.Serialize(normalized, JsonOptions);
@@ -873,6 +879,17 @@ public sealed class StateSyncBroker : IDisposable
             foreach (var evt in events)
             {
                 if (evt is null) continue;
+                // 1. Deliver to in-process brokers registered on this Engine first (records EventId in _seenEventIds
+                // and updates in-memory state before any NamedPipe echo arrives).
+                foreach (var instanceId in _registeredInstances.Keys)
+                {
+                    if (ActiveBrokersById.TryGetValue(instanceId, out var broker) && !broker._disposed)
+                    {
+                        broker.DispatchToLocalSubscribers(evt);
+                    }
+                }
+
+                // 2. Broadcast over the Named Pipe to connected clients.
                 try
                 {
                     var jsonLine = JsonSerializer.Serialize(evt, JsonOptions);
@@ -880,15 +897,6 @@ public sealed class StateSyncBroker : IDisposable
                 }
                 catch
                 {
-                }
-
-                // Also deliver to in-process brokers registered on this Engine (deduplicated via EventId).
-                foreach (var instanceId in _registeredInstances.Keys)
-                {
-                    if (ActiveBrokersById.TryGetValue(instanceId, out var broker) && !broker._disposed)
-                    {
-                        broker.DispatchToLocalSubscribers(evt);
-                    }
                 }
             }
         }
