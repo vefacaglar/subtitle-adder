@@ -325,37 +325,49 @@ public sealed partial class SettingsWindow : Window
     {
         if (_syncing) return;
         _vm.ExternalLlmEnabled = ExternalLlmSwitch.IsOn;
-        if (_vm.IsExternalLlmActive) await _vm.RefreshExternalModelsAsync();
+        App.Current.Providers.SyncFromLegacyLanSettings(_vm);
+        if (_vm.IsExternalLlmActive)
+        {
+            await _vm.RefreshExternalModelsAsync();
+            App.Current.Providers.SyncFromLegacyLanSettings(_vm);
+        }
     }
 
     private void ExternalLlmUrlBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_syncing) return;
         _vm.ExternalLlmUrl = ExternalLlmUrlBox.Text;
+        App.Current.Providers.SyncFromLegacyLanSettings(_vm);
     }
 
     private void ExternalLlmModelBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncing) return;
         if (ExternalLlmModelBox.SelectedItem is string selected)
+        {
             _vm.ExternalLlmModel = selected;
+            App.Current.Providers.SyncFromLegacyLanSettings(_vm);
+        }
     }
 
     private void ExternalLlmModelBox_TextSubmitted(ComboBox sender, ComboBoxTextSubmittedEventArgs args)
     {
         if (_syncing) return;
         _vm.ExternalLlmModel = args.Text ?? string.Empty;
+        App.Current.Providers.SyncFromLegacyLanSettings(_vm);
     }
 
     private void ExternalLlmModelBox_LostFocus(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
         _vm.ExternalLlmModel = ExternalLlmModelBox.Text ?? string.Empty;
+        App.Current.Providers.SyncFromLegacyLanSettings(_vm);
     }
 
     private async void TestExternalLlmButton_Click(object sender, RoutedEventArgs e)
     {
         var (ok, msg) = await _vm.TestExternalLlmConnectionAsync();
+        App.Current.Providers.SyncFromLegacyLanSettings(_vm);
         ExternalLlmTestBar.Severity = ok ? InfoBarSeverity.Success : InfoBarSeverity.Error;
         ExternalLlmTestBar.Message = msg;
         ExternalLlmTestBar.IsOpen = true;
@@ -364,12 +376,14 @@ public sealed partial class SettingsWindow : Window
     private async void RefreshExternalModelsButton_Click(object sender, RoutedEventArgs e)
     {
         await _vm.RefreshExternalModelsAsync();
+        App.Current.Providers.SyncFromLegacyLanSettings(_vm);
     }
 
     private void ExternalLlmAsyncSwitch_Toggled(object sender, RoutedEventArgs e)
     {
         if (_syncing) return;
         _vm.ExternalLlmAsync = ExternalLlmAsyncSwitch.IsOn;
+        App.Current.Providers.SyncFromLegacyLanSettings(_vm);
     }
 
     private void SpeakerCountBox_SelectionChanged(object sender, SelectionChangedEventArgs e)

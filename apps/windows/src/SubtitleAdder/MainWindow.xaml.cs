@@ -727,15 +727,55 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>Translation model menu: API providers (OpenCode Go, OpenRouter, etc.), LLM models (Gemma 4, Qwen 3.5), and encoder-decoder models (MADLAD, NLLB).</summary>
-    private void TranslationModelFlyout_Opening(object? sender, object e)
+    /// <summary>Translation model menu: active Ollama/API provider models at the top level, provider switcher, and local translation models.</summary>
+    private async void TranslationModelFlyout_Opening(object? sender, object e)
     {
-        TranslationProvidersMenuBuilder.PopulateFlyout(
-            TranslationModelFlyout,
-            App.Current.Providers,
-            Vm,
-            Vm.Catalog.TranslationModels,
-            () => App.Current.ShowSettings("general"));
+        var providers = App.Current.Providers;
+        providers.EnsureMigratedFromViewModel(Vm);
+
+        void RebuildFlyout()
+        {
+            TranslationProvidersMenuBuilder.PopulateFlyout(
+                TranslationModelFlyout,
+                providers,
+                Vm,
+                Vm.Catalog.TranslationModels,
+                () => App.Current.ShowSettings("general"),
+                async providerId =>
+                {
+                    if (providerId is { } id && providers.Providers.FirstOrDefault(p => p.Id == id) is { } target &&
+                        !string.Equals(target.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
+                    {
+                        await providers.TestAndFetchModelsAsync(id);
+                        providers.ApplyToViewModel(Vm);
+                    }
+                    else
+                    {
+                        await Vm.RefreshExternalModelsAsync();
+                        providers.SyncFromLegacyLanSettings(Vm);
+                    }
+                    RebuildFlyout();
+                });
+        }
+
+        RebuildFlyout();
+
+        var active = providers.ActiveProvider;
+        if (active is not null && !string.Equals(active.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
+        {
+            if (active.DiscoveredModels.Count == 0 && !providers.IsTesting)
+            {
+                await providers.TestAndFetchModelsAsync(active.Id);
+                providers.ApplyToViewModel(Vm);
+                RebuildFlyout();
+            }
+        }
+        else if (Vm.IsExternalLlmActive && Vm.ExternalLlmModels.Count == 0 && !Vm.IsLoadingExternalModels)
+        {
+            await Vm.RefreshExternalModelsAsync();
+            providers.SyncFromLegacyLanSettings(Vm);
+            RebuildFlyout();
+        }
     }
 
     private void SpeakerFlyout_Opening(object? sender, object e)

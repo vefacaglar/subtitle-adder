@@ -626,6 +626,8 @@ public sealed class VideoPlatformHubView : Grid
     public VideoPlatformHubView(VideoPlatformViewModel? viewModel)
     {
         _vm = viewModel ?? VideoPlatformViewModel.Shared;
+        HorizontalAlignment = HorizontalAlignment.Stretch;
+        VerticalAlignment = VerticalAlignment.Stretch;
 
         // 1. Build Logged-Out Auth Gate Card
         _authGateContainer = BuildAuthGateCard(
@@ -834,6 +836,8 @@ public sealed class VideoPlatformHubView : Grid
         {
             RowSpacing = 12,
             Padding = new Thickness(16, 12, 16, 12),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
             Visibility = Visibility.Collapsed,
         };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });

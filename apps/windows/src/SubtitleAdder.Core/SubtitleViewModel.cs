@@ -440,6 +440,11 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         private set => SetProperty(ref _externalLlmModels, value);
     }
 
+    public void SetExternalLlmModels(IReadOnlyList<string> models)
+    {
+        ExternalLlmModels = models ?? [];
+    }
+
     public bool IsLoadingExternalModels
     {
         get => _isLoadingExternalModels;
@@ -557,11 +562,19 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             var discovered = new List<string>();
             Exception? lastError = null;
             var reachable = false;
-            foreach (var endpoint in new[] { $"{resolvedBaseUrl}/api/tags", $"{resolvedBaseUrl}/v1/models" })
+            var apiKey = ExternalLlmState.Shared.ActiveApiKey;
+            foreach (var endpoint in new[] { $"{resolvedBaseUrl}/api/tags", $"{resolvedBaseUrl}/v1/models", $"{resolvedBaseUrl}/models" })
             {
                 try
                 {
-                    var json = await ExternalModelsHttp.GetStringAsync(endpoint, cancellationToken).ConfigureAwait(true);
+                    using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, endpoint);
+                    if (!string.IsNullOrWhiteSpace(apiKey))
+                    {
+                        req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+                    }
+                    using var resp = await ExternalModelsHttp.SendAsync(req, cancellationToken).ConfigureAwait(true);
+                    if (!resp.IsSuccessStatusCode) continue;
+                    var json = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(true);
                     reachable = true;
                     discovered = ParseSuitableExternalModels(json);
                     if (discovered.Count > 0) break;
@@ -576,6 +589,10 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             if (string.IsNullOrWhiteSpace(_externalLlmModel) && discovered.Count > 0)
             {
                 ExternalLlmModel = discovered[0];
+            }
+            if (discovered.Count > 0 && TranslationProviderManager.Shared.ActiveProvider is { } activeProvider)
+            {
+                TranslationProviderManager.Shared.UpdateProviderDiscoveredModels(activeProvider.Id, discovered, _externalLlmModel);
             }
             if (!reachable)
             {

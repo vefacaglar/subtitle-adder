@@ -94,10 +94,11 @@ public partial class App : Application
         Catalog = ModelCatalog.Default();
         ViewModel = new SubtitleViewModel(Catalog, Settings, ui);
         Providers = TranslationProviderManager.Shared;
+        Providers.EnsureMigratedFromViewModel(ViewModel);
         Providers.PropertyChanged += (_, _) => Providers.ApplyToViewModel(ViewModel);
-        if (Providers.IsExternalProviderActive)
+        if (ViewModel.IsExternalLlmActive)
         {
-            Providers.ApplyToViewModel(ViewModel);
+            _ = RefreshInitialExternalModelsAsync();
         }
         MediaIndex = new MediaLibraryIndex();
         ExplorerViewModel = new FileExplorerViewModel(MediaIndex, Settings, ui);
@@ -138,6 +139,27 @@ public partial class App : Application
         catch (Exception error) when (error is System.Runtime.InteropServices.COMException or ArgumentException)
         {
             // Not fatal: system strings stay in the OS language.
+        }
+    }
+
+    private async Task RefreshInitialExternalModelsAsync()
+    {
+        try
+        {
+            if (Providers.ActiveProvider is { } active && !string.Equals(active.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
+            {
+                await Providers.TestAndFetchModelsAsync(active.Id);
+                Providers.ApplyToViewModel(ViewModel);
+            }
+            else if (ViewModel.IsExternalLlmActive)
+            {
+                await ViewModel.RefreshExternalModelsAsync();
+                Providers.SyncFromLegacyLanSettings(ViewModel);
+            }
+        }
+        catch
+        {
+            // Ignore background startup discovery errors.
         }
     }
 

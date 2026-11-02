@@ -66,10 +66,13 @@ public sealed record TranslationProviderProfile
                 if (!string.IsNullOrWhiteSpace(m) && seen.Add(m.Trim()))
                     result.Add(m.Trim());
             }
-            foreach (var m in TranslationProviderManager.GetPreset(PresetId).SuggestedModels)
+            if (DiscoveredModels.Count == 0 || !string.Equals(PresetId, "lan", StringComparison.OrdinalIgnoreCase))
             {
-                if (!string.IsNullOrWhiteSpace(m) && seen.Add(m.Trim()))
-                    result.Add(m.Trim());
+                foreach (var m in TranslationProviderManager.GetPreset(PresetId).SuggestedModels)
+                {
+                    if (!string.IsNullOrWhiteSpace(m) && seen.Add(m.Trim()))
+                        result.Add(m.Trim());
+                }
             }
             if (!string.IsNullOrWhiteSpace(Model) && seen.Add(Model.Trim()))
             {
@@ -243,7 +246,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
             ApiKey = resolvedKey,
             Model = resolvedModel,
             AsyncTranslation = asyncTranslation,
-            DiscoveredModels = [.. preset.SuggestedModels],
+            DiscoveredModels = [],
         };
 
         lock (_lock)
@@ -389,6 +392,197 @@ public sealed partial class TranslationProviderManager : ObservableObject
         }
     }
 
+    public void UpdateProviderDiscoveredModels(Guid id, IReadOnlyList<string> discoveredModels, string? selectedModel = null)
+    {
+        var updated = false;
+        lock (_lock)
+        {
+            var idx = _providers.FindIndex(p => p.Id == id);
+            if (idx < 0) return;
+            var current = _providers[idx];
+            var nextModel = !string.IsNullOrWhiteSpace(selectedModel)
+                ? selectedModel.Trim()
+                : (!string.IsNullOrWhiteSpace(current.Model) ? current.Model : (discoveredModels.FirstOrDefault() ?? ""));
+            _providers[idx] = current with
+            {
+                DiscoveredModels = [.. discoveredModels],
+                Model = nextModel,
+            };
+            SaveToDiskLocked();
+            updated = true;
+        }
+        if (updated)
+        {
+            SyncToEngineState();
+            NotifyStateChanged();
+        }
+    }
+
+    /// <summary>
+    /// Migrates or synchronizes existing LAN/Ollama settings from <paramref name="viewModel"/> into saved providers on startup
+    /// so upgrading users never lose their active Ollama configuration or models.
+    /// </summary>
+    public void EnsureMigratedFromViewModel(SubtitleViewModel? viewModel)
+    {
+        if (viewModel is null) return;
+
+        var vmUrl = (viewModel.ExternalLlmUrl ?? "").Trim();
+        var vmModel = (viewModel.ExternalLlmModel ?? "").Trim();
+        var vmAsync = viewModel.ExternalLlmAsync;
+        var vmEnabled = viewModel.ExternalLlmEnabled;
+
+        if (!string.IsNullOrWhiteSpace(vmUrl))
+        {
+            TranslationProviderProfile? lanProfile = null;
+            var changed = false;
+            lock (_lock)
+            {
+                lanProfile = _providers.FirstOrDefault(p =>
+                    string.Equals(p.PresetId, "lan", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(p.BaseUrl.Trim().TrimEnd('/'), vmUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+
+                if (lanProfile is null && (_providers.Count == 0 || vmEnabled))
+                {
+                    var preset = GetPreset("lan");
+                    lanProfile = new TranslationProviderProfile
+                    {
+                        Id = Guid.NewGuid(),
+                        Name = preset.Name,
+                        PresetId = "lan",
+                        BaseUrl = vmUrl,
+                        ApiKey = "",
+                        Model = vmModel,
+                        AsyncTranslation = vmAsync,
+                        DiscoveredModels = viewModel.ExternalLlmModels.Count > 0 ? [.. viewModel.ExternalLlmModels] : [],
+                    };
+                    _providers.Add(lanProfile);
+                    if (vmEnabled && _activeProviderId is null)
+                    {
+                        _activeProviderId = lanProfile.Id;
+                    }
+                    SaveToDiskLocked();
+                    changed = true;
+                }
+                else if (lanProfile is not null)
+                {
+                    var idx = _providers.FindIndex(p => p.Id == lanProfile.Id);
+                    if (idx >= 0)
+                    {
+                        var updatedModel = !string.IsNullOrWhiteSpace(vmModel) ? vmModel : lanProfile.Model;
+                        var updatedModels = viewModel.ExternalLlmModels.Count > 0
+                            ? [.. viewModel.ExternalLlmModels]
+                            : lanProfile.DiscoveredModels;
+                        var nextProfile = lanProfile with
+                        {
+                            BaseUrl = vmUrl,
+                            Model = updatedModel,
+                            AsyncTranslation = vmAsync,
+                            DiscoveredModels = updatedModels,
+                        };
+                        if (nextProfile != lanProfile)
+                        {
+                            _providers[idx] = nextProfile;
+                            changed = true;
+                        }
+                        if (vmEnabled && _activeProviderId is null)
+                        {
+                            _activeProviderId = lanProfile.Id;
+                            changed = true;
+                        }
+                        if (changed)
+                        {
+                            SaveToDiskLocked();
+                        }
+                    }
+                }
+            }
+
+            if (changed)
+            {
+                SyncToEngineState();
+                NotifyStateChanged();
+            }
+        }
+
+        if (IsExternalProviderActive)
+        {
+            ApplyToViewModel(viewModel);
+        }
+    }
+
+    /// <summary>
+    /// Keeps the saved LAN/Ollama provider synchronized when the user edits the LAN LLM section in Settings.
+    /// </summary>
+    public void SyncFromLegacyLanSettings(SubtitleViewModel? viewModel)
+    {
+        if (viewModel is null) return;
+        var vmUrl = (viewModel.ExternalLlmUrl ?? "").Trim();
+        var vmModel = (viewModel.ExternalLlmModel ?? "").Trim();
+        var vmAsync = viewModel.ExternalLlmAsync;
+        var vmEnabled = viewModel.ExternalLlmEnabled;
+
+        if (vmEnabled && !string.IsNullOrWhiteSpace(vmUrl))
+        {
+            Guid targetId;
+            lock (_lock)
+            {
+                var existing = (_activeProviderId is { } activeId
+                        ? _providers.FirstOrDefault(p => p.Id == activeId && string.Equals(p.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
+                        : null)
+                    ?? _providers.FirstOrDefault(p =>
+                        string.Equals(p.PresetId, "lan", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(p.BaseUrl.Trim().TrimEnd('/'), vmUrl.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+
+                if (existing is not null)
+                {
+                    var idx = _providers.FindIndex(p => p.Id == existing.Id);
+                    var discovered = viewModel.ExternalLlmModels.Count > 0
+                        ? [.. viewModel.ExternalLlmModels]
+                        : existing.DiscoveredModels;
+                    _providers[idx] = existing with
+                    {
+                        BaseUrl = vmUrl,
+                        Model = !string.IsNullOrWhiteSpace(vmModel) ? vmModel : existing.Model,
+                        AsyncTranslation = vmAsync,
+                        DiscoveredModels = discovered,
+                    };
+                    _activeProviderId = existing.Id;
+                    targetId = existing.Id;
+                    SaveToDiskLocked();
+                }
+                else
+                {
+                    var preset = GetPreset("lan");
+                    var created = new TranslationProviderProfile
+                    {
+                        Id = Guid.NewGuid(),
+                        Name = preset.Name,
+                        PresetId = "lan",
+                        BaseUrl = vmUrl,
+                        ApiKey = "",
+                        Model = vmModel,
+                        AsyncTranslation = vmAsync,
+                        DiscoveredModels = viewModel.ExternalLlmModels.Count > 0 ? [.. viewModel.ExternalLlmModels] : [],
+                    };
+                    _providers.Add(created);
+                    _activeProviderId = created.Id;
+                    targetId = created.Id;
+                    SaveToDiskLocked();
+                }
+            }
+            SyncToEngineState();
+            NotifyStateChanged();
+            _ = targetId;
+        }
+        else if (!vmEnabled)
+        {
+            if (ActiveProvider is not null)
+            {
+                SetActiveProvider(null);
+            }
+        }
+    }
+
     /// <summary>
     /// Synchronizes the active provider into both <see cref="ExternalLlmState.Shared"/> and <paramref name="viewModel"/>.
     /// </summary>
@@ -399,11 +593,21 @@ public sealed partial class TranslationProviderManager : ObservableObject
         var active = ActiveProvider;
         if (active is not null && !string.IsNullOrWhiteSpace(active.BaseUrl))
         {
-            viewModel.ActiveProviderName = active.Name;
+            viewModel.ActiveProviderName = string.Equals(active.PresetId, "lan", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : active.Name;
             viewModel.ExternalLlmUrl = active.BaseUrl.Trim();
-            viewModel.ExternalLlmModel = active.Model.Trim();
+            if (!string.IsNullOrWhiteSpace(active.Model))
+            {
+                viewModel.ExternalLlmModel = active.Model.Trim();
+            }
             viewModel.ExternalLlmAsync = active.AsyncTranslation;
             viewModel.ExternalLlmEnabled = true;
+            if (active.DiscoveredModels.Count > 0 &&
+                !string.Equals(active.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
+            {
+                viewModel.SetExternalLlmModels(active.DiscoveredModels);
+            }
             ExternalLlmState.Shared.ApiKey = active.ApiKey.Trim();
         }
         else
@@ -600,7 +804,10 @@ public sealed partial class TranslationProviderManager : ObservableObject
             }
 
             sw.Stop();
-            var merged = MergeModels(discovered, preset.SuggestedModels, model);
+            var suggestedFallback = discovered.Count > 0 && string.Equals(preset.Id, "lan", StringComparison.OrdinalIgnoreCase)
+                ? []
+                : preset.SuggestedModels;
+            var merged = MergeModels(discovered, suggestedFallback, model);
             if (!reachable)
             {
                 return (false, L("Sunucuya ulaşılamadı: %@", lastError ?? "timeout"), merged);

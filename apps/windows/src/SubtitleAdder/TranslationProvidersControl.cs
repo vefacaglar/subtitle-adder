@@ -712,83 +712,156 @@ public static class TranslationProvidersMenuBuilder
         TranslationProviderManager manager,
         SubtitleViewModel? viewModel = null,
         IReadOnlyList<EngineModel>? localTranslationModels = null,
-        Action? onOpenSettingsRequested = null)
+        Action? onOpenSettingsRequested = null,
+        Func<Guid?, Task>? onRefreshModelsRequested = null)
     {
         flyout.Items.Clear();
 
         var providers = manager.Providers;
-        if (providers.Count > 0)
-        {
-            foreach (var provider in providers)
-            {
-                var isProviderActive = manager.ActiveProviderId == provider.Id;
-                var subMenu = new MenuFlyoutSubItem
-                {
-                    Text = isProviderActive
-                        ? $"✓ {provider.Name} ({(string.IsNullOrWhiteSpace(provider.Model) ? L("Otomatik") : provider.Model)})"
-                        : $"{provider.Name} ({(string.IsNullOrWhiteSpace(provider.Model) ? L("Otomatik") : provider.Model)})",
-                };
-
-                var capturedProviderId = provider.Id;
-                var models = provider.AvailableModels;
-                if (models.Count == 0)
-                {
-                    var activateItem = new RadioMenuFlyoutItem
-                    {
-                        Text = L("Etkinleştir"),
-                        GroupName = $"provider_{capturedProviderId}",
-                        IsChecked = isProviderActive,
-                    };
-                    activateItem.Click += (_, _) =>
-                    {
-                        manager.SetActiveProvider(capturedProviderId);
-                        manager.ApplyToViewModel(viewModel);
-                    };
-                    subMenu.Items.Add(activateItem);
-                }
-                else
-                {
-                    foreach (var modelName in models)
-                    {
-                        var capturedModel = modelName;
-                        var modelItem = new RadioMenuFlyoutItem
-                        {
-                            Text = capturedModel,
-                            GroupName = $"provider_{capturedProviderId}",
-                            IsChecked = isProviderActive && string.Equals(provider.Model, capturedModel, StringComparison.OrdinalIgnoreCase),
-                        };
-                        modelItem.Click += (_, _) =>
-                        {
-                            manager.UpdateProviderModel(capturedProviderId, capturedModel);
-                            manager.SetActiveProvider(capturedProviderId);
-                            manager.ApplyToViewModel(viewModel);
-                        };
-                        subMenu.Items.Add(modelItem);
-                    }
-                }
-
-                subMenu.Items.Add(new MenuFlyoutSeparator());
-                var refreshItem = new MenuFlyoutItem { Text = L("Uzaktaki modelleri listele") };
-                refreshItem.Click += async (_, _) =>
-                {
-                    await manager.TestAndFetchModelsAsync(capturedProviderId);
-                    manager.ApplyToViewModel(viewModel);
-                };
-                subMenu.Items.Add(refreshItem);
-
-                flyout.Items.Add(subMenu);
-            }
-
-            flyout.Items.Add(new MenuFlyoutSeparator());
-        }
-
+        var activeProvider = manager.ActiveProvider;
+        var isExternalActive = activeProvider is not null || (viewModel?.IsExternalLlmActive == true);
         var localModels = localTranslationModels ?? viewModel?.Catalog.TranslationModels ?? [];
         var llms = localModels.Where(m => m.Backend == "llama").ToList();
         var others = localModels.Where(m => m.Backend != "llama").ToList();
 
-        foreach (var model in llms) flyout.Items.Add(CreateLocalModelItem(model));
-        if (others.Count > 0 && llms.Count > 0) flyout.Items.Add(new MenuFlyoutSeparator());
-        foreach (var model in others) flyout.Items.Add(CreateLocalModelItem(model));
+        if (isExternalActive)
+        {
+            // 1. Put all models of the active Ollama / API provider directly at the top level for single-click selection.
+            var topModels = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            var currentModel = !string.IsNullOrWhiteSpace(viewModel?.ExternalLlmModel)
+                ? viewModel!.ExternalLlmModel.Trim()
+                : (activeProvider?.Model?.Trim() ?? "");
+
+            if (viewModel?.ExternalLlmModels is { Count: > 0 } vmModels &&
+                (activeProvider is null || string.Equals(activeProvider.PresetId, "lan", StringComparison.OrdinalIgnoreCase)))
+            {
+                foreach (var m in vmModels)
+                {
+                    if (!string.IsNullOrWhiteSpace(m) && seen.Add(m.Trim()))
+                        topModels.Add(m.Trim());
+                }
+            }
+
+            if (activeProvider is not null && !string.Equals(activeProvider.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
+            {
+                var sourceModels = activeProvider.DiscoveredModels.Count > 0
+                    ? activeProvider.DiscoveredModels
+                    : (topModels.Count == 0 ? activeProvider.AvailableModels : []);
+                foreach (var m in sourceModels)
+                {
+                    if (!string.IsNullOrWhiteSpace(m) && seen.Add(m.Trim()))
+                        topModels.Add(m.Trim());
+                }
+            }
+            else if (activeProvider is not null && topModels.Count == 0 && activeProvider.DiscoveredModels.Count > 0)
+            {
+                foreach (var m in activeProvider.DiscoveredModels)
+                {
+                    if (!string.IsNullOrWhiteSpace(m) && seen.Add(m.Trim()))
+                        topModels.Add(m.Trim());
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(currentModel) && seen.Add(currentModel))
+            {
+                topModels.Insert(0, currentModel);
+            }
+
+            var capturedActiveId = activeProvider?.Id;
+            foreach (var remoteModel in topModels)
+            {
+                var capturedModel = remoteModel;
+                var item = new RadioMenuFlyoutItem
+                {
+                    Text = capturedModel,
+                    GroupName = "externalTranslationModel",
+                    IsChecked = string.Equals(capturedModel, currentModel, StringComparison.OrdinalIgnoreCase),
+                };
+                item.Click += (_, _) =>
+                {
+                    if (capturedActiveId is { } id)
+                    {
+                        manager.UpdateProviderModel(id, capturedModel);
+                        manager.SetActiveProvider(id);
+                        manager.ApplyToViewModel(viewModel);
+                    }
+                    if (viewModel is not null)
+                    {
+                        viewModel.ExternalLlmModel = capturedModel;
+                        viewModel.ExternalLlmEnabled = true;
+                        manager.SyncFromLegacyLanSettings(viewModel);
+                    }
+                };
+                flyout.Items.Add(item);
+            }
+
+            if (flyout.Items.Count > 0)
+            {
+                flyout.Items.Add(new MenuFlyoutSeparator());
+            }
+
+            var refreshItem = new MenuFlyoutItem { Text = L("Uzaktaki modelleri listele") };
+            refreshItem.Click += async (_, _) =>
+            {
+                if (onRefreshModelsRequested is not null)
+                {
+                    await onRefreshModelsRequested(capturedActiveId);
+                }
+                else if (capturedActiveId is { } id)
+                {
+                    await manager.TestAndFetchModelsAsync(id);
+                    manager.ApplyToViewModel(viewModel);
+                }
+                else if (viewModel is not null)
+                {
+                    await viewModel.RefreshExternalModelsAsync();
+                    manager.SyncFromLegacyLanSettings(viewModel);
+                }
+            };
+            flyout.Items.Add(refreshItem);
+
+            // 2. Other saved providers (if any) + Local on-device models submenu so the user can switch anytime.
+            var otherProviders = providers.Where(p => p.Id != capturedActiveId).ToList();
+            if (otherProviders.Count > 0 || localModels.Count > 0)
+            {
+                flyout.Items.Add(new MenuFlyoutSeparator());
+
+                foreach (var provider in otherProviders)
+                {
+                    flyout.Items.Add(CreateProviderSubMenu(provider, isProviderActive: false));
+                }
+
+                if (localModels.Count > 0)
+                {
+                    var localSubMenu = new MenuFlyoutSubItem
+                    {
+                        Text = L("Yerel modeller (Cihaz üzerinde)"),
+                    };
+                    foreach (var model in llms) localSubMenu.Items.Add(CreateLocalModelItem(model));
+                    if (others.Count > 0 && llms.Count > 0) localSubMenu.Items.Add(new MenuFlyoutSeparator());
+                    foreach (var model in others) localSubMenu.Items.Add(CreateLocalModelItem(model));
+                    flyout.Items.Add(localSubMenu);
+                }
+            }
+        }
+        else
+        {
+            // Local on-device model is currently active: show saved API/Ollama providers at the top, then local models.
+            if (providers.Count > 0)
+            {
+                foreach (var provider in providers)
+                {
+                    flyout.Items.Add(CreateProviderSubMenu(provider, isProviderActive: false));
+                }
+                flyout.Items.Add(new MenuFlyoutSeparator());
+            }
+
+            foreach (var model in llms) flyout.Items.Add(CreateLocalModelItem(model));
+            if (others.Count > 0 && llms.Count > 0) flyout.Items.Add(new MenuFlyoutSeparator());
+            foreach (var model in others) flyout.Items.Add(CreateLocalModelItem(model));
+        }
 
         if (onOpenSettingsRequested is not null)
         {
@@ -798,9 +871,74 @@ public static class TranslationProvidersMenuBuilder
             flyout.Items.Add(manageItem);
         }
 
+        MenuFlyoutSubItem CreateProviderSubMenu(TranslationProviderProfile provider, bool isProviderActive)
+        {
+            var subMenu = new MenuFlyoutSubItem
+            {
+                Text = isProviderActive
+                    ? $"✓ {provider.Name} ({(string.IsNullOrWhiteSpace(provider.Model) ? L("Otomatik") : provider.Model)})"
+                    : $"{provider.Name} ({(string.IsNullOrWhiteSpace(provider.Model) ? L("Otomatik") : provider.Model)})",
+            };
+
+            var capturedProviderId = provider.Id;
+            var models = provider.AvailableModels;
+            if (models.Count == 0)
+            {
+                var activateItem = new RadioMenuFlyoutItem
+                {
+                    Text = L("Etkinleştir"),
+                    GroupName = $"provider_{capturedProviderId}",
+                    IsChecked = isProviderActive,
+                };
+                activateItem.Click += (_, _) =>
+                {
+                    manager.SetActiveProvider(capturedProviderId);
+                    manager.ApplyToViewModel(viewModel);
+                };
+                subMenu.Items.Add(activateItem);
+            }
+            else
+            {
+                foreach (var modelName in models)
+                {
+                    var capturedModel = modelName;
+                    var modelItem = new RadioMenuFlyoutItem
+                    {
+                        Text = capturedModel,
+                        GroupName = $"provider_{capturedProviderId}",
+                        IsChecked = isProviderActive && string.Equals(provider.Model, capturedModel, StringComparison.OrdinalIgnoreCase),
+                    };
+                    modelItem.Click += (_, _) =>
+                    {
+                        manager.UpdateProviderModel(capturedProviderId, capturedModel);
+                        manager.SetActiveProvider(capturedProviderId);
+                        manager.ApplyToViewModel(viewModel);
+                    };
+                    subMenu.Items.Add(modelItem);
+                }
+            }
+
+            subMenu.Items.Add(new MenuFlyoutSeparator());
+            var refreshItem = new MenuFlyoutItem { Text = L("Uzaktaki modelleri listele") };
+            refreshItem.Click += async (_, _) =>
+            {
+                if (onRefreshModelsRequested is not null)
+                {
+                    await onRefreshModelsRequested(capturedProviderId);
+                }
+                else
+                {
+                    await manager.TestAndFetchModelsAsync(capturedProviderId);
+                    manager.ApplyToViewModel(viewModel);
+                }
+            };
+            subMenu.Items.Add(refreshItem);
+            return subMenu;
+        }
+
         MenuFlyoutItemBase CreateLocalModelItem(EngineModel model)
         {
-            var isLocalChecked = !manager.IsExternalProviderActive && model.Id == viewModel?.TranslationModel;
+            var isLocalChecked = !isExternalActive && model.Id == viewModel?.TranslationModel;
             var item = new RadioMenuFlyoutItem
             {
                 Text = ModelLabel.MenuTitle(model),

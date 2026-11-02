@@ -621,14 +621,15 @@
                     </StackPanel>
                 </Grid>
             </Border>
-        </Grid>
 
             <!-- Tab 3: YouTube-style Local Video Platform Hub -->
             <Border x:Name="PlatformPanel" Visibility="Collapsed" CornerRadius="8"
+                    HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                <loc:VideoPlatformHubView x:Name="PlatformHubView" />
+                <loc:VideoPlatformHubView x:Name="PlatformHubView" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
             </Border>
+            </Grid>
         </Grid>
 
         <!-- Status bar -->
