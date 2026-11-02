@@ -6480,6 +6480,54 @@
           }
         }
       }
+    },
+    "Kontur": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kontur"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outline"
+          }
+        }
+      }
+    },
+    "Arayüz yazı tipi": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arayüz yazı tipi"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interface font"
+          }
+        }
+      }
+    },
+    "Altyazı yazı tipinden bağımsızdır.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı yazı tipinden bağımsızdır."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Independent of the subtitle font."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
