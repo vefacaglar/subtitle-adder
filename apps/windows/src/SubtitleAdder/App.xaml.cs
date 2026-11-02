@@ -12,6 +12,7 @@ public partial class App : Application
 {
     private MainWindow? _window;
     private SettingsWindow? _settingsWindow;
+    private SingleInstanceCoordinator? _singleInstance;
 
     public App()
     {
@@ -43,8 +44,43 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        var cliPaths = Environment.GetCommandLineArgs()
+            .Skip(1)
+            .Select(p => p.Trim().Trim('"'))
+            .Where(File.Exists)
+            .Select(Path.GetFullPath)
+            .ToList();
+
+        if (!SingleInstanceCoordinator.TryAcquireOrForward(cliPaths, paths =>
+            {
+                _window?.DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (_window is null) return;
+                    SingleInstanceCoordinator.BringToForeground(_window);
+                    if (paths.Count > 0) _window.OpenExternalFiles(paths);
+                });
+            }, out _singleInstance))
+        {
+            Environment.Exit(0);
+            return;
+        }
+
         SubtitleViewModel.CleanupTempDirectory();
         Settings = new JsonFileSettingsStore();
+
+        if (string.Equals(Path.GetFileName(Environment.ProcessPath), "SubtitleAdder.exe", StringComparison.OrdinalIgnoreCase) &&
+            Settings.GetBool("fileAssociationsDisabled") != true)
+        {
+            try
+            {
+                FileAssociationRegistrar.Register();
+            }
+            catch
+            {
+                // Ignore if registry access is restricted.
+            }
+        }
+
         // Must exist before anything builds a localized string.
         Language = new AppLanguage(Settings, () => GlobalizationPreferences.Languages);
         ApplySystemLanguage(Language.Effective);
@@ -58,14 +94,17 @@ public partial class App : Application
         _window.Closed += (_, _) =>
         {
             _settingsWindow?.Close();
+            _singleInstance?.Dispose();
             ViewModel.Dispose();
             (Settings as IDisposable)?.Dispose();   // writes pending settings
         };
         _window.Activate();
 
-        // "Open with" / a path on the command line.
-        var path = Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(File.Exists);
-        if (path is not null) ViewModel.OpenVideo(Path.GetFullPath(path));
+        // "Open with" / double-clicked media or subtitle files on the command line.
+        if (cliPaths.Count > 0)
+        {
+            _window.OpenExternalFiles(cliPaths);
+        }
     }
 
     /// <summary>

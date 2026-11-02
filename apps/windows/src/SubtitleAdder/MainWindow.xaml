@@ -200,7 +200,7 @@
         </InfoBar>
 
         <!-- Content -->
-        <Grid Grid.Row="3" Margin="12,0,12,0">
+        <Grid x:Name="ContentGrid" Grid.Row="3" Margin="12,0,12,0">
             <!-- Tab 1: Single-video editor (unchanged layout) -->
             <Grid x:Name="EditorView">
                 <Grid x:Name="DropZone" CornerRadius="8" Background="{ThemeResource LayerFillColorDefaultBrush}">
@@ -234,16 +234,18 @@
 
                     <Border x:Name="PlayerBorder" Grid.ColumnSpan="3" CornerRadius="8" Background="Black">
                         <Grid x:Name="PlayerGrid" SizeChanged="PlayerGrid_SizeChanged"
-                              PointerEntered="PlayerGrid_PointerEntered" PointerExited="PlayerGrid_PointerExited">
+                              PointerEntered="PlayerGrid_PointerEntered" PointerExited="PlayerGrid_PointerExited"
+                              PointerMoved="PlayerGrid_PointerMoved" PointerWheelChanged="PlayerGrid_PointerWheelChanged">
                             <MediaPlayerElement x:Name="PlayerElement" AreTransportControlsEnabled="False" Stretch="Uniform" RequestedTheme="Dark"
-                                                Tapped="PlayerElement_Tapped" loc:Localize.AutomationName="Video" />
+                                                IsDoubleTapEnabled="True" Tapped="PlayerElement_Tapped" DoubleTapped="PlayerElement_DoubleTapped" loc:Localize.AutomationName="Video" />
                             <Grid x:Name="OverlayArea" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
                                 <loc:OverlayLabel x:Name="Overlay" />
                             </Grid>
                             <loc:PreviewTransportControls x:Name="PreviewControls" HorizontalAlignment="Center" VerticalAlignment="Bottom"
                                                           Margin="0,0,0,14" />
                             <Border x:Name="DisplayPicker" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10" Padding="10,4,4,4"
-                                    CornerRadius="8" Background="#CC1C1C1E" BorderBrush="#40FFFFFF" BorderThickness="1" RequestedTheme="Dark">
+                                    CornerRadius="8" Background="#CC1C1C1E" BorderBrush="#40FFFFFF" BorderThickness="1" RequestedTheme="Dark"
+                                    PointerEntered="DisplayPicker_PointerEntered" PointerExited="DisplayPicker_PointerExited">
                                 <StackPanel Orientation="Horizontal" Spacing="4">
                                     <TextBlock loc:Localize.Text="Gösterilen" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center" Margin="0,0,4,0" Foreground="#D9FFFFFF" />
                                     <ToggleButton x:Name="DisplayOriginalButton" Padding="10,4" MinWidth="68" Click="DisplayOriginal_Click"
@@ -253,6 +255,11 @@
                                     <ToggleButton x:Name="DisplayBothButton" Padding="10,4" MinWidth="56" Click="DisplayBoth_Click"
                                                   loc:Localize.Content="İkisi" loc:Localize.AutomationName="İkisi" />
                                     <Border Width="1" Margin="4,4" Background="#40FFFFFF" />
+                                    <ToggleButton x:Name="SubtitlePanelButton" Padding="8,4" Click="SubtitlePanel_Click"
+                                                  loc:Localize.ToolTip="Altyazı panelini gizle / göster"
+                                                  loc:Localize.AutomationName="Altyazı panelini gizle / göster">
+                                        <FontIcon x:Name="SubtitlePanelIcon" Glyph="&#xED1E;" FontSize="14" />
+                                    </ToggleButton>
                                     <ToggleButton x:Name="SideBySideButton" Padding="8,4" Click="SideBySide_Click"
                                                   loc:Localize.ToolTip="Altyazıları sağa / alta al"
                                                   loc:Localize.AutomationName="Altyazıları sağa / alta al">
@@ -585,7 +592,7 @@
         </Grid>
 
         <!-- Status bar -->
-        <Grid Grid.Row="4" Padding="16,10" ColumnSpacing="10">
+        <Grid x:Name="StatusBarGrid" Grid.Row="4" Padding="16,10" ColumnSpacing="10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />

@@ -15,6 +15,12 @@ public static partial class SubtitleParser
 {
     public static readonly IReadOnlyList<string> Extensions = [".srt", ".vtt", ".ass", ".ssa", ".json"];
 
+    public static readonly IReadOnlyList<string> CompanionVideoExtensions =
+    [
+        ".mp4", ".mkv", ".mov", ".m4v", ".avi", ".webm", ".wmv", ".mpg", ".mpeg", ".ts", ".mts", ".m2ts", ".3gp", ".flv",
+        ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma",
+    ];
+
     private static readonly Regex TimingArrowRegex = new(
         @"^\s*(?<start>(?:\d{1,2}:)?\d{1,2}:\d{2}[,\.]\d{1,3})\s*-->\s*(?<end>(?:\d{1,2}:)?\d{1,2}:\d{2}[,\.]\d{1,3})",
         RegexOptions.Compiled);
@@ -40,6 +46,31 @@ public static partial class SubtitleParser
         {
             var candidate = Path.Combine(dir, stem + ext);
             if (File.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    /// <summary>Finds a companion video/audio file next to <paramref name="subtitlePath"/> with the same base name, if one exists.</summary>
+    public static string? FindCompanionVideo(string? subtitlePath)
+    {
+        if (string.IsNullOrWhiteSpace(subtitlePath)) return null;
+        var dir = Path.GetDirectoryName(subtitlePath);
+        var stem = Path.GetFileNameWithoutExtension(subtitlePath);
+        if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(stem)) return null;
+        foreach (var ext in CompanionVideoExtensions)
+        {
+            var candidate = Path.Combine(dir, stem + ext);
+            if (File.Exists(candidate)) return candidate;
+        }
+        var strippedStem = Path.GetFileNameWithoutExtension(stem);
+        var langSuffix = Path.GetExtension(stem);
+        if (!string.IsNullOrEmpty(strippedStem) && strippedStem != stem && langSuffix.Length is >= 3 and <= 6)
+        {
+            foreach (var ext in CompanionVideoExtensions)
+            {
+                var candidate = Path.Combine(dir, strippedStem + ext);
+                if (File.Exists(candidate)) return candidate;
+            }
         }
         return null;
     }

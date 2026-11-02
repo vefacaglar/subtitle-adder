@@ -23,6 +23,7 @@ public sealed class PlayerController : IDisposable
     private volatile bool _disposed;
     private readonly PlaybackTimeline _timeline = new();
     private double? _seekWhenReady;
+    private bool _autoPlayWhenReady;
 
     public PlayerController(DispatcherQueue queue)
     {
@@ -37,6 +38,12 @@ public sealed class PlayerController : IDisposable
             {
                 _seekWhenReady = null;
                 Seek(target);
+            }
+            if (_autoPlayWhenReady)
+            {
+                _autoPlayWhenReady = false;
+                Player.Play();
+                IsPlaying = true;
             }
             Tick();
         });
@@ -72,13 +79,14 @@ public sealed class PlayerController : IDisposable
     public event Action? Ticked;
     public event Action<string>? Failed;
 
-    public void Load(string? path)
+    public void Load(string? path, bool autoPlay = false)
     {
         var generation = Interlocked.Increment(ref _loadGeneration);
         _mediaReady = false;
         IsPlaying = false;
         _timeline.Reset();
         _seekWhenReady = null;
+        _autoPlayWhenReady = path is not null && autoPlay;
         Ticked?.Invoke();
         // Don't use the old video's aspect ratio until the new size arrives.
         VideoSize = (16, 9);

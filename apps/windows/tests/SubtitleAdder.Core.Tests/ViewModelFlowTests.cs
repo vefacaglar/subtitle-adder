@@ -871,4 +871,45 @@ public class ViewModelTranslationTests
         var models = SubtitleViewModel.ParseSuitableExternalModels(ollamaJson);
         Assert.Equal(["gemma4:e4b", "qwen3:14b"], models);
     }
+
+    [Fact]
+    public void AutoPlayVideoDefaultsToTrueAndPersists()
+    {
+        var (vm, _, settings) = Make.ViewModel(engine: false);
+        Assert.True(vm.AutoPlayVideo);
+
+        vm.AutoPlayVideo = false;
+        Assert.False(vm.AutoPlayVideo);
+        Assert.Equal(false, settings.GetBool(SubtitleViewModel.AutoPlayVideoDefaultsKey));
+
+        var vm2 = new SubtitleViewModel(new ModelCatalog(null), settings, ImmediateDispatcher.Instance);
+        Assert.False(vm2.AutoPlayVideo);
+    }
+
+    [Fact]
+    public async Task FindCompanionVideoMatchesExactAndLanguageSuffixedSubtitles()
+    {
+        var rootDir = Path.Combine(Path.GetTempPath(), "SubtitleAdderCompanionTest-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(rootDir);
+        try
+        {
+            var videoPath = Path.Combine(rootDir, "Episode01.mkv");
+            var exactSub = Path.Combine(rootDir, "Episode01.srt");
+            var langSub = Path.Combine(rootDir, "Episode01.tr.srt");
+            var orphanSub = Path.Combine(rootDir, "Other.srt");
+
+            await File.WriteAllTextAsync(videoPath, "video");
+            await File.WriteAllTextAsync(exactSub, "1\n00:00:00,000 --> 00:00:01,000\nHi\n");
+            await File.WriteAllTextAsync(langSub, "1\n00:00:00,000 --> 00:00:01,000\nSelam\n");
+            await File.WriteAllTextAsync(orphanSub, "1\n00:00:00,000 --> 00:00:01,000\nOrphan\n");
+
+            Assert.Equal(videoPath, SubtitleParser.FindCompanionVideo(exactSub));
+            Assert.Equal(videoPath, SubtitleParser.FindCompanionVideo(langSub));
+            Assert.Null(SubtitleParser.FindCompanionVideo(orphanSub));
+        }
+        finally
+        {
+            Directory.Delete(rootDir, recursive: true);
+        }
+    }
 }
