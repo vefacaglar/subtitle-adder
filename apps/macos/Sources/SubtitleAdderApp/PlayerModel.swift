@@ -26,11 +26,27 @@ final class PlayerModel {
     /// observed by any view.
     @ObservationIgnored var onPlaybackEvent: (@MainActor (PlaybackEvent) -> Void)?
 
+    /// `.started` has been reported for the current load and not yet answered by a `.paused`.
+    @ObservationIgnored private var reportedPlaying = false
+    @ObservationIgnored private var timeControlObservation: NSKeyValueObservation?
+
     private(set) var currentTime: Double = 0
+    /// Whether the player is playing (or about to: waiting for the item to be ready). Follows `AVPlayer.timeControlStatus`
+    /// and nothing else: only the KVO handler writes it, so it can neither be left `true` on a paused player by a late
+    /// periodic tick nor claim playback the player has not started. It trails the player by a main-actor hop, so code that
+    /// starts or stops playback and then looks at it has to wait.
     private(set) var isPlaying = false {
         didSet {
             guard isPlaying != oldValue else { return }
-            onPlaybackEvent?(isPlaying ? .started : .paused(position))
+            if isPlaying {
+                reportedPlaying = true
+                onPlaybackEvent?(.started)
+            } else if reportedPlaying {
+                // A pause that only follows the video being replaced (`load` reported `.leaving`) is not reported again,
+                // as it would carry the new video's position.
+                reportedPlaying = false
+                onPlaybackEvent?(.paused(position))
+            }
         }
     }
     private(set) var videoSize = CGSize(width: 16, height: 9)
@@ -86,6 +102,16 @@ final class PlayerModel {
         ) { [weak self] time in
             MainActor.assumeIsolated { self?.observe(playerTime: time.seconds) }
         }
+        // The single source of `isPlaying`. The handler reads the status when it runs rather than the value it was called
+        // with, so however the changes pile up the last one to run leaves the current state.
+        timeControlObservation = player.observe(\.timeControlStatus, options: []) { [weak self] _, _ in
+            Task { @MainActor in self?.syncPlaybackState() }
+        }
+    }
+
+    private func syncPlaybackState() {
+        let playing = player.timeControlStatus != .paused
+        if playing != isPlaying { isPlaying = playing }
     }
 
     /// Replaces the video. With `autoPlay` playback starts once the new item is ready (never for `nil`, and not when
@@ -93,6 +119,7 @@ final class PlayerModel {
     func load(_ url: URL?, autoPlay: Bool = false) {
         // Where the video being left was, before anything resets.
         if player.currentItem != nil { onPlaybackEvent?(.leaving(position)) }
+        reportedPlaying = false
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
@@ -101,7 +128,6 @@ final class PlayerModel {
         failureReported = false
         autoPlayWhenReady = autoPlay && url != nil
         player.pause()
-        isPlaying = false
         timeline.reset()
         currentTime = 0
         // Don't use the old video's aspect ratio until the new video size arrives.
@@ -146,7 +172,6 @@ final class PlayerModel {
         failure = Self.cause(for: error)
         autoPlayWhenReady = false
         player.pause()
-        isPlaying = false
     }
 
     /// Hides the playback notice for the current video; a later failure of the same load doesn't bring it back.
@@ -221,14 +246,12 @@ final class PlayerModel {
         guard player.currentItem != nil else { return }
         autoPlayWhenReady = false
         player.play()
-        isPlaying = true
     }
 
     /// Pauses, and also cancels an auto-play that is still waiting for the item.
     func pause() {
         autoPlayWhenReady = false
         player.pause()
-        isPlaying = false
     }
 
     func togglePlayback() {
@@ -279,8 +302,6 @@ final class PlayerModel {
         let duration = player.currentItem?.duration.seconds ?? 0
         timeline.observe(position: seconds, duration: duration, now: now)
         if currentTime != timeline.position { currentTime = timeline.position }
-        let playing = player.timeControlStatus != .paused
-        if playing != isPlaying { isPlaying = playing }
         updateActive()
     }
 
