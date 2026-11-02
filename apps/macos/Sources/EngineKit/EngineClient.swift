@@ -190,7 +190,7 @@ public struct EngineClient: Sendable {
                 defer { run.cleanup() }
                 do {
                     var engineError: String?
-                    for try await line in run.stdout.bytes.lines where !line.isEmpty {
+                    for await line in run.lines() where !line.isEmpty {
                         // Events from a newer engine that this client doesn't know are skipped.
                         guard let event = try EngineEvent.decode(line) else { continue }
                         if case .error(let message) = event {
@@ -225,8 +225,7 @@ public struct EngineClient: Sendable {
         let run = try start(["render", "--format", format.rawValue], stdin: input)
         defer { run.cleanup() }
         return try await withTaskCancellationHandler {
-            var output = Data()
-            for try await byte in run.stdout.bytes { output.append(byte) }
+            let output = await run.output()
             let status = await run.exitStatus()
             try Task.checkCancellation()
             guard status == 0 else { throw run.failure(status) }
@@ -242,7 +241,7 @@ public struct EngineClient: Sendable {
         defer { run.cleanup() }
         return try await withTaskCancellationHandler {
             var line: String?
-            for try await text in run.stdout.bytes.lines where !text.isEmpty {
+            for await text in run.lines() where !text.isEmpty {
                 line = text
             }
             let status = await run.exitStatus()
@@ -267,7 +266,7 @@ public struct EngineClient: Sendable {
         defer { run.cleanup() }
         return try await withTaskCancellationHandler {
             var line: String?
-            for try await text in run.stdout.bytes.lines where !text.isEmpty {
+            for await text in run.lines() where !text.isEmpty {
                 line = text
             }
             let status = await run.exitStatus()
@@ -362,6 +361,51 @@ private struct RunningEngine: @unchecked Sendable {
         }
     }
 
+    /// What the engine writes to stdout, line by line, until it closes the pipe. Read on a thread of its own:
+    /// `FileHandle.bytes` serializes the reads of every engine running at the same time, so one that has nothing to
+    /// say (a model loading, a long translation batch) would hold back the events of all the others.
+    func lines() -> AsyncStream<String> {
+        AsyncStream { continuation in
+            let splitter = LineSplitter()
+            readInBackground(
+                chunk: { chunk in for line in splitter.feed(chunk) { continuation.yield(line) } },
+                finish: {
+                    for line in splitter.rest() { continuation.yield(line) }
+                    continuation.finish()
+                }
+            )
+        }
+    }
+
+    /// Everything the engine writes to stdout until it closes the pipe (read like `lines()`).
+    func output() async -> Data {
+        let chunks = AsyncStream<Data> { continuation in
+            readInBackground(chunk: { continuation.yield($0) }, finish: { continuation.finish() })
+        }
+        var all = Data()
+        for await chunk in chunks { all.append(chunk) }
+        return all
+    }
+
+    private func readInBackground(chunk: @escaping @Sendable (Data) -> Void, finish: @escaping @Sendable () -> Void) {
+        let handle = stdout
+        Thread.detachNewThread {
+            // `read(2)` returns as soon as anything is there; `FileHandle.read(upToCount:)` would wait for a full buffer.
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            while true {
+                let count = read(handle.fileDescriptor, &buffer, buffer.count)
+                if count > 0 {
+                    chunk(Data(buffer[0..<count]))
+                } else if count < 0, errno == EINTR {
+                    continue
+                } else {
+                    break
+                }
+            }
+            finish()
+        }
+    }
+
     /// Sends SIGTERM if the process is still running (`uv run` forwards it to the Python child).
     func terminate() {
         if process.isRunning { process.terminate() }
@@ -377,6 +421,29 @@ private struct RunningEngine: @unchecked Sendable {
         let tail = (try? String(contentsOf: log, encoding: .utf8))?
             .split(separator: "\n").suffix(5).joined(separator: "\n") ?? ""
         return .failed(engineString("Motor hata koduyla çıktı (%lld). %@", language: language, Int(status), tail))
+    }
+}
+
+/// Cuts the chunks of a pipe into lines (`\n` or `\r\n`). Only the thread that reads the pipe touches it.
+private final class LineSplitter: @unchecked Sendable {
+    private var buffer = Data()
+
+    func feed(_ chunk: Data) -> [String] {
+        buffer.append(chunk)
+        var lines: [String] = []
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            var line = buffer.subdata(in: buffer.startIndex..<newline)
+            buffer.removeSubrange(buffer.startIndex...newline)
+            if line.last == 0x0D { line.removeLast() }
+            lines.append(String(decoding: line, as: UTF8.self))
+        }
+        return lines
+    }
+
+    /// The last line when the output doesn't end with a newline.
+    func rest() -> [String] {
+        defer { buffer = Data() }
+        return buffer.isEmpty ? [] : [String(decoding: buffer, as: UTF8.self)]
     }
 }
 

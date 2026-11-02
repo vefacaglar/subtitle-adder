@@ -1,3 +1,4 @@
+import CryptoKit
 import EngineKit
 import Foundation
 
@@ -24,12 +25,39 @@ struct PlaylistItem: Identifiable, Equatable, Sendable {
     var folderPath: String { videoURL.deletingLastPathComponent().path }
     /// The language can't change and the item can't go away while it is being worked on.
     var isEditable: Bool { state != .working }
+    /// Its audio was extracted ahead of time ("Ses hazır · Sırada") and it waits for its turn; only that row is
+    /// pending with a progress value.
+    var isAudioReady: Bool { state == .pending && fraction != nil }
+}
+
+/// What one playlist run keeps track of while its three stages overlap.
+@MainActor
+final class PlaylistPipeline {
+    /// Items whose speech recognition has begun (or was skipped because a subtitle file sits next to the video); the
+    /// run never picks them again, so a failed item is retried by the next run, not by this one.
+    var stage2Started: Set<UUID> = []
+    /// Stage 1 tasks by item: the audio extraction started for it (running or done).
+    var extractions: [UUID: Task<Void, Never>] = [:]
+    /// The newest extraction; the next one queues behind it, so two never run at once.
+    var lastExtraction: Task<Void, Never>?
+    /// Items whose WAV is waiting in their folder for the transcription.
+    var audioReady: Set<UUID> = []
+    /// Local translation models that stage 3 is using right now, with the number of items using each. They stay out of
+    /// reach of the model deletion in Settings, which the job-based protection (cleared whenever the video changes)
+    /// doesn't cover while the next video is already transcribing.
+    var translationModelsInUse: [String: Int] = [:]
 }
 
 /// Batch playlist: several videos are transcribed, translated into the one target language chosen at the start and
-/// saved next to their videos, one after the other. The editor's own single-video flow does the work for each item
-/// (`openVideo`, `generate`, `translate`); with an external LLM in async mode the translation of an item runs in the
-/// background while the next video transcribes.
+/// saved next to their videos. The run is a three-stage pipeline over the list:
+///
+/// 1. Audio extraction (CPU): one extraction at a time, at most one item ahead of the one being transcribed.
+/// 2. Speech recognition (the editor's own flow: `openVideo`, `generate`): strictly one item after the other.
+/// 3. Translation and save: handed off without waiting, so item N translates while item N + 1 transcribes. One
+///    translation at a time.
+///
+/// With an external LLM in async mode the finished lines of the video being transcribed are also translated in the
+/// background during stage 2; stage 3 then only sends what is left.
 extension SubtitleViewModel {
     // MARK: - Items
 
@@ -123,55 +151,71 @@ extension SubtitleViewModel {
         commitDraft()
         commitTranslationDraft()
         isPlaylistRunning = true
-        playlistTask = Task { await runPlaylist(engine: engine, target: translationTarget) }
+        let pipeline = PlaylistPipeline()
+        playlistPipeline = pipeline
+        playlistTask = Task { await runPlaylist(engine: engine, target: translationTarget, pipeline: pipeline) }
     }
 
-    /// Stops a playlist run: the item in progress goes back to waiting, the background translations stop.
+    /// Stops a playlist run: every engine process of it (audio extraction, recognition, translation) is terminated and
+    /// the items that were not finished go back to waiting.
     func cancelPlaylist() {
         playlistTask?.cancel()
         for task in playlistBackground { task.cancel() }
+        if let pipeline = playlistPipeline {
+            for task in pipeline.extractions.values { task.cancel() }
+        }
     }
 
     private enum ItemOutcome {
-        case completed(LocalizedMessage)
+        /// The lines are in the editor and ready for stage 3.
+        case ready
         case failed(LocalizedMessage)
         case cancelled
-        /// The translation went to a background task, which reports the end result itself.
-        case handedOff
     }
 
-    private func runPlaylist(engine: EngineClient, target: String) async {
+    private func runPlaylist(engine: EngineClient, target: String, pipeline: PlaylistPipeline) async {
         let savedLanguage = language
         let savedModel = model
-        // A failed item is retried by the next run, not again by this one.
-        var attempted: Set<UUID> = []
         playlistBackground = []
         playlistBackgroundPending = 0
-        while !Task.isCancelled,
-              let item = playlist.first(where: { ($0.state == .pending || $0.state == .failed) && !attempted.contains($0.id) }) {
-            attempted.insert(item.id)
+        while !Task.isCancelled, let item = nextWaitingItem(pipeline) {
+            // Barrier: the item's own audio extraction has to be over before its recognition starts, and with it the
+            // extraction of the next item can begin; two never run at once.
+            if let extraction = ensureAudioExtraction(item, engine: engine, pipeline: pipeline) {
+                await extraction.value
+            }
+            if Task.isCancelled {
+                updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
+                break
+            }
+            pipeline.stage2Started.insert(item.id)
             activePlaylistItemID = item.id
-            updatePlaylistItem(item.id, .working, .key("Başlıyor…"), nil)
-            let outcome = await process(item, engine: engine, target: target)
+            scheduleAudioLookahead(engine: engine, pipeline: pipeline)
+            updatePlaylistItem(item.id, .working, .key("Başlıyor…"), pipeline.audioReady.contains(item.id) ? 1 : nil)
+            let outcome = await transcribe(item, target: target)
             activePlaylistItemID = nil
             switch outcome {
-            case .completed(let message):
-                updatePlaylistItem(item.id, .completed, message, 1)
+            case .ready:
+                handOffToStage3(item, engine: engine, target: target, pipeline: pipeline)
             case .failed(let message):
                 updatePlaylistItem(item.id, .failed, message, nil)
             case .cancelled:
                 updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
-            case .handedOff:
-                break
             }
             if case .cancelled = outcome { break }
         }
-        // Items handed to the external server may still be translating.
-        let background = playlistBackground
-        if !background.isEmpty, !Task.isCancelled {
+        // Translations handed off earlier may still be working.
+        if playlistBackgroundPending > 0, !Task.isCancelled {
             status = .working(Self.label(for: .translating, fraction: nil, purpose: .translation), fraction: nil)
         }
-        for task in background { await task.value }
+        for task in playlistBackground { await task.value }
+        for task in Array(pipeline.extractions.values) { await task.value }
+        if Task.isCancelled {
+            // Everything that was not finished is waiting again, whichever stage it had reached.
+            for item in playlist where item.state == .working || item.isAudioReady {
+                updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
+            }
+        }
         if !Task.isCancelled, case .working = status { status = .finished }
         // A model that was missing for some item offers to go online and run the list again.
         if offlineRetry != nil { offlineRetry = { [weak self] in self?.startPlaylist() } }
@@ -184,47 +228,47 @@ extension SubtitleViewModel {
         linesSourceLanguage = linesLanguage
         playlistBackground = []
         playlistBackgroundPending = 0
+        playlistPipeline = nil
         playlistTask = nil
         isPlaylistRunning = false
     }
 
-    private func process(_ item: PlaylistItem, engine: EngineClient, target: String) async -> ItemOutcome {
+    /// The first item that hasn't reached recognition yet: waiting, failed earlier (retried once per run), or already
+    /// being prepared by stage 1.
+    private func nextWaitingItem(_ pipeline: PlaylistPipeline) -> PlaylistItem? {
+        playlist.first { isWaitingForRecognition($0, pipeline) }
+    }
+
+    private func isWaitingForRecognition(_ item: PlaylistItem, _ pipeline: PlaylistPipeline) -> Bool {
+        !pipeline.stage2Started.contains(item.id)
+            && (item.state == .pending || item.state == .failed || pipeline.extractions[item.id] != nil)
+    }
+
+    // MARK: - Stage 2: recognition
+
+    /// Opens the item's video in the editor and transcribes it (unless a subtitle file sits next to it).
+    private func transcribe(_ item: PlaylistItem, target: String) async -> ItemOutcome {
         language = item.sourceLanguage
         useModelFitting(language: item.sourceLanguage)
         translationTarget = target
         // Reopening also makes a sidecar written by an earlier run count.
         openVideo(nil)
         openVideo(item.videoURL)
+        protectPlaylistModels()
         // A sidecar next to the video is used as it is, no transcription (as on Windows). Once translations are saved as
         // `<video>.<fmt>` a sidecar may be an earlier translation; the list can't tell, so that run translates it again.
         if sentences.isEmpty {
             // With an external LLM in async mode `generate` translates the finished lines while it transcribes.
             generate()
+            protectPlaylistModels()
             await finishJob()
+            protectPlaylistModels()
             if Task.isCancelled { return .cancelled }
             if let message = failureMessage() { return .failed(message) }
             if sentences.isEmpty { return .failed(.key("Videoda konuşma bulunamadı.")) }
         }
         if Task.isCancelled { return .cancelled }
-
-        if isExternalAsyncActive {
-            handOffToBackground(item, engine: engine, target: target)
-            return .handedOff
-        }
-
-        translate()
-        await finishJob()
-        if Task.isCancelled { return .cancelled }
-        if let message = failureMessage() { return .failed(message) }
-        if translations.isEmpty { return .failed(.key("Çeviri tamamlanamadı.")) }
-
-        // Always the translation, whatever the auto-save toggle says.
-        guard let url = await saveSubtitle(translated: true) else {
-            // A stop during the render isn't a failure.
-            if Task.isCancelled { return .cancelled }
-            return .failed(failureMessage() ?? .key("Çeviri tamamlanamadı."))
-        }
-        return .completed(Self.savedMessage(url.lastPathComponent))
+        return .ready
     }
 
     /// The job that was just started, including one it hands over to.
@@ -268,17 +312,116 @@ extension SubtitleViewModel {
         playlist[index].fraction = fraction
     }
 
-    // MARK: - Async mode (external LLM)
+    // MARK: - Working folders
 
-    /// Translates and saves the item in the background, one at a time, while the next video transcribes. Everything the
-    /// task needs is captured now: the editor moves on to the next video. Lines the server already translated while the
-    /// video was transcribing (`translations`) are not sent again.
-    private func handOffToBackground(_ item: PlaylistItem, engine: EngineClient, target: String) {
+    /// The folder the engine works in for one playlist video: `<working folder>/playlist/<short hash of the path>`.
+    /// Every item has its own, so two videos with the same file name in different folders never share a WAV while one
+    /// of them is still being read. Audio extraction and recognition of the same video use the same one, which is how
+    /// the recognition finds the WAV that was extracted ahead of time.
+    nonisolated static func playlistOutDirectory(for video: URL, base: URL = WorkingDirectory.url()) -> URL {
+        let digest = SHA256.hash(data: Data(video.standardizedFileURL.path.utf8))
+        let name = digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+        return base.appending(path: "playlist").appending(path: name)
+    }
+
+    /// Where the engine works for `video`: its own folder while a playlist item is being transcribed, the working
+    /// folder itself for the editor's single-video flow. Created if needed.
+    func engineOutDirectory(for video: URL) -> URL {
+        guard isPlaylistRunning, activePlaylistItemID != nil else { return WorkingDirectory.ensureExists() }
+        let folder = Self.playlistOutDirectory(for: video)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    // MARK: - Stage 1: audio extraction
+
+    /// How many items beyond the one being transcribed get their audio extracted ahead of time.
+    private static let maxAudioLookahead = 1
+
+    /// The item's audio extraction: the one already started, a new one, or `nil` when none is needed because a
+    /// subtitle file sits next to the video (it is used as it is, nothing is transcribed).
+    private func ensureAudioExtraction(
+        _ item: PlaylistItem, engine: EngineClient, pipeline: PlaylistPipeline
+    ) -> Task<Void, Never>? {
+        if let existing = pipeline.extractions[item.id] { return existing }
+        guard !Task.isCancelled, SubtitleParser.findSidecar(for: item.videoURL) == nil else { return nil }
+        // Queued behind the newest one, so that two extractions never run at once.
+        let previous = pipeline.lastExtraction
+        let task = Task {
+            await previous?.value
+            await extractAudio(item, engine: engine, pipeline: pipeline)
+        }
+        pipeline.extractions[item.id] = task
+        pipeline.lastExtraction = task
+        return task
+    }
+
+    /// Starts the extraction for the next item that isn't being transcribed yet, at most `maxAudioLookahead` items
+    /// ahead. An item that needs no extraction (it has a subtitle file) still takes up the slot.
+    private func scheduleAudioLookahead(engine: EngineClient, pipeline: PlaylistPipeline) {
+        guard !Task.isCancelled else { return }
+        for candidate in playlist.filter({ isWaitingForRecognition($0, pipeline) }).prefix(Self.maxAudioLookahead) {
+            _ = ensureAudioExtraction(candidate, engine: engine, pipeline: pipeline)
+        }
+    }
+
+    /// Extracts the item's WAV into its folder while an earlier video is transcribed. The row shows the progress;
+    /// when it is over the row reads "Ses hazır · Sırada". A failed or stopped extraction just puts the row back to
+    /// "Sırada": the recognition extracts the audio itself and reports the real error when its turn comes.
+    private func extractAudio(_ item: PlaylistItem, engine: EngineClient, pipeline: PlaylistPipeline) async {
+        var finished = false
+        if !Task.isCancelled {
+            let folder = Self.playlistOutDirectory(for: item.videoURL)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            do {
+                for try await event in engine.extractAudio(video: item.videoURL, outDir: folder) {
+                    guard !Task.isCancelled else { break }
+                    switch event {
+                    case .stage(let stage, let fraction):
+                        guard !pipeline.stage2Started.contains(item.id) else { continue }
+                        updatePlaylistItem(
+                            item.id, .working, Self.label(for: stage, fraction: fraction, purpose: .transcription), fraction
+                        )
+                    case .result:
+                        finished = true
+                    case .partial, .translation, .error:
+                        break
+                    }
+                }
+            } catch {
+                finished = false
+            }
+        }
+        guard !pipeline.stage2Started.contains(item.id) else { return }
+        if finished, !Task.isCancelled {
+            pipeline.audioReady.insert(item.id)
+            updatePlaylistItem(item.id, .pending, .key("Ses hazır · Sırada"), 1)
+        } else {
+            updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
+        }
+    }
+
+    // MARK: - Stage 3: translation and save
+
+    /// Keeps the local translation models of the running hand-offs out of Settings' deletion. The editor's own jobs
+    /// reset the set whenever the video changes, so this is applied again after each of those.
+    private func protectPlaylistModels() {
+        guard let pipeline = playlistPipeline, !pipeline.translationModelsInUse.isEmpty else { return }
+        catalog.activeModels.formUnion(pipeline.translationModelsInUse.keys)
+    }
+
+    /// Translates and saves the item in the background, one translation at a time, while the next video transcribes.
+    /// Everything the task needs is captured now: the editor moves on to the next video. Lines the server already
+    /// translated while the video was transcribing (`translations`) are not sent again.
+    private func handOffToStage3(_ item: PlaylistItem, engine: EngineClient, target: String, pipeline: PlaylistPipeline) {
         let lines = sentences
         let preTranslated = translations
         let source = translationSource
         let model = translationModel
         let format = exportFormat
+        let external = isExternalLLMActive
+        // A model that wasn't on disk is downloaded by this translation; the catalog should show it as ready after.
+        let refreshCatalog = !external && catalog.models.first(where: { $0.id == model })?.downloaded == false
         // The task may wait minutes for the earlier ones; it must still go to the server chosen now.
         let engine = pinningLaunchSettings(engine)
         if let initial = Self.translationProgress(done: preTranslated.count, total: lines.count) {
@@ -288,18 +431,35 @@ extension SubtitleViewModel {
         } else {
             updatePlaylistItem(item.id, .working, .key("Çeviri hazırlanıyor…"), nil)
         }
+        if !external {
+            pipeline.translationModelsInUse[model, default: 0] += 1
+            protectPlaylistModels()
+        }
         let previous = playlistBackground.last
         playlistBackgroundPending += 1
         playlistBackground.append(Task {
-            defer { playlistBackgroundPending -= 1 }
-            // One external translation at a time. (The live translation while a video transcribes is not held back
-            // by this, as on Windows: the server queues the requests.)
+            defer {
+                playlistBackgroundPending -= 1
+                if !external { releaseTranslationModel(model, in: pipeline) }
+            }
+            // One translation at a time, in the order the videos were transcribed. (The live translation while a video
+            // transcribes is not held back by this, as on Windows: the server queues the requests.)
             await previous?.value
             await translateAndSaveInBackground(
-                item, lines: lines, preTranslated: preTranslated, engine: engine,
-                source: source, target: target, model: model, format: format
+                item, lines: lines, preTranslated: preTranslated, engine: engine, source: source, target: target,
+                model: model, format: format, external: external, refreshCatalog: refreshCatalog
             )
         })
+    }
+
+    private func releaseTranslationModel(_ model: String, in pipeline: PlaylistPipeline) {
+        let remaining = (pipeline.translationModelsInUse[model] ?? 1) - 1
+        if remaining > 0 {
+            pipeline.translationModelsInUse[model] = remaining
+        } else {
+            pipeline.translationModelsInUse[model] = nil
+            catalog.activeModels.remove(model)
+        }
     }
 
     /// Whether the editor currently shows the item's video, so what happens to the item is mirrored there.
@@ -309,7 +469,7 @@ extension SubtitleViewModel {
 
     private func translateAndSaveInBackground(
         _ item: PlaylistItem, lines: [Sentence], preTranslated: [UUID: TranslationEntry], engine: EngineClient,
-        source: String?, target: String, model: String, format: SubtitleFormat
+        source: String?, target: String, model: String, format: SubtitleFormat, external: Bool, refreshCatalog: Bool
     ) async {
         guard !Task.isCancelled else {
             updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
@@ -317,6 +477,13 @@ extension SubtitleViewModel {
         }
         guard source != target else {
             updatePlaylistItem(item.id, .failed, .key("Kaynak ve hedef dil aynı olamaz."), nil)
+            return
+        }
+        // An external LLM takes any language pair, so NLLB's need for a source language doesn't apply.
+        if model == "nllb-1.3b", source == nil, !external {
+            updatePlaylistItem(
+                item.id, .failed, .key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç."), nil
+            )
             return
         }
         // What was translated during transcription stays; only the rest goes to the server, with its neighbours as context.
@@ -412,5 +579,7 @@ extension SubtitleViewModel {
         onSubtitleSaved?(url)
         if editorShows(item) { savedSubtitleName = name }
         updatePlaylistItem(item.id, .completed, Self.savedMessage(name), 1)
+        // Make the translation model that was just downloaded show as "hazır" (ready) in Settings.
+        if refreshCatalog { await catalog.load() }
     }
 }
