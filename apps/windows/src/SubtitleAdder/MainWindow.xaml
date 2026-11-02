@@ -537,6 +537,7 @@
 
                     <!-- Queued videos list -->
                     <ListView x:Name="PlaylistList" Grid.Row="2" ItemsSource="{x:Bind PlaylistRows}" SelectionMode="None" Padding="4,6"
+                              IsItemClickEnabled="True" ItemClick="PlaylistList_ItemClick"
                               Visibility="{x:Bind Vm.HasPlaylistItems, Mode=OneWay}" loc:Localize.AutomationName="Çalma listesi">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">

@@ -51,6 +51,7 @@ public sealed partial class MainWindow : Window
     private bool _pointerOverDisplayPicker;
     private bool _hudIdleHidden;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _hudHideTimer;
+    private CancellationTokenSource? _videoOpenedDebounceCts;
     private LocalizedMessage? _shownError;
     private Func<string>? _saveError;   // rebuilt on a language switch
 
@@ -134,6 +135,7 @@ public sealed partial class MainWindow : Window
             }
         };
         ApplyWorkspaceLayout();
+        PlatformHubView.SetActiveTab(_activeTab == WorkspaceTab.Platform);
 
         // Buttons follow the commands' CanExecute (wired here rather than through Command bindings).
         foreach (var (command, button) in new (CommunityToolkit.Mvvm.Input.IRelayCommand, Button)[]
@@ -273,22 +275,58 @@ public sealed partial class MainWindow : Window
     private void OnVideoChanged()
     {
         var currentVideo = Vm.Video;
-        _player.Load(Vm.IsPlaylistRunning ? null : currentVideo, autoPlay: !Vm.IsPlaylistRunning && Vm.AutoPlayVideo);
+        _saveError = null;
+        _player.Load(currentVideo, autoPlay: Vm.AutoPlayVideo);
         FileExplorerPane.ActiveVideoPath = currentVideo;
         Title = Vm.WindowTitle;
         TitleFile.Text = currentVideo is null ? "" : "— " + Vm.WindowTitle;
         DropZone.Visibility = currentVideo is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
         WorkArea.Visibility = currentVideo is not null || Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
         UpdatePickers();
+        UpdateStatus();
+        SyncRows();
+        UpdateOverlay();
         _lastProgressRecordedTime = -1;
         _ = ExplorerVm.SyncToVideoPathAsync(currentVideo);
-        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        PlatformVm.SetActiveVideoImmediate(currentVideo);
+
+        _videoOpenedDebounceCts?.Cancel();
+        _videoOpenedDebounceCts?.Dispose();
+        _videoOpenedDebounceCts = null;
+        if (!string.IsNullOrWhiteSpace(currentVideo) && !Vm.IsPlaylistRunning)
         {
-            if (string.Equals(Vm.Video, currentVideo, StringComparison.OrdinalIgnoreCase))
+            var cts = new CancellationTokenSource();
+            _videoOpenedDebounceCts = cts;
+            var token = cts.Token;
+            _ = Task.Run(async () =>
             {
-                PlatformVm.OnVideoOpened(currentVideo);
-            }
-        });
+                try
+                {
+                    await Task.Delay(150, token).ConfigureAwait(false);
+                    if (token.IsCancellationRequested) return;
+                    PlatformVm.RecordWatchOnly(currentVideo);
+                    DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+                    {
+                        if (token.IsCancellationRequested) return;
+                        if (string.Equals(Vm.Video, currentVideo, StringComparison.OrdinalIgnoreCase))
+                        {
+                            PlatformVm.SetActiveVideoImmediate(currentVideo);
+                            if (_activeTab == WorkspaceTab.Platform)
+                            {
+                                PlatformVm.RefreshFeed();
+                            }
+                            else
+                            {
+                                PlatformHubView.MarkDirtyWhileHidden();
+                            }
+                        }
+                    });
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }, token);
+        }
     }
 
     private void UpdateStatus()
@@ -300,7 +338,8 @@ public sealed partial class MainWindow : Window
         StatusSpinner.Visibility = showWorking ? Visibility.Visible : Visibility.Collapsed;
         Progress.Visibility = showWorking ? Visibility.Visible : Visibility.Collapsed;
         Progress.IsIndeterminate = Vm.IsIndeterminate;
-        Progress.Value = Vm.StatusFraction ?? 0;
+        var statusFrac = Vm.StatusFraction ?? 0.0;
+        Progress.Value = double.IsFinite(statusFrac) ? Math.Clamp(statusFrac, 0.0, 1.0) : 0.0;
         DoneIcon.Visibility = kind == JobStatusKind.Finished ? Visibility.Visible : Visibility.Collapsed;
         FailIcon.Visibility = kind == JobStatusKind.Failed ? Visibility.Visible : Visibility.Collapsed;
         EmptyTitle.Text = Vm.IsWorking ? L("Altyazı üretiliyor…") : L("Henüz altyazı yok");
@@ -1362,6 +1401,7 @@ public sealed partial class MainWindow : Window
         EditorView.Visibility = isEditor ? Visibility.Visible : Visibility.Collapsed;
         PlaylistPanel.Visibility = isPlaylist ? Visibility.Visible : Visibility.Collapsed;
         PlatformPanel.Visibility = isPlatform ? Visibility.Visible : Visibility.Collapsed;
+        PlatformHubView.SetActiveTab(isPlatform);
         if (isPlatform) PlatformVm.RefreshFeed();
         UpdateTabActionVisibility();
     }
@@ -1416,9 +1456,19 @@ public sealed partial class MainWindow : Window
             row.IsCompleted = item.IsCompleted;
             row.IsFailed = item.IsFailed;
             row.IsIndeterminate = item.IsWorking && item.Fraction is null;
-            row.ProgressValue = item.Fraction ?? 0;
+            var itemFrac = item.Fraction ?? 0.0;
+            row.ProgressValue = double.IsFinite(itemFrac) ? Math.Clamp(itemFrac, 0.0, 1.0) : 0.0;
             row.CanEdit = item.CanEdit && !Vm.IsPlaylistRunning;
         }
+    }
+
+    private void PlaylistList_ItemClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is not PlaylistRow row) return;
+        var item = Vm.Playlist.FirstOrDefault(i => i.Id == row.Id);
+        if (item is null || string.IsNullOrWhiteSpace(item.VideoPath)) return;
+        SwitchMode(WorkspaceTab.Editor);
+        Vm.OpenVideo(item.VideoPath);
     }
 
     private async void AddPlaylistVideos_Click(object sender, RoutedEventArgs e) => await PickPlaylistVideosAsync();

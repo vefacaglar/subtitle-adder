@@ -30,58 +30,142 @@ public sealed partial class SubtitleViewModel
         TranslateCore(reuseExistingTranslations: false, selectedUids: SelectedUids.ToHashSet());
     }
 
-    private void TranslateCore(bool reuseExistingTranslations, IReadOnlySet<Guid>? selectedUids = null)
+    private void TranslateCore(bool reuseExistingTranslations, IReadOnlySet<Guid>? selectedUids = null) =>
+        TranslateCoreForVideo(_video, reuseExistingTranslations, selectedUids);
+
+    private void TranslateCoreForVideo(
+        string? jobVideo,
+        bool reuseExistingTranslations,
+        IReadOnlySet<Guid>? selectedUids = null,
+        string? sourceLanguageOverride = null,
+        string? targetLanguageOverride = null,
+        string? translationModelOverride = null,
+        bool? autoSaveOverride = null,
+        SubtitleFormat? exportFormatOverride = null,
+        TaskCompletionSource<bool>? externalCompletion = null,
+        bool bypassQueueCheck = false)
     {
-        if (_sentences.Count == 0) return;
-        if (Catalog.Engine is not { } engine)
+        var session = GetOrCreateSession(jobVideo);
+        if (session.Sentences.Count == 0)
         {
-            Status = new JobStatus.Failed(LocalizedMessage.Error(EngineException.NotFound()));
-            return;
-        }
-        FinishEditing();
-        var source = TranslationSource;
-        var target = _translationTarget;
-        if (source == target)
-        {
-            Status = new JobStatus.Failed(LocalizedMessage.Key("Kaynak ve hedef dil aynı olamaz."));
-            return;
-        }
-        if (_translationModel == "nllb-1.3b" && source is null && !IsExternalLlmActive)
-        {
-            Status = new JobStatus.Failed(LocalizedMessage.Key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç."));
-            return;
-        }
-        if (BlockedOffline([_translationModel], selectedUids is null ? Translate : () =>
-            TranslateCore(reuseExistingTranslations: false, selectedUids: selectedUids))) return;
-        _savedSubtitleName = null;
-        var request = selectedUids is not null
-            ? _sentences.Where(s => selectedUids.Contains(s.Uid)).ToList()
-            : reuseExistingTranslations
-            ? _sentences
-                .Where(s => !_translations.TryGetValue(s.Uid, out var existing) || !IsReusableTranslation(s, existing, target))
-                .ToList()
-            : _sentences;
-        if (request.Count == 0)
-        {
-            Status = JobStatus.FinishedStatus;
-            if (_autoSaveSubtitle && HasTranslations && CanSaveSubtitle &&
-                VideoSubtitlePath is { } autoPath &&
-                Path.GetDirectoryName(autoPath) is { Length: > 0 } autoDir &&
-                Directory.Exists(autoDir))
+            if (externalCompletion is not null)
             {
-                CurrentJob = SaveSubtitleToVideoFolderAsync();
+                externalCompletion.TrySetResult(false);
+                AdvanceJobQueueOrFinish();
             }
             return;
         }
-        var totalCount = Math.Max(1, _sentences.Count);
-        var alreadyDoneCount = reuseExistingTranslations ? Math.Max(0, _sentences.Count - request.Count) : 0;
+        if (Catalog.Engine is not { } engine)
+        {
+            SetSessionStatus(jobVideo, new JobStatus.Failed(LocalizedMessage.Error(EngineException.NotFound())));
+            if (externalCompletion is not null)
+            {
+                externalCompletion.TrySetResult(false);
+                AdvanceJobQueueOrFinish();
+            }
+            return;
+        }
+        if (IsForegroundVideo(jobVideo))
+        {
+            FinishEditing();
+        }
+
+        var rawLanguage = sourceLanguageOverride ?? _language;
+        var source = rawLanguage.Length > 0 ? rawLanguage : session.DetectedLanguage;
+        var target = targetLanguageOverride ?? _translationTarget;
+        var model = translationModelOverride ?? _translationModel;
+        var autoSave = autoSaveOverride ?? _autoSaveSubtitle;
+        var exportFormat = exportFormatOverride ?? _exportFormat;
+
+        if (source == target)
+        {
+            SetSessionStatus(jobVideo, new JobStatus.Failed(LocalizedMessage.Key("Kaynak ve hedef dil aynı olamaz.")));
+            if (externalCompletion is not null)
+            {
+                externalCompletion.TrySetResult(false);
+                AdvanceJobQueueOrFinish();
+            }
+            return;
+        }
+        if (model == "nllb-1.3b" && source is null && !IsExternalLlmActive)
+        {
+            SetSessionStatus(jobVideo, new JobStatus.Failed(LocalizedMessage.Key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç.")));
+            if (externalCompletion is not null)
+            {
+                externalCompletion.TrySetResult(false);
+                AdvanceJobQueueOrFinish();
+            }
+            return;
+        }
+        if (BlockedOffline([model], selectedUids is null ? Translate : () =>
+            TranslateCoreForVideo(jobVideo, reuseExistingTranslations: false, selectedUids: selectedUids)))
+        {
+            if (externalCompletion is not null)
+            {
+                externalCompletion.TrySetResult(false);
+                AdvanceJobQueueOrFinish();
+            }
+            return;
+        }
+
+        session.SavedSubtitleName = null;
+        if (IsForegroundVideo(jobVideo))
+        {
+            _savedSubtitleName = null;
+        }
+
+        if (!bypassQueueCheck && !_isPlaylistRunning && _isJobRunning && !string.Equals(_activeJobVideo, jobVideo, StringComparison.OrdinalIgnoreCase))
+        {
+            EnqueueVideoJob(
+                jobVideo,
+                QueuedJobKind.Translate,
+                rawLanguage,
+                target,
+                _model,
+                model,
+                _diarize,
+                _speakerCount,
+                autoSave,
+                exportFormat,
+                selectedUids);
+            return;
+        }
+
+        var request = selectedUids is not null
+            ? session.Sentences.Where(s => selectedUids.Contains(s.Uid)).ToList()
+            : reuseExistingTranslations
+            ? session.Sentences
+                .Where(s => !session.Translations.TryGetValue(s.Uid, out var existing) || !IsReusableTranslation(s, existing, target))
+                .ToList()
+            : session.Sentences;
+        if (request.Count == 0)
+        {
+            SetSessionStatus(jobVideo, JobStatus.FinishedStatus);
+            if (autoSave && session.Translations.Count > 0 &&
+                (jobVideo ?? session.LoadedSubtitlePath) is { } basePath &&
+                Path.GetDirectoryName(basePath) is { Length: > 0 } autoDir &&
+                Directory.Exists(autoDir))
+            {
+                CurrentJob = SaveSessionSubtitleToVideoFolderAsync(jobVideo, exportFormat, externalCompletion);
+                return;
+            }
+            if (externalCompletion is not null)
+            {
+                externalCompletion.TrySetResult(true);
+                AdvanceJobQueueOrFinish();
+            }
+            return;
+        }
+        var totalCount = Math.Max(1, session.Sentences.Count);
+        var alreadyDoneCount = reuseExistingTranslations ? Math.Max(0, session.Sentences.Count - request.Count) : 0;
         var initialFraction = alreadyDoneCount > 0 ? Math.Clamp((double)alreadyDoneCount / totalCount, 0.0, 0.99) : (double?)null;
-        var model = _translationModel;
-        var contextualRequest = WithTranslationContext(_sentences, request);
-        Status = initialFraction is { } initF
+        var contextualRequest = WithTranslationContext(session.Sentences, request);
+        var initStatus = initialFraction is { } initF
             ? new JobStatus.Working(Label(EngineStage.Translating, initF, JobPurpose.Translation), initF)
             : new JobStatus.Working(LocalizedMessage.Key("Çeviri hazırlanıyor…"), null);
+        SetSessionStatus(jobVideo, initStatus, PlaylistItemState.Working);
         StartJob(
+            jobVideo,
             new HashSet<string> { model },
             token => SerializeTranslationStream(engine.Translate(contextualRequest, target, source, model, token), token),
             engineEvent =>
@@ -94,12 +178,26 @@ public sealed partial class SubtitleViewModel
                     {
                         fraction = Math.Clamp((alreadyDoneCount + request.Count * Math.Clamp(f, 0.0, 1.0)) / totalCount, 0.0, 1.0);
                     }
-                    Status = new JobStatus.Working(Label(stage.Kind, fraction, JobPurpose.Translation), fraction);
+                    SetSessionStatus(jobVideo, new JobStatus.Working(Label(stage.Kind, fraction, JobPurpose.Translation), fraction), PlaylistItemState.Working);
                     break;
                 case EngineEvent.Translation translation:
-                    ApplyTranslation(translation.Sentences, translation.Language, request,
+                    ApplySessionTranslation(
+                        jobVideo,
+                        translation.Sentences,
+                        translation.Language,
+                        request,
                         mergeIntoExisting: reuseExistingTranslations || selectedUids is not null,
                         preserveOtherLanguages: selectedUids is not null);
+                    if (!_isPlaylistRunning && !string.IsNullOrWhiteSpace(jobVideo))
+                    {
+                        var batchFrac = Math.Clamp((double)session.Translations.Count / totalCount, 0.0, 0.99);
+                        EnsureOrUpdateVideoPlaylistItem(
+                            jobVideo,
+                            session.DetectedLanguage ?? rawLanguage,
+                            PlaylistItemState.Working,
+                            Label(EngineStage.Translating, batchFrac, JobPurpose.Translation),
+                            batchFrac);
+                    }
                     break;
                 case EngineEvent.Error error:
                     return new JobStatus.Failed(LocalizedMessage.Verbatim(error.Message));
@@ -110,16 +208,77 @@ public sealed partial class SubtitleViewModel
             Task<string?>? saveTask = null;
             await _ui.InvokeAsync(() =>
             {
-                if (_autoSaveSubtitle && HasTranslations && CanSaveSubtitle &&
-                    VideoSubtitlePath is { } path &&
-                    Path.GetDirectoryName(path) is { Length: > 0 } dir &&
+                if (autoSave && session.Translations.Count > 0 &&
+                    (jobVideo ?? session.LoadedSubtitlePath) is { } basePath &&
+                    Path.GetDirectoryName(basePath) is { Length: > 0 } dir &&
                     Directory.Exists(dir))
                 {
-                    saveTask = SaveSubtitleToVideoFolderAsync();
+                    saveTask = SaveSessionSubtitleToVideoFolderAsync(jobVideo, exportFormat);
                 }
             }).ConfigureAwait(false);
             if (saveTask is not null) await saveTask.ConfigureAwait(false);
-        });
+        }, externalCompletion: externalCompletion);
+    }
+
+    private async Task<string?> SaveSessionSubtitleToVideoFolderAsync(
+        string? jobVideo,
+        SubtitleFormat format,
+        TaskCompletionSource<bool>? externalCompletion = null)
+    {
+        try
+        {
+            if (IsForegroundVideo(jobVideo))
+            {
+                return await SaveSubtitleToVideoFolderAsync().ConfigureAwait(false);
+            }
+
+            var session = GetOrCreateSession(jobVideo);
+            var basePath = jobVideo ?? session.LoadedSubtitlePath;
+            if (basePath is null || Catalog.Engine is not { } engine || session.Sentences.Count == 0)
+            {
+                return null;
+            }
+
+            var outPath = Path.ChangeExtension(basePath, format.RawValue());
+            var useTranslated = session.ExportLanguage == ExportLanguage.Translated && session.Translations.Count > 0;
+            var list = useTranslated
+                ? session.Sentences
+                    .Select(s => session.Translations.TryGetValue(s.Uid, out var e) && e.Text.Length > 0
+                        ? s with { Text = e.Text, Words = [], NeedsReview = e.NeedsReview }
+                        : s with { Words = [] })
+                    .ToList()
+                : session.Sentences;
+
+            var rendered = await engine.RenderAsync(list, format).ConfigureAwait(false);
+            if (rendered is null) return null;
+            await File.WriteAllTextAsync(outPath, rendered, new System.Text.UTF8Encoding(false)).ConfigureAwait(false);
+            var savedName = Path.GetFileName(outPath);
+            VideoCardViewModel.InvalidateSidecarCache(jobVideo);
+
+            await _ui.InvokeAsync(() =>
+            {
+                session.SavedSubtitleName = savedName;
+                if (IsForegroundVideo(jobVideo))
+                {
+                    _savedSubtitleName = savedName;
+                    OnPropertyChanged(nameof(StatusText));
+                }
+                SetSessionStatus(jobVideo, JobStatus.FinishedStatus);
+            }).ConfigureAwait(false);
+
+            return outPath;
+        }
+        finally
+        {
+            if (externalCompletion is not null)
+            {
+                await _ui.InvokeAsync(() =>
+                {
+                    externalCompletion.TrySetResult(true);
+                    AdvanceJobQueueOrFinish();
+                }).ConfigureAwait(false);
+            }
+        }
     }
 
     private const int MinAsyncBatchSentences = 10;
@@ -171,9 +330,11 @@ public sealed partial class SubtitleViewModel
 
     private async Task PumpPartialTranslationsExternallyAsync(
         IEngineClient engine,
+        string? jobVideo,
         HashSet<Guid> queuedAsyncUids,
         CancellationToken token)
     {
+        var session = GetOrCreateSession(jobVideo);
         while (!token.IsCancellationRequested)
         {
             if (_translationExecutionGate.CurrentCount == 0) break;
@@ -184,13 +345,13 @@ public sealed partial class SubtitleViewModel
             var model = "";
             await _ui.InvokeAsync(() =>
             {
-                if (token.IsCancellationRequested || _sentences.Count <= 2 || _translationExecutionGate.CurrentCount == 0) return;
+                if (token.IsCancellationRequested || session.Sentences.Count <= 2 || _translationExecutionGate.CurrentCount == 0) return;
                 target = _translationTarget;
-                source = TranslationSource;
+                source = _language.Length > 0 ? _language : session.DetectedLanguage;
                 model = _translationModel;
                 if (source == target) return;
-                var candidates = _sentences
-                    .Take(_sentences.Count - 2)
+                var candidates = session.Sentences
+                    .Take(session.Sentences.Count - 2)
                     .Where(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text))
                     .ToList();
                 if (candidates.Count >= MinAsyncBatchSentences)
@@ -201,12 +362,13 @@ public sealed partial class SubtitleViewModel
             }).ConfigureAwait(false);
 
             if (batch is null || batch.Count == 0) break;
-            await TranslatePartialBatchExternallyAsync(engine, batch, target, source, model, token).ConfigureAwait(false);
+            await TranslatePartialBatchExternallyAsync(engine, jobVideo, batch, target, source, model, token).ConfigureAwait(false);
         }
     }
 
     private async Task TranslatePartialBatchExternallyAsync(
         IEngineClient engine,
+        string? jobVideo,
         IReadOnlyList<Sentence> batch,
         string target,
         string? source,
@@ -214,6 +376,7 @@ public sealed partial class SubtitleViewModel
         CancellationToken token)
     {
         if (batch.Count == 0 || source == target) return;
+        var session = GetOrCreateSession(jobVideo);
 
         try
         {
@@ -231,13 +394,12 @@ public sealed partial class SubtitleViewModel
             await _ui.InvokeAsync(() =>
             {
                 if (token.IsCancellationRequested) return;
-                contextualRequest = WithTranslationContext(_sentences, batch);
-                alreadyTranslatedCount = _translations.Count;
-                if (alreadyTranslatedCount > 0 && _sentences.Count > 0)
-                {
-                    AsyncTranslationFraction = Math.Clamp((double)alreadyTranslatedCount / _sentences.Count, 0.0, 0.99);
-                }
-                IsAsyncTranslating = true;
+                contextualRequest = WithTranslationContext(session.Sentences, batch);
+                alreadyTranslatedCount = session.Translations.Count;
+                var initFrac = alreadyTranslatedCount > 0 && session.Sentences.Count > 0
+                    ? Math.Clamp((double)alreadyTranslatedCount / session.Sentences.Count, 0.0, 0.99)
+                    : session.AsyncTranslationFraction;
+                SetSessionAsyncTranslating(jobVideo, true, initFrac);
             }).ConfigureAwait(false);
 
             await foreach (var engineEvent in engine.Translate(contextualRequest, target, source, model, token).ConfigureAwait(false))
@@ -248,17 +410,20 @@ public sealed partial class SubtitleViewModel
                     await _ui.InvokeAsync(() =>
                     {
                         if (token.IsCancellationRequested) return;
-                        var total = Math.Max(_sentences.Count, alreadyTranslatedCount + batch.Count);
+                        var total = Math.Max(session.Sentences.Count, alreadyTranslatedCount + batch.Count);
                         var overall = total > 0
                             ? Math.Clamp((alreadyTranslatedCount + batch.Count * Math.Clamp(f, 0.0, 1.0)) / total, 0.0, 0.99)
                             : f;
-                        AsyncTranslationFraction = overall;
-                        if (_status is JobStatus.Working w &&
+                        SetSessionAsyncTranslating(jobVideo, true, overall);
+                        if (session.Status is JobStatus.Working w &&
                             w.Label.Id.StartsWith("stage:Translating:", StringComparison.Ordinal))
                         {
-                            Status = new JobStatus.Working(
-                                Label(EngineStage.Translating, overall, JobPurpose.Translation),
-                                overall);
+                            SetSessionStatus(
+                                jobVideo,
+                                new JobStatus.Working(
+                                    Label(EngineStage.Translating, overall, JobPurpose.Translation),
+                                    overall),
+                                PlaylistItemState.Working);
                         }
                     }).ConfigureAwait(false);
                 }
@@ -268,16 +433,19 @@ public sealed partial class SubtitleViewModel
                     {
                         if (!token.IsCancellationRequested)
                         {
-                            ApplyTranslation(translation.Sentences, translation.Language, batch, mergeIntoExisting: true);
-                            var total = Math.Max(1, _sentences.Count);
-                            var overall = Math.Clamp((double)_translations.Count / total, 0.0, 0.99);
-                            AsyncTranslationFraction = overall;
-                            if (_status is JobStatus.Working w &&
+                            ApplySessionTranslation(jobVideo, translation.Sentences, translation.Language, batch, mergeIntoExisting: true);
+                            var total = Math.Max(1, session.Sentences.Count);
+                            var overall = Math.Clamp((double)session.Translations.Count / total, 0.0, 0.99);
+                            SetSessionAsyncTranslating(jobVideo, true, overall);
+                            if (session.Status is JobStatus.Working w &&
                                 w.Label.Id.StartsWith("stage:Translating:", StringComparison.Ordinal))
                             {
-                                Status = new JobStatus.Working(
-                                    Label(EngineStage.Translating, overall, JobPurpose.Translation),
-                                    overall);
+                                SetSessionStatus(
+                                    jobVideo,
+                                    new JobStatus.Working(
+                                        Label(EngineStage.Translating, overall, JobPurpose.Translation),
+                                        overall),
+                                    PlaylistItemState.Working);
                             }
                         }
                     }).ConfigureAwait(false);
@@ -294,34 +462,55 @@ public sealed partial class SubtitleViewModel
         }
     }
 
-    /// <summary>Maps translated lines by their stable <c>Uid</c> values; supports both incremental batches and final results.</summary>
-    private void ApplyTranslation(
-        IReadOnlyList<Sentence> translated, string language, IReadOnlyList<Sentence> source,
-        bool mergeIntoExisting = false, bool preserveOtherLanguages = false)
+    private void ApplySessionTranslation(
+        string? jobVideo,
+        IReadOnlyList<Sentence> translated,
+        string language,
+        IReadOnlyList<Sentence> source,
+        bool mergeIntoExisting = false,
+        bool preserveOtherLanguages = false)
     {
-        var hadTranslations = _translations.Count > 0;
-        var entries = mergeIntoExisting && (preserveOtherLanguages || _translationLanguage == language)
-            ? new Dictionary<Guid, TranslationEntry>(_translations)
+        var session = GetOrCreateSession(jobVideo);
+        var hadTranslations = session.Translations.Count > 0;
+        var entries = mergeIntoExisting && (preserveOtherLanguages || session.TranslationLanguage == language)
+            ? new Dictionary<Guid, TranslationEntry>(session.Translations)
             : new Dictionary<Guid, TranslationEntry>();
         for (var index = 0; index < translated.Count; index++)
         {
             var result = translated[index];
             var original = source.FirstOrDefault(s => s.Id == result.Id);
             if (original is null) continue;
-            if (result.NeedsReview && _translations.TryGetValue(original.Uid, out var existing))
+            if (result.NeedsReview && session.Translations.TryGetValue(original.Uid, out var existing))
                 entries[original.Uid] = existing with { NeedsReview = true };
             else
                 entries[original.Uid] = new TranslationEntry(result.Text, original.Text, language, result.NeedsReview);
         }
-        Translations = entries;
-        TranslationLanguage = language;
-        TranslationTarget = language;
+        session.Translations = entries;
+        session.TranslationLanguage = language;
         if (!hadTranslations && entries.Count > 0)
         {
-            if (DisplayMode == SubtitleDisplay.Original) DisplayMode = SubtitleDisplay.Translation;
-            ExportLanguage = ExportLanguage.Translated;
+            if (session.DisplayMode == SubtitleDisplay.Original) session.DisplayMode = SubtitleDisplay.Translation;
+            session.ExportLanguage = ExportLanguage.Translated;
+        }
+
+        if (IsForegroundVideo(jobVideo))
+        {
+            Translations = new Dictionary<Guid, TranslationEntry>(entries);
+            TranslationLanguage = language;
+            TranslationTarget = language;
+            if (!hadTranslations && entries.Count > 0)
+            {
+                if (DisplayMode == SubtitleDisplay.Original) DisplayMode = SubtitleDisplay.Translation;
+                ExportLanguage = ExportLanguage.Translated;
+            }
         }
     }
+
+    /// <summary>Maps translated lines by their stable <c>Uid</c> values; supports both incremental batches and final results.</summary>
+    private void ApplyTranslation(
+        IReadOnlyList<Sentence> translated, string language, IReadOnlyList<Sentence> source,
+        bool mergeIntoExisting = false, bool preserveOtherLanguages = false) =>
+        ApplySessionTranslation(_video, translated, language, source, mergeIntoExisting, preserveOtherLanguages);
 
     // MARK: - Editing the translation text
 

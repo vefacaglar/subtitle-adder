@@ -258,7 +258,7 @@ public sealed class BufferedVideoStream : Stream
 
     public override long Seek(long offset, SeekOrigin origin)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_disposed) return Interlocked.Read(ref _position);
         var next = origin switch
         {
             SeekOrigin.Begin => offset,
@@ -286,8 +286,7 @@ public sealed class BufferedVideoStream : Stream
 
     public override int Read(Span<byte> buffer)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (buffer.IsEmpty) return 0;
+        if (_disposed || buffer.IsEmpty) return 0;
 
         var currentPos = Interlocked.Read(ref _position);
         if (currentPos >= _length) return 0;
@@ -333,11 +332,7 @@ public sealed class BufferedVideoStream : Stream
         {
             return ValueTask.FromCanceled<int>(cancellationToken);
         }
-        if (_disposed)
-        {
-            return ValueTask.FromException<int>(new ObjectDisposedException(nameof(BufferedVideoStream)));
-        }
-        if (buffer.IsEmpty)
+        if (_disposed || buffer.IsEmpty)
         {
             return ValueTask.FromResult(0);
         }
@@ -474,7 +469,10 @@ public sealed class BufferedVideoStream : Stream
                     }
                 }
 
-                ObjectDisposedException.ThrowIf(_disposed, this);
+                if (_disposed)
+                {
+                    return new CachedChunk(chunkIndex, [], 0, 0);
+                }
 
                 data = new byte[expectedBytes];
                 totalRead = 0;
