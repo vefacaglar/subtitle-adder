@@ -1,6 +1,102 @@
 {
   "sourceLanguage": "tr",
   "strings": {
+    "Çeviri sağlayıcısı": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation provider"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri sağlayıcısı"
+          }
+        }
+      }
+    },
+    "Model ara…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search models…"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model ara…"
+          }
+        }
+      }
+    },
+    "Aramayla eşleşen model yok.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No models match your search."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aramayla eşleşen model yok."
+          }
+        }
+      }
+    },
+    "Model listesi boş. Yenile düğmesini kullanın.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No models listed. Use Refresh to load them."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model listesi boş. Yenile düğmesini kullanın."
+          }
+        }
+      }
+    },
+    "Modeller yenileniyor…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refreshing models…"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modeller yenileniyor…"
+          }
+        }
+      }
+    },
+    "Modeller yenilenemedi: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not refresh models: %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modeller yenilenemedi: %@"
+          }
+        }
+      }
+    },
     "Süren altyazı ya da çeviri işini durdur": {
       "localizations": {
         "en": {

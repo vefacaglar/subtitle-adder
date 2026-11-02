@@ -255,6 +255,110 @@ public sealed class TranslationProviderTests : IDisposable
         Assert.Equal("gemma4:e4b", preservedLan.Model);
     }
 
+    [Fact]
+    public void PickerSelectionsKeepCloudLanAndOnDeviceModelsSeparateAndPersisted()
+    {
+        var manager = new TranslationProviderManager(_filePath);
+        var (vm, _, settings) = Make.ViewModel();
+        using var viewModelLifetime = vm;
+        vm.ExternalLlmUrl = "http://lan-server:11434";
+        vm.ExternalLlmModel = "lan-model";
+        vm.ExternalLlmEnabled = true;
+        manager.EnsureMigratedFromViewModel(vm);
+        var lan = Assert.Single(manager.Providers);
+        var cloud = manager.AddProvider("openrouter", model: "cloud-a", apiKey: "test-key");
+        manager.UpdateProviderDiscoveredModels(cloud.Id, ["cloud-b", "cloud-a", " cloud-b "]);
+        manager.ApplyToViewModel(vm);
+
+        Assert.Equal(new[] { "cloud-a", "cloud-b" },
+            TranslationModelSelection.GetModels(manager, vm, cloud.Id).Select(m => m.Id));
+        Assert.True(TranslationModelSelection.SelectModel(manager, vm, cloud.Id, "cloud-b"));
+        Assert.Equal("cloud-b", vm.ActiveProviderModel);
+        Assert.Equal("cloud-b", ExternalLlmState.Shared.Model);
+        Assert.Equal("lan-model", vm.ExternalLlmModel);
+        Assert.Equal("lan-model", settings.GetString(SubtitleViewModel.ExternalLlmModelDefaultsKey));
+        Assert.Equal("http://lan-server:11434", settings.GetString(SubtitleViewModel.ExternalLlmUrlDefaultsKey));
+
+        var localModel = vm.Catalog.TranslationModels.First().Id;
+        Assert.True(TranslationModelSelection.SelectModel(manager, vm, null, localModel));
+        Assert.False(vm.IsExternalLlmActive);
+        Assert.Equal(localModel, vm.TranslationModel);
+        Assert.False(ExternalLlmState.Shared.Enabled);
+        Assert.Equal("", ExternalLlmState.Shared.ApiKey);
+        Assert.True(TranslationModelSelection.SelectModel(manager, vm, lan.Id, "lan-model"));
+        Assert.Equal("http://lan-server:11434", ExternalLlmState.Shared.Url);
+        Assert.Equal("lan-model", ExternalLlmState.Shared.Model);
+
+        var reloaded = new TranslationProviderManager(_filePath);
+        Assert.Equal("cloud-b", reloaded.Providers.Single(p => p.Id == cloud.Id).Model);
+        Assert.Equal("lan-model", reloaded.Providers.Single(p => p.Id == lan.Id).Model);
+    }
+
+    [Fact]
+    public void PickerRejectsAnotherProvidersModelAndRemovedProvider()
+    {
+        var manager = new TranslationProviderManager(_filePath);
+        var (vm, _, _) = Make.ViewModel();
+        using var viewModelLifetime = vm;
+        var active = manager.AddProvider("custom", baseUrl: "https://example.test/v1", model: "cloud-model");
+        var removed = manager.AddProvider("lan", model: "lan-model", setActive: false);
+        manager.ApplyToViewModel(vm);
+        manager.RemoveProvider(removed.Id);
+
+        Assert.False(TranslationModelSelection.SelectModel(manager, vm, active.Id, "lan-model"));
+        Assert.False(TranslationModelSelection.SelectProvider(manager, vm, removed.Id));
+        Assert.Empty(TranslationModelSelection.GetModels(manager, vm, removed.Id));
+        Assert.Equal(active.Id, manager.ActiveProviderId);
+        Assert.Equal("cloud-model", ExternalLlmState.Shared.Model);
+    }
+
+    [Fact]
+    public async Task ModelRefreshFinishingAfterProviderSwitchDoesNotChangeSelection()
+    {
+        var response = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new DeferredHttpHandler(response);
+        var manager = new TranslationProviderManager(_filePath, handler);
+        var (vm, _, _) = Make.ViewModel();
+        using var viewModelLifetime = vm;
+        vm.ExternalLlmUrl = "http://lan-server:11434";
+        vm.ExternalLlmModel = "lan-model";
+        var first = manager.AddProvider("custom", baseUrl: "https://first.test/v1", model: "first-model");
+        var second = manager.AddProvider("custom", baseUrl: "https://second.test/v1", model: "second-model", setActive: false);
+        // Match the application subscription that applies provider notifications to the active view model.
+        manager.PropertyChanged += (_, _) => manager.ApplyToViewModel(vm);
+        manager.ApplyToViewModel(vm);
+        var refresh = manager.TestAndFetchModelsAsync(first.Id);
+        Assert.True(TranslationModelSelection.SelectProvider(manager, vm, second.Id));
+        response.SetResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"data\":[{\"id\":\"first-new-model\"}]}")
+        });
+        Assert.True((await refresh).Success);
+        Assert.Equal(second.Id, manager.ActiveProviderId);
+        Assert.Equal("second-model", ExternalLlmState.Shared.Model);
+        Assert.Equal("second-model", vm.ActiveProviderModel);
+        Assert.Equal("lan-model", vm.ExternalLlmModel);
+        Assert.DoesNotContain(TranslationModelSelection.GetModels(manager, vm, second.Id), m => m.Id == "first-new-model");
+    }
+
+    [Fact]
+    public async Task FailedRefreshKeepsPreviouslyDiscoveredModelsAndSelection()
+    {
+        using var handler = new FakeHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        var manager = new TranslationProviderManager(_filePath, handler);
+        var provider = manager.AddProvider("openrouter", model: "saved-model");
+        manager.UpdateProviderDiscoveredModels(provider.Id, ["saved-model", "other-model"]);
+        Assert.False((await manager.TestAndFetchModelsAsync(provider.Id)).Success);
+        Assert.Equal(new[] { "saved-model", "other-model" }, manager.ActiveProvider!.DiscoveredModels);
+        Assert.Equal("saved-model", manager.ActiveProvider.Model);
+    }
+
+    private sealed class DeferredHttpHandler(TaskCompletionSource<HttpResponseMessage> response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            response.Task.WaitAsync(cancellationToken);
+    }
+
     private sealed class FakeHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

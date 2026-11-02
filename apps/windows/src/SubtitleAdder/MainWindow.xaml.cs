@@ -58,6 +58,12 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        TranslationPicker.ModelChosen += () => TranslationModelFlyout.Hide();
+        TranslationPicker.SettingsRequested += () =>
+        {
+            TranslationModelFlyout.Hide();
+            App.Current.ShowSettings("general");
+        };
         WindowChrome.Setup(this, Root, AppTitleBar, minWidth: 760, minHeight: 580, defaultWidth: 1240, defaultHeight: 840, sizeKey: "mainWindow");
 
         _player = new PlayerController(DispatcherQueue);
@@ -448,7 +454,7 @@ public sealed partial class MainWindow : Window
         LanguageBox.Width = compactTop ? 132 : 165;
         TargetBox.Width = compactTop ? 128 : 155;
         ModelNameText.MinWidth = compactTop ? 74 : 95;
-        TranslationModelNameText.MinWidth = compactTop ? 74 : 95;
+        TranslationModelButton.Width = compactTop ? 180 : 220;
     }
 
     // MARK: - Pickers
@@ -789,56 +795,10 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>Translation model menu: active Ollama/API provider models at the top level, provider switcher, and local translation models.</summary>
-    private async void TranslationModelFlyout_Opening(object? sender, object e)
-    {
-        var providers = App.Current.Providers;
-        providers.EnsureMigratedFromViewModel(Vm);
+    private void TranslationModelFlyout_Opening(object? sender, object e) =>
+        TranslationPicker.Open(App.Current.Providers, Vm);
 
-        void RebuildFlyout()
-        {
-            TranslationProvidersMenuBuilder.PopulateFlyout(
-                TranslationModelFlyout,
-                providers,
-                Vm,
-                Vm.Catalog.TranslationModels,
-                () => App.Current.ShowSettings("general"),
-                async providerId =>
-                {
-                    if (providerId is { } id && providers.Providers.FirstOrDefault(p => p.Id == id) is { } target &&
-                        !string.Equals(target.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
-                    {
-                        await providers.TestAndFetchModelsAsync(id);
-                        providers.ApplyToViewModel(Vm);
-                    }
-                    else
-                    {
-                        await Vm.RefreshExternalModelsAsync();
-                        providers.SyncFromLegacyLanSettings(Vm);
-                    }
-                    RebuildFlyout();
-                });
-        }
-
-        RebuildFlyout();
-
-        var active = providers.ActiveProvider;
-        if (active is not null && !string.Equals(active.PresetId, "lan", StringComparison.OrdinalIgnoreCase))
-        {
-            if (active.DiscoveredModels.Count == 0 && !providers.IsTesting)
-            {
-                await providers.TestAndFetchModelsAsync(active.Id);
-                providers.ApplyToViewModel(Vm);
-                RebuildFlyout();
-            }
-        }
-        else if (Vm.IsExternalLlmActive && Vm.ExternalLlmModels.Count == 0 && !Vm.IsLoadingExternalModels)
-        {
-            await Vm.RefreshExternalModelsAsync();
-            providers.SyncFromLegacyLanSettings(Vm);
-            RebuildFlyout();
-        }
-    }
+    private void TranslationModelFlyout_Closed(object? sender, object e) => TranslationPicker.Close();
 
     private void SpeakerFlyout_Opening(object? sender, object e)
     {

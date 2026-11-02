@@ -695,7 +695,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
             profile.Model,
             cancellationToken).ConfigureAwait(true);
 
-        if (models.Count > 0)
+        if (success && models.Count > 0)
         {
             var updated = false;
             lock (_lock)

@@ -99,18 +99,25 @@
                     <Border Width="1" Margin="2,6" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
                     <ComboBox x:Name="TargetBox" Width="155" VerticalAlignment="Center" SelectionChanged="TargetBox_SelectionChanged"
                               IsEnabled="{x:Bind loc:Ui.Not(Vm.IsWorking), Mode=OneWay}" loc:Localize.AutomationName="Çeviri dili" />
-                    <DropDownButton x:Name="TranslationModelButton" VerticalAlignment="Center" HorizontalContentAlignment="Left"
+                    <DropDownButton x:Name="TranslationModelButton" Width="220" VerticalAlignment="Center" HorizontalContentAlignment="Stretch"
                                     IsEnabled="{x:Bind loc:Ui.Not(Vm.IsWorking), Mode=OneWay}"
                                     loc:Localize.AutomationName="Çeviri modeli"
-                                    loc:Localize.ToolTip="Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir.">
-                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                    ToolTipService.ToolTip="{x:Bind Vm.TranslationModelName, Mode=OneWay}">
+                        <Grid ColumnSpacing="6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
                             <FontIcon Glyph="&#xE968;" FontSize="14"
                                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
                                       Visibility="{x:Bind Vm.IsExternalLlmActive, Mode=OneWay}" />
-                            <TextBlock x:Name="TranslationModelNameText" Text="{x:Bind Vm.TranslationModelName, Mode=OneWay}" MinWidth="95" />
-                        </StackPanel>
+                            <TextBlock Grid.Column="1" Text="{x:Bind Vm.TranslationModelName, Mode=OneWay}" TextTrimming="CharacterEllipsis" />
+                        </Grid>
                         <DropDownButton.Flyout>
-                            <MenuFlyout x:Name="TranslationModelFlyout" Placement="BottomEdgeAlignedLeft" Opening="TranslationModelFlyout_Opening" />
+                            <Flyout x:Name="TranslationModelFlyout" Placement="BottomEdgeAlignedLeft"
+                                    Opening="TranslationModelFlyout_Opening" Closed="TranslationModelFlyout_Closed">
+                                <loc:TranslationModelPicker x:Name="TranslationPicker" />
+                            </Flyout>
                         </DropDownButton.Flyout>
                     </DropDownButton>
                     <Button x:Name="TranslateButton" Style="{StaticResource ToolButtonStyle}" Click="Translate_Click"
