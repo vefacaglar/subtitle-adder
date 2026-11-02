@@ -79,6 +79,22 @@ public sealed partial class MainWindow : Window
         PreviewControls.MuteToggleRequested += _player.ToggleMute;
         PreviewControls.VolumeRequested += _player.SetVolume;
         PreviewControls.InteractionChanged += UpdatePreviewControlVisibility;
+        _player.PlayEmptyRequested += () =>
+        {
+            var candidate = Vm.Video
+                ?? FileExplorerPane.ActiveVideoPath
+                ?? ExplorerVm.Files.FirstOrDefault()?.FullPath
+                ?? Vm.Playlist.FirstOrDefault()?.VideoPath
+                ?? PlatformVm.FeedItems.FirstOrDefault()?.VideoPath;
+            if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
+            {
+                if (!string.Equals(Vm.Video, candidate, StringComparison.OrdinalIgnoreCase))
+                {
+                    Vm.OpenVideo(candidate);
+                }
+                _player.Load(candidate, autoPlay: true);
+            }
+        };
         _player.Failed += message => ShowSaveError(() => L("Video oynatılamadı: %@", message));
         Splitter.Target = PlayerRow;
         Splitter.Other = EditorRow;
@@ -1237,6 +1253,7 @@ public sealed partial class MainWindow : Window
         try
         {
             await Vm.SaveSubtitleToVideoFolderAsync();
+            VideoCardViewModel.InvalidateSidecarCache(Vm.Video);
             _ = ExplorerVm.SyncToVideoPathAsync(Vm.Video);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)

@@ -3745,6 +3745,125 @@
           }
         }
       }
+    },
+    "Şifreli video önbelleği (HDD koruma)": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted video cache (HDD protection)"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Şifreli video önbelleği (HDD koruma)"
+          }
+        }
+      }
+    },
+    "Videoları HDD'yi yormadan oynatmak ve ileri-geri sarmada anında açmak için seçili profil anahtarıyla şifrelenmiş olarak SSD/bellekte saklar.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stores video chunks on SSD/RAM encrypted with the active profile key for instant seeking without wearing out mechanical HDDs."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videoları HDD'yi yormadan oynatmak ve ileri-geri sarmada anında açmak için seçili profil anahtarıyla şifrelenmiş olarak SSD/bellekte saklar."
+          }
+        }
+      }
+    },
+    "Şifreli önbellek kullanımı: %@ / %lld GB": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encrypted cache usage: %1$@ / %2$lld GB"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Şifreli önbellek kullanımı: %1$@ / %2$lld GB"
+          }
+        }
+      }
+    },
+    "Önbelleği temizle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear cache"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Önbelleği temizle"
+          }
+        }
+      }
+    },
+    "Player": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Player"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Player"
+          }
+        }
+      }
+    },
+    "Platform": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Platform"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Platform"
+          }
+        }
+      }
+    },
+    "Çeviri listesi": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation queue"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri listesi"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -124,6 +124,12 @@ public sealed partial class SettingsWindow : Window
         DiarizeSwitch.IsOn = _vm.Diarize;
         OfflineSwitch.IsOn = _vm.OfflineMode;
         AutoPlaySwitch.IsOn = _vm.AutoPlayVideo;
+        if ((int)Math.Round(VideoCacheSizeBox.Value) != _vm.VideoCacheMaxSizeGb)
+        {
+            VideoCacheSizeBox.Value = _vm.VideoCacheMaxSizeGb;
+        }
+        VideoCacheUsageLabel.Text = _vm.VideoCacheUsageText;
+        ClearVideoCacheButton.IsEnabled = _vm.VideoCacheUsedBytes > 0;
         ExternalLlmSwitch.IsOn = _vm.ExternalLlmEnabled;
         if (ExternalLlmUrlBox.Text != _vm.ExternalLlmUrl) ExternalLlmUrlBox.Text = _vm.ExternalLlmUrl;
         ExternalLlmAsyncSwitch.IsOn = _vm.ExternalLlmAsync;
@@ -265,6 +271,29 @@ public sealed partial class SettingsWindow : Window
     {
         if (_syncing) return;
         _vm.AutoPlayVideo = AutoPlaySwitch.IsOn;
+    }
+
+    private void VideoCacheSizeBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_syncing) return;
+        if (!double.IsFinite(args.NewValue))
+        {
+            _syncing = true;
+            sender.Value = _vm.VideoCacheMaxSizeGb;
+            _syncing = false;
+            return;
+        }
+        var gb = Math.Clamp((int)Math.Round(args.NewValue), SubtitleViewModel.MinVideoCacheMaxSizeGb, SubtitleViewModel.MaxVideoCacheMaxSizeGb);
+        _vm.VideoCacheMaxSizeGb = gb;
+        VideoCacheUsageLabel.Text = _vm.VideoCacheUsageText;
+        ClearVideoCacheButton.IsEnabled = _vm.VideoCacheUsedBytes > 0;
+    }
+
+    private void ClearVideoCacheButton_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.ClearVideoCache();
+        VideoCacheUsageLabel.Text = _vm.VideoCacheUsageText;
+        ClearVideoCacheButton.IsEnabled = false;
     }
 
     private void UpdateFileAssociationStatus()

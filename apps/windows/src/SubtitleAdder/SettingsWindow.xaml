@@ -277,6 +277,31 @@
                             </Grid>
                         </Border>
                         <Border Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <Grid ColumnSpacing="16" VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xEDA2;" FontSize="18" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                        <TextBlock loc:Localize.Text="Şifreli video önbelleği (HDD koruma)" Style="{StaticResource CardTitleStyle}" />
+                                        <TextBlock loc:Localize.Text="Videoları HDD'yi yormadan oynatmak ve ileri-geri sarmada anında açmak için seçili profil anahtarıyla şifrelenmiş olarak SSD/bellekte saklar."
+                                                   Style="{StaticResource SecondaryTextStyle}" />
+                                        <TextBlock x:Name="VideoCacheUsageLabel" Style="{StaticResource SecondaryTextStyle}" Opacity="0.85" />
+                                    </StackPanel>
+                                </Grid>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                    <NumberBox x:Name="VideoCacheSizeBox" Width="120" Minimum="1" Maximum="500" SmallChange="5" LargeChange="10"
+                                               SpinButtonPlacementMode="Inline" ValueChanged="VideoCacheSizeBox_ValueChanged" VerticalAlignment="Center"
+                                               loc:Localize.AutomationName="Şifreli video önbelleği (HDD koruma)" />
+                                    <TextBlock Text="GB" VerticalAlignment="Center" Opacity="0.75" Margin="0,0,4,0" />
+                                    <Button x:Name="ClearVideoCacheButton" Click="ClearVideoCacheButton_Click" VerticalAlignment="Center"
+                                            loc:Localize.AutomationName="Önbelleği temizle">
+                                        <TextBlock loc:Localize.Text="Önbelleği temizle" />
+                                    </Button>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <Border Style="{StaticResource CardStyle}">
                             <StackPanel Spacing="10">
                                 <Grid ColumnSpacing="16">
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>

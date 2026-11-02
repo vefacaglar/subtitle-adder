@@ -131,11 +131,11 @@
                     <Button x:Name="EditorTabButton" Click="EditorTab_Click" Padding="14,7,14,9" CornerRadius="6,6,0,0"
                             BorderThickness="1,1,1,0" Background="{ThemeResource LayerFillColorDefaultBrush}"
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            loc:Localize.AutomationName="Düzenleyici">
+                            loc:Localize.AutomationName="Player">
                         <Grid>
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <FontIcon Glyph="&#xE714;" FontSize="14" />
-                                <TextBlock x:Name="EditorTabTitle" loc:Localize.Text="Düzenleyici" FontWeight="SemiBold" />
+                                <TextBlock x:Name="EditorTabTitle" loc:Localize.Text="Player" FontWeight="SemiBold" />
                             </StackPanel>
                             <Rectangle x:Name="EditorTabIndicator" Height="3" RadiusX="1.5" RadiusY="1.5"
                                        VerticalAlignment="Bottom" Margin="0,0,0,-7"
@@ -144,11 +144,11 @@
                     </Button>
                     <Button x:Name="PlatformTabButton" Click="PlatformTab_Click" Padding="14,7,14,9" CornerRadius="6,6,0,0"
                             BorderThickness="1,1,1,0" Background="Transparent" BorderBrush="Transparent"
-                            loc:Localize.AutomationName="Video Platformu">
+                            loc:Localize.AutomationName="Platform">
                         <Grid>
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <FontIcon Glyph="&#xE80F;" FontSize="14" />
-                                <TextBlock x:Name="PlatformTabTitle" loc:Localize.Text="Video Platformu" />
+                                <TextBlock x:Name="PlatformTabTitle" loc:Localize.Text="Platform" />
                             </StackPanel>
                             <Rectangle x:Name="PlatformTabIndicator" Height="3" RadiusX="1.5" RadiusY="1.5"
                                        VerticalAlignment="Bottom" Margin="0,0,0,-7" Visibility="Collapsed"
@@ -157,11 +157,11 @@
                     </Button>
                     <Button x:Name="PlaylistTabButton" Click="PlaylistTab_Click" Padding="14,7,14,9" CornerRadius="6,6,0,0"
                             BorderThickness="1,1,1,0" Background="Transparent" BorderBrush="Transparent"
-                            loc:Localize.AutomationName="Çalma listesi">
+                            loc:Localize.AutomationName="Çeviri listesi">
                         <Grid>
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <FontIcon Glyph="&#xE90B;" FontSize="14" />
-                                <TextBlock x:Name="PlaylistTabTitle" loc:Localize.Text="Çalma listesi" />
+                                <TextBlock x:Name="PlaylistTabTitle" loc:Localize.Text="Çeviri listesi" />
                                 <Border CornerRadius="8" Padding="6,1" Background="{ThemeResource AccentFillColorDefaultBrush}"
                                         Visibility="{x:Bind Vm.HasPlaylistItems, Mode=OneWay}" VerticalAlignment="Center">
                                     <TextBlock Text="{x:Bind Vm.PlaylistCount, Mode=OneWay}" FontSize="11" Foreground="White" />

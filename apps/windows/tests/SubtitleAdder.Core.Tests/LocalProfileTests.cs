@@ -723,4 +723,76 @@ public sealed class LocalProfileTests : IDisposable
         Assert.True(customListFeed[0].IsLiked);
         Assert.Equal(5, customListFeed[0].Rating);
     }
+
+    [Fact]
+    public void UnpluggedDriveVideos_AreHiddenFromWatchHistoryAndFeeds_AndReappearWithFullStatsWhenDriveReconnected()
+    {
+        var internalVideo = Path.Combine(_tempDir, "internal_ssd_movie.mp4");
+        var externalHddVideo = Path.Combine(_tempDir, "external_hdd_movie.mkv");
+        File.WriteAllBytes(internalVideo, [1, 2, 3, 4]);
+        File.WriteAllBytes(externalHddVideo, [5, 6, 7, 8]);
+
+        var manager = new LocalProfileManager(_profilesPath);
+        using var vm = new VideoPlatformViewModel(manager);
+        Assert.True(vm.TryRegister("emre", "pass123"));
+
+        vm.SetDiscoveredPaths([internalVideo, externalHddVideo]);
+        vm.OnVideoOpened(internalVideo);
+        vm.UpdateActiveVideoProgress(45, 120);
+        vm.ToggleActiveVideoLike();
+        vm.SetActiveVideoRating(4);
+
+        vm.OnVideoOpened(externalHddVideo);
+        vm.UpdateActiveVideoProgress(90, 300);
+        vm.ToggleActiveVideoLike();
+        vm.SetActiveVideoRating(5);
+
+        var list = vm.CreateCustomList("HDD Arşivi");
+        Assert.NotNull(list);
+        Assert.True(vm.ToggleVideoInCustomList(list.Id, internalVideo));
+        Assert.True(vm.ToggleVideoInCustomList(list.Id, externalHddVideo));
+
+        // Both drives connected: both videos appear in History, Liked, MostWatched, TopRated, CustomList, and All
+        vm.ActiveFilter = VideoFeedFilter.History;
+        Assert.Equal(2, vm.FeedItems.Count);
+
+        // Simulate unplugging the external HDD containing externalHddVideo
+        var hddConnected = false;
+        manager.StorageAvailabilityFilter = path =>
+            hddConnected || !string.Equals(path, externalHddVideo, StringComparison.OrdinalIgnoreCase);
+        vm.RefreshFeed();
+
+        foreach (var filter in new[]
+                 {
+                     VideoFeedFilter.History,
+                     VideoFeedFilter.Liked,
+                     VideoFeedFilter.MostWatched,
+                     VideoFeedFilter.TopRated,
+                     VideoFeedFilter.All,
+                 })
+        {
+            vm.ActiveFilter = filter;
+            Assert.Single(vm.FeedItems);
+            Assert.Equal(internalVideo, vm.FeedItems[0].VideoPath);
+        }
+
+        vm.SelectCustomList(list.Id);
+        Assert.Single(vm.FeedItems);
+        Assert.Equal(internalVideo, vm.FeedItems[0].VideoPath);
+
+        // Simulate plugging the external HDD back in -> externalHddVideo reappears with all stats intact!
+        hddConnected = true;
+        vm.RefreshFeed();
+        vm.ActiveFilter = VideoFeedFilter.History;
+        Assert.Equal(2, vm.FeedItems.Count);
+        var restored = vm.FeedItems.First(i => i.VideoPath == externalHddVideo);
+        Assert.Equal(1, restored.ViewCount);
+        Assert.True(restored.IsLiked);
+        Assert.Equal(5, restored.Rating);
+        Assert.Equal(90, restored.LastPositionSeconds);
+        Assert.Contains("HDD Arşivi", restored.CustomListNames);
+
+        vm.SelectCustomList(list.Id);
+        Assert.Equal(2, vm.FeedItems.Count);
+    }
 }

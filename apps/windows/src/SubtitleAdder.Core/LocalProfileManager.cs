@@ -58,10 +58,16 @@ public sealed record VideoUserStats
             ? Math.Clamp(LastPositionSeconds / DurationSeconds, 0.0, 1.0)
             : 0.0;
 
-    public static VideoUserStats CreateDefault(string normalizedPath, DateTimeOffset? now = null, string? contentFingerprint = null)
+    public static VideoUserStats CreateDefault(
+        string normalizedPath,
+        DateTimeOffset? now = null,
+        string? contentFingerprint = null,
+        bool computeFingerprintFromDisk = true)
     {
         var timestamp = now ?? DateTimeOffset.UtcNow;
-        var computed = contentFingerprint ?? LocalProfileManager.TryComputeFingerprintOnly(normalizedPath);
+        var computed = contentFingerprint ?? (computeFingerprintFromDisk
+            ? LocalProfileManager.TryComputeFingerprintOnly(normalizedPath)
+            : LocalProfileManager.TryGetCachedFingerprint(normalizedPath));
         return new VideoUserStats
         {
             ContentFingerprint = computed,
@@ -103,6 +109,9 @@ public sealed class LocalProfileManager : IDisposable
     private static readonly ConcurrentDictionary<string, CachedFingerprint> FingerprintCache =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private static readonly ConcurrentDictionary<string, long> GlobalFileWriteGeneration =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly record struct CachedFingerprint(long Length, long LastWriteTicks, string Fingerprint);
 
     private readonly Lock _sync = new();
@@ -119,6 +128,9 @@ public sealed class LocalProfileManager : IDisposable
     private string? _rememberedUsername;
     private string? _rememberedProtectedKeyBase64;
     private string? _lastSyncedJson;
+    private long _lastSyncedGeneration = -1;
+    private long _lastSyncedWriteTicks = -1;
+    private long _lastSyncedFileLength = -1;
 
     public LocalProfileManager(string? filePath = null, StateSyncBroker? broker = null)
     {
@@ -191,6 +203,30 @@ public sealed class LocalProfileManager : IDisposable
                 SyncFromDiskLocked();
                 return _activeProfile?.Username;
             }
+        }
+    }
+
+    /// <summary>
+    /// Returns the active authenticated profile's username and a defensive copy of its 256-bit AES-GCM vault key.
+    /// Returns <c>false</c> when no profile is logged in or when the profile's vault key is not unlocked in this session.
+    /// </summary>
+    public bool TryGetActiveProfileVaultKey(out string username, out byte[] vaultKey)
+    {
+        lock (_sync)
+        {
+            SyncFromDiskLocked();
+            if (_activeProfile is not null &&
+                _sessionVaultKeys.TryGetValue(_activeProfile.Username, out var key) &&
+                key.Length == 32)
+            {
+                username = _activeProfile.Username;
+                vaultKey = (byte[])key.Clone();
+                return true;
+            }
+
+            username = "";
+            vaultKey = [];
+            return false;
         }
     }
 
@@ -268,6 +304,63 @@ public sealed class LocalProfileManager : IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Optional custom storage availability predicate for testing or custom volume filtering.
+    /// When set, a video path is considered available only if both its drive root is ready and this predicate returns <c>true</c>.
+    /// </summary>
+    public Func<string, bool>? StorageAvailabilityFilter { get; set; }
+
+    /// <summary>
+    /// Checks whether the drive/volume hosting <paramref name="videoPath"/> is currently connected and ready,
+    /// without spinning up or seeking individual files on mechanical HDDs.
+    /// </summary>
+    public bool IsVideoStorageAvailable(string? videoPath) =>
+        IsVideoStorageAvailableCore(NormalizeVideoPath(videoPath), rootCache: null);
+
+    private bool IsVideoStorageAvailableCore(string normalizedPath, Dictionary<string, bool>? rootCache)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedPath)) return false;
+
+        if (StorageAvailabilityFilter is { } customFilter && !customFilter(normalizedPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var root = Path.GetPathRoot(normalizedPath);
+            if (string.IsNullOrWhiteSpace(root)) return true;
+
+            if (rootCache is not null && rootCache.TryGetValue(root, out var cachedReady))
+            {
+                return cachedReady;
+            }
+
+            bool isReady;
+            if (root.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                isReady = Directory.Exists(root);
+            }
+            else
+            {
+                var drive = new DriveInfo(root);
+                isReady = drive.IsReady;
+            }
+
+            rootCache?.TryAdd(root, isReady);
+            return isReady;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static string? TryGetCachedFingerprint(string normalizedPath) =>
+        !string.IsNullOrEmpty(normalizedPath) && FingerprintCache.TryGetValue(normalizedPath, out var cached)
+            ? cached.Fingerprint
+            : null;
 
     /// <summary>
     /// Computes a fast hybrid video identifier: if the file exists on disk with <c>Length &gt; 0</c>, reads up to three
@@ -1158,6 +1251,7 @@ public sealed class LocalProfileManager : IDisposable
             using var crossLock = AcquireCrossProcessMutex();
             SyncFromDiskLocked();
             var now = DateTimeOffset.UtcNow;
+            var rootCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
             if (_activeProfile is null)
             {
@@ -1170,9 +1264,11 @@ public sealed class LocalProfileManager : IDisposable
                 foreach (var rawPath in additionalDiscoveredPaths)
                 {
                     var norm = NormalizeVideoPath(rawPath);
-                    if (norm.Length > 0 && !discoveredOnly.ContainsKey(norm))
+                    if (norm.Length > 0 &&
+                        !discoveredOnly.ContainsKey(norm) &&
+                        IsVideoStorageAvailableCore(norm, rootCache))
                     {
-                        discoveredOnly[norm] = VideoUserStats.CreateDefault(norm, now);
+                        discoveredOnly[norm] = VideoUserStats.CreateDefault(norm, now, computeFingerprintFromDisk: false);
                     }
                 }
 
@@ -1187,6 +1283,23 @@ public sealed class LocalProfileManager : IDisposable
                 return anonQuery.ToList();
             }
 
+            var knownProfilePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var hasMovedTrackedVideo = false;
+            foreach (var v in _activeProfile.Videos.Values)
+            {
+                if (!string.IsNullOrEmpty(v.VideoPath))
+                {
+                    knownProfilePaths.Add(v.VideoPath);
+                    if (!hasMovedTrackedVideo &&
+                        !string.IsNullOrEmpty(v.ContentFingerprint) &&
+                        IsVideoStorageAvailableCore(v.VideoPath, rootCache) &&
+                        !File.Exists(v.VideoPath))
+                    {
+                        hasMovedTrackedVideo = true;
+                    }
+                }
+            }
+
             var anyMigrated = false;
             var discoveredNormalized = new List<string>();
             if (additionalDiscoveredPaths is not null)
@@ -1194,11 +1307,16 @@ public sealed class LocalProfileManager : IDisposable
                 foreach (var rawPath in additionalDiscoveredPaths)
                 {
                     var norm = NormalizeVideoPath(rawPath);
-                    if (norm.Length == 0) continue;
+                    if (norm.Length == 0 || !IsVideoStorageAvailableCore(norm, rootCache)) continue;
                     discoveredNormalized.Add(norm);
-                    if (ResolveAndMigrateVideoKeyLocked(_activeProfile, norm, out _, out _, out var migrated) && migrated)
+                    // Only probe disk fingerprint if this path is unknown AND a tracked video was moved/renamed from its old path
+                    if (hasMovedTrackedVideo &&
+                        !knownProfilePaths.Contains(norm) &&
+                        ResolveAndMigrateVideoKeyLocked(_activeProfile, norm, out _, out _, out var migrated) &&
+                        migrated)
                     {
                         anyMigrated = true;
+                        knownProfilePaths.Add(norm);
                     }
                 }
             }
@@ -1208,11 +1326,12 @@ public sealed class LocalProfileManager : IDisposable
                 SaveToDiskLocked();
             }
 
-            // Build path-keyed map of all profile videos + discovered videos + custom list videos
+            // Build path-keyed map of all available profile videos + discovered videos + custom list videos
             var mergedByPath = new Dictionary<string, VideoUserStats>(StringComparer.OrdinalIgnoreCase);
             foreach (var (key, video) in _activeProfile.Videos)
             {
-                if (!string.IsNullOrEmpty(video.VideoPath))
+                if (!string.IsNullOrEmpty(video.VideoPath) &&
+                    IsVideoStorageAvailableCore(video.VideoPath, rootCache))
                 {
                     var withThumb = _activeProfile.Thumbnails.TryGetValue(key, out var b64) && TryDecodeBase64(b64) is { } tb
                         ? video with { ThumbnailBytes = tb }
@@ -1225,7 +1344,7 @@ public sealed class LocalProfileManager : IDisposable
             {
                 if (!mergedByPath.ContainsKey(norm))
                 {
-                    mergedByPath[norm] = VideoUserStats.CreateDefault(norm, now);
+                    mergedByPath[norm] = VideoUserStats.CreateDefault(norm, now, computeFingerprintFromDisk: false);
                 }
             }
 
@@ -1234,9 +1353,11 @@ public sealed class LocalProfileManager : IDisposable
                 foreach (var rawPath in list.VideoPaths)
                 {
                     var norm = NormalizeVideoPath(rawPath);
-                    if (norm.Length > 0 && !mergedByPath.ContainsKey(norm))
+                    if (norm.Length > 0 &&
+                        !mergedByPath.ContainsKey(norm) &&
+                        IsVideoStorageAvailableCore(norm, rootCache))
                     {
-                        mergedByPath[norm] = VideoUserStats.CreateDefault(norm, now);
+                        mergedByPath[norm] = VideoUserStats.CreateDefault(norm, now, computeFingerprintFromDisk: false);
                     }
                 }
             }
@@ -1255,10 +1376,10 @@ public sealed class LocalProfileManager : IDisposable
                 foreach (var rawPath in targetList.VideoPaths)
                 {
                     var norm = NormalizeVideoPath(rawPath);
-                    if (norm.Length == 0) continue;
+                    if (norm.Length == 0 || !IsVideoStorageAvailableCore(norm, rootCache)) continue;
                     listItems.Add(mergedByPath.TryGetValue(norm, out var stats)
                         ? stats
-                        : VideoUserStats.CreateDefault(norm, now));
+                        : VideoUserStats.CreateDefault(norm, now, computeFingerprintFromDisk: false));
                 }
                 query = listItems;
             }
@@ -1364,6 +1485,7 @@ public sealed class LocalProfileManager : IDisposable
     /// Resolves an existing <see cref="VideoUserStats"/> entry by content fingerprint (<c>fp:...</c>) or normalized path.
     /// If the file was moved or renamed on disk, automatically migrates its <see cref="VideoUserStats.VideoPath"/>
     /// and updates any custom lists referencing the old path.
+    /// Avoids opening/reading the video file on disk if the path or cached fingerprint already matches an entry in memory.
     /// </summary>
     private static bool ResolveAndMigrateVideoKeyLocked(
         ProfileEntry profile,
@@ -1373,7 +1495,70 @@ public sealed class LocalProfileManager : IDisposable
         out bool migrated)
     {
         migrated = false;
-        var fingerprint = TryComputeFingerprintOnly(normalizedPath);
+
+        // Fast path 1: Direct path key lookup or in-memory cached fingerprint lookup (0 disk I/O!)
+        if (profile.Videos.TryGetValue(normalizedPath, out var directByPath))
+        {
+            resolvedKey = normalizedPath;
+            resolvedStats = directByPath;
+            return true;
+        }
+
+        var cachedFp = TryGetCachedFingerprint(normalizedPath);
+        if (cachedFp is not null && profile.Videos.TryGetValue(cachedFp, out var directByCachedFp))
+        {
+            if (string.Equals(directByCachedFp.VideoPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                resolvedKey = cachedFp;
+                resolvedStats = directByCachedFp;
+                return true;
+            }
+        }
+
+        // Fast path 2: Linear scan of in-memory Videos by VideoPath (0 disk I/O!)
+        foreach (var (k, v) in profile.Videos)
+        {
+            if (string.Equals(v.VideoPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                resolvedKey = k;
+                resolvedStats = v;
+                return true;
+            }
+        }
+
+        // Slow path: Only compute disk fingerprint if profile.Videos actually has an entry whose ContentFingerprint
+        // has the exact same byte length ("fp:<length>:") and whose VideoPath differs from normalizedPath.
+        string? fingerprint = cachedFp;
+        if (fingerprint is null && profile.Videos.Count > 0)
+        {
+            try
+            {
+                var info = new FileInfo(normalizedPath);
+                if (info.Exists && info.Length > 0)
+                {
+                    var expectedPrefix = string.Create(CultureInfo.InvariantCulture, $"fp:{info.Length}:");
+                    var hasSameSizeCandidate = false;
+                    foreach (var v in profile.Videos.Values)
+                    {
+                        if (v.ContentFingerprint is { } fp &&
+                            fp.StartsWith(expectedPrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            hasSameSizeCandidate = true;
+                            break;
+                        }
+                    }
+
+                    if (hasSameSizeCandidate)
+                    {
+                        fingerprint = TryComputeFingerprintOnly(normalizedPath);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
         var candidateKey = fingerprint ?? normalizedPath;
 
         string? foundKey = null;
@@ -1384,23 +1569,11 @@ public sealed class LocalProfileManager : IDisposable
             foundKey = fingerprint;
             foundStats = byFpKey;
         }
-        else if (profile.Videos.TryGetValue(normalizedPath, out var byPathKey))
-        {
-            foundKey = normalizedPath;
-            foundStats = byPathKey;
-        }
-        else
+        else if (fingerprint is not null)
         {
             foreach (var (k, v) in profile.Videos)
             {
-                if (fingerprint is not null &&
-                    string.Equals(v.ContentFingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
-                {
-                    foundKey = k;
-                    foundStats = v;
-                    break;
-                }
-                if (string.Equals(v.VideoPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(v.ContentFingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
                 {
                     foundKey = k;
                     foundStats = v;
@@ -1494,9 +1667,29 @@ public sealed class LocalProfileManager : IDisposable
             return (key, existing);
         }
 
-        var fingerprint = TryComputeFingerprintOnly(normalizedPath);
+        var fingerprint = TryGetCachedFingerprint(normalizedPath);
+        if (fingerprint is null)
+        {
+            try
+            {
+                var info = new FileInfo(normalizedPath);
+                if (info.Exists && info.Length > 0 && info.Length <= 64L * 1024L * 1024L)
+                {
+                    fingerprint = TryComputeFingerprintOnly(normalizedPath);
+                }
+                else if (info.Exists && info.Length > 64L * 1024L * 1024L)
+                {
+                    // Warm the fingerprint cache in the background for multi-gigabyte files so the UI thread never blocks on HDD seeks
+                    _ = Task.Run(() => TryComputeFingerprintOnly(normalizedPath));
+                }
+            }
+            catch
+            {
+            }
+        }
+
         var newKey = fingerprint ?? normalizedPath;
-        var created = VideoUserStats.CreateDefault(normalizedPath, now, fingerprint);
+        var created = VideoUserStats.CreateDefault(normalizedPath, now, fingerprint, computeFingerprintFromDisk: false);
         profile.Videos[newKey] = created;
         return (newKey, created);
     }
@@ -1635,7 +1828,7 @@ public sealed class LocalProfileManager : IDisposable
         {
             return TryDecodeBase64(b64);
         }
-        var fp = TryComputeFingerprintOnly(normalizedPath);
+        var fp = TryGetCachedFingerprint(normalizedPath);
         if (fp is not null && profile.Thumbnails.TryGetValue(fp, out var b64Fp))
         {
             return TryDecodeBase64(b64Fp);
@@ -1665,7 +1858,7 @@ public sealed class LocalProfileManager : IDisposable
                 if (norm.Length == 0) continue;
                 var fp = !string.IsNullOrWhiteSpace(video.ContentFingerprint)
                     ? video.ContentFingerprint.Trim()
-                    : TryComputeFingerprintOnly(norm);
+                    : TryGetCachedFingerprint(norm);
                 var key = fp ?? norm;
                 entry.Videos[key] = video with
                 {
@@ -1722,6 +1915,21 @@ public sealed class LocalProfileManager : IDisposable
     {
         try
         {
+            var currentGen = GlobalFileWriteGeneration.GetValueOrDefault(FilePath, 0L);
+            if (!force && _lastSyncedJson is not null && currentGen == _lastSyncedGeneration)
+            {
+                var info = new FileInfo(FilePath);
+                if (!info.Exists)
+                {
+                    return false;
+                }
+                if (info.LastWriteTimeUtc.Ticks == _lastSyncedWriteTicks &&
+                    info.Length == _lastSyncedFileLength)
+                {
+                    return false;
+                }
+            }
+
             if (AtomicFileStore.ReadAllTextShared(FilePath) is not { } json)
             {
                 if (force)
@@ -1734,6 +1942,19 @@ public sealed class LocalProfileManager : IDisposable
 
             if (!force && string.Equals(json, _lastSyncedJson, StringComparison.Ordinal))
             {
+                _lastSyncedGeneration = currentGen;
+                try
+                {
+                    var info = new FileInfo(FilePath);
+                    if (info.Exists)
+                    {
+                        _lastSyncedWriteTicks = info.LastWriteTimeUtc.Ticks;
+                        _lastSyncedFileLength = info.Length;
+                    }
+                }
+                catch
+                {
+                }
                 return false;
             }
 
@@ -1806,6 +2027,19 @@ public sealed class LocalProfileManager : IDisposable
             }
 
             _lastSyncedJson = json;
+            _lastSyncedGeneration = currentGen;
+            try
+            {
+                var info = new FileInfo(FilePath);
+                if (info.Exists)
+                {
+                    _lastSyncedWriteTicks = info.LastWriteTimeUtc.Ticks;
+                    _lastSyncedFileLength = info.Length;
+                }
+            }
+            catch
+            {
+            }
             return true;
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
@@ -1823,7 +2057,8 @@ public sealed class LocalProfileManager : IDisposable
 
             foreach (var entry in _profiles.Values)
             {
-                if (_sessionVaultKeys.TryGetValue(entry.Username, out var vaultKey))
+                if (_sessionVaultKeys.TryGetValue(entry.Username, out var vaultKey) &&
+                    (ReferenceEquals(entry, _activeProfile) || string.IsNullOrEmpty(entry.EncryptedVaultBase64)))
                 {
                     var vault = new ProfileSecretVault
                     {
@@ -1863,6 +2098,20 @@ public sealed class LocalProfileManager : IDisposable
             if (AtomicFileStore.WriteAllTextAtomic(FilePath, json))
             {
                 _lastSyncedJson = json;
+                var nextGen = GlobalFileWriteGeneration.AddOrUpdate(FilePath, 1L, static (_, v) => v + 1L);
+                _lastSyncedGeneration = nextGen;
+                try
+                {
+                    var info = new FileInfo(FilePath);
+                    if (info.Exists)
+                    {
+                        _lastSyncedWriteTicks = info.LastWriteTimeUtc.Ticks;
+                        _lastSyncedFileLength = info.Length;
+                    }
+                }
+                catch
+                {
+                }
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

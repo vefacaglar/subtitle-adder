@@ -69,7 +69,7 @@ public partial class App : Application
             return;
         }
 
-        SubtitleViewModel.CleanupTempDirectory();
+        _ = Task.Run(SubtitleViewModel.CleanupTempDirectory);
         Settings = new JsonFileSettingsStore();
 
         if (string.Equals(Path.GetFileName(Environment.ProcessPath), "SubtitleAdder.exe", StringComparison.OrdinalIgnoreCase) &&
@@ -77,7 +77,7 @@ public partial class App : Application
         {
             try
             {
-                FileAssociationRegistrar.Register();
+                _ = Task.Run(() => { try { FileAssociationRegistrar.Register(); } catch { } });
             }
             catch
             {

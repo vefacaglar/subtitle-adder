@@ -27,6 +27,7 @@ public sealed class PlayerController : IDisposable
     private volatile bool _mediaReady;
     private volatile bool _disposed;
     private readonly PlaybackTimeline _timeline = new();
+    private string? _currentPath;
     private double? _seekWhenReady;
     private bool _autoPlayWhenReady;
 
@@ -87,15 +88,17 @@ public sealed class PlayerController : IDisposable
     public event Action? VideoSizeChanged;
     public event Action? Ticked;
     public event Action<string>? Failed;
+    public event Action? PlayEmptyRequested;
 
     public void Load(string? path, bool autoPlay = false)
     {
         var generation = Interlocked.Increment(ref _loadGeneration);
+        _currentPath = path;
         _mediaReady = false;
-        IsPlaying = false;
         _timeline.Reset();
         _seekWhenReady = null;
         _autoPlayWhenReady = path is not null && autoPlay;
+        IsPlaying = _autoPlayWhenReady;
         Ticked?.Invoke();
         // Don't use the old video's aspect ratio until the new size arrives.
         VideoSize = (16, 9);
@@ -174,7 +177,23 @@ public sealed class PlayerController : IDisposable
             _bufferedStream = newBufferedStream;
             _randomAccessStream = newRandomStream;
             _source = newSource;
-            Player.Source = newSource;
+            _queue.TryEnqueue(() =>
+            {
+                if (_disposed || generation != Volatile.Read(ref _loadGeneration)) return;
+                try
+                {
+                    Player.Source = newSource;
+                    if (_autoPlayWhenReady)
+                    {
+                        Player.Play();
+                        IsPlaying = true;
+                        Ticked?.Invoke();
+                    }
+                }
+                catch
+                {
+                }
+            });
         }
         catch (Exception error)
         {
@@ -219,7 +238,29 @@ public sealed class PlayerController : IDisposable
 
     public void TogglePlayback()
     {
-        if (!HasMedia) return;
+        if (_disposed) return;
+        if (!HasMedia)
+        {
+            if (_currentPath is not null)
+            {
+                _autoPlayWhenReady = !_autoPlayWhenReady;
+                IsPlaying = _autoPlayWhenReady;
+                if (_autoPlayWhenReady)
+                {
+                    try { Player.Play(); } catch { }
+                }
+                else
+                {
+                    try { Player.Pause(); } catch { }
+                }
+                Ticked?.Invoke();
+            }
+            else
+            {
+                PlayEmptyRequested?.Invoke();
+            }
+            return;
+        }
         var session = Player.PlaybackSession;
         if (session.PlaybackState != MediaPlaybackState.Playing)
         {
