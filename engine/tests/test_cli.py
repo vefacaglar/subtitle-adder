@@ -235,7 +235,8 @@ def test_extract_audio_cli_emits_stage_and_result_and_transcribe_reuses_wav(tone
     assert events[0] == {"event": "stage", "stage": "extracting_audio", "fraction": None}
     assert events[-1]["event"] == "result"
     wav_path = Path(events[-1]["audio"])
-    assert wav_path == tmp_path / "tone.wav"
+    assert wav_path == pipeline.wav_path_for(tone_video, tmp_path)
+    assert wav_path.name.startswith("tone-") and wav_path.suffix == ".wav"
     assert wav_path.is_file() and wav_path.stat().st_size > 44
     assert not list(tmp_path.glob("*.tmp.wav"))
 
@@ -246,3 +247,25 @@ def test_extract_audio_cli_emits_stage_and_result_and_transcribe_reuses_wav(tone
     assert events2[0] == {"event": "stage", "stage": "extracting_audio", "fraction": 1.0}
     assert events2[-1]["event"] == "result"
     assert events2[-1]["audio"] == str(wav_path)
+
+
+def test_extract_audio_cli_reports_an_error_event_for_a_missing_video(tmp_path, capsys):
+    missing = tmp_path / "yok.mp4"
+    out_dir = tmp_path / "out"
+
+    code = cli.main(["extract-audio", str(missing), "-o", str(out_dir), "--json"])
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert code == 1
+    assert [e["event"] for e in events] == ["stage", "error"]  # the extracting_audio stage opens, then it fails
+    assert events[-1]["message"].startswith("Video bulunamadı:") and "yok.mp4" in events[-1]["message"]
+    assert not list(out_dir.glob("*.wav")) and not list(out_dir.glob("*.tmp*"))
+
+
+def test_extract_audio_cli_missing_video_without_json_prints_the_message_on_stderr(tmp_path, capsys):
+    code = cli.main(["--lang", "en", "extract-audio", str(tmp_path / "yok.mp4"), "-o", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert captured.out == ""
+    assert "Video not found:" in captured.err and "yok.mp4" in captured.err

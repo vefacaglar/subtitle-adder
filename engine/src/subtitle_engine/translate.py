@@ -11,6 +11,7 @@ to the server configured by the user.
 import atexit
 import contextlib
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -79,6 +80,114 @@ def normalize_external_chat_url(raw_url: str) -> str:
     return f"{url}/v1/chat/completions"
 
 
+_LOCAL_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "127.0.0.0/8",  # loopback
+        "10.0.0.0/8",  # RFC 1918
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",  # carrier-grade NAT, used by Tailscale and similar overlays
+        "169.254.0.0/16",  # link-local
+        "::1/128",
+        "fc00::/7",  # IPv6 unique local
+        "fe80::/10",  # IPv6 link-local
+    )
+)
+
+
+def _parse_ip(name: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(name)
+    except ValueError:
+        pass
+    # Legacy spellings the system resolver also accepts ("127.1", "0x7f.1", "2130706433") are addresses, not names.
+    if re.fullmatch(r"[0-9a-fx.]+", name):
+        try:
+            return ipaddress.IPv4Address(socket.inet_aton(name))
+        except OSError:
+            pass
+    return None
+
+
+def is_local_network_host(host: str | None) -> bool:
+    """True for a host on this machine or the user's own network: loopback, private ranges (RFC 1918, 100.64/10,
+    link-local, IPv6 unique-local/link-local), `localhost`, `.local` names and bare single-label names.
+
+    Anything else (a public address or a dotted internet name) is treated as the internet.
+    """
+    name = (host or "").strip().strip("[]").split("%", 1)[0].rstrip(".").lower()
+    if not name:
+        return False
+    address = _parse_ip(name)
+    if address is not None:
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        return any(address in network for network in _LOCAL_NETWORKS if network.version == address.version)
+    if name == "localhost" or name.endswith((".localhost", ".local")):
+        return True
+    return "." not in name
+
+
+def _url_host(url: str) -> str | None:
+    try:
+        return urlsplit(url).hostname
+    except ValueError:
+        return None
+
+
+def api_key_transport_allowed(url: str) -> bool:
+    """May an `Authorization: Bearer` key be sent to `url`? Always over https; over http only to the local network."""
+    try:
+        scheme = urlsplit(url).scheme.lower()
+    except ValueError:
+        return False
+    if scheme == "https":
+        return True
+    return scheme == "http" and is_local_network_host(_url_host(url))
+
+
+def check_external_llm(raw_url: str, api_key: str | None = None) -> str:
+    """Validates the external LLM setup before any request; returns the normalized chat URL.
+
+    Raises a localized `ModelError` when the address is unusable, when strict offline mode is on and the server
+    is not on the local network (a `.local` name stays allowed however it later resolves), or when an API key would
+    travel over plain http to a host outside the local network.
+    """
+    chat_url = normalize_external_chat_url(raw_url)
+    host = _url_host(chat_url)
+    if models.offline_requested() and not is_local_network_host(host):
+        raise ModelError(t("offline_external_llm", host=host or raw_url.strip()))
+    if (api_key or "").strip() and not api_key_transport_allowed(chat_url):
+        raise ModelError(t("external_llm_key_insecure"))
+    return chat_url
+
+
+class _KeySafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """urllib copies every request header onto a redirected request; the API key must not follow it elsewhere."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None:
+            same_host = (_url_host(req.full_url) or "").lower() == (_url_host(redirected.full_url) or "").lower()
+            if not same_host or not api_key_transport_allowed(redirected.full_url):
+                for name in [name for name in redirected.headers if name.lower() == "authorization"]:
+                    del redirected.headers[name]
+        return redirected
+
+
+_key_safe_opener_installed = False
+
+
+def _urlopen(req: urllib.request.Request, timeout: float):
+    """`urllib.request.urlopen` with the key-safe redirect handler (installed once, process-wide)."""
+    global _key_safe_opener_installed
+    if not _key_safe_opener_installed:
+        urllib.request.install_opener(urllib.request.build_opener(_KeySafeRedirectHandler))
+        _key_safe_opener_installed = True
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def _external_models_url(chat_url: str) -> str | None:
     lower = chat_url.lower()
     if lower.endswith("/chat/completions"):
@@ -89,7 +198,10 @@ def _external_models_url(chat_url: str) -> str | None:
 
 
 def _discover_lan_server_ip(port: int) -> str | None:
-    """Scans the local /24 IPv4 subnet for an open LLM server port when mesh Wi-Fi routers (e.g. TP-Link Deco) block mDNS."""
+    """Scans the local /24 IPv4 subnet for an open LLM server port when mesh Wi-Fi routers (e.g. TP-Link Deco) block mDNS.
+
+    Only opens and closes TCP connections: no byte (so no API key) is ever sent to a probed host.
+    """
     import concurrent.futures
 
     try:
@@ -117,8 +229,12 @@ def _discover_lan_server_ip(port: int) -> str | None:
     return None
 
 
-def _resolve_lan_url(url: str) -> str:
-    """Resolves `.local` mDNS hostnames to IPv4 (with LAN port scan fallback for Deco mesh routers)."""
+def _resolve_lan_url(url: str, allow_scan: bool = True) -> str:
+    """Resolves `.local` mDNS hostnames to IPv4 (with LAN port scan fallback for Deco mesh routers).
+
+    `allow_scan=False` skips the scan: whichever host first answers on the port is unverified, so it must not
+    become the destination of a request that carries an API key.
+    """
     from urllib.parse import urlparse, urlunparse
 
     try:
@@ -135,7 +251,7 @@ def _resolve_lan_url(url: str) -> str:
                 return urlunparse(parsed._replace(netloc=netloc))
         except OSError:
             pass
-        discovered_ip = _discover_lan_server_ip(port)
+        discovered_ip = _discover_lan_server_ip(port) if allow_scan else None
         if discovered_ip:
             netloc = f"{discovered_ip}:{parsed.port}" if parsed.port else discovered_ip
             return urlunparse(parsed._replace(netloc=netloc))
@@ -691,6 +807,8 @@ class LlamaTranslator:
         )
         self._external_model = (resolved_external_model or "").strip() or None
         self._external_api_key = (resolved_external_api_key or "").strip() or None
+        if resolved_external_url:
+            check_external_llm(resolved_external_url, self._external_api_key)
         self._resolved_external_model: str | None = self._external_model
         self._process: subprocess.Popen | None = None
         self._stderr_file = None
@@ -792,13 +910,17 @@ class LlamaTranslator:
         with contextlib.suppress(Exception):
             self.close()
 
-    def _request_headers(self) -> dict[str, str]:
+    def _request_headers(self, url: str | None = None) -> dict[str, str]:
+        """Headers for a request to `url`; the API key only goes to the external server, and never over plain http
+        to a host outside the local network (checked against the URL actually used, after `.local` resolution)."""
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": "SubtitleAdder/1.0",
         }
-        if self._external_api_key:
+        if self._external_api_key and self._external_chat_url is not None:
+            if not api_key_transport_allowed(url or self._external_chat_url):
+                raise ModelError(t("external_llm_key_insecure"))
             headers["Authorization"] = f"Bearer {self._external_api_key}"
         return headers
 
@@ -808,9 +930,10 @@ class LlamaTranslator:
         if self._external_chat_url:
             models_url = _external_models_url(self._external_chat_url)
             if models_url:
+                headers = self._request_headers(models_url)  # outside the try: a refused key must not be swallowed
                 try:
-                    req = urllib.request.Request(models_url, headers=self._request_headers(), method="GET")
-                    with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    req = urllib.request.Request(models_url, headers=headers, method="GET")
+                    with _urlopen(req, timeout=2.5) as resp:
                         payload = json.loads(resp.read().decode("utf-8"))
                     items = payload.get("data") or payload.get("models") or []
                     if isinstance(items, list) and items:
@@ -829,7 +952,9 @@ class LlamaTranslator:
         if self._completion_fn is not None:
             return self._completion_fn(messages)
         if self._external_chat_url is not None:
-            self._external_chat_url = _resolve_lan_url(self._external_chat_url)
+            self._external_chat_url = _resolve_lan_url(
+                self._external_chat_url, allow_scan=not self._external_api_key
+            )
             url = self._external_chat_url
             # Use Ollama's native API on its conventional port; custom ports can specify /api/chat explicitly.
             if ":11434/v1/chat/completions" in url.lower():
@@ -851,7 +976,7 @@ class LlamaTranslator:
                 "cache_prompt": False,
                 **profile_for_model(self._info.id).generation_options(ollama=False),
             }
-        headers = self._request_headers()
+        headers = self._request_headers(url)
         payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -861,7 +986,7 @@ class LlamaTranslator:
         )
         try:
             try:
-                with urllib.request.urlopen(req, timeout=300.0) as resp:
+                with _urlopen(req, timeout=300.0) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as http_exc:
                 if (
@@ -876,7 +1001,7 @@ class LlamaTranslator:
                         headers=headers,
                         method="POST",
                     )
-                    with urllib.request.urlopen(retry_req, timeout=300.0) as resp:
+                    with _urlopen(retry_req, timeout=300.0) as resp:
                         data = json.loads(resp.read().decode("utf-8"))
                 else:
                     raise
