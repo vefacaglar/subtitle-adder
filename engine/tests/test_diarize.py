@@ -151,6 +151,30 @@ def test_pipeline_without_diarize_leaves_speaker_null(tone_video, tmp_path):
     assert all(x.speaker is None for x in result.sentences)
 
 
+def test_complete_asr_text_and_indeterminate_stage_arrive_before_diarizer_load(tone_video, tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(models, "needs_download", lambda _: False)
+
+    class ReportingDiarizer(FakeDiarizer):
+        def diarize(self, audio, num_speakers=None, on_progress=None):
+            on_progress(0.0)
+            return super().diarize(audio, num_speakers, on_progress)
+
+    def load_diarizer():
+        assert events[-1] == ("diarizing", None)
+        assert any(kind == "partial" and value for kind, value in events)
+        return ReportingDiarizer()
+
+    pipeline.run(
+        tone_video, FakeTranscriber, tmp_path, diarize=True,
+        diarizer_factory=load_diarizer,
+        on_stage=lambda stage, fraction: events.append((stage, fraction)),
+        on_partial=lambda sentences, language: events.append(("partial", sentences)),
+    )
+    assert ("diarizing", 0.0) not in events
+    assert ("diarizing", 0.5) in events
+
+
 def test_cli_diarize_flag_and_speakers_validation(tone_video, tmp_path, capsys, monkeypatch):
     monkeypatch.setattr("subtitle_engine.transcribe.FasterWhisperTranscriber", lambda model: FakeTranscriber())
     monkeypatch.setattr(models, "needs_download", lambda model_id: False)

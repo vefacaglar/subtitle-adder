@@ -9,6 +9,11 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
+            <!-- Standalone labels use the same application font as WinUI controls and menus. -->
+            <Style TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="{ThemeResource ContentControlThemeFontFamily}" />
+            </Style>
+
             <!-- Fluent settings card: a grouped row on a layer background. -->
             <Style x:Key="CardStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />

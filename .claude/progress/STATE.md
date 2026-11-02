@@ -1,6 +1,22 @@
 # State
 
-## Latest update — 2026-11-03: Windows translation provider/model picker
+## Latest update — 2026-11-03: Subtitle outline and independent application font
+
+- Added `Kontur` / `Outline` as the third subtitle background style alongside Box and Shadow. Stored as `outline`, with an opaque black glyph outline in eight directions, scaled/bounded for video size and no filled box. The shared `OverlayLabel` renderer covers both playback and Settings preview; subtitle export is unchanged.
+- Added Appearance > Application > `Arayüz yazı tipi` / `Interface font`, persisted separately as `appFontFamily`. The UI explains that it takes effect when the app is reopened. Startup sets WinUI's shared text-font resource and wraps named text styles so headings, labels, controls, menus and time readouts use the chosen family. Symbol/icon font resources are preserved. Subtitle font (including its System choice) remains independent, and resetting subtitles does not reset the UI font.
+- Validation: **13/13 targeted appearance/settings tests passed**; final WinUI build **0 warnings / 0 errors**. Existing Box/Shadow values round-trip unchanged; new tests cover Outline persistence and UI/subtitle font isolation/reset. No app launch, desktop control, screenshots or visual inspection, per user instruction.
+- Source changes only; the existing packaged application has not been republished. Earlier uncommitted settings responsiveness and diarization/translation fixes remain in the working tree.
+
+## Previous update — 2026-11-03: Settings responsiveness and translation during diarization
+
+- Implemented on top of `5f0ad79`. Settings previously refreshed every control for every subtitle/translation property notification; each refresh synchronously enumerated all video-cache chunks twice and checked file associations. Added `SettingsRefreshSubscription` to filter out job/progress notifications and coalesce actual settings changes into low-priority UI callbacks. Pending callbacks are ignored after window close. Cache usage calculation/clearing now run in a background task and the controls display a cached usage value. General settings no longer automatically launch catalog/LAN discovery on open.
+- Diarization preparation reads audio/builds models before the first measurable progress callback. The engine now reports indeterminate diarization progress during that phase instead of displaying a stalled 0%; no diarization speedup is claimed or benchmarked.
+- Before speaker analysis, the engine emits the complete ASR text even when streaming partials were throttled or unsupported. On entering diarization/segmentation, the Windows async translation pump releases the usual two-line holdback and minimum batch size. Small batches and the final tail can translate remotely while speaker analysis is still running, still respecting the single-translation semaphore.
+- Regression tests uncovered a self-await in the completion path when all lines were already translated and no auto-save was needed. The no-work final translation path now sets a completed task rather than leaving `CurrentJob` pointing at its parent transcription task.
+- Validation: **53/53 targeted .NET tests passed** (settings responsiveness, diarization/translation overlap with 1/8/14 lines, UI-thread notifications, provider isolation, job/translation flows and single-translation concurrency); **44 Python diarization tests passed, 1 skipped, 1 slow test deselected**. WinUI build **0 warnings / 0 errors**. Test/build artifacts remain outside normal app output directories.
+- User constraints maintained: **no desktop control, app launch, screenshots, or visual inspection**. Live click latency and real-model throughput were not measured. The packaged app/engine in `build/Subtitle Adder` has not been republished; both Windows source and Python engine changes must be included in the next package.
+
+## Previous update — 2026-11-03: Windows translation provider/model picker
 
 - Implemented in the working tree on top of `f771c21`: replaced the changing, nested translation model menu with `TranslationModelPicker`, containing a provider selector, searchable model list with a fixed height, explicit Refresh, and provider settings access. The toolbar button has bounded width and ellipsis, with the full selection in its tooltip. Opening the picker does not fetch models or rewrite provider settings.
 - Removed `TranslationProvidersMenuBuilder`, including its cloud-model click path that wrote into `ExternalLlmModel` and synchronized that value into the saved LAN profile. All picker selections now use the provider-scoped `TranslationModelSelection` helper; on-device, LAN and cloud selections retain their own model settings.

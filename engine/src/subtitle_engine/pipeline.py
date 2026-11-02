@@ -182,17 +182,22 @@ def run(
 
     speakers = None
     if diarize:
+        # Flush the complete ASR text before the potentially long speaker pass. Streaming ASR callbacks
+        # can be throttled (or unsupported), so the UI otherwise waits until diarization for the last lines.
+        if on_partial is not None:
+            on_partial(segment(transcript.words, config), transcript.language)
+        # Model construction, WAV loading and speech compaction have no measurable percentage yet.
+        on_stage("diarizing", None)
         del transcriber  # large Whisper models keep gigabytes resident; free them before diarizing
         gc.collect()
         # Self-heal if an external cleaner removed the temp WAV during a long transcription run.
         if isinstance(audio, Path) and not audio.is_file() and video.is_file():
             audio.parent.mkdir(parents=True, exist_ok=True)
             audio = extract_audio(video, wav_path, **extract_kwargs)
-        on_stage("diarizing", 0.0)
         diarizer = (diarizer_factory or diarization.create_diarizer)()
         diarize_kwargs: dict = {
             "num_speakers": num_speakers,
-            "on_progress": lambda f: on_stage("diarizing", f),
+            "on_progress": lambda f: on_stage("diarizing", f if f > 0 else None),
         }
         if "words" in inspect.signature(diarizer.diarize).parameters:
             diarize_kwargs["words"] = transcript.words

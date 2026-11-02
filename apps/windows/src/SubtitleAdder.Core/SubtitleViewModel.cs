@@ -1850,7 +1850,19 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         var asyncPreTranslate = (chainTranslate || _isPlaylistRunning) && IsExternalAsyncActive;
         var queuedAsyncUids = new HashSet<Guid>();
         var asyncTranslationTask = Task.CompletedTask;
+        var transcriptionComplete = false;
         CancellationToken currentJobToken = CancellationToken.None;
+        void StartPartialTranslation()
+        {
+            if (!asyncPreTranslate || !asyncTranslationTask.IsCompleted || currentJobToken.IsCancellationRequested) return;
+            var stableCount = transcriptionComplete ? session.Sentences.Count : Math.Max(0, session.Sentences.Count - 2);
+            var readyCount = session.Sentences.Take(stableCount)
+                .Count(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text));
+            if (readyCount < (transcriptionComplete ? 1 : MinAsyncBatchSentences)) return;
+            SetSessionAsyncTranslating(video, true, session.AsyncTranslationFraction);
+            asyncTranslationTask = PumpPartialTranslationsExternallyAsync(
+                engine, video, queuedAsyncUids, () => transcriptionComplete, currentJobToken);
+        }
         StartJob(video, running, token =>
         {
             currentJobToken = token;
@@ -1863,6 +1875,12 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                     var download = tracker.Update(stage.Kind, stage.Fraction);
                     var purpose = download == DownloadPhaseTracker.Kind.Diarization ? JobPurpose.Diarization : JobPurpose.Transcription;
                     SetSessionStatus(video, new JobStatus.Working(Label(stage.Kind, stage.Fraction, purpose), stage.Fraction), PlaylistItemState.Working);
+                    if (stage.Kind is EngineStage.Diarizing or EngineStage.Segmenting)
+                    {
+                        // ASR is finished: even a short final batch can translate while speaker analysis runs.
+                        transcriptionComplete = true;
+                        StartPartialTranslation();
+                    }
                     break;
                 case EngineEvent.Partial partial:
                     SetSessionSentences(video, MergeSentencesPreservingUid(session.Sentences, partial.Sentences));
@@ -1876,18 +1894,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
                         {
                             SetSessionAsyncTranslating(video, true, Math.Clamp((double)session.Translations.Count / session.Sentences.Count, 0.0, 0.99));
                         }
-                        if (asyncTranslationTask.IsCompleted && _translationExecutionGate.CurrentCount > 0)
-                        {
-                            var hasUnqueued = session.Sentences
-                                .Take(session.Sentences.Count - 1)
-                                .Any(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text));
-                            if (hasUnqueued)
-                            {
-                                SetSessionAsyncTranslating(video, true, session.AsyncTranslationFraction);
-                                asyncTranslationTask = PumpPartialTranslationsExternallyAsync(
-                                    engine, video, queuedAsyncUids, currentJobToken);
-                            }
-                        }
+                        StartPartialTranslation();
                     }
                     break;
                 case EngineEvent.Result result:

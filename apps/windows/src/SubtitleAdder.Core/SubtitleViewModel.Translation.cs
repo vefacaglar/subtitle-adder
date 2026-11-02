@@ -149,6 +149,9 @@ public sealed partial class SubtitleViewModel
                 CurrentJob = SaveSessionSubtitleToVideoFolderAsync(jobVideo, exportFormat, externalCompletion);
                 return;
             }
+            // The background pass already translated every line. Do not leave CurrentJob pointing
+            // to the parent transcription task: its completion callback would await itself.
+            CurrentJob = Task.CompletedTask;
             if (externalCompletion is not null)
             {
                 externalCompletion.TrySetResult(true);
@@ -332,29 +335,30 @@ public sealed partial class SubtitleViewModel
         IEngineClient engine,
         string? jobVideo,
         HashSet<Guid> queuedAsyncUids,
+        Func<bool> transcriptionComplete,
         CancellationToken token)
     {
         var session = GetOrCreateSession(jobVideo);
         while (!token.IsCancellationRequested)
         {
-            if (_translationExecutionGate.CurrentCount == 0) break;
-
             List<Sentence>? batch = null;
             var target = "";
             string? source = null;
             var model = "";
             await _ui.InvokeAsync(() =>
             {
-                if (token.IsCancellationRequested || session.Sentences.Count <= 2 || _translationExecutionGate.CurrentCount == 0) return;
+                if (token.IsCancellationRequested) return;
+                var complete = transcriptionComplete();
+                var stableCount = complete ? session.Sentences.Count : Math.Max(0, session.Sentences.Count - 2);
                 target = _translationTarget;
                 source = _language.Length > 0 ? _language : session.DetectedLanguage;
                 model = _translationModel;
                 if (source == target) return;
                 var candidates = session.Sentences
-                    .Take(session.Sentences.Count - 2)
+                    .Take(stableCount)
                     .Where(s => !queuedAsyncUids.Contains(s.Uid) && !string.IsNullOrWhiteSpace(s.Text))
                     .ToList();
-                if (candidates.Count >= MinAsyncBatchSentences)
+                if (candidates.Count >= (complete ? 1 : MinAsyncBatchSentences))
                 {
                     batch = candidates;
                     foreach (var s in batch) queuedAsyncUids.Add(s.Uid);
