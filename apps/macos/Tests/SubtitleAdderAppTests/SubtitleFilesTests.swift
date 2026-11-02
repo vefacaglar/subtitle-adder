@@ -140,6 +140,8 @@ import Testing
         let subtitle = folder.appending(path: "a.srt")
         try write(Self.srt, to: subtitle)
 
+        // No video of that name sits next to it, so there is no companion to bring along (see
+        // OpeningAndLayoutTests for the ones that have one).
         vm.openFiles([subtitle])
         #expect(vm.video == nil)
         #expect(vm.sentences.count == 2)

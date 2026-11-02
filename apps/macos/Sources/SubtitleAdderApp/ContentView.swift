@@ -72,7 +72,7 @@ struct ContentView: View {
         // A second importer on the same view isn't presented reliably, so it hangs off a background.
         .background {
             Color.clear.fileImporter(isPresented: $pickingSubtitle, allowedContentTypes: Self.subtitleTypes) { result in
-                if case .success(let url) = result { vm.loadSubtitleFile(url) }
+                if case .success(let url) = result { vm.openSubtitle(url) }
             }
         }
         .fileExporter(

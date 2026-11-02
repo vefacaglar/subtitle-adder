@@ -8,6 +8,8 @@ struct SubtitleAdderApp: App {
     @State private var catalog: ModelCatalog
     @State private var vm: SubtitleViewModel
     @State private var language: AppLanguage
+    /// Finder hands several files over one by one; they are opened together.
+    @State private var externalOpen: ExternalOpenCoalescer
 
     init() {
         // If the engine exits early, writing to stdin shouldn't kill the app with SIGPIPE.
@@ -24,6 +26,7 @@ struct SubtitleAdderApp: App {
         let model = SubtitleViewModel(catalog: catalog)
         _catalog = State(initialValue: catalog)
         _vm = State(initialValue: model)
+        _externalOpen = State(initialValue: ExternalOpenCoalescer { model.openExternalFiles($0) })
         // On quit, clear the scratch folder again unless a job is still running (the next launch gets it then).
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
@@ -40,7 +43,7 @@ struct SubtitleAdderApp: App {
                 .frame(minWidth: 760, minHeight: 600)
                 // Opening with "Open With" from Finder / dropping on the Dock: don't open a new window, hand it to the open one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
-                .onOpenURL { vm.openFiles([$0]) }
+                .onOpenURL { externalOpen.receive($0) }
                 .environment(\.locale, language.effective.locale)
         }
         .commands { LayoutCommands(vm: vm) }
