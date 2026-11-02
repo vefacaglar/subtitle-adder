@@ -257,6 +257,8 @@
                             </Grid>
                         </Border>
 
+                        <loc:TranslationProvidersControl x:Name="TranslationProvidersSection" />
+
                         <TextBlock loc:Localize.Text="Medya oynatıcı" Style="{StaticResource SectionHeaderStyle}" />
                         <Border Style="{StaticResource CardStyle}">
                             <Grid ColumnSpacing="16">

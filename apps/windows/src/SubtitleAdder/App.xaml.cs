@@ -41,6 +41,10 @@ public partial class App : Application
     public AppearanceSettings Appearance { get; private set; } = null!;
     public ModelCatalog Catalog { get; private set; } = null!;
     public SubtitleViewModel ViewModel { get; private set; } = null!;
+    public TranslationProviderManager Providers { get; private set; } = TranslationProviderManager.Shared;
+    public MediaLibraryIndex MediaIndex { get; private set; } = null!;
+    public FileExplorerViewModel ExplorerViewModel { get; private set; } = null!;
+    public VideoPlatformViewModel PlatformViewModel { get; private set; } = VideoPlatformViewModel.Shared;
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
@@ -89,6 +93,20 @@ public partial class App : Application
         Appearance = new AppearanceSettings(Settings);
         Catalog = ModelCatalog.Default();
         ViewModel = new SubtitleViewModel(Catalog, Settings, ui);
+        Providers = TranslationProviderManager.Shared;
+        Providers.PropertyChanged += (_, _) => Providers.ApplyToViewModel(ViewModel);
+        if (Providers.IsExternalProviderActive)
+        {
+            Providers.ApplyToViewModel(ViewModel);
+        }
+        MediaIndex = new MediaLibraryIndex();
+        ExplorerViewModel = new FileExplorerViewModel(MediaIndex, Settings, ui);
+        PlatformViewModel = VideoPlatformViewModel.Shared;
+        PlatformViewModel.SetDiscoveredPaths(MediaIndex.Search("", 500).Select(f => f.FullPath));
+        MediaIndex.IndexChanged += (_, _) =>
+        {
+            ui.Post(() => PlatformViewModel.SetDiscoveredPaths(MediaIndex.Search("", 500).Select(f => f.FullPath)));
+        };
 
         _window = new MainWindow();
         _window.Closed += (_, _) =>

@@ -54,6 +54,11 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <StackPanel x:Name="LeftToolsPanel" Orientation="Horizontal" Spacing="8">
+                <ToggleButton x:Name="ExplorerToggleButton" Padding="8,5" VerticalAlignment="Center" Click="ExplorerToggle_Click"
+                              loc:Localize.ToolTip="Dosya Gezgini kenar çubuğunu göster / gizle (Ctrl+B)"
+                              loc:Localize.AutomationName="Dosya Gezgini">
+                    <FontIcon Glyph="&#xEC50;" FontSize="16" />
+                </ToggleButton>
                 <Button x:Name="OpenButton" Style="{StaticResource ToolButtonStyle}" Click="Open_Click" loc:Localize.ToolTip="Video dosyası seç (Ctrl+O)" loc:Localize.AutomationName="Video seç">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <FontIcon Glyph="&#xE8E5;" FontSize="16" />
@@ -137,6 +142,19 @@
                                        Fill="{ThemeResource AccentFillColorDefaultBrush}" />
                         </Grid>
                     </Button>
+                    <Button x:Name="PlatformTabButton" Click="PlatformTab_Click" Padding="14,7,14,9" CornerRadius="6,6,0,0"
+                            BorderThickness="1,1,1,0" Background="Transparent" BorderBrush="Transparent"
+                            loc:Localize.AutomationName="Video Platformu">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE80F;" FontSize="14" />
+                                <TextBlock x:Name="PlatformTabTitle" loc:Localize.Text="Video Platformu" />
+                            </StackPanel>
+                            <Rectangle x:Name="PlatformTabIndicator" Height="3" RadiusX="1.5" RadiusY="1.5"
+                                       VerticalAlignment="Bottom" Margin="0,0,0,-7" Visibility="Collapsed"
+                                       Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+                        </Grid>
+                    </Button>
                     <Button x:Name="PlaylistTabButton" Click="PlaylistTab_Click" Padding="14,7,14,9" CornerRadius="6,6,0,0"
                             BorderThickness="1,1,1,0" Background="Transparent" BorderBrush="Transparent"
                             loc:Localize.AutomationName="Çalma listesi">
@@ -163,6 +181,7 @@
                           loc:Localize.Content="Otomatik kaydet"
                           loc:Localize.ToolTip="Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"
                           loc:Localize.AutomationName="Otomatik kaydet" />
+                <loc:ProfileStatusButton x:Name="ProfileStatusButton" VerticalAlignment="Center" />
                 <Button x:Name="SettingsButton" Style="{StaticResource IconButtonStyle}" Click="Settings_Click"
                         loc:Localize.ToolTip="Ayarlar (Ctrl+,)" loc:Localize.AutomationName="Ayarlar">
                     <FontIcon Glyph="&#xE713;" FontSize="16" />
@@ -201,6 +220,12 @@
 
         <!-- Content -->
         <Grid x:Name="ContentGrid" Grid.Row="3" Margin="12,0,12,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="ExplorerCol" Width="280" />
+                <ColumnDefinition x:Name="WorkspaceCol" Width="*" />
+            </Grid.ColumnDefinitions>
+            <loc:FileExplorerPane x:Name="FileExplorerPane" Grid.Column="0" Width="280" Margin="0,0,10,0" />
+            <Grid x:Name="WorkspaceContainer" Grid.Column="1">
             <!-- Tab 1: Single-video editor (unchanged layout) -->
             <Grid x:Name="EditorView">
                 <Grid x:Name="DropZone" CornerRadius="8" Background="{ThemeResource LayerFillColorDefaultBrush}">
@@ -243,6 +268,8 @@
                             </Grid>
                             <loc:PreviewTransportControls x:Name="PreviewControls" HorizontalAlignment="Center" VerticalAlignment="Bottom"
                                                           Margin="0,0,0,14" />
+                            <loc:PlayerEngagementBar x:Name="PlayerEngagementBar" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10"
+                                                     PointerEntered="DisplayPicker_PointerEntered" PointerExited="DisplayPicker_PointerExited" />
                             <Border x:Name="DisplayPicker" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10" Padding="10,4,4,4"
                                     CornerRadius="8" Background="#CC1C1C1E" BorderBrush="#40FFFFFF" BorderThickness="1" RequestedTheme="Dark"
                                     PointerEntered="DisplayPicker_PointerEntered" PointerExited="DisplayPicker_PointerExited">
@@ -255,6 +282,11 @@
                                     <ToggleButton x:Name="DisplayBothButton" Padding="10,4" MinWidth="56" Click="DisplayBoth_Click"
                                                   loc:Localize.Content="İkisi" loc:Localize.AutomationName="İkisi" />
                                     <Border Width="1" Margin="4,4" Background="#40FFFFFF" />
+                                    <ToggleButton x:Name="PlayerExplorerButton" Padding="8,4" Click="PlayerExplorer_Click"
+                                                  loc:Localize.ToolTip="Dosya Gezgini kenar çubuğunu göster / gizle (Ctrl+B)"
+                                                  loc:Localize.AutomationName="Dosya Gezgini">
+                                        <FontIcon Glyph="&#xEC50;" FontSize="14" />
+                                    </ToggleButton>
                                     <ToggleButton x:Name="SubtitlePanelButton" Padding="8,4" Click="SubtitlePanel_Click"
                                                   loc:Localize.ToolTip="Altyazı panelini gizle / göster"
                                                   loc:Localize.AutomationName="Altyazı panelini gizle / göster">
@@ -588,6 +620,14 @@
                         </Button>
                     </StackPanel>
                 </Grid>
+            </Border>
+        </Grid>
+
+            <!-- Tab 3: YouTube-style Local Video Platform Hub -->
+            <Border x:Name="PlatformPanel" Visibility="Collapsed" CornerRadius="8"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                <loc:VideoPlatformHubView x:Name="PlatformHubView" />
             </Border>
         </Grid>
 

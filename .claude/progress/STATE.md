@@ -1,5 +1,17 @@
 # State
 
+## ACTIVE ORCHESTRATION (2026-11-02 — Windows Media Player, Explorer, Platform & Multi-API Providers)
+
+Mode: Orchestrator + parallel isolated git worktree subagents (`apps/windows` first; macOS parity deferred per user request).
+
+| # | Workstream | Subagent Role | Branch | Status | Details |
+|---|---|---|---|---|---|
+| 1 | Left File Explorer Sidebar & SSD Media Indexer | `File Explorer & Indexer Engineer` | `subagent-File-Explorer---Indexer-Engineer-self-705ab804` (`bee3800`) | **DONE** (ready to merge) | `MediaLibraryIndex.cs` (`%LOCALAPPDATA%\SubtitleAdder\media-index.json`), `FileExplorerViewModel.cs`, `FileExplorerPane.cs` (collapsible sidebar), `MediaLibraryIndexTests.cs` (6/6 tests passing). |
+| 2 | Media Player Positioning & Controls | `Media Player & Shell Engineer` | `subagent-Media-Player---Shell-Engineer-self-af7e855e` (`a8e3d08`) | **DONE** (ready to merge) | `FileAssociationRegistrar.cs` (`HKCU` file associations for video/audio/subtitle + Settings UI), `SingleInstanceCoordinator.cs` (named pipe forwarding + window restore), `AutoPlayVideo`, player keyboard/mouse shortcuts (double-click fullscreen, wheel/arrow volume, left/right seek, Space play/pause, `E` hide subtitle panel), toggle to hide bottom/right subtitle editor panel (116/116 Core tests, 106/106 EngineKit tests passing). |
+| 3 | YouTube-Style Local Video Platform & Profile Auth | `Video Platform & Profile Engineer` | `subagent-Video-Platform---Profile-Engineer-self-819e99fb` (`438a5dc`) | **DONE** (ready to merge) | `LocalProfileManager.cs` (`%LOCALAPPDATA%\SubtitleAdder\profiles.json`, PBKDF2 SHA-256 password hashing), `VideoPlatformViewModel.cs`, `VideoPlatformControls.cs` (profile login/register flyout, per-user watch history, view counts, likes, 1–5 star ratings, YouTube-style Browse/History/Liked/MostWatched/TopRated feed + player engagement bar), `LocalProfileTests.cs` (6/6 tests passing). |
+| 4 | Multi-Provider API Key Translation (OpenCode Go, etc.) | `API Translation Providers Engineer` | `subagent-API-Translation-Providers-Engineer-self-3ebbce0c` (`a610355`) | **DONE** (ready to merge) | `SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY` in `translate.py` + `EngineKit`, `TranslationProviderManager.cs` (`%LOCALAPPDATA%\SubtitleAdder\translation-providers.json`, presets for OpenCode Go, OpenRouter, OpenAI, DeepSeek, Groq, Gemini, LAN, Custom), `TranslationProvidersControl.cs`, `TranslationProviderTests.cs` (all pytest & dotnet tests passing). |
+| 5 | Final Integration & Verification | `Integration Engineer` | `main` | **DONE** | Merged worktrees #1–#4 into `main`, wired collapsible `FileExplorerPane`, `VideoPlatformControls` (Platform tab + `ProfileStatusButton` + `PlayerEngagementBar`), and `TranslationProvidersControl` into `App` / `MainWindow` / `SettingsWindow` / `SubtitleViewModel` / `Windows.xcstrings`, all `dotnet test` (132/132 Core, 107/107 EngineKit) + `pytest` passing with 0 warnings/errors. |
+
 ## RESUME POINT
 
 2026-11-01 (macOS parity with the Windows features): the macOS app now has the Windows-side features, built in five commits on top of the engine (`abe39c2` EngineKit, `b5c1390` app core, `0061777` files, `09badf5` external LLM, `fe93e7b` playlist). Engine protocol and CLAUDE.md are updated to HEAD (partial/incremental translation events, llama backend, new env vars, checkpoints).

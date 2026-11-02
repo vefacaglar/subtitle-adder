@@ -399,6 +399,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
         var active = ActiveProvider;
         if (active is not null && !string.IsNullOrWhiteSpace(active.BaseUrl))
         {
+            viewModel.ActiveProviderName = active.Name;
             viewModel.ExternalLlmUrl = active.BaseUrl.Trim();
             viewModel.ExternalLlmModel = active.Model.Trim();
             viewModel.ExternalLlmAsync = active.AsyncTranslation;
@@ -407,6 +408,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
         }
         else
         {
+            viewModel.ActiveProviderName = null;
             viewModel.ExternalLlmEnabled = false;
             ExternalLlmState.Shared.ApiKey = "";
         }

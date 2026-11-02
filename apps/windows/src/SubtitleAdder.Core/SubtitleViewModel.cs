@@ -259,7 +259,14 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         get
         {
             if (!IsExternalLlmActive) return ModelLabel.Name(_translationModel);
+            var activeProviderName = _activeProviderName ?? TranslationProviderManager.Shared.ActiveProvider?.Name?.Trim();
             var modelText = !string.IsNullOrWhiteSpace(_externalLlmModel) ? _externalLlmModel.Trim() : L("Harici LLM");
+            if (!string.IsNullOrWhiteSpace(activeProviderName))
+            {
+                return !string.IsNullOrWhiteSpace(_externalLlmModel)
+                    ? $"{activeProviderName}: {modelText}"
+                    : activeProviderName;
+            }
             return IsExternalAsyncActive ? L("Harici: %@ (Asenkron)", modelText) : L("Harici: %@", modelText);
         }
     }
@@ -408,6 +415,19 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
 
     /// <summary>True ONLY when external LAN LLM mode is active AND optional asynchronous translation is enabled.</summary>
     public bool IsExternalAsyncActive => IsExternalLlmActive && _externalLlmAsync;
+
+    private string? _activeProviderName;
+
+    public string? ActiveProviderName
+    {
+        get => _activeProviderName;
+        set
+        {
+            var next = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+            if (!SetProperty(ref _activeProviderName, next)) return;
+            OnPropertyChanged(nameof(TranslationModelName));
+        }
+    }
 
     private IReadOnlyList<string> _externalLlmModels = [];
     private bool _isLoadingExternalModels;

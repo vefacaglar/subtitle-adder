@@ -34,7 +34,15 @@ public sealed partial class MainWindow : Window
     private readonly PlayerController _player;
     private readonly Dictionary<(int Speaker, bool Dark), Brush> _speakerBrushes = [];
     private bool _syncing;
-    private bool _isPlaylistTabActive;
+    private enum WorkspaceTab { Editor, Playlist, Platform }
+
+    private WorkspaceTab _activeTab = WorkspaceTab.Editor;
+    private bool _isPlaylistTabActive => _activeTab == WorkspaceTab.Playlist;
+    private bool _isExplorerOpen;
+    private double _lastProgressRecordedTime = -1;
+
+    public FileExplorerViewModel ExplorerVm { get; } = App.Current.ExplorerViewModel;
+    public VideoPlatformViewModel PlatformVm { get; } = App.Current.PlatformViewModel;
     private bool _isSideBySide;
     private bool _isTheaterMode;
     private bool _isFullScreen;
@@ -59,6 +67,11 @@ public sealed partial class MainWindow : Window
         {
             SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
             PreviewControls.Synchronize(_player.CurrentTime, _player.Duration, _player.IsPlaying, _player.IsMuted, _player.Volume);
+            if (_player.IsPlaying && _player.Duration > 0 && Math.Abs(_player.CurrentTime - _lastProgressRecordedTime) >= 2.0)
+            {
+                _lastProgressRecordedTime = _player.CurrentTime;
+                PlatformVm.UpdateActiveVideoProgress(_player.CurrentTime, _player.Duration);
+            }
             UpdatePreviewControlVisibility();
         };
         PreviewControls.SeekRequested += _player.Seek;
@@ -73,6 +86,26 @@ public sealed partial class MainWindow : Window
         Splitter.OtherColumn = EditorCol;
         _isSideBySide = App.Current.Settings.GetBool("sideBySideLayout") ?? false;
         _isEditorHidden = App.Current.Settings.GetBool("hideSubtitlePanel") ?? false;
+        _isExplorerOpen = App.Current.Settings.GetBool("showFileExplorer") ?? true;
+
+        FileExplorerPane.AttachViewModel(ExplorerVm);
+        FileExplorerPane.FileSelected += path =>
+        {
+            SwitchMode(WorkspaceTab.Editor);
+            Vm.OpenVideo(path);
+        };
+        FileExplorerPane.AddToPlaylistRequested += path =>
+        {
+            Vm.AddToPlaylist([path]);
+            SwitchMode(WorkspaceTab.Playlist);
+        };
+
+        ProfileStatusButton.OpenPlatformHubRequested += () => SwitchMode(WorkspaceTab.Platform);
+        PlatformHubView.VideoSelected += path =>
+        {
+            SwitchMode(WorkspaceTab.Editor);
+            Vm.OpenVideo(path);
+        };
         _hudHideTimer = DispatcherQueue.CreateTimer();
         _hudHideTimer.Interval = TimeSpan.FromMilliseconds(2500);
         _hudHideTimer.IsRepeating = false;
@@ -224,6 +257,10 @@ public sealed partial class MainWindow : Window
     private void OnVideoChanged()
     {
         _player.Load(Vm.IsPlaylistRunning ? null : Vm.Video, autoPlay: !Vm.IsPlaylistRunning && Vm.AutoPlayVideo);
+        FileExplorerPane.ActiveVideoPath = Vm.Video;
+        _ = ExplorerVm.SyncToVideoPathAsync(Vm.Video);
+        _lastProgressRecordedTime = -1;
+        PlatformVm.OnVideoOpened(Vm.Video);
         Title = Vm.WindowTitle;
         TitleFile.Text = Vm.Video is null ? "" : "— " + Vm.WindowTitle;
         DropZone.Visibility = Vm.Video is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
@@ -444,6 +481,27 @@ public sealed partial class MainWindow : Window
         UpdatePickers();
     }
 
+    private void ExplorerToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _isExplorerOpen = ExplorerToggleButton.IsChecked == true;
+        App.Current.Settings.SetBool("showFileExplorer", _isExplorerOpen);
+        ApplyWorkspaceLayout();
+    }
+
+    private void PlayerExplorer_Click(object sender, RoutedEventArgs e)
+    {
+        _isExplorerOpen = PlayerExplorerButton.IsChecked == true;
+        App.Current.Settings.SetBool("showFileExplorer", _isExplorerOpen);
+        ApplyWorkspaceLayout();
+    }
+
+    private void ToggleFileExplorer()
+    {
+        _isExplorerOpen = !_isExplorerOpen;
+        App.Current.Settings.SetBool("showFileExplorer", _isExplorerOpen);
+        ApplyWorkspaceLayout();
+    }
+
     private void SubtitlePanel_Click(object sender, RoutedEventArgs e)
     {
         _isEditorHidden = SubtitlePanelButton.IsChecked == false;
@@ -494,6 +552,12 @@ public sealed partial class MainWindow : Window
 
     private void ApplyWorkspaceLayout()
     {
+        ExplorerToggleButton.IsChecked = _isExplorerOpen;
+        PlayerExplorerButton.IsChecked = _isExplorerOpen;
+        var showExplorer = _isExplorerOpen && !_isFullScreen;
+        FileExplorerPane.Visibility = showExplorer ? Visibility.Visible : Visibility.Collapsed;
+        ExplorerCol.Width = new GridLength(showExplorer ? 280 : 0);
+
         SubtitlePanelButton.IsChecked = !_isEditorHidden;
         SideBySideButton.IsChecked = _isSideBySide;
         SideBySideButton.IsEnabled = !_isEditorHidden && !_isFullScreen;
@@ -663,55 +727,15 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>Translation model menu: LLM models (Gemma 4, Qwen 3.5), a separator, then encoder-decoder models (MADLAD, NLLB).</summary>
-    private async void TranslationModelFlyout_Opening(object? sender, object e)
+    /// <summary>Translation model menu: API providers (OpenCode Go, OpenRouter, etc.), LLM models (Gemma 4, Qwen 3.5), and encoder-decoder models (MADLAD, NLLB).</summary>
+    private void TranslationModelFlyout_Opening(object? sender, object e)
     {
-        TranslationModelFlyout.Items.Clear();
-        if (Vm.IsExternalLlmActive)
-        {
-            if (Vm.ExternalLlmModels.Count == 0 && !Vm.IsLoadingExternalModels)
-            {
-                await Vm.RefreshExternalModelsAsync();
-            }
-            foreach (var remoteModel in Vm.ExternalLlmModels)
-            {
-                var item = new RadioMenuFlyoutItem
-                {
-                    Text = remoteModel,
-                    GroupName = "externalTranslationModel",
-                    IsChecked = string.Equals(remoteModel, Vm.ExternalLlmModel, StringComparison.OrdinalIgnoreCase),
-                };
-                var captured = remoteModel;
-                item.Click += (_, _) => Vm.ExternalLlmModel = captured;
-                TranslationModelFlyout.Items.Add(item);
-            }
-            if (TranslationModelFlyout.Items.Count > 0)
-            {
-                TranslationModelFlyout.Items.Add(new MenuFlyoutSeparator());
-            }
-            var refreshItem = new MenuFlyoutItem { Text = L("Uzaktaki modelleri listele") };
-            refreshItem.Click += async (_, _) => await Vm.RefreshExternalModelsAsync();
-            TranslationModelFlyout.Items.Add(refreshItem);
-            return;
-        }
-        var models = Vm.Catalog.TranslationModels;
-        var llms = models.Where(m => m.Backend == "llama").ToList();
-        var others = models.Where(m => m.Backend != "llama").ToList();
-        foreach (var model in llms) TranslationModelFlyout.Items.Add(ModelItem(model));
-        if (others.Count > 0 && llms.Count > 0) TranslationModelFlyout.Items.Add(new MenuFlyoutSeparator());
-        foreach (var model in others) TranslationModelFlyout.Items.Add(ModelItem(model));
-
-        MenuFlyoutItemBase ModelItem(EngineModel model)
-        {
-            var item = new RadioMenuFlyoutItem
-            {
-                Text = Core.ModelLabel.MenuTitle(model),
-                GroupName = "translationModel",
-                IsChecked = model.Id == Vm.TranslationModel,
-            };
-            item.Click += (_, _) => Vm.TranslationModel = model.Id;
-            return item;
-        }
+        TranslationProvidersMenuBuilder.PopulateFlyout(
+            TranslationModelFlyout,
+            App.Current.Providers,
+            Vm,
+            Vm.Catalog.TranslationModels,
+            () => App.Current.ShowSettings("general"));
     }
 
     private void SpeakerFlyout_Opening(object? sender, object e)
@@ -1095,6 +1119,8 @@ public sealed partial class MainWindow : Window
         var pickerVisible = visible || !_player.IsPlaying;
         DisplayPicker.Opacity = pickerVisible ? 1.0 : 0.0;
         DisplayPicker.IsHitTestVisible = pickerVisible;
+        PlayerEngagementBar.Opacity = pickerVisible ? 1.0 : 0.0;
+        PlayerEngagementBar.IsHitTestVisible = pickerVisible;
         PreviewControls.SetVisible(visible);
     }
 
@@ -1164,6 +1190,7 @@ public sealed partial class MainWindow : Window
         try
         {
             await Vm.SaveSubtitleToVideoFolderAsync();
+            _ = ExplorerVm.SyncToVideoPathAsync(Vm.Video);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -1234,35 +1261,50 @@ public sealed partial class MainWindow : Window
 
     // MARK: - Playlist tab and batch queue
 
-    private void EditorTab_Click(object sender, RoutedEventArgs e) => SwitchTab(playlist: false);
+    private void EditorTab_Click(object sender, RoutedEventArgs e) => SwitchMode(WorkspaceTab.Editor);
 
-    private void PlaylistTab_Click(object sender, RoutedEventArgs e) => SwitchTab(playlist: true);
+    private void PlaylistTab_Click(object sender, RoutedEventArgs e) => SwitchMode(WorkspaceTab.Playlist);
 
-    private void SwitchTab(bool playlist)
+    private void PlatformTab_Click(object sender, RoutedEventArgs e) => SwitchMode(WorkspaceTab.Platform);
+
+    private void SwitchTab(bool playlist) => SwitchMode(playlist ? WorkspaceTab.Playlist : WorkspaceTab.Editor);
+
+    private void SwitchMode(WorkspaceTab tab)
     {
-        _isPlaylistTabActive = playlist;
+        _activeTab = tab;
         var activeBg = (Brush)Application.Current.Resources["LayerFillColorDefaultBrush"];
         var activeBorder = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"];
         var transparent = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
 
-        EditorTabButton.Background = !playlist ? activeBg : transparent;
-        EditorTabButton.BorderBrush = !playlist ? activeBorder : transparent;
-        EditorTabTitle.FontWeight = !playlist ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
-        EditorTabIndicator.Visibility = !playlist ? Visibility.Visible : Visibility.Collapsed;
+        var isEditor = tab == WorkspaceTab.Editor;
+        var isPlaylist = tab == WorkspaceTab.Playlist;
+        var isPlatform = tab == WorkspaceTab.Platform;
 
-        PlaylistTabButton.Background = playlist ? activeBg : transparent;
-        PlaylistTabButton.BorderBrush = playlist ? activeBorder : transparent;
-        PlaylistTabTitle.FontWeight = playlist ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
-        PlaylistTabIndicator.Visibility = playlist ? Visibility.Visible : Visibility.Collapsed;
+        EditorTabButton.Background = isEditor ? activeBg : transparent;
+        EditorTabButton.BorderBrush = isEditor ? activeBorder : transparent;
+        EditorTabTitle.FontWeight = isEditor ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+        EditorTabIndicator.Visibility = isEditor ? Visibility.Visible : Visibility.Collapsed;
 
-        EditorView.Visibility = playlist ? Visibility.Collapsed : Visibility.Visible;
-        PlaylistPanel.Visibility = playlist ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistTabButton.Background = isPlaylist ? activeBg : transparent;
+        PlaylistTabButton.BorderBrush = isPlaylist ? activeBorder : transparent;
+        PlaylistTabTitle.FontWeight = isPlaylist ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+        PlaylistTabIndicator.Visibility = isPlaylist ? Visibility.Visible : Visibility.Collapsed;
+
+        PlatformTabButton.Background = isPlatform ? activeBg : transparent;
+        PlatformTabButton.BorderBrush = isPlatform ? activeBorder : transparent;
+        PlatformTabTitle.FontWeight = isPlatform ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+        PlatformTabIndicator.Visibility = isPlatform ? Visibility.Visible : Visibility.Collapsed;
+
+        EditorView.Visibility = isEditor ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistPanel.Visibility = isPlaylist ? Visibility.Visible : Visibility.Collapsed;
+        PlatformPanel.Visibility = isPlatform ? Visibility.Visible : Visibility.Collapsed;
+        if (isPlatform) PlatformVm.RefreshFeed();
         UpdateTabActionVisibility();
     }
 
     private void UpdateTabActionVisibility()
     {
-        var singleTab = !_isPlaylistTabActive;
+        var singleTab = _activeTab == WorkspaceTab.Editor;
         OpenButton.Visibility = singleTab ? Visibility.Visible : Visibility.Collapsed;
         ImportSubtitleButton.Visibility = singleTab ? Visibility.Visible : Visibility.Collapsed;
         LanguageBox.Visibility = singleTab ? Visibility.Visible : Visibility.Collapsed;
@@ -1543,6 +1585,10 @@ public sealed partial class MainWindow : Window
             case VirtualKey.O:
                 e.Handled = true;
                 await PickVideoAsync();
+                break;
+            case VirtualKey.B:
+                e.Handled = true;
+                ToggleFileExplorer();
                 break;
             case VirtualKey.Enter:
                 e.Handled = true;
