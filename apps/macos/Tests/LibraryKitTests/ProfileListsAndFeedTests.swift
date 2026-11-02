@@ -209,4 +209,34 @@ import Testing
         #expect(!video.matches(search: "bolum 06"))
         #expect(video.matches(search: "..."), "a query of only separators matches everything")
     }
+
+    @Test func searchFoldsTheTurkishDottedAndDotlessIAlike() {
+        let video = VideoUserStats(
+            videoPath: "/Videolar/KISA FİLM.mp4", fileName: "KISA FİLM.mp4", directoryPath: "/Videolar", updatedAt: Date())
+        #expect(video.matches(search: "kısa"), "the dotless ı finds a capital I")
+        #expect(video.matches(search: "kisa"))
+        #expect(video.matches(search: "KISA film"))
+        #expect(video.matches(search: "kısa fılm"))
+        #expect(video.matches(search: "fİlm"))
+        let lower = VideoUserStats(
+            videoPath: "/v/kısa film.mp4", fileName: "kısa film.mp4", directoryPath: "/v", updatedAt: Date())
+        #expect(lower.matches(search: "KISA"))
+        #expect(lower.matches(search: "Kısa Fİlm"))
+    }
+
+    @Test func listNamesFoldTheDotlessIToo() throws {
+        let store = try loggedInStore()
+        try store.createList(named: "Kısa Filmler")
+        for duplicate in ["KISA FILMLER", "kisa filmler", "Kısa Fılmler", "KISA FİLMLER"] {
+            #expect(throws: ProfileError.duplicateListName, "\(duplicate)") { try store.createList(named: duplicate) }
+        }
+        let other = try #require(try store.createList(named: "Uzun Filmler"))
+        #expect(throws: ProfileError.duplicateListName) { try store.renameList(id: other.id, to: "kısa filmler") }
+    }
+
+    @Test func theLibraryIndexAndTheProfileSearchFoldIdentically() {
+        for text in ["KISA FİLM", "kısa film", "Ağaç ILIK", "ǅ ﬁ Ｆｕｌｌ"] {
+            #expect(MediaLibraryIndex.fold(text) == TextFolding.fold(text), "\(text)")
+        }
+    }
 }

@@ -242,10 +242,10 @@ public actor MediaLibraryIndex {
 
     // MARK: Search keys
 
-    /// Case, diacritic and width-insensitive form of `text`; the dotless i of Turkish file names becomes a plain i.
+    /// Case, diacritic and width-insensitive form of `text`; the dotless i of Turkish file names becomes a plain i
+    /// (`TextFolding`, shared with the profile search).
     nonisolated static func fold(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
-            .replacingOccurrences(of: "\u{131}", with: "i")
+        TextFolding.fold(text)
     }
 }
 
