@@ -118,7 +118,7 @@ private func waitUntil(_ condition: @Sendable () -> Bool) async {
         await waitUntil { folders.startedCount(root) == 1 }
         await index.scan(directory: URL(filePath: root))
         gate.open()
-        await older.value
+        _ = await older.value
         #expect(await index.cachedDirectory(URL(filePath: root)).map(\.fileName) == ["a.mp4"])
     }
 
@@ -208,7 +208,7 @@ private func waitUntil(_ condition: @Sendable () -> Bool) async {
         await waitUntil { folders.startedCount(root) == 1 }
         await index.scan(directory: URL(filePath: other))
         gate.open()
-        await slow.value
+        _ = await slow.value
         #expect(await index.totalIndexedFiles == 2)
     }
 }

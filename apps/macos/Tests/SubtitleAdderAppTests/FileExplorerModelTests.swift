@@ -91,8 +91,8 @@ private func names(_ files: [IndexedMediaFile]) -> [String] { files.map(\.fileNa
         let box = try ExplorerSandbox()
         try box.file("Movies/a.mp4")
         let model = box.model()
-        #expect(model.currentFolder == box.moviesFolder)
         await model.start()
+        #expect(model.currentFolder == box.moviesFolder)
         #expect(names(model.files) == ["a.mp4"])
         #expect(!model.isScanning)
     }
@@ -101,8 +101,8 @@ private func names(_ files: [IndexedMediaFile]) -> [String] { files.map(\.fileNa
         let box = try ExplorerSandbox()
         try box.file("Home/h.mp4")
         let model = box.model()
-        #expect(model.currentFolder == box.homeFolder)
         await model.start()
+        #expect(model.currentFolder == box.homeFolder)
         #expect(names(model.files) == ["h.mp4"])
     }
 
@@ -111,7 +111,54 @@ private func names(_ files: [IndexedMediaFile]) -> [String] { files.map(\.fileNa
         try box.folder("Movies")
         box.defaults.set(box.path("Deleted"), forKey: FileExplorerModel.lastFolderKey)
         let model = box.model()
+        await model.start()
         #expect(model.currentFolder == box.moviesFolder)
+    }
+
+    /// A saved folder on a network mount that no longer answers must not hold up the app's launch: creating the model
+    /// asks the file system nothing, `start()` does, off the main actor.
+    @Test func creatingTheModelDoesNotTouchTheFileSystem() async throws {
+        let box = try ExplorerSandbox()
+        try box.file("Movies/a.mp4")
+        try box.file("Saved/s.mp4")
+        box.defaults.set(box.path("Saved"), forKey: FileExplorerModel.lastFolderKey)
+        let asked = Mutex<[String]>([])
+        let onMain = Mutex<[Bool]>([])
+        var services = box.services()
+        let inner = services.directoryExists
+        services.directoryExists = { path in
+            asked.withLock { $0.append(path) }
+            onMain.withLock { $0.append(Thread.isMainThread) }
+            Thread.sleep(forTimeInterval: 0.3)
+            return inner(path)
+        }
+        services.isVolumeMounted = { _ in
+            asked.withLock { $0.append("mount-check") }
+            return true
+        }
+        let started = ContinuousClock.now
+        let model = FileExplorerModel(index: box.index(), defaults: box.defaults, services: services)
+        #expect(ContinuousClock.now - started < .milliseconds(200), "the slow check was not waited for")
+        #expect(asked.withLock { $0 }.isEmpty)
+        // Until start() has looked, the folder is the saved one as it was stored.
+        #expect(model.currentFolder == box.path("Saved") && model.isScanning)
+
+        await model.start()
+        #expect(asked.withLock { $0 }.contains(box.path("Saved")))
+        #expect(onMain.withLock { $0 }.allSatisfy { !$0 })
+        #expect(model.currentFolder == box.path("Saved"))
+        #expect(names(model.files) == ["s.mp4"])
+    }
+
+    @Test func aFolderChosenBeforeStartIsNotReplacedByTheLaunchLookup() async throws {
+        let box = try ExplorerSandbox()
+        try box.file("Movies/a.mp4")
+        try box.file("Other/o.mp4")
+        let model = box.model()
+        await model.navigate(to: box.url("Other"))
+        await model.start()
+        #expect(model.currentFolder == box.path("Other"))
+        #expect(names(model.files) == ["o.mp4"])
     }
 
     @Test func theSidebarIsShownByDefaultAndTheChoiceIsStored() throws {
@@ -327,8 +374,8 @@ private func names(_ files: [IndexedMediaFile]) -> [String] { files.map(\.fileNa
         #expect(box.defaults.string(forKey: "explorerLastFolder") == MediaPath.normalized(gone))
         let relaunched = box.model(index: index)
         #expect(relaunched.currentFolder == MediaPath.normalized(gone))
-        #expect(relaunched.availability == .volumeNotMounted)
         await relaunched.start()
+        #expect(relaunched.currentFolder == MediaPath.normalized(gone))
         #expect(relaunched.availability == .volumeNotMounted)
         #expect(!relaunched.isScanning)
     }
