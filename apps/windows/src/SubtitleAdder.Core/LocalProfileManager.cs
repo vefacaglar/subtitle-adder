@@ -1,3 +1,7 @@
+using System.Buffers;
+using System.Buffers.Binary;
+using System.Collections.Concurrent;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -14,11 +18,23 @@ public enum VideoFeedFilter
     Liked,
     MostWatched,
     TopRated,
+    CustomList,
+}
+
+/// <summary>A user-created custom playlist/collection of local videos inside a profile.</summary>
+public sealed record UserVideoList
+{
+    public required string Id { get; init; }
+    public required string Name { get; init; }
+    public required IReadOnlyList<string> VideoPaths { get; init; }
+    public DateTimeOffset CreatedAtUtc { get; init; }
+    public DateTimeOffset UpdatedAtUtc { get; init; }
 }
 
 /// <summary>Per-profile engagement and watch statistics for a single local video file.</summary>
 public sealed record VideoUserStats
 {
+    public string? ContentFingerprint { get; init; }
     public required string VideoPath { get; init; }
     public required string FileName { get; init; }
     public required string DirectoryPath { get; init; }
@@ -39,11 +55,13 @@ public sealed record VideoUserStats
             ? Math.Clamp(LastPositionSeconds / DurationSeconds, 0.0, 1.0)
             : 0.0;
 
-    public static VideoUserStats CreateDefault(string normalizedPath, DateTimeOffset? now = null)
+    public static VideoUserStats CreateDefault(string normalizedPath, DateTimeOffset? now = null, string? contentFingerprint = null)
     {
         var timestamp = now ?? DateTimeOffset.UtcNow;
+        var computed = contentFingerprint ?? LocalProfileManager.TryComputeFingerprintOnly(normalizedPath);
         return new VideoUserStats
         {
+            ContentFingerprint = computed,
             VideoPath = normalizedPath,
             FileName = Path.GetFileName(normalizedPath),
             DirectoryPath = Path.GetDirectoryName(normalizedPath) ?? "",
@@ -60,7 +78,9 @@ public sealed record VideoUserStats
 
 /// <summary>
 /// Manages password-protected local user profiles and their personal video watch history, view counts,
-/// likes, and 1..5 star ratings. Persisted atomically as JSON at <c>%LOCALAPPDATA%\SubtitleAdder\profiles.json</c>.
+/// likes, 1..5 star ratings, and custom video lists. Persisted atomically as JSON at <c>%LOCALAPPDATA%\SubtitleAdder\profiles.json</c>.
+/// Videos are tracked by a hybrid fast content fingerprint (<c>fp:&lt;length&gt;:&lt;sha256_prefix&gt;</c>) with path fallback,
+/// so moving or renaming a video file automatically migrates its history, likes, ratings, and custom list memberships.
 /// Passwords are never stored in plaintext; they are salted and hashed with PBKDF2-HMAC-SHA256.
 /// </summary>
 public sealed class LocalProfileManager
@@ -68,6 +88,7 @@ public sealed class LocalProfileManager
     private const int SaltByteLength = 16;
     private const int HashByteLength = 32;
     private const int Pbkdf2Iterations = 100_000;
+    private const int FingerprintSliceBytes = 65536;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -75,6 +96,11 @@ public sealed class LocalProfileManager
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    private static readonly ConcurrentDictionary<string, CachedFingerprint> FingerprintCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly record struct CachedFingerprint(long Length, long LastWriteTicks, string Fingerprint);
 
     private readonly Lock _sync = new();
     private readonly Dictionary<string, ProfileEntry> _profiles = new(StringComparer.OrdinalIgnoreCase);
@@ -95,7 +121,7 @@ public sealed class LocalProfileManager
     /// <summary>Path to the JSON file backing this manager.</summary>
     public string FilePath { get; }
 
-    /// <summary>Raised whenever authentication state or active profile video stats change.</summary>
+    /// <summary>Raised whenever authentication state, active profile video stats, or custom lists change.</summary>
     public event EventHandler? StateChanged;
 
     /// <summary>True when a user profile is currently authenticated.</summary>
@@ -186,6 +212,95 @@ public sealed class LocalProfileManager
         }
     }
 
+    /// <summary>
+    /// Computes a fast hybrid video identifier: if the file exists on disk with <c>Length &gt; 0</c>, reads up to three
+    /// 64 KB slices (at offset <c>0</c>, middle, and end) and hashes <c>(length + slices)</c> with SHA-256 to return
+    /// <c>"fp:&lt;length&gt;:&lt;24-hex&gt;"</c>. Otherwise falls back to the normalized full path.
+    /// </summary>
+    public static string ComputeVideoId(string? videoPath)
+    {
+        var normalized = NormalizeVideoPath(videoPath);
+        if (normalized.Length == 0) return "";
+        return TryComputeFingerprintOnly(normalized) ?? normalized;
+    }
+
+    internal static string? TryComputeFingerprintOnly(string normalizedPath)
+    {
+        if (string.IsNullOrEmpty(normalizedPath)) return null;
+        try
+        {
+            var info = new FileInfo(normalizedPath);
+            if (!info.Exists || info.Length <= 0)
+            {
+                return null;
+            }
+
+            var length = info.Length;
+            var ticks = info.LastWriteTimeUtc.Ticks;
+            if (FingerprintCache.TryGetValue(normalizedPath, out var cached) &&
+                cached.Length == length &&
+                cached.LastWriteTicks == ticks)
+            {
+                return cached.Fingerprint;
+            }
+
+            long[] offsets =
+            [
+                0L,
+                Math.Max(0L, (length / 2) - (FingerprintSliceBytes / 2)),
+                Math.Max(0L, length - FingerprintSliceBytes),
+            ];
+
+            using var stream = new FileStream(
+                normalizedPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+
+            using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            Span<byte> lengthBytes = stackalloc byte[8];
+            BinaryPrimitives.WriteInt64LittleEndian(lengthBytes, length);
+            sha.AppendData(lengthBytes);
+
+            var buffer = ArrayPool<byte>.Shared.Rent(FingerprintSliceBytes);
+            try
+            {
+                foreach (var offset in offsets)
+                {
+                    if (offset >= length) continue;
+                    stream.Seek(offset, SeekOrigin.Begin);
+                    var toRead = (int)Math.Min(FingerprintSliceBytes, length - offset);
+                    var totalRead = 0;
+                    while (totalRead < toRead)
+                    {
+                        var read = stream.Read(buffer, totalRead, toRead - totalRead);
+                        if (read <= 0) break;
+                        totalRead += read;
+                    }
+                    if (totalRead > 0)
+                    {
+                        sha.AppendData(buffer.AsSpan(0, totalRead));
+                    }
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            Span<byte> hash = stackalloc byte[32];
+            sha.GetHashAndReset(hash);
+            var hex = Convert.ToHexStringLower(hash)[..24];
+            var fingerprint = string.Create(CultureInfo.InvariantCulture, $"fp:{length}:{hex}");
+            FingerprintCache[normalizedPath] = new CachedFingerprint(length, ticks, fingerprint);
+            return fingerprint;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Registers a new local profile with PBKDF2-SHA256 password hashing and logs it in immediately.</summary>
     public bool Register(string username, string password) => Register(username, password, out _);
 
@@ -262,7 +377,7 @@ public sealed class LocalProfileManager
         return true;
     }
 
-    /// <summary>Logs out of the active profile so personal watch history, likes, and ratings are locked.</summary>
+    /// <summary>Logs out of the active profile so personal watch history, likes, ratings, and lists are locked.</summary>
     public void Logout()
     {
         var changed = false;
@@ -279,10 +394,10 @@ public sealed class LocalProfileManager
         if (changed) StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>Deletes a profile and all of its watch history/ratings after verifying its password.</summary>
+    /// <summary>Deletes a profile and all of its watch history/ratings/lists after verifying its password.</summary>
     public bool DeleteProfile(string username, string password) => DeleteProfile(username, password, out _);
 
-    /// <summary>Deletes a profile and all of its watch history/ratings after verifying its password.</summary>
+    /// <summary>Deletes a profile and all of its watch history/ratings/lists after verifying its password.</summary>
     public bool DeleteProfile(string username, string password, out string? error)
     {
         var cleanUser = (username ?? "").Trim();
@@ -329,7 +444,7 @@ public sealed class LocalProfileManager
         {
             if (_activeProfile is null) return null;
             var now = DateTimeOffset.UtcNow;
-            var existing = GetOrCreateStatsLocked(_activeProfile, normalized, now);
+            var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
             var cleanDuration = SanitizeSeconds(durationSeconds, existing.DurationSeconds);
             var cleanPosition = SanitizeSeconds(positionSeconds, existing.LastPositionSeconds);
             if (cleanDuration > 0 && cleanPosition > cleanDuration) cleanPosition = cleanDuration;
@@ -342,7 +457,7 @@ public sealed class LocalProfileManager
                 LastWatchedAtUtc = now,
                 UpdatedAtUtc = now,
             };
-            _activeProfile.Videos[normalized] = updated;
+            _activeProfile.Videos[key] = updated;
             SaveToDiskLocked();
         }
 
@@ -364,7 +479,7 @@ public sealed class LocalProfileManager
         {
             if (_activeProfile is null) return null;
             var now = DateTimeOffset.UtcNow;
-            var existing = GetOrCreateStatsLocked(_activeProfile, normalized, now);
+            var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
             var cleanDuration = SanitizeSeconds(durationSeconds, existing.DurationSeconds);
             var cleanPosition = Math.Max(0, double.IsFinite(positionSeconds) ? positionSeconds : existing.LastPositionSeconds);
             if (cleanDuration > 0 && cleanPosition > cleanDuration) cleanPosition = cleanDuration;
@@ -375,12 +490,52 @@ public sealed class LocalProfileManager
                 DurationSeconds = cleanDuration,
                 UpdatedAtUtc = now,
             };
-            _activeProfile.Videos[normalized] = updated;
+            _activeProfile.Videos[key] = updated;
             SaveToDiskLocked();
         }
 
         StateChanged?.Invoke(this, EventArgs.Empty);
         return updated;
+    }
+
+    /// <summary>
+    /// Clears watch history (<c>ViewCount = 0</c>, <c>LastWatchedAtUtc = null</c>, <c>LastPositionSeconds = 0</c>)
+    /// for the active profile while preserving likes (<c>IsLiked</c>), star ratings (<c>Rating</c>), and custom lists.
+    /// </summary>
+    public bool ClearWatchHistory()
+    {
+        lock (_sync)
+        {
+            if (_activeProfile is null) return false;
+            var now = DateTimeOffset.UtcNow;
+            var listedPaths = _activeProfile.CustomLists
+                .SelectMany(l => l.VideoPaths)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var keys = _activeProfile.Videos.Keys.ToList();
+            foreach (var key in keys)
+            {
+                var current = _activeProfile.Videos[key];
+                if (!current.IsLiked && current.Rating <= 0 && !listedPaths.Contains(current.VideoPath))
+                {
+                    _activeProfile.Videos.Remove(key);
+                }
+                else
+                {
+                    _activeProfile.Videos[key] = current with
+                    {
+                        ViewCount = 0,
+                        LastWatchedAtUtc = null,
+                        LastPositionSeconds = 0,
+                        UpdatedAtUtc = now,
+                    };
+                }
+            }
+            SaveToDiskLocked();
+        }
+
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        return true;
     }
 
     /// <summary>Toggles the like state for <paramref name="videoPath"/> in the active profile and returns the new state.</summary>
@@ -394,9 +549,9 @@ public sealed class LocalProfileManager
         {
             if (_activeProfile is null) return false;
             var now = DateTimeOffset.UtcNow;
-            var existing = GetOrCreateStatsLocked(_activeProfile, normalized, now);
+            var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
             newLiked = !existing.IsLiked;
-            _activeProfile.Videos[normalized] = existing with
+            _activeProfile.Videos[key] = existing with
             {
                 IsLiked = newLiked,
                 UpdatedAtUtc = now,
@@ -419,13 +574,13 @@ public sealed class LocalProfileManager
         {
             if (_activeProfile is null) return null;
             var now = DateTimeOffset.UtcNow;
-            var existing = GetOrCreateStatsLocked(_activeProfile, normalized, now);
+            var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
             updated = existing with
             {
                 IsLiked = isLiked,
                 UpdatedAtUtc = now,
             };
-            _activeProfile.Videos[normalized] = updated;
+            _activeProfile.Videos[key] = updated;
             SaveToDiskLocked();
         }
 
@@ -445,13 +600,13 @@ public sealed class LocalProfileManager
         {
             if (_activeProfile is null) return null;
             var now = DateTimeOffset.UtcNow;
-            var existing = GetOrCreateStatsLocked(_activeProfile, normalized, now);
+            var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
             updated = existing with
             {
                 Rating = clamped,
                 UpdatedAtUtc = now,
             };
-            _activeProfile.Videos[normalized] = updated;
+            _activeProfile.Videos[key] = updated;
             SaveToDiskLocked();
         }
 
@@ -459,94 +614,465 @@ public sealed class LocalProfileManager
         return updated;
     }
 
-    /// <summary>Returns the active profile's stats for <paramref name="videoPath"/>, or <c>null</c> when logged out or untracked.</summary>
+    /// <summary>
+    /// Returns the active profile's stats for <paramref name="videoPath"/> (automatically migrating the stored path
+    /// if the file was moved or renamed on disk and matches by content fingerprint), or <c>null</c> when logged out or untracked.
+    /// </summary>
     public VideoUserStats? GetStats(string? videoPath)
     {
         var normalized = NormalizeVideoPath(videoPath);
         if (normalized.Length == 0) return null;
 
+        VideoUserStats? result;
+        var migrated = false;
         lock (_sync)
         {
             if (_activeProfile is null) return null;
-            return _activeProfile.Videos.GetValueOrDefault(normalized);
+            if (!ResolveAndMigrateVideoKeyLocked(_activeProfile, normalized, out _, out result, out migrated))
+            {
+                return null;
+            }
+            if (migrated)
+            {
+                SaveToDiskLocked();
+            }
         }
+
+        if (migrated) StateChanged?.Invoke(this, EventArgs.Empty);
+        return result;
     }
 
-    /// <summary>
-    /// Queries the active profile's video feed filtered by <paramref name="filter"/> and optional <paramref name="searchQuery"/>,
-    /// merging any <paramref name="additionalDiscoveredPaths"/> into <see cref="VideoFeedFilter.All"/> (or matching search).
-    /// Returns an empty list when logged out.
-    /// </summary>
-    public IReadOnlyList<VideoUserStats> GetFeed(
-        VideoFeedFilter filter,
-        string? searchQuery = null,
-        IEnumerable<string>? additionalDiscoveredPaths = null)
+    // MARK: - Custom User Lists ("Listelerim / Ayrı Liste Oluşturduklarım")
+
+    /// <summary>Creates a new custom video list in the active profile. Returns <c>null</c> if logged out, empty, or duplicate name.</summary>
+    public UserVideoList? CreateCustomList(string name)
+    {
+        var cleanName = (name ?? "").Trim();
+        if (cleanName.Length == 0) return null;
+
+        UserVideoList created;
+        lock (_sync)
+        {
+            if (_activeProfile is null) return null;
+            if (_activeProfile.CustomLists.Any(l => string.Equals(l.Name, cleanName, StringComparison.CurrentCultureIgnoreCase)))
+            {
+                return null;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            created = new UserVideoList
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                Name = cleanName,
+                VideoPaths = [],
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+            };
+            _activeProfile.CustomLists.Add(created);
+            SaveToDiskLocked();
+        }
+
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        return created;
+    }
+
+    /// <summary>Renames an existing custom list in the active profile.</summary>
+    public bool RenameCustomList(string listId, string newName)
+    {
+        var cleanName = (newName ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(listId) || cleanName.Length == 0) return false;
+
+        lock (_sync)
+        {
+            if (_activeProfile is null) return false;
+            var idx = _activeProfile.CustomLists.FindIndex(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0) return false;
+
+            if (_activeProfile.CustomLists.Where((_, i) => i != idx)
+                .Any(l => string.Equals(l.Name, cleanName, StringComparison.CurrentCultureIgnoreCase)))
+            {
+                return false;
+            }
+
+            var existing = _activeProfile.CustomLists[idx];
+            _activeProfile.CustomLists[idx] = existing with
+            {
+                Name = cleanName,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+            SaveToDiskLocked();
+        }
+
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    /// <summary>Deletes a custom list by <paramref name="listId"/> from the active profile.</summary>
+    public bool DeleteCustomList(string listId)
+    {
+        if (string.IsNullOrWhiteSpace(listId)) return false;
+
+        lock (_sync)
+        {
+            if (_activeProfile is null) return false;
+            var removed = _activeProfile.CustomLists.RemoveAll(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
+            if (removed == 0) return false;
+            SaveToDiskLocked();
+        }
+
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    /// <summary>Adds <paramref name="videoPath"/> to the custom list identified by <paramref name="listId"/>.</summary>
+    public bool AddVideoToCustomList(string listId, string videoPath)
+    {
+        var normalized = NormalizeVideoPath(videoPath);
+        if (string.IsNullOrWhiteSpace(listId) || normalized.Length == 0) return false;
+
+        lock (_sync)
+        {
+            if (_activeProfile is null) return false;
+            var idx = _activeProfile.CustomLists.FindIndex(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0) return false;
+
+            // Ensure video fingerprint is recorded so future file renames/moves migrate this custom list entry too.
+            _ = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
+
+            var existing = _activeProfile.CustomLists[idx];
+            if (existing.VideoPaths.Any(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
+            var updatedPaths = new List<string>(existing.VideoPaths) { normalized };
+            _activeProfile.CustomLists[idx] = existing with
+            {
+                VideoPaths = updatedPaths,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+            SaveToDiskLocked();
+        }
+
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    /// <summary>Removes <paramref name="videoPath"/> from the custom list identified by <paramref name="listId"/>.</summary>
+    public bool RemoveVideoFromCustomList(string listId, string videoPath)
+    {
+        var normalized = NormalizeVideoPath(videoPath);
+        if (string.IsNullOrWhiteSpace(listId) || normalized.Length == 0) return false;
+
+        lock (_sync)
+        {
+            if (_activeProfile is null) return false;
+            _ = ResolveAndMigrateVideoKeyLocked(_activeProfile, normalized, out _, out _, out _);
+
+            var idx = _activeProfile.CustomLists.FindIndex(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0) return false;
+
+            var existing = _activeProfile.CustomLists[idx];
+            var updatedPaths = existing.VideoPaths
+                .Where(p => !string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (updatedPaths.Count == existing.VideoPaths.Count) return false;
+
+            _activeProfile.CustomLists[idx] = existing with
+            {
+                VideoPaths = updatedPaths,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+            SaveToDiskLocked();
+        }
+
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    /// <summary>Toggles membership of <paramref name="videoPath"/> in the custom list identified by <paramref name="listId"/>. Returns true if now in list.</summary>
+    public bool ToggleVideoInCustomList(string listId, string videoPath)
+    {
+        var normalized = NormalizeVideoPath(videoPath);
+        if (string.IsNullOrWhiteSpace(listId) || normalized.Length == 0) return false;
+
+        bool nowInList;
+        lock (_sync)
+        {
+            if (_activeProfile is null) return false;
+            _ = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
+
+            var idx = _activeProfile.CustomLists.FindIndex(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0) return false;
+
+            var existing = _activeProfile.CustomLists[idx];
+            var updatedPaths = new List<string>(existing.VideoPaths);
+            var matchIdx = updatedPaths.FindIndex(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase));
+            if (matchIdx >= 0)
+            {
+                updatedPaths.RemoveAt(matchIdx);
+                nowInList = false;
+            }
+            else
+            {
+                updatedPaths.Add(normalized);
+                nowInList = true;
+            }
+
+            _activeProfile.CustomLists[idx] = existing with
+            {
+                VideoPaths = updatedPaths,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+            SaveToDiskLocked();
+        }
+
+        StateChanged?.Invoke(this, EventArgs.Empty);
+        return nowInList;
+    }
+
+    /// <summary>Returns all custom lists created by the active profile, or an empty list when logged out.</summary>
+    public IReadOnlyList<UserVideoList> GetCustomLists()
     {
         lock (_sync)
         {
             if (_activeProfile is null) return [];
+            return _activeProfile.CustomLists.ToList();
+        }
+    }
 
-            var merged = new Dictionary<string, VideoUserStats>(_activeProfile.Videos, StringComparer.OrdinalIgnoreCase);
-            if (additionalDiscoveredPaths is not null)
+    /// <summary>Returns all custom lists in the active profile that contain <paramref name="videoPath"/>.</summary>
+    public IReadOnlyList<UserVideoList> GetCustomListsContaining(string? videoPath)
+    {
+        var normalized = NormalizeVideoPath(videoPath);
+        if (normalized.Length == 0) return [];
+
+        lock (_sync)
+        {
+            if (_activeProfile is null) return [];
+            if (ResolveAndMigrateVideoKeyLocked(_activeProfile, normalized, out _, out _, out var migrated) && migrated)
             {
-                var now = DateTimeOffset.UtcNow;
+                SaveToDiskLocked();
+            }
+            return _activeProfile.CustomLists
+                .Where(l => l.VideoPaths.Any(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
+    }
+
+    /// <summary>Checks whether <paramref name="videoPath"/> belongs to the custom list <paramref name="listId"/>.</summary>
+    public bool IsVideoInCustomList(string listId, string? videoPath)
+    {
+        var normalized = NormalizeVideoPath(videoPath);
+        if (string.IsNullOrWhiteSpace(listId) || normalized.Length == 0) return false;
+
+        lock (_sync)
+        {
+            if (_activeProfile is null) return false;
+            if (ResolveAndMigrateVideoKeyLocked(_activeProfile, normalized, out _, out _, out var migrated) && migrated)
+            {
+                SaveToDiskLocked();
+            }
+            var list = _activeProfile.CustomLists.FirstOrDefault(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
+            return list is not null && list.VideoPaths.Any(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    /// <summary>
+    /// Queries the active profile's video feed filtered by <paramref name="filter"/>, optional <paramref name="searchQuery"/>,
+    /// optional <paramref name="additionalDiscoveredPaths"/>, and optional <paramref name="customListId"/>.
+    /// Automatically migrates any moved/renamed video files discovered via <paramref name="additionalDiscoveredPaths"/>.
+    /// </summary>
+    public IReadOnlyList<VideoUserStats> GetFeed(
+        VideoFeedFilter filter,
+        string? searchQuery = null,
+        IEnumerable<string>? additionalDiscoveredPaths = null,
+        string? customListId = null)
+    {
+        lock (_sync)
+        {
+            var now = DateTimeOffset.UtcNow;
+
+            if (_activeProfile is null)
+            {
+                if (filter != VideoFeedFilter.All || additionalDiscoveredPaths is null)
+                {
+                    return [];
+                }
+
+                var discoveredOnly = new Dictionary<string, VideoUserStats>(StringComparer.OrdinalIgnoreCase);
                 foreach (var rawPath in additionalDiscoveredPaths)
                 {
                     var norm = NormalizeVideoPath(rawPath);
-                    if (norm.Length > 0 && !merged.ContainsKey(norm))
+                    if (norm.Length > 0 && !discoveredOnly.ContainsKey(norm))
                     {
-                        merged[norm] = VideoUserStats.CreateDefault(norm, now);
+                        discoveredOnly[norm] = VideoUserStats.CreateDefault(norm, now);
+                    }
+                }
+
+                IEnumerable<VideoUserStats> anonQuery = discoveredOnly.Values
+                    .OrderBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase);
+
+                if (!string.IsNullOrWhiteSpace(searchQuery))
+                {
+                    anonQuery = anonQuery.Where(v => MatchesSearchQuery(v, searchQuery));
+                }
+
+                return anonQuery.ToList();
+            }
+
+            var anyMigrated = false;
+            var discoveredNormalized = new List<string>();
+            if (additionalDiscoveredPaths is not null)
+            {
+                foreach (var rawPath in additionalDiscoveredPaths)
+                {
+                    var norm = NormalizeVideoPath(rawPath);
+                    if (norm.Length == 0) continue;
+                    discoveredNormalized.Add(norm);
+                    if (ResolveAndMigrateVideoKeyLocked(_activeProfile, norm, out _, out _, out var migrated) && migrated)
+                    {
+                        anyMigrated = true;
                     }
                 }
             }
 
-            IEnumerable<VideoUserStats> query = merged.Values;
-
-            query = filter switch
+            if (anyMigrated)
             {
-                VideoFeedFilter.History => query
-                    .Where(v => v.ViewCount > 0 || v.LastWatchedAtUtc is not null)
-                    .OrderByDescending(v => v.LastWatchedAtUtc ?? v.UpdatedAtUtc)
-                    .ThenByDescending(v => v.ViewCount)
-                    .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
+                SaveToDiskLocked();
+            }
 
-                VideoFeedFilter.Liked => query
-                    .Where(v => v.IsLiked)
-                    .OrderByDescending(v => v.UpdatedAtUtc)
-                    .ThenByDescending(v => v.ViewCount)
-                    .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
-
-                VideoFeedFilter.MostWatched => query
-                    .Where(v => v.ViewCount > 0)
-                    .OrderByDescending(v => v.ViewCount)
-                    .ThenByDescending(v => v.LastWatchedAtUtc ?? v.UpdatedAtUtc)
-                    .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
-
-                VideoFeedFilter.TopRated => query
-                    .Where(v => v.Rating > 0)
-                    .OrderByDescending(v => v.Rating)
-                    .ThenByDescending(v => v.ViewCount)
-                    .ThenByDescending(v => v.UpdatedAtUtc)
-                    .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
-
-                _ => query
-                    .OrderByDescending(v => v.LastWatchedAtUtc is not null || v.IsLiked || v.Rating > 0)
-                    .ThenByDescending(v => v.LastWatchedAtUtc ?? DateTimeOffset.MinValue)
-                    .ThenByDescending(v => v.ViewCount)
-                    .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
-            };
-
-            var trimmedSearch = (searchQuery ?? "").Trim();
-            if (trimmedSearch.Length > 0)
+            // Build path-keyed map of all profile videos + discovered videos + custom list videos
+            var mergedByPath = new Dictionary<string, VideoUserStats>(StringComparer.OrdinalIgnoreCase);
+            foreach (var video in _activeProfile.Videos.Values)
             {
-                query = query.Where(v =>
-                    v.FileName.Contains(trimmedSearch, StringComparison.CurrentCultureIgnoreCase) ||
-                    v.DirectoryPath.Contains(trimmedSearch, StringComparison.CurrentCultureIgnoreCase) ||
-                    v.VideoPath.Contains(trimmedSearch, StringComparison.CurrentCultureIgnoreCase));
+                if (!string.IsNullOrEmpty(video.VideoPath))
+                {
+                    mergedByPath[video.VideoPath] = video;
+                }
+            }
+
+            foreach (var norm in discoveredNormalized)
+            {
+                if (!mergedByPath.ContainsKey(norm))
+                {
+                    mergedByPath[norm] = VideoUserStats.CreateDefault(norm, now);
+                }
+            }
+
+            foreach (var list in _activeProfile.CustomLists)
+            {
+                foreach (var rawPath in list.VideoPaths)
+                {
+                    var norm = NormalizeVideoPath(rawPath);
+                    if (norm.Length > 0 && !mergedByPath.ContainsKey(norm))
+                    {
+                        mergedByPath[norm] = VideoUserStats.CreateDefault(norm, now);
+                    }
+                }
+            }
+
+            IEnumerable<VideoUserStats> query;
+
+            if (filter == VideoFeedFilter.CustomList)
+            {
+                var targetList = !string.IsNullOrWhiteSpace(customListId)
+                    ? _activeProfile.CustomLists.FirstOrDefault(l => string.Equals(l.Id, customListId, StringComparison.OrdinalIgnoreCase))
+                    : _activeProfile.CustomLists.FirstOrDefault();
+
+                if (targetList is null) return [];
+
+                var listItems = new List<VideoUserStats>();
+                foreach (var rawPath in targetList.VideoPaths)
+                {
+                    var norm = NormalizeVideoPath(rawPath);
+                    if (norm.Length == 0) continue;
+                    listItems.Add(mergedByPath.TryGetValue(norm, out var stats)
+                        ? stats
+                        : VideoUserStats.CreateDefault(norm, now));
+                }
+                query = listItems;
+            }
+            else
+            {
+                query = mergedByPath.Values;
+                query = filter switch
+                {
+                    VideoFeedFilter.History => query
+                        .Where(v => v.ViewCount > 0 || v.LastWatchedAtUtc is not null)
+                        .OrderByDescending(v => v.LastWatchedAtUtc ?? v.UpdatedAtUtc)
+                        .ThenByDescending(v => v.ViewCount)
+                        .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
+
+                    VideoFeedFilter.Liked => query
+                        .Where(v => v.IsLiked)
+                        .OrderByDescending(v => v.UpdatedAtUtc)
+                        .ThenByDescending(v => v.ViewCount)
+                        .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
+
+                    VideoFeedFilter.MostWatched => query
+                        .Where(v => v.ViewCount > 0)
+                        .OrderByDescending(v => v.ViewCount)
+                        .ThenByDescending(v => v.LastWatchedAtUtc ?? v.UpdatedAtUtc)
+                        .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
+
+                    VideoFeedFilter.TopRated => query
+                        .Where(v => v.Rating > 0)
+                        .OrderByDescending(v => v.Rating)
+                        .ThenByDescending(v => v.ViewCount)
+                        .ThenByDescending(v => v.UpdatedAtUtc)
+                        .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
+
+                    _ => query
+                        .OrderByDescending(v => v.LastWatchedAtUtc is not null || v.IsLiked || v.Rating > 0)
+                        .ThenByDescending(v => v.LastWatchedAtUtc ?? DateTimeOffset.MinValue)
+                        .ThenByDescending(v => v.ViewCount)
+                        .ThenBy(v => v.FileName, StringComparer.CurrentCultureIgnoreCase),
+                };
+            }
+
+            if (!string.IsNullOrWhiteSpace(searchQuery))
+            {
+                query = query.Where(v => MatchesSearchQuery(v, searchQuery));
             }
 
             return query.ToList();
         }
+    }
+
+    private static readonly char[] SearchTokenSeparators = [' ', '\t', '_', '-', '.'];
+
+    /// <summary>
+    /// Multi-token case-insensitive search across file name, folder path, and full video path so queries like
+    /// <c>"sezon 2 bolum"</c> match <c>"Sezon_2_Bolum_05.mkv"</c> as well as parent folder names.
+    /// </summary>
+    public static bool MatchesSearchQuery(VideoUserStats video, string? searchQuery)
+    {
+        var trimmed = (searchQuery ?? "").Trim();
+        if (trimmed.Length == 0) return true;
+
+        if (video.FileName.Contains(trimmed, StringComparison.CurrentCultureIgnoreCase) ||
+            video.DirectoryPath.Contains(trimmed, StringComparison.CurrentCultureIgnoreCase) ||
+            video.VideoPath.Contains(trimmed, StringComparison.CurrentCultureIgnoreCase))
+        {
+            return true;
+        }
+
+        var tokens = trimmed.Split(SearchTokenSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0) return true;
+
+        foreach (var token in tokens)
+        {
+            var matched =
+                video.FileName.Contains(token, StringComparison.CurrentCultureIgnoreCase) ||
+                video.DirectoryPath.Contains(token, StringComparison.CurrentCultureIgnoreCase) ||
+                video.VideoPath.Contains(token, StringComparison.CurrentCultureIgnoreCase) ||
+                video.FileName.Contains(token, StringComparison.OrdinalIgnoreCase) ||
+                video.DirectoryPath.Contains(token, StringComparison.OrdinalIgnoreCase);
+            if (!matched) return false;
+        }
+
+        return true;
     }
 
     /// <summary>Normalizes a file path for case-insensitive Windows dictionary lookups.</summary>
@@ -565,15 +1091,141 @@ public sealed class LocalProfileManager
         }
     }
 
-    private static VideoUserStats GetOrCreateStatsLocked(ProfileEntry profile, string normalizedPath, DateTimeOffset now)
+    /// <summary>
+    /// Resolves an existing <see cref="VideoUserStats"/> entry by content fingerprint (<c>fp:...</c>) or normalized path.
+    /// If the file was moved or renamed on disk, automatically migrates its <see cref="VideoUserStats.VideoPath"/>
+    /// and updates any custom lists referencing the old path.
+    /// </summary>
+    private static bool ResolveAndMigrateVideoKeyLocked(
+        ProfileEntry profile,
+        string normalizedPath,
+        out string resolvedKey,
+        out VideoUserStats? resolvedStats,
+        out bool migrated)
     {
-        if (profile.Videos.TryGetValue(normalizedPath, out var existing))
+        migrated = false;
+        var fingerprint = TryComputeFingerprintOnly(normalizedPath);
+        var candidateKey = fingerprint ?? normalizedPath;
+
+        string? foundKey = null;
+        VideoUserStats? foundStats = null;
+
+        if (fingerprint is not null && profile.Videos.TryGetValue(fingerprint, out var byFpKey))
         {
-            return existing;
+            foundKey = fingerprint;
+            foundStats = byFpKey;
         }
-        var created = VideoUserStats.CreateDefault(normalizedPath, now);
-        profile.Videos[normalizedPath] = created;
-        return created;
+        else if (profile.Videos.TryGetValue(normalizedPath, out var byPathKey))
+        {
+            foundKey = normalizedPath;
+            foundStats = byPathKey;
+        }
+        else
+        {
+            foreach (var (k, v) in profile.Videos)
+            {
+                if (fingerprint is not null &&
+                    string.Equals(v.ContentFingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
+                {
+                    foundKey = k;
+                    foundStats = v;
+                    break;
+                }
+                if (string.Equals(v.VideoPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    foundKey = k;
+                    foundStats = v;
+                    break;
+                }
+            }
+        }
+
+        if (foundKey is null || foundStats is null)
+        {
+            resolvedKey = candidateKey;
+            resolvedStats = null;
+            return false;
+        }
+
+        var canonicalKey = fingerprint ?? foundStats.ContentFingerprint ?? foundKey;
+        var pathChanged = !string.Equals(foundStats.VideoPath, normalizedPath, StringComparison.OrdinalIgnoreCase);
+        var keyChanged = !string.Equals(foundKey, canonicalKey, StringComparison.OrdinalIgnoreCase);
+        var fpAdded = fingerprint is not null && !string.Equals(foundStats.ContentFingerprint, fingerprint, StringComparison.OrdinalIgnoreCase);
+
+        if (pathChanged || keyChanged || fpAdded)
+        {
+            var oldPath = foundStats.VideoPath;
+            var updated = foundStats with
+            {
+                ContentFingerprint = fingerprint ?? foundStats.ContentFingerprint,
+                VideoPath = normalizedPath,
+                FileName = Path.GetFileName(normalizedPath),
+                DirectoryPath = Path.GetDirectoryName(normalizedPath) ?? "",
+            };
+
+            if (keyChanged)
+            {
+                profile.Videos.Remove(foundKey);
+            }
+            profile.Videos[canonicalKey] = updated;
+
+            if (pathChanged && !string.IsNullOrEmpty(oldPath))
+            {
+                MigrateCustomListPathsLocked(profile, oldPath, normalizedPath);
+            }
+
+            migrated = true;
+            resolvedKey = canonicalKey;
+            resolvedStats = updated;
+            return true;
+        }
+
+        resolvedKey = foundKey;
+        resolvedStats = foundStats;
+        return true;
+    }
+
+    private static void MigrateCustomListPathsLocked(ProfileEntry profile, string oldPath, string newPath)
+    {
+        for (var i = 0; i < profile.CustomLists.Count; i++)
+        {
+            var list = profile.CustomLists[i];
+            if (!list.VideoPaths.Any(p => string.Equals(p, oldPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            var updatedPaths = new List<string>(list.VideoPaths.Count);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in list.VideoPaths)
+            {
+                var replacement = string.Equals(p, oldPath, StringComparison.OrdinalIgnoreCase) ? newPath : p;
+                if (seen.Add(replacement))
+                {
+                    updatedPaths.Add(replacement);
+                }
+            }
+
+            profile.CustomLists[i] = list with
+            {
+                VideoPaths = updatedPaths,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+        }
+    }
+
+    private static (string Key, VideoUserStats Stats) GetOrCreateStatsLocked(ProfileEntry profile, string normalizedPath, DateTimeOffset now)
+    {
+        if (ResolveAndMigrateVideoKeyLocked(profile, normalizedPath, out var key, out var existing, out _) && existing is not null)
+        {
+            return (key, existing);
+        }
+
+        var fingerprint = TryComputeFingerprintOnly(normalizedPath);
+        var newKey = fingerprint ?? normalizedPath;
+        var created = VideoUserStats.CreateDefault(normalizedPath, now, fingerprint);
+        profile.Videos[newKey] = created;
+        return (newKey, created);
     }
 
     private static double SanitizeSeconds(double candidate, double fallback)
@@ -642,14 +1294,38 @@ public sealed class LocalProfileManager
                         {
                             var norm = NormalizeVideoPath(video.VideoPath);
                             if (norm.Length == 0) continue;
-                            entry.Videos[norm] = video with
+                            var fp = !string.IsNullOrWhiteSpace(video.ContentFingerprint)
+                                ? video.ContentFingerprint.Trim()
+                                : TryComputeFingerprintOnly(norm);
+                            var key = fp ?? norm;
+                            entry.Videos[key] = video with
                             {
+                                ContentFingerprint = fp,
                                 VideoPath = norm,
                                 FileName = string.IsNullOrWhiteSpace(video.FileName) ? Path.GetFileName(norm) : video.FileName,
                                 DirectoryPath = video.DirectoryPath ?? (Path.GetDirectoryName(norm) ?? ""),
                                 Rating = Math.Clamp(video.Rating, 0, 5),
                                 ViewCount = Math.Max(0, video.ViewCount),
                             };
+                        }
+                    }
+
+                    if (dto.CustomLists is not null)
+                    {
+                        foreach (var list in dto.CustomLists)
+                        {
+                            if (string.IsNullOrWhiteSpace(list.Id) || string.IsNullOrWhiteSpace(list.Name))
+                                continue;
+                            var normalizedPaths = (list.VideoPaths ?? [])
+                                .Select(NormalizeVideoPath)
+                                .Where(p => p.Length > 0)
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToList();
+                            entry.CustomLists.Add(list with
+                            {
+                                Name = list.Name.Trim(),
+                                VideoPaths = normalizedPaths,
+                            });
                         }
                     }
 
@@ -685,6 +1361,7 @@ public sealed class LocalProfileManager
                         Videos = p.Videos.Values
                             .OrderBy(v => v.VideoPath, StringComparer.OrdinalIgnoreCase)
                             .ToList(),
+                        CustomLists = p.CustomLists.ToList(),
                     })
                     .ToList(),
             };
@@ -708,6 +1385,7 @@ public sealed class LocalProfileManager
         public int Iterations { get; init; } = Pbkdf2Iterations;
         public DateTimeOffset CreatedAtUtc { get; init; }
         public Dictionary<string, VideoUserStats> Videos { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<UserVideoList> CustomLists { get; } = [];
     }
 
     private sealed class ProfilesDocument
@@ -724,5 +1402,6 @@ public sealed class LocalProfileManager
         public int Iterations { get; set; } = Pbkdf2Iterations;
         public DateTimeOffset CreatedAtUtc { get; set; }
         public List<VideoUserStats> Videos { get; set; } = [];
+        public List<UserVideoList> CustomLists { get; set; } = [];
     }
 }

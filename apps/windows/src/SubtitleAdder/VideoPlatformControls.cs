@@ -371,7 +371,7 @@ public sealed class ProfileStatusButton : Grid
 /// Sleek YouTube-style engagement bar for the currently open video.
 /// Visible when <c>IsLoggedIn &amp;&amp; ActiveVideoPath is not null</c>.
 /// Shows view count badge (<c>\uE7B3</c>), interactive Like button (<c>\uEB51</c>/<c>\uEB52</c>),
-/// and interactive 5-star rating bar (<c>\uE734</c>/<c>\uE735</c>).
+/// interactive 5-star rating bar (<c>\uE734</c>/<c>\uE735</c>), and "+ Listeye ekle" menu button.
 /// </summary>
 public sealed class PlayerEngagementBar : Grid
 {
@@ -382,6 +382,9 @@ public sealed class PlayerEngagementBar : Grid
     private readonly TextBlock _likeText;
     private readonly Button[] _starButtons = new Button[5];
     private readonly FontIcon[] _starIcons = new FontIcon[5];
+    private readonly Button _addToListButton;
+    private readonly TextBlock _addToListLabel;
+    private readonly MenuFlyout _addToListFlyout;
 
     public PlayerEngagementBar() : this(null)
     {
@@ -506,6 +509,36 @@ public sealed class PlayerEngagementBar : Grid
         }
 
         row.Children.Add(starsRow);
+
+        // "+ Listeye ekle" button with dynamic MenuFlyout
+        _addToListLabel = new TextBlock
+        {
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var addToListContent = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 5,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        addToListContent.Children.Add(new FontIcon { Glyph = "\uE710", FontSize = 11 });
+        addToListContent.Children.Add(_addToListLabel);
+
+        _addToListFlyout = new MenuFlyout();
+        _addToListFlyout.Opening += (_, _) => PopulateAddToListFlyout(_addToListFlyout, _vm, _vm.ActiveVideoPath);
+
+        _addToListButton = new Button
+        {
+            Padding = new Thickness(10, 4, 10, 4),
+            CornerRadius = new CornerRadius(6),
+            VerticalAlignment = VerticalAlignment.Center,
+            Content = addToListContent,
+            Flyout = _addToListFlyout,
+        };
+        row.Children.Add(_addToListButton);
+
         Children.Add(row);
 
         Subscribe(_vm);
@@ -518,6 +551,58 @@ public sealed class PlayerEngagementBar : Grid
         };
 
         Refresh();
+    }
+
+    internal static void PopulateAddToListFlyout(MenuFlyout flyout, VideoPlatformViewModel vm, string? videoPath)
+    {
+        flyout.Items.Clear();
+        if (!vm.IsLoggedIn || string.IsNullOrWhiteSpace(videoPath))
+        {
+            flyout.Items.Add(new MenuFlyoutItem
+            {
+                Text = L("Listeye eklemek için giriş yapın"),
+                IsEnabled = false,
+            });
+            return;
+        }
+
+        var lists = vm.CustomLists;
+        foreach (var list in lists)
+        {
+            var capturedId = list.Id;
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = $"{list.Name} ({list.VideoPaths.Count})",
+                IsChecked = vm.IsVideoInCustomList(capturedId, videoPath),
+            };
+            item.Click += (_, _) => vm.ToggleVideoInCustomList(capturedId, videoPath);
+            flyout.Items.Add(item);
+        }
+
+        if (lists.Count > 0)
+        {
+            flyout.Items.Add(new MenuFlyoutSeparator());
+        }
+
+        var quickCreateItem = new MenuFlyoutItem
+        {
+            Text = lists.Count == 0
+                ? L("+ \"Daha Sonra İzle\" listesi oluştur ve ekle")
+                : L("+ Yeni liste oluştur ve ekle"),
+            Icon = new FontIcon { Glyph = "\uE710" },
+        };
+        quickCreateItem.Click += (_, _) =>
+        {
+            var defaultName = lists.Count == 0
+                ? L("Daha Sonra İzle")
+                : $"{L("Listem")} {lists.Count + 1}";
+            var created = vm.CreateCustomList(defaultName);
+            if (created is not null)
+            {
+                vm.ToggleVideoInCustomList(created.Id, videoPath);
+            }
+        };
+        flyout.Items.Add(quickCreateItem);
     }
 
     public VideoPlatformViewModel ViewModel
@@ -564,6 +649,9 @@ public sealed class PlayerEngagementBar : Grid
         _likeText.Text = _vm.ActiveVideoLikeText;
         AutomationProperties.SetName(_likeButton, _vm.ActiveVideoLikeText);
 
+        _addToListLabel.Text = L("+ Listeye ekle");
+        AutomationProperties.SetName(_addToListButton, L("+ Listeye ekle"));
+
         var rating = _vm.ActiveVideoRating;
         var goldBrush = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0xFF, 0xC8, 0x3D));
         var dimBrush = new SolidColorBrush(ColorHelper.FromArgb(0x88, 0xFF, 0xFF, 0xFF));
@@ -583,17 +671,35 @@ public sealed class PlayerEngagementBar : Grid
 
 /// <summary>
 /// Full YouTube-style local video platform view.
-/// When logged out: displays a centered authentication card explaining that watch history, view counts, likes,
-/// and ratings are protected by a local profile, with inline Username &amp; Password fields and Login/Register buttons.
-/// When logged in: displays filter pills ("Keşfet", "İzleme geçmişi", "Beğenilenler", "En çok izlenenler", "Puanlananlar"),
-/// search box ("Videolarda ara…"), and a scrollable feed of rich 16:9 cinema cards with view counts, CC badges,
-/// playback progress bars, like buttons, and 5-star ratings.
+/// Always shows a prominent search bar at the top (type &amp; press Enter or click Search to list matching SSD-indexed videos)
+/// and category filter pills ("Keşfet", "İzleme geçmişi", "Favorilerim", "Puan verdiklerim", "En çok izlenenler").
+/// When logged in, also displays the "Listelerim" custom list bar and full personal engagement on every card.
 /// </summary>
 public sealed class VideoPlatformHubView : Grid
 {
     private VideoPlatformViewModel _vm;
 
-    // Logged-out auth card elements
+    // Top search & profile header elements
+    private readonly TextBox _searchBox;
+    private readonly Button _searchButton;
+    private readonly TextBlock _searchButtonLabel;
+    private readonly Button _clearSearchButton;
+    private readonly TextBlock _activeProfileBadgeText;
+    private readonly Button _clearHistoryButton;
+    private readonly Button _hubLogoutButton;
+    private readonly Button _hubSignInPromptButton;
+
+    // Filter pills row
+    private readonly Dictionary<VideoFeedFilter, Button> _filterButtons = [];
+
+    // Custom lists ("Listelerim") bar
+    private readonly Border _customListsBar;
+    private readonly TextBlock _customListsTitle;
+    private readonly StackPanel _customListPillsPanel;
+    private readonly TextBox _newListNameBox;
+    private readonly Button _createListButton;
+
+    // Logged-out auth gate card (shown when a personal tab or sign-in is selected while logged out)
     private readonly Border _authGateContainer;
     private readonly TextBlock _authTitle;
     private readonly TextBlock _authDescription;
@@ -604,17 +710,13 @@ public sealed class VideoPlatformHubView : Grid
     private readonly Button _authLoginButton;
     private readonly Button _authRegisterButton;
 
-    // Logged-in platform hub elements
-    private readonly Grid _hubContainer;
-    private readonly Dictionary<VideoFeedFilter, Button> _filterButtons = [];
-    private readonly TextBox _searchBox;
-    private readonly TextBlock _activeProfileBadgeText;
-    private readonly Button _hubLogoutButton;
+    // Scrollable feed area
+    private readonly ScrollViewer _feedScroller;
     private readonly StackPanel _cardsPanel;
     private readonly Border _emptyStateCard;
     private readonly TextBlock _emptyStateTitle;
     private readonly TextBlock _emptyStateSubtitle;
-    private bool _updatingSearchBox;
+    private bool _showExplicitSignInCard;
 
     /// <summary>Fired when the user clicks a video card in the platform feed to open and play it immediately.</summary>
     public event Action<string>? VideoSelected;
@@ -628,8 +730,48 @@ public sealed class VideoPlatformHubView : Grid
         _vm = viewModel ?? VideoPlatformViewModel.Shared;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
+        RowSpacing = 10;
+        Padding = new Thickness(16, 12, 16, 12);
 
-        // 1. Build Logged-Out Auth Gate Card
+        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Row 0: Search bar + Profile status
+        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Row 1: Category filter pills
+        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Row 2: "Listelerim" custom lists bar
+        RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // Row 3: Content area
+
+        // Row 0: Prominent Search Bar + Profile / Session Actions
+        var searchAndProfileBar = BuildSearchAndProfileBar(
+            out _searchBox,
+            out _searchButton,
+            out _searchButtonLabel,
+            out _clearSearchButton,
+            out _activeProfileBadgeText,
+            out _clearHistoryButton,
+            out _hubLogoutButton,
+            out _hubSignInPromptButton);
+        Grid.SetRow(searchAndProfileBar, 0);
+        Children.Add(searchAndProfileBar);
+
+        // Row 1: Category Filter Pills
+        var filterBar = BuildFilterPillsBar();
+        Grid.SetRow(filterBar, 1);
+        Children.Add(filterBar);
+
+        // Row 2: Custom Lists ("Listelerim") Bar
+        _customListsBar = BuildCustomListsBar(
+            out _customListsTitle,
+            out _customListPillsPanel,
+            out _newListNameBox,
+            out _createListButton);
+        Grid.SetRow(_customListsBar, 2);
+        Children.Add(_customListsBar);
+
+        // Row 3: Content Area (Auth Gate Card + Empty State + Video Cards Scroller)
+        var contentArea = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+        };
+
         _authGateContainer = BuildAuthGateCard(
             out _authTitle,
             out _authDescription,
@@ -639,19 +781,29 @@ public sealed class VideoPlatformHubView : Grid
             out _authErrorText,
             out _authLoginButton,
             out _authRegisterButton);
+        contentArea.Children.Add(_authGateContainer);
 
-        // 2. Build Logged-In Hub Container
-        _hubContainer = BuildHubContainer(
-            out _searchBox,
-            out _activeProfileBadgeText,
-            out _hubLogoutButton,
-            out _cardsPanel,
-            out _emptyStateCard,
-            out _emptyStateTitle,
-            out _emptyStateSubtitle);
+        _emptyStateCard = BuildEmptyStateCard(out _emptyStateTitle, out _emptyStateSubtitle);
+        contentArea.Children.Add(_emptyStateCard);
 
-        Children.Add(_authGateContainer);
-        Children.Add(_hubContainer);
+        _cardsPanel = new StackPanel
+        {
+            Spacing = 10,
+            Orientation = Orientation.Vertical,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        _feedScroller = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Content = _cardsPanel,
+        };
+        contentArea.Children.Add(_feedScroller);
+
+        Grid.SetRow(contentArea, 3);
+        Children.Add(contentArea);
 
         Subscribe(_vm);
         Unloaded += (_, _) => Unsubscribe(_vm);
@@ -679,6 +831,13 @@ public sealed class VideoPlatformHubView : Grid
         }
     }
 
+    /// <summary>Focuses the top video search input box.</summary>
+    public void FocusSearchBox()
+    {
+        _searchBox.Focus(FocusState.Programmatic);
+        _searchBox.SelectAll();
+    }
+
     private void Subscribe(VideoPlatformViewModel vm)
     {
         vm.PropertyChanged += OnViewModelPropertyChanged;
@@ -689,6 +848,351 @@ public sealed class VideoPlatformHubView : Grid
     {
         vm.PropertyChanged -= OnViewModelPropertyChanged;
         vm.LocalizationChanged -= OnLocalizationChanged;
+    }
+
+    private Grid BuildSearchAndProfileBar(
+        out TextBox searchBox,
+        out Button searchButton,
+        out TextBlock searchButtonLabel,
+        out Button clearSearchButton,
+        out TextBlock activeProfileBadgeText,
+        out Button clearHistoryButton,
+        out Button logoutButton,
+        out Button signInPromptButton)
+    {
+        var bar = new Grid
+        {
+            ColumnSpacing = 10,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        searchBox = new TextBox
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        searchBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == VirtualKey.Enter)
+            {
+                ExecuteSearch();
+                e.Handled = true;
+            }
+        };
+        searchBox.TextChanged += (s, _) =>
+        {
+            // When cleared to empty, restore full list immediately
+            var txt = ((TextBox)s).Text;
+            if (string.IsNullOrEmpty(txt) && !string.IsNullOrEmpty(_vm.SearchQuery))
+            {
+                _vm.SearchQuery = "";
+            }
+        };
+        Grid.SetColumn(searchBox, 0);
+        bar.Children.Add(searchBox);
+
+        searchButtonLabel = new TextBlock
+        {
+            FontSize = 12.5,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var searchBtnStack = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        searchBtnStack.Children.Add(new FontIcon { Glyph = "\uE721", FontSize = 13 });
+        searchBtnStack.Children.Add(searchButtonLabel);
+
+        searchButton = new Button
+        {
+            Padding = new Thickness(12, 6, 12, 6),
+            CornerRadius = new CornerRadius(6),
+            VerticalAlignment = VerticalAlignment.Center,
+            Content = searchBtnStack,
+            Style = Application.Current?.Resources.TryGetValue("AccentButtonStyle", out var accent) == true
+                ? accent as Style
+                : null,
+        };
+        searchButton.Click += (_, _) => ExecuteSearch();
+        Grid.SetColumn(searchButton, 1);
+        bar.Children.Add(searchButton);
+
+        clearSearchButton = new Button
+        {
+            Padding = new Thickness(8, 6, 8, 6),
+            CornerRadius = new CornerRadius(6),
+            VerticalAlignment = VerticalAlignment.Center,
+            Content = new FontIcon { Glyph = "\uE711", FontSize = 12 },
+            Visibility = Visibility.Collapsed,
+        };
+        clearSearchButton.Click += (_, _) =>
+        {
+            _searchBox.Text = "";
+            _vm.SearchQuery = "";
+        };
+        Grid.SetColumn(clearSearchButton, 2);
+        bar.Children.Add(clearSearchButton);
+
+        var profileRightStack = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        activeProfileBadgeText = new TextBlock
+        {
+            FontSize = 12,
+            Opacity = 0.82,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        profileRightStack.Children.Add(activeProfileBadgeText);
+
+        clearHistoryButton = new Button
+        {
+            Padding = new Thickness(10, 5, 10, 5),
+            CornerRadius = new CornerRadius(6),
+            FontSize = 12,
+            Visibility = Visibility.Collapsed,
+        };
+        clearHistoryButton.Click += (_, _) => _vm.ClearWatchHistory();
+        profileRightStack.Children.Add(clearHistoryButton);
+
+        logoutButton = new Button
+        {
+            Padding = new Thickness(10, 5, 10, 5),
+            CornerRadius = new CornerRadius(6),
+            FontSize = 12,
+            Visibility = Visibility.Collapsed,
+        };
+        logoutButton.Click += (_, _) =>
+        {
+            _showExplicitSignInCard = false;
+            _vm.Logout();
+            _authPasswordBox.Password = "";
+            Refresh();
+        };
+        profileRightStack.Children.Add(logoutButton);
+
+        signInPromptButton = new Button
+        {
+            Padding = new Thickness(10, 5, 10, 5),
+            CornerRadius = new CornerRadius(6),
+            FontSize = 12,
+        };
+        signInPromptButton.Click += (_, _) =>
+        {
+            _showExplicitSignInCard = !_showExplicitSignInCard;
+            Refresh();
+        };
+        profileRightStack.Children.Add(signInPromptButton);
+
+        Grid.SetColumn(profileRightStack, 3);
+        bar.Children.Add(profileRightStack);
+
+        return bar;
+    }
+
+    private StackPanel BuildFilterPillsBar()
+    {
+        var pillsPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        foreach (var filter in new[]
+                 {
+                     VideoFeedFilter.All,
+                     VideoFeedFilter.History,
+                     VideoFeedFilter.Liked,
+                     VideoFeedFilter.TopRated,
+                     VideoFeedFilter.MostWatched,
+                 })
+        {
+            var captured = filter;
+            var pill = new Button
+            {
+                Padding = new Thickness(12, 6, 12, 6),
+                CornerRadius = new CornerRadius(16),
+                FontSize = 12.5,
+                FontWeight = FontWeights.SemiBold,
+            };
+            pill.Click += (_, _) =>
+            {
+                _showExplicitSignInCard = false;
+                _vm.ActiveFilter = captured;
+            };
+            _filterButtons[captured] = pill;
+            pillsPanel.Children.Add(pill);
+        }
+
+        return pillsPanel;
+    }
+
+    private Border BuildCustomListsBar(
+        out TextBlock customListsTitle,
+        out StackPanel customListPillsPanel,
+        out TextBox newListNameBox,
+        out Button createListButton)
+    {
+        var barBorder = new Border
+        {
+            Padding = new Thickness(10, 7, 10, 7),
+            CornerRadius = new CornerRadius(10),
+            Background = new SolidColorBrush(ColorHelper.FromArgb(0x14, 0x80, 0x80, 0x8A)),
+            BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(0x24, 0x80, 0x80, 0x8A)),
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Visibility = Visibility.Collapsed,
+        };
+
+        var grid = new Grid
+        {
+            ColumnSpacing = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var labelStack = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        labelStack.Children.Add(new FontIcon { Glyph = "\uE8FD", FontSize = 13, Opacity = 0.85 });
+        customListsTitle = new TextBlock
+        {
+            FontSize = 12.5,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        labelStack.Children.Add(customListsTitle);
+        Grid.SetColumn(labelStack, 0);
+        grid.Children.Add(labelStack);
+
+        customListPillsPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var pillsScroll = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = customListPillsPanel,
+        };
+        Grid.SetColumn(pillsScroll, 1);
+        grid.Children.Add(pillsScroll);
+
+        newListNameBox = new TextBox
+        {
+            Width = 170,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        newListNameBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == VirtualKey.Enter)
+            {
+                AttemptCreateCustomList();
+                e.Handled = true;
+            }
+        };
+        Grid.SetColumn(newListNameBox, 2);
+        grid.Children.Add(newListNameBox);
+
+        createListButton = new Button
+        {
+            Padding = new Thickness(10, 5, 10, 5),
+            CornerRadius = new CornerRadius(6),
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        createListButton.Click += (_, _) => AttemptCreateCustomList();
+        Grid.SetColumn(createListButton, 3);
+        grid.Children.Add(createListButton);
+
+        barBorder.Child = grid;
+        return barBorder;
+    }
+
+    private void AttemptCreateCustomList()
+    {
+        var name = _newListNameBox.Text.Trim();
+        if (name.Length == 0) return;
+        var created = _vm.CreateCustomList(name);
+        if (created is not null)
+        {
+            _newListNameBox.Text = "";
+            _vm.SelectCustomList(created.Id);
+        }
+    }
+
+    private void ExecuteSearch()
+    {
+        _showExplicitSignInCard = false;
+        _vm.SearchQuery = _searchBox.Text;
+        _vm.RefreshFeed();
+        Refresh();
+    }
+
+    private Border BuildEmptyStateCard(out TextBlock emptyStateTitle, out TextBlock emptyStateSubtitle)
+    {
+        emptyStateTitle = new TextBlock
+        {
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            TextAlignment = TextAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        emptyStateSubtitle = new TextBlock
+        {
+            FontSize = 12.5,
+            Opacity = 0.72,
+            TextAlignment = TextAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 420,
+        };
+        var emptyStack = new StackPanel
+        {
+            Spacing = 6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        emptyStack.Children.Add(new FontIcon
+        {
+            Glyph = "\uE714",
+            FontSize = 28,
+            Opacity = 0.55,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        });
+        emptyStack.Children.Add(emptyStateTitle);
+        emptyStack.Children.Add(emptyStateSubtitle);
+
+        return new Border
+        {
+            Padding = new Thickness(24),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = emptyStack,
+            Visibility = Visibility.Collapsed,
+        };
     }
 
     private Border BuildAuthGateCard(
@@ -704,13 +1208,14 @@ public sealed class VideoPlatformHubView : Grid
         var card = new Border
         {
             MaxWidth = 420,
-            Padding = new Thickness(28, 26, 28, 26),
+            Padding = new Thickness(28, 24, 28, 24),
             CornerRadius = new CornerRadius(14),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Background = new SolidColorBrush(ColorHelper.FromArgb(0x18, 0x80, 0x80, 0x88)),
             BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(0x30, 0x80, 0x80, 0x88)),
             BorderThickness = new Thickness(1),
+            Visibility = Visibility.Collapsed,
         };
 
         var stack = new StackPanel
@@ -823,179 +1328,11 @@ public sealed class VideoPlatformHubView : Grid
         return card;
     }
 
-    private Grid BuildHubContainer(
-        out TextBox searchBox,
-        out TextBlock activeProfileBadgeText,
-        out Button logoutButton,
-        out StackPanel cardsPanel,
-        out Border emptyStateCard,
-        out TextBlock emptyStateTitle,
-        out TextBlock emptyStateSubtitle)
-    {
-        var root = new Grid
-        {
-            RowSpacing = 12,
-            Padding = new Thickness(16, 12, 16, 12),
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch,
-            Visibility = Visibility.Collapsed,
-        };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-        // Top bar: filter pills + search box + active profile chip
-        var topBar = new Grid { ColumnSpacing = 12, VerticalAlignment = VerticalAlignment.Center };
-        topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        var pillsPanel = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 6,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-
-        foreach (var filter in new[]
-                 {
-                     VideoFeedFilter.All,
-                     VideoFeedFilter.History,
-                     VideoFeedFilter.Liked,
-                     VideoFeedFilter.MostWatched,
-                     VideoFeedFilter.TopRated,
-                 })
-        {
-            var captured = filter;
-            var pill = new Button
-            {
-                Padding = new Thickness(12, 6, 12, 6),
-                CornerRadius = new CornerRadius(16),
-                FontSize = 12.5,
-                FontWeight = FontWeights.SemiBold,
-            };
-            pill.Click += (_, _) => _vm.ActiveFilter = captured;
-            _filterButtons[captured] = pill;
-            pillsPanel.Children.Add(pill);
-        }
-
-        Grid.SetColumn(pillsPanel, 0);
-        topBar.Children.Add(pillsPanel);
-
-        searchBox = new TextBox
-        {
-            MinWidth = 180,
-            MaxWidth = 320,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        searchBox.TextChanged += (s, _) =>
-        {
-            if (_updatingSearchBox) return;
-            _vm.SearchQuery = ((TextBox)s).Text;
-        };
-        Grid.SetColumn(searchBox, 1);
-        topBar.Children.Add(searchBox);
-
-        var profileRightStack = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 8,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        activeProfileBadgeText = new TextBlock
-        {
-            FontSize = 12,
-            Opacity = 0.8,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        logoutButton = new Button
-        {
-            Padding = new Thickness(10, 5, 10, 5),
-            CornerRadius = new CornerRadius(6),
-            FontSize = 12,
-        };
-        logoutButton.Click += (_, _) =>
-        {
-            _vm.Logout();
-            _authPasswordBox.Password = "";
-            Refresh();
-        };
-        profileRightStack.Children.Add(activeProfileBadgeText);
-        profileRightStack.Children.Add(logoutButton);
-        Grid.SetColumn(profileRightStack, 2);
-        topBar.Children.Add(profileRightStack);
-
-        Grid.SetRow(topBar, 0);
-        root.Children.Add(topBar);
-
-        // Scrollable video cards area
-        var contentGrid = new Grid();
-
-        emptyStateTitle = new TextBlock
-        {
-            FontSize = 15,
-            FontWeight = FontWeights.SemiBold,
-            TextAlignment = TextAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
-        };
-        emptyStateSubtitle = new TextBlock
-        {
-            FontSize = 12.5,
-            Opacity = 0.72,
-            TextAlignment = TextAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            TextWrapping = TextWrapping.Wrap,
-            MaxWidth = 380,
-        };
-        var emptyStack = new StackPanel
-        {
-            Spacing = 6,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        emptyStack.Children.Add(new FontIcon
-        {
-            Glyph = "\uE714",
-            FontSize = 28,
-            Opacity = 0.55,
-            HorizontalAlignment = HorizontalAlignment.Center,
-        });
-        emptyStack.Children.Add(emptyStateTitle);
-        emptyStack.Children.Add(emptyStateSubtitle);
-
-        emptyStateCard = new Border
-        {
-            Padding = new Thickness(24),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Child = emptyStack,
-            Visibility = Visibility.Collapsed,
-        };
-        contentGrid.Children.Add(emptyStateCard);
-
-        cardsPanel = new StackPanel
-        {
-            Spacing = 10,
-            Orientation = Orientation.Vertical,
-        };
-        var scroller = new ScrollViewer
-        {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = cardsPanel,
-        };
-        contentGrid.Children.Add(scroller);
-
-        Grid.SetRow(contentGrid, 1);
-        root.Children.Add(contentGrid);
-
-        return root;
-    }
-
     private void AttemptInlineLogin()
     {
         if (_vm.TryLogin(_authUsernameBox.Text, _authPasswordBox.Password))
         {
+            _showExplicitSignInCard = false;
             _authPasswordBox.Password = "";
             Refresh();
         }
@@ -1009,6 +1346,7 @@ public sealed class VideoPlatformHubView : Grid
     {
         if (_vm.TryRegister(_authUsernameBox.Text, _authPasswordBox.Password))
         {
+            _showExplicitSignInCard = false;
             _authPasswordBox.Password = "";
             Refresh();
         }
@@ -1038,42 +1376,84 @@ public sealed class VideoPlatformHubView : Grid
     public void Refresh()
     {
         var loggedIn = _vm.IsLoggedIn;
-        _authGateContainer.Visibility = loggedIn ? Visibility.Collapsed : Visibility.Visible;
-        _hubContainer.Visibility = loggedIn ? Visibility.Visible : Visibility.Collapsed;
+        if (loggedIn) _showExplicitSignInCard = false;
 
-        // Localize auth gate
-        _authTitle.Text = L("Yerel Video Platformu");
-        _authDescription.Text = L("İzleme geçmişi, görüntülenme sayısı, beğeni ve yıldız puanları yerel profilinize kaydedilir. Devam etmek için giriş yapın veya yeni profil oluşturun.");
-        _authUsernameBox.PlaceholderText = L("Kullanıcı adı");
-        _authPasswordBox.PlaceholderText = L("Şifre");
-        _authLoginButton.Content = L("Giriş yap");
-        _authRegisterButton.Content = L("Profil oluştur");
-
-        if (!loggedIn)
+        // Top search bar localization & state
+        _searchBox.PlaceholderText = L("İndekslenen tüm videolarda ara (yazıp Enter'a basın)…");
+        if (_searchBox.Text != _vm.SearchQuery && string.IsNullOrEmpty(_vm.SearchQuery))
         {
+            _searchBox.Text = "";
+        }
+        _searchButtonLabel.Text = L("Ara");
+        ToolTipService.SetToolTip(_clearSearchButton, L("Aramayı temizle"));
+        _clearSearchButton.Visibility = !string.IsNullOrWhiteSpace(_vm.SearchQuery)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        // Top-right profile controls
+        _activeProfileBadgeText.Visibility = loggedIn ? Visibility.Visible : Visibility.Collapsed;
+        _hubLogoutButton.Visibility = loggedIn ? Visibility.Visible : Visibility.Collapsed;
+        _hubSignInPromptButton.Visibility = loggedIn ? Visibility.Collapsed : Visibility.Visible;
+        _clearHistoryButton.Visibility = loggedIn && _vm.ActiveFilter == VideoFeedFilter.History && _vm.TotalWatchedVideosCount > 0
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        if (loggedIn)
+        {
+            _activeProfileBadgeText.Text = $"{_vm.CurrentUsername} · {_vm.ProfileSummaryText}";
+            _clearHistoryButton.Content = L("Geçmişi temizle");
+            _hubLogoutButton.Content = L("Çıkış yap");
+        }
+        else
+        {
+            _hubSignInPromptButton.Content = L("Giriş yap / Profil oluştur");
+        }
+
+        // Category Filter Pills with counts
+        UpdateFilterPill(VideoFeedFilter.All, L("Keşfet"));
+        UpdateFilterPill(
+            VideoFeedFilter.History,
+            loggedIn ? L("İzleme geçmişi (%lld)", (long)_vm.TotalWatchedVideosCount) : L("İzleme geçmişi"));
+        UpdateFilterPill(
+            VideoFeedFilter.Liked,
+            loggedIn ? L("Favorilerim (%lld)", (long)_vm.TotalLikedVideosCount) : L("Favorilerim"));
+        UpdateFilterPill(
+            VideoFeedFilter.TopRated,
+            loggedIn ? L("Puan verdiklerim (%lld)", (long)_vm.TotalRatedVideosCount) : L("Puan verdiklerim"));
+        UpdateFilterPill(VideoFeedFilter.MostWatched, L("En çok izlenenler"));
+
+        // Custom Lists ("Listelerim") Bar
+        _customListsBar.Visibility = loggedIn ? Visibility.Visible : Visibility.Collapsed;
+        if (loggedIn)
+        {
+            _customListsTitle.Text = L("Listelerim:");
+            _newListNameBox.PlaceholderText = L("Yeni liste adı…");
+            _createListButton.Content = L("+ Liste oluştur");
+            RebuildCustomListPills();
+        }
+
+        // Auth Gate vs Feed Area
+        var showAuthCard = !loggedIn && (_vm.RequiresAuthForCurrentTab || _showExplicitSignInCard);
+        _authGateContainer.Visibility = showAuthCard ? Visibility.Visible : Visibility.Collapsed;
+
+        if (showAuthCard)
+        {
+            _feedScroller.Visibility = Visibility.Collapsed;
+            _emptyStateCard.Visibility = Visibility.Collapsed;
+
+            _authTitle.Text = L("Yerel Video Platformu");
+            _authDescription.Text = L("İzleme geçmişi, görüntülenme sayısı, favoriler, yıldız puanları ve özel listeleriniz yerel profilinize kaydedilir. Devam etmek için giriş yapın veya yeni profil oluşturun.");
+            _authUsernameBox.PlaceholderText = L("Kullanıcı adı");
+            _authPasswordBox.PlaceholderText = L("Şifre");
+            _authLoginButton.Content = L("Giriş yap");
+            _authRegisterButton.Content = L("Profil oluştur");
+
             RebuildAuthExistingProfileChips();
             RefreshAuthGateError();
             return;
         }
 
-        // Localize filter pills
-        UpdateFilterPill(VideoFeedFilter.All, L("Keşfet"));
-        UpdateFilterPill(VideoFeedFilter.History, L("İzleme geçmişi"));
-        UpdateFilterPill(VideoFeedFilter.Liked, L("Beğenilenler"));
-        UpdateFilterPill(VideoFeedFilter.MostWatched, L("En çok izlenenler"));
-        UpdateFilterPill(VideoFeedFilter.TopRated, L("Puanlananlar"));
-
-        _searchBox.PlaceholderText = L("Videolarda ara…");
-        if (_searchBox.Text != _vm.SearchQuery)
-        {
-            _updatingSearchBox = true;
-            _searchBox.Text = _vm.SearchQuery;
-            _updatingSearchBox = false;
-        }
-
-        _activeProfileBadgeText.Text = $"{_vm.CurrentUsername} · {_vm.ProfileSummaryText}";
-        _hubLogoutButton.Content = L("Çıkış yap");
-
+        _feedScroller.Visibility = Visibility.Visible;
         RebuildFeedCards();
     }
 
@@ -1088,6 +1468,71 @@ public sealed class VideoPlatformHubView : Grid
         button.Foreground = active
             ? new SolidColorBrush(Colors.White)
             : new SolidColorBrush(ColorHelper.FromArgb(0xDF, 0xFF, 0xFF, 0xFF));
+    }
+
+    private void RebuildCustomListPills()
+    {
+        _customListPillsPanel.Children.Clear();
+        var lists = _vm.CustomLists;
+        if (lists.Count == 0)
+        {
+            _customListPillsPanel.Children.Add(new TextBlock
+            {
+                Text = L("Henüz özel liste oluşturulmadı"),
+                FontSize = 12,
+                Opacity = 0.65,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            return;
+        }
+
+        foreach (var list in lists)
+        {
+            var captured = list;
+            var isSelected = _vm.ActiveFilter == VideoFeedFilter.CustomList &&
+                             string.Equals(_vm.ActiveCustomListId, captured.Id, StringComparison.OrdinalIgnoreCase);
+
+            var pillRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            var selectBtn = new Button
+            {
+                Content = $"{captured.Name} ({captured.VideoPaths.Count})",
+                Padding = new Thickness(10, 4, 10, 4),
+                CornerRadius = new CornerRadius(14),
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Background = isSelected
+                    ? new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0x2B, 0x7A, 0xFF))
+                    : new SolidColorBrush(ColorHelper.FromArgb(0x22, 0x80, 0x80, 0x88)),
+                Foreground = new SolidColorBrush(Colors.White),
+            };
+            selectBtn.Click += (_, _) => _vm.SelectCustomList(captured.Id);
+            pillRow.Children.Add(selectBtn);
+
+            if (isSelected)
+            {
+                var deleteBtn = new Button
+                {
+                    Content = "×",
+                    Padding = new Thickness(6, 2, 6, 2),
+                    MinWidth = 24,
+                    MinHeight = 24,
+                    CornerRadius = new CornerRadius(12),
+                    FontSize = 12,
+                    FontWeight = FontWeights.Bold,
+                };
+                ToolTipService.SetToolTip(deleteBtn, L("Listeyi sil"));
+                deleteBtn.Click += (_, _) => _vm.DeleteCustomList(captured.Id);
+                pillRow.Children.Add(deleteBtn);
+            }
+
+            _customListPillsPanel.Children.Add(pillRow);
+        }
     }
 
     private void RebuildAuthExistingProfileChips()
@@ -1128,15 +1573,25 @@ public sealed class VideoPlatformHubView : Grid
         if (items.Count == 0)
         {
             _emptyStateCard.Visibility = Visibility.Visible;
+            if (!string.IsNullOrWhiteSpace(_vm.SearchQuery))
+            {
+                _emptyStateTitle.Text = L("\"%@\" için eşleşen video bulunamadı", _vm.SearchQuery);
+                _emptyStateSubtitle.Text = L("Farklı bir anahtar kelime deneyin veya klasör gezgininden yeni bir video klasörü açın.");
+                return;
+            }
+
             _emptyStateTitle.Text = _vm.ActiveFilter switch
             {
                 VideoFeedFilter.History => L("Henüz izleme geçmişi yok"),
-                VideoFeedFilter.Liked => L("Henüz beğenilen video yok"),
+                VideoFeedFilter.Liked => L("Henüz favorilere eklenen video yok"),
                 VideoFeedFilter.MostWatched => L("Henüz izlenen video yok"),
                 VideoFeedFilter.TopRated => L("Henüz puanlanan video yok"),
+                VideoFeedFilter.CustomList => L("\"%@\" listesinde henüz video yok", _vm.ActiveCustomListName ?? L("Liste")),
                 _ => L("Gösterilecek video bulunamadı"),
             };
-            _emptyStateSubtitle.Text = L("Bir video açıp izlediğinizde, beğendiğinizde veya puanladığınızda burada YouTube tarzı kartlar halinde listelenir.");
+            _emptyStateSubtitle.Text = _vm.ActiveFilter == VideoFeedFilter.CustomList
+                ? L("Herhangi bir video kartındaki veya oynatıcıdaki \"+ Listeye ekle\" düğmesiyle bu listeye video ekleyebilirsiniz.")
+                : L("Bir video açıp izlediğinizde, favorilere eklediğinizde veya puanladığınızda burada YouTube tarzı kartlar halinde listelenir.");
             return;
         }
 
@@ -1153,12 +1608,17 @@ public sealed class VideoPlatformHubView : Grid
         {
             CornerRadius = new CornerRadius(12),
             Padding = new Thickness(12),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             Background = new SolidColorBrush(ColorHelper.FromArgb(0x1C, 0x80, 0x80, 0x8A)),
             BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(0x2A, 0x80, 0x80, 0x8A)),
             BorderThickness = new Thickness(1),
         };
 
-        var layout = new Grid { ColumnSpacing = 14 };
+        var layout = new Grid
+        {
+            ColumnSpacing = 14,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(192) });
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
@@ -1174,7 +1634,6 @@ public sealed class VideoPlatformHubView : Grid
             Background = thumbBg,
         };
 
-        // Play button circle in center
         var playCircle = new Border
         {
             Width = 38,
@@ -1197,30 +1656,64 @@ public sealed class VideoPlatformHubView : Grid
         };
         thumbGrid.Children.Add(playCircle);
 
-        // Top-left sidecar subtitle badge ("CC")
-        if (item.HasSidecarSubtitle)
+        if (item.HasSubtitle)
         {
+            var ccStack = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            ccStack.Children.Add(new FontIcon
+            {
+                Glyph = "\uF2B7",
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Colors.White),
+            });
+            ccStack.Children.Add(new TextBlock
+            {
+                Text = string.IsNullOrEmpty(item.SubtitleBadgeText) ? L("Altyazılı") : item.SubtitleBadgeText,
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(Colors.White),
+            });
+
             var ccBadge = new Border
             {
                 Margin = new Thickness(7, 7, 0, 0),
                 Padding = new Thickness(6, 2, 6, 2),
                 CornerRadius = new CornerRadius(4),
-                Background = new SolidColorBrush(ColorHelper.FromArgb(0xD8, 0x2B, 0x7A, 0xFF)),
+                Background = new SolidColorBrush(ColorHelper.FromArgb(0xE6, 0x1E, 0x8E, 0x5A)),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+                Child = ccStack,
+            };
+            ToolTipService.SetToolTip(ccBadge, L("Altyazı / çeviri dosyası mevcut"));
+            thumbGrid.Children.Add(ccBadge);
+        }
+        else
+        {
+            var noSubBadge = new Border
+            {
+                Margin = new Thickness(7, 7, 0, 0),
+                Padding = new Thickness(6, 2, 6, 2),
+                CornerRadius = new CornerRadius(4),
+                Background = new SolidColorBrush(ColorHelper.FromArgb(0x98, 0x1A, 0x1A, 0x22)),
+                BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(0x38, 0xFF, 0xFF, 0xFF)),
+                BorderThickness = new Thickness(1),
                 HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Top,
                 Child = new TextBlock
                 {
-                    Text = "CC",
-                    FontSize = 10,
-                    FontWeight = FontWeights.Bold,
-                    Foreground = new SolidColorBrush(Colors.White),
+                    Text = L("Altyazı yok"),
+                    FontSize = 9.5,
+                    Foreground = new SolidColorBrush(ColorHelper.FromArgb(0xB8, 0xFF, 0xFF, 0xFF)),
                 },
             };
-            ToolTipService.SetToolTip(ccBadge, L("Altyazı hazır (CC)"));
-            thumbGrid.Children.Add(ccBadge);
+            ToolTipService.SetToolTip(noSubBadge, L("Altyazı yok"));
+            thumbGrid.Children.Add(noSubBadge);
         }
 
-        // Top-right view count pill ("3 görüntüleme")
         var viewsPill = new Border
         {
             Margin = new Thickness(0, 7, 7, 0),
@@ -1239,7 +1732,6 @@ public sealed class VideoPlatformHubView : Grid
         };
         thumbGrid.Children.Add(viewsPill);
 
-        // Bottom-right duration pill if known
         if (!string.IsNullOrEmpty(item.DurationText))
         {
             var durationPill = new Border
@@ -1260,7 +1752,6 @@ public sealed class VideoPlatformHubView : Grid
             thumbGrid.Children.Add(durationPill);
         }
 
-        // Bottom playback progress bar if partially watched
         if (item.HasProgress)
         {
             var progressTrack = new Border
@@ -1296,11 +1787,12 @@ public sealed class VideoPlatformHubView : Grid
         Grid.SetColumn(thumbBorder, 0);
         layout.Children.Add(thumbBorder);
 
-        // Right: Video title, folder path, last watched timestamp, Like button, and 5-star rating buttons
+        // Right: Video title, folder path, badges (Favorites, Rating, Custom Lists), and interactive action buttons
         var detailsStack = new StackPanel
         {
             Spacing = 5,
             VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
         };
 
         var titleText = new TextBlock
@@ -1328,15 +1820,92 @@ public sealed class VideoPlatformHubView : Grid
         };
         detailsStack.Children.Add(folderText);
 
-        var metaText = new TextBlock
+        // Metadata + Badges Row (Views, Last Watched, Favorite badge, Star Rating badge, Custom List badges)
+        var badgesRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        badgesRow.Children.Add(new TextBlock
         {
             Text = $"{item.ViewsText} · {item.LastWatchedText}",
             FontSize = 11.5,
             Opacity = 0.78,
-        };
-        detailsStack.Children.Add(metaText);
+            VerticalAlignment = VerticalAlignment.Center,
+        });
 
-        // Engagement actions row on card: Play button, Heart (Like) button, and 5-star rating buttons
+        if (item.HasSubtitle)
+        {
+            var subBadgeContent = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 4,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            subBadgeContent.Children.Add(new FontIcon
+            {
+                Glyph = "\uF2B7",
+                FontSize = 11,
+                Foreground = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0x6E, 0xF2, 0xB4)),
+            });
+            subBadgeContent.Children.Add(new TextBlock
+            {
+                Text = item.SubtitleStatusText,
+                FontSize = 10.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0x6E, 0xF2, 0xB4)),
+            });
+
+            var subBadge = new Border
+            {
+                Padding = new Thickness(6, 2, 6, 2),
+                CornerRadius = new CornerRadius(5),
+                Background = new SolidColorBrush(ColorHelper.FromArgb(0x33, 0x1E, 0x8E, 0x5A)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = subBadgeContent,
+            };
+            ToolTipService.SetToolTip(subBadge, L("Altyazı / çeviri dosyası mevcut"));
+            badgesRow.Children.Add(subBadge);
+        }
+        else
+        {
+            var noSubMetaBadge = MakeBadge(
+                L("Altyazı yok"),
+                ColorHelper.FromArgb(0x22, 0x80, 0x80, 0x8A),
+                ColorHelper.FromArgb(0x99, 0xFF, 0xFF, 0xFF));
+            ToolTipService.SetToolTip(noSubMetaBadge, L("Altyazı yok"));
+            badgesRow.Children.Add(noSubMetaBadge);
+        }
+
+        if (item.IsLiked)
+        {
+            badgesRow.Children.Add(MakeBadge(
+                $"♥ {L("Favori")}",
+                ColorHelper.FromArgb(0x33, 0xFF, 0x4D, 0x6D),
+                ColorHelper.FromArgb(0xFF, 0xFF, 0x85, 0x9D)));
+        }
+
+        if (item.Rating > 0)
+        {
+            badgesRow.Children.Add(MakeBadge(
+                item.RatingBadgeText,
+                ColorHelper.FromArgb(0x33, 0xFF, 0xC8, 0x3D),
+                ColorHelper.FromArgb(0xFF, 0xFF, 0xD8, 0x6B)));
+        }
+
+        foreach (var listName in item.CustomListNames)
+        {
+            badgesRow.Children.Add(MakeBadge(
+                $"☰ {listName}",
+                ColorHelper.FromArgb(0x33, 0x2B, 0x7A, 0xFF),
+                ColorHelper.FromArgb(0xFF, 0x8C, 0xB8, 0xFF)));
+        }
+
+        detailsStack.Children.Add(badgesRow);
+
+        // Engagement actions row on card: Play button, Heart (Favorite) button, 5-star rating buttons, and "+ Listeye ekle"
         var actionsRow = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -1364,72 +1933,99 @@ public sealed class VideoPlatformHubView : Grid
         playButton.Click += (_, _) => VideoSelected?.Invoke(item.VideoPath);
         actionsRow.Children.Add(playButton);
 
-        var likeButton = new Button
+        if (_vm.IsLoggedIn)
         {
-            Padding = new Thickness(10, 4, 10, 4),
-            CornerRadius = new CornerRadius(6),
-            FontSize = 12,
-            Content = new StackPanel
+            var likeButton = new Button
+            {
+                Padding = new Thickness(10, 4, 10, 4),
+                CornerRadius = new CornerRadius(6),
+                FontSize = 12,
+                Content = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 5,
+                    Children =
+                    {
+                        new FontIcon
+                        {
+                            Glyph = item.IsLiked ? "\uEB52" : "\uEB51",
+                            FontSize = 12,
+                            Foreground = item.IsLiked
+                                ? new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0xFF, 0x4D, 0x6D))
+                                : new SolidColorBrush(Colors.White),
+                        },
+                        new TextBlock { Text = item.LikeButtonText, FontSize = 12 },
+                    },
+                },
+            };
+            likeButton.Click += (_, _) => _vm.ToggleItemLike(item.VideoPath);
+            actionsRow.Children.Add(likeButton);
+
+            var starsRow = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Spacing = 5,
-                Children =
+                Spacing = 1,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var goldBrush = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0xFF, 0xC8, 0x3D));
+            var dimBrush = new SolidColorBrush(ColorHelper.FromArgb(0x80, 0xFF, 0xFF, 0xFF));
+
+            for (var s = 1; s <= 5; s++)
+            {
+                var starNumber = s;
+                var active = starNumber <= item.Rating;
+                var starBtn = new Button
                 {
-                    new FontIcon
+                    Padding = new Thickness(4, 2, 4, 2),
+                    MinWidth = 24,
+                    MinHeight = 24,
+                    CornerRadius = new CornerRadius(4),
+                    Background = new SolidColorBrush(Colors.Transparent),
+                    BorderThickness = new Thickness(0),
+                    Content = new FontIcon
                     {
-                        Glyph = item.IsLiked ? "\uEB52" : "\uEB51",
-                        FontSize = 12,
-                        Foreground = item.IsLiked
-                            ? new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0xFF, 0x4D, 0x6D))
-                            : new SolidColorBrush(Colors.White),
+                        Glyph = active ? "\uE735" : "\uE734",
+                        FontSize = 13,
+                        Foreground = active ? goldBrush : dimBrush,
                     },
-                    new TextBlock { Text = item.LikeButtonText, FontSize = 12 },
-                },
-            },
-        };
-        likeButton.Click += (_, _) => _vm.ToggleItemLike(item.VideoPath);
-        actionsRow.Children.Add(likeButton);
-
-        var starsRow = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 1,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        var goldBrush = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0xFF, 0xC8, 0x3D));
-        var dimBrush = new SolidColorBrush(ColorHelper.FromArgb(0x80, 0xFF, 0xFF, 0xFF));
-
-        for (var s = 1; s <= 5; s++)
-        {
-            var starNumber = s;
-            var active = starNumber <= item.Rating;
-            var starBtn = new Button
-            {
-                Padding = new Thickness(4, 2, 4, 2),
-                MinWidth = 24,
-                MinHeight = 24,
-                CornerRadius = new CornerRadius(4),
-                Background = new SolidColorBrush(Colors.Transparent),
-                BorderThickness = new Thickness(0),
-                Content = new FontIcon
+                };
+                var tip = L("%lld yıldız", (long)starNumber);
+                ToolTipService.SetToolTip(starBtn, tip);
+                AutomationProperties.SetName(starBtn, tip);
+                starBtn.Click += (_, _) =>
                 {
-                    Glyph = active ? "\uE735" : "\uE734",
-                    FontSize = 13,
-                    Foreground = active ? goldBrush : dimBrush,
+                    var nextRating = item.Rating == starNumber ? 0 : starNumber;
+                    _vm.SetItemRating(item.VideoPath, nextRating);
+                };
+                starsRow.Children.Add(starBtn);
+            }
+
+            actionsRow.Children.Add(starsRow);
+
+            // "+ Listeye ekle" menu button on card
+            var cardListFlyout = new MenuFlyout();
+            cardListFlyout.Opening += (_, _) => PlayerEngagementBar.PopulateAddToListFlyout(cardListFlyout, _vm, item.VideoPath);
+
+            var addToListBtn = new Button
+            {
+                Padding = new Thickness(10, 4, 10, 4),
+                CornerRadius = new CornerRadius(6),
+                FontSize = 12,
+                Flyout = cardListFlyout,
+                Content = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 5,
+                    Children =
+                    {
+                        new FontIcon { Glyph = "\uE710", FontSize = 11 },
+                        new TextBlock { Text = L("+ Listeye ekle"), FontSize = 12 },
+                    },
                 },
             };
-            var tip = L("%lld yıldız", (long)starNumber);
-            ToolTipService.SetToolTip(starBtn, tip);
-            AutomationProperties.SetName(starBtn, tip);
-            starBtn.Click += (_, _) =>
-            {
-                var nextRating = item.Rating == starNumber ? 0 : starNumber;
-                _vm.SetItemRating(item.VideoPath, nextRating);
-            };
-            starsRow.Children.Add(starBtn);
+            actionsRow.Children.Add(addToListBtn);
         }
 
-        actionsRow.Children.Add(starsRow);
         detailsStack.Children.Add(actionsRow);
 
         Grid.SetColumn(detailsStack, 1);
@@ -1438,4 +2034,20 @@ public sealed class VideoPlatformHubView : Grid
         card.Child = layout;
         return card;
     }
+
+    private static Border MakeBadge(string text, Windows.UI.Color bg, Windows.UI.Color fg) =>
+        new()
+        {
+            Padding = new Thickness(6, 2, 6, 2),
+            CornerRadius = new CornerRadius(5),
+            Background = new SolidColorBrush(bg),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock
+            {
+                Text = text,
+                FontSize = 10.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(fg),
+            },
+        };
 }
