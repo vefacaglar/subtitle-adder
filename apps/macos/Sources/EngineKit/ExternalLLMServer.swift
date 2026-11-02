@@ -23,8 +23,12 @@ public enum ExternalLLMServer {
         "/v1/chat/completions", "/chat/completions", "/api/chat", "/api/tags", "/v1/models",
     ]
 
-    /// Trims the address, drops trailing slashes, adds `http://` when there is no scheme and strips one API suffix.
-    /// `nil` when nothing usable (no host) is left.
+    /// Trims the address, drops trailing slashes, adds a scheme when there is none and strips one API suffix. `nil`
+    /// when nothing usable (no host) is left.
+    ///
+    /// An address typed without a scheme gets `http://` when its host is on this computer or the local network (see
+    /// `isLocalNetworkHost(_:)`; LM Studio, Ollama and friends rarely have TLS) and `https://` otherwise, so that
+    /// `api.openai.com/v1` never sends its bearer token in cleartext. A scheme the user typed is kept as it is.
     public static func normalizeBaseURL(_ raw: String) -> String? {
         var url = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while url.hasSuffix("/") { url.removeLast() }
@@ -32,7 +36,9 @@ public enum ExternalLLMServer {
         guard !url.isEmpty, !["http:", "https:"].contains(url.lowercased()) else { return nil }
         let lower = url.lowercased()
         if !lower.hasPrefix("http://") && !lower.hasPrefix("https://") {
-            url = "http://" + url
+            // Judge the host by parsing it as if it were plain HTTP; an unparsable one stays "http://" and fails below.
+            let host = URL(string: "http://" + url)?.host()
+            url = (host.map(isLocalNetworkHost) ?? true ? "http://" : "https://") + url
         }
         for suffix in strippedSuffixes where url.lowercased().hasSuffix(suffix) {
             url.removeLast(suffix.count)
@@ -249,9 +255,16 @@ public enum ExternalLLMServer {
         (error as? URLError)?.code == .timedOut ? engineString("Zaman aşımı") : error.localizedDescription
     }
 
-    /// A `Fetch` over `URLSession` (ephemeral by default: no cache or cookies, so a key is never kept by the session).
-    public static func urlSessionFetch(session: URLSession = URLSession(configuration: .ephemeral)) -> Fetch {
-        { request in
+    /// The session every default `Fetch` shares: ephemeral (no cache, cookies or credential storage, so a key is never
+    /// kept by the session) and created once, because a `URLSession` holds connections and threads until it is
+    /// invalidated and the settings window builds a `Fetch` per view model.
+    static let sharedSession = URLSession(configuration: .ephemeral)
+
+    /// A `Fetch` over `URLSession`: the shared ephemeral session unless one is given (tests pass a stubbed one, which
+    /// the caller owns).
+    public static func urlSessionFetch(session: URLSession? = nil) -> Fetch {
+        let session = session ?? sharedSession
+        return { request in
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
             return (data, http.statusCode)

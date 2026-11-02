@@ -53,7 +53,7 @@ extension ProfileStore {
     /// gets a record so a later move or rename can be followed. `false` for an unknown list or while logged out.
     @discardableResult
     public func addVideo(_ video: URL, toList id: String) throws(ProfileError) -> Bool {
-        guard let probe = VideoProbe(video) else { return false }
+        guard let probe = lookupProbe(for: video) else { return false }
         return try transact(fallback: false) { state in
             guard state.session!.contents.listIndex(id: id) != nil else { return (false, []) }
             let now = clock()
@@ -72,7 +72,7 @@ extension ProfileStore {
     /// Removes a video from a list. `false` if it was not in it (or the list is unknown, or nobody is logged in).
     @discardableResult
     public func removeVideo(_ video: URL, fromList id: String) throws(ProfileError) -> Bool {
-        guard let probe = VideoProbe(video) else { return false }
+        guard let probe = lookupProbe(for: video) else { return false }
         return try transact(fallback: false) { state in
             let now = clock()
             let migrated = state.session!.contents.resolve(probe, now: now)?.migrated == true
@@ -90,7 +90,7 @@ extension ProfileStore {
     /// an unknown list or while logged out).
     @discardableResult
     public func toggleVideo(_ video: URL, inList id: String) throws(ProfileError) -> Bool {
-        guard let probe = VideoProbe(video) else { return false }
+        guard let probe = lookupProbe(for: video) else { return false }
         return try transact(fallback: false) { state in
             guard state.session!.contents.listIndex(id: id) != nil else { return (false, []) }
             let now = clock()
@@ -116,20 +116,18 @@ extension ProfileStore {
         read { $0.session?.contents.customLists ?? [] }
     }
 
-    /// The lists that contain the video, after following the video if it moved.
-    public func lists(containing video: URL) -> [UserVideoList] {
-        guard let probe = VideoProbe(video) else { return [] }
-        return readMigrating([probe]) { session in
-            session.contents.customLists.filter { $0.videoPaths.contains { $0.lowercased() == probe.pathKey } }
-        } ?? []
+    /// The lists that contain the video, after following the video if it moved (applied in memory, saved with the next
+    /// write, see `ProfileStore`). Fingerprints the file: see `FingerprintMode` for the main-actor variants.
+    public func lists(containing video: URL, fingerprints: FingerprintMode = .compute) -> [UserVideoList] {
+        guard let probe = lookupProbe(for: video, mode: fingerprints), let contents = readMigrating([probe]) else { return [] }
+        return contents.customLists.filter { $0.videoPaths.contains { $0.lowercased() == probe.pathKey } }
     }
 
     /// Whether the video is in the list, after following the video if it moved.
-    public func isVideo(_ video: URL, inList id: String) -> Bool {
-        guard let probe = VideoProbe(video) else { return false }
-        return readMigrating([probe]) { session in
-            guard let index = session.contents.listIndex(id: id) else { return false }
-            return session.contents.customLists[index].videoPaths.contains { $0.lowercased() == probe.pathKey }
-        } ?? false
+    public func isVideo(_ video: URL, inList id: String, fingerprints: FingerprintMode = .compute) -> Bool {
+        guard let probe = lookupProbe(for: video, mode: fingerprints), let contents = readMigrating([probe]),
+            let index = contents.listIndex(id: id)
+        else { return false }
+        return contents.customLists[index].videoPaths.contains { $0.lowercased() == probe.pathKey }
     }
 }

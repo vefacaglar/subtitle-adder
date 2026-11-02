@@ -1,9 +1,13 @@
 import Foundation
 
-/// Case- and diacritic-insensitive comparison, independent of the user's locale ("daha sonra izle" equals "Daha Sonra İzle").
+/// Case-, diacritic- and width-insensitive comparison, independent of the user's locale ("daha sonra izle" equals
+/// "Daha Sonra İzle"). The dotless ı of Turkish also folds to a plain i, which Unicode folding alone does not do
+/// ("kısa" finds "KISA FİLM.mp4"). The one folding of the module: library search, list-name uniqueness and
+/// `MediaLibraryIndex` search all use it, so they always agree on what is "the same".
 enum TextFolding {
     static func fold(_ text: String) -> String {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+            .replacingOccurrences(of: "\u{131}", with: "i")
     }
 }
 

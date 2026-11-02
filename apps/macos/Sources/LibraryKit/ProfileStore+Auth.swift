@@ -3,7 +3,7 @@ import Foundation
 
 extension ProfileStore {
     /// Creates a profile and logs in as it. The username is trimmed and must be new (ignoring case); the password
-    /// is used as typed. Runs one PBKDF2 (tens of milliseconds): call it off the main actor.
+    /// is used as typed. Runs one PBKDF2 (tens of milliseconds) and talks to the keychain: call it off the main actor.
     public func register(username: String, password: String, rememberMe: Bool = true) throws(ProfileError) {
         let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw .emptyUsername }
@@ -14,7 +14,10 @@ extension ProfileStore {
         let derived = try ProfileCrypto.derive(password: password, salt: salt, iterations: ProfileCrypto.defaultIterations)
         let createdAt = clock()
 
-        var secrets: [(account: String, value: Data?)] = []
+        // Whoever is logged in now keeps the progress they have not saved yet; the keychain is asked before any lock is taken.
+        _ = try? persistDirty(minInterval: 0)
+        let step = storeRememberKey(rememberMe, username: name, key: derived.vaultKey)
+        var previouslyRemembered: String?
         do throws(ProfileError) {
             try transact(requiresSession: false, fallback: ()) { (state: inout ProfileState) throws(ProfileError) -> ((), ProfileEffect) in
                 guard state.profiles[name.lowercased()] == nil else { throw .usernameTaken }
@@ -25,29 +28,35 @@ extension ProfileStore {
                 var session = ProfileSession(
                     usernameKey: name.lowercased(), username: name, vaultKey: derived.vaultKey, contents: VaultContents(),
                     loadedCiphertext: nil, remembered: false)
-                secrets = applyRememberChoice(rememberMe, state: &state, session: &session)
+                previouslyRemembered = state.rememberedUsername
+                applyRememberChoice(rememberMe, step: step, state: &state, session: &session)
                 state.session = session
                 state.lastUsername = name
                 return ((), [.vault, .header])
             }
         } catch {
-            restore(secrets)
+            rollBack(step)
             throw error
         }
+        finish(step, previouslyRemembered: previouslyRemembered)
     }
 
     /// Unlocks a profile. The username match ignores case and the session keeps the registered casing. Throws
     /// `.invalidCredentials` for an unknown user and a wrong password alike (both cost one PBKDF2), and
-    /// `.vaultUnreadable` if the password is right but the vault will not decrypt (the stored vault is not touched).
-    /// Runs one PBKDF2: call it off the main actor.
+    /// `.vaultUnreadable` if the password is right but the vault will not decrypt (the stored vault is not touched);
+    /// `.fileUnreadable` if `profiles.json` cannot be read at all right now. Runs one PBKDF2 and talks to the
+    /// keychain: call it off the main actor.
     public func login(username: String, password: String, rememberMe: Bool = true) throws(ProfileError) {
         let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !password.isEmpty else { throw .missingCredentials }
 
-        let candidate = read { $0.profiles[name.lowercased()] }
+        let (candidate, problem) = read { ($0.profiles[name.lowercased()], $0.fileProblem) }
+        if candidate == nil, problem == .unreadable { throw .fileUnreadable }
         let derived = try verifyPassword(password, against: candidate)
 
-        var secrets: [(account: String, value: Data?)] = []
+        _ = try? persistDirty(minInterval: 0)
+        let step = storeRememberKey(rememberMe, username: candidate?.username ?? name, key: derived.vaultKey)
+        var previouslyRemembered: String?
         do throws(ProfileError) {
             try transact(requiresSession: false, fallback: ()) { (state: inout ProfileState) throws(ProfileError) -> ((), ProfileEffect) in
                 // The profile may have changed or vanished while the password was being checked.
@@ -60,51 +69,72 @@ extension ProfileStore {
                 var session = ProfileSession(
                     usernameKey: name.lowercased(), username: current.username, vaultKey: derived.vaultKey,
                     contents: contents, loadedCiphertext: current.encryptedVaultBase64, remembered: false)
-                secrets = applyRememberChoice(rememberMe, state: &state, session: &session)
+                previouslyRemembered = state.rememberedUsername
+                applyRememberChoice(rememberMe, step: step, state: &state, session: &session)
                 state.session = session
                 state.lastUsername = current.username
                 return ((), [.header])
             }
         } catch {
-            restore(secrets)
+            rollBack(step)
             throw error
         }
+        finish(step, previouslyRemembered: previouslyRemembered)
     }
 
     /// Locks the profile in memory and forgets the remembered login (the stored key and `rememberedUsername`), for
     /// every instance. `rememberMe` and `lastUsername` stay. The local logout always happens; the error, if any, is
-    /// only that it could not be written to disk (`.lockUnavailable`, `.writeFailed`).
+    /// only that it could not be written to disk (`.lockUnavailable`, `.writeFailed`). Unsaved progress is written
+    /// first, on a best-effort basis. Talks to the keychain: call it off the main actor.
     public func logout() throws(ProfileError) {
-        lock.lock()
-        defer { lock.unlock() }
-        syncLocked()
-        guard state.session != nil || state.rememberedUsername != nil else { return }
+        _ = try? persistDirty(minInterval: 0)
 
-        for name in [state.session?.username, state.rememberedUsername].compactMap({ $0 }) {
-            secretStore.remove(Self.rememberAccount(for: name))
+        // 1. Lock and forget in memory, under the in-process lock only.
+        lock.lock()
+        syncLocked()
+        guard state.session != nil || state.rememberedUsername != nil else {
+            lock.unlock()
+            return
         }
+        let forgotten = [state.session?.username, state.rememberedUsername].compactMap { $0 }
         state.session = nil
         state.rememberedUsername = nil
+        lock.unlock()
         hub.yield(.local)
 
+        // 2. Remove the keys, outside every lock.
+        for name in forgotten { secretStore.remove(Self.rememberAccount(for: name)) }
+
+        // 3. Write the forgotten state. The file lock is waited for without the in-process lock.
         let fileLock = try ProfileFileLock.acquire(at: lockURL, timeout: lockTimeout)
         defer { fileLock.release() }
-        syncLocked()
-        if let name = state.rememberedUsername { secretStore.remove(Self.rememberAccount(for: name)) }
-        state.session = nil
-        state.rememberedUsername = nil
-        var working = state
-        try saveLocked(&working, vaultChanged: false)
-        state = working
+        var rememberedMeanwhile: String?
+        do throws(ProfileError) {
+            lock.lock()
+            defer { lock.unlock() }
+            syncLocked()
+            rememberedMeanwhile = state.rememberedUsername
+            state.session = nil
+            state.rememberedUsername = nil
+            var working = state
+            try saveLocked(&working, vaultChanged: false)
+            state = working
+        } catch {
+            // A login another instance remembered meanwhile was cleared in memory but not on disk; its key goes anyway.
+            if let name = rememberedMeanwhile { secretStore.remove(Self.rememberAccount(for: name)) }
+            throw error
+        }
+        if let name = rememberedMeanwhile { secretStore.remove(Self.rememberAccount(for: name)) }
     }
 
     /// Deletes a profile and everything in its vault after checking its password; ends the session if it is the
-    /// active one. Runs one PBKDF2: call it off the main actor.
+    /// active one. Runs one PBKDF2 and talks to the keychain: call it off the main actor.
     public func deleteProfile(username: String, password: String) throws(ProfileError) {
         let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !password.isEmpty else { throw .missingCredentials }
 
-        let candidate = read { $0.profiles[name.lowercased()] }
+        let (candidate, problem) = read { ($0.profiles[name.lowercased()], $0.fileProblem) }
+        if candidate == nil, problem == .unreadable { throw .fileUnreadable }
         _ = try verifyPassword(password, against: candidate)
 
         let key = name.lowercased()
@@ -139,35 +169,52 @@ extension ProfileStore {
         throw .invalidCredentials
     }
 
-    /// Stores or clears the remembered login for a session that is about to start and returns what the keychain held
-    /// before, so a failed save can put it back. With remember-me on and the key stored, `rememberedUsername` becomes
-    /// this user (and a previously remembered other user is forgotten); otherwise both are cleared.
-    func applyRememberChoice(
-        _ rememberMe: Bool, state: inout ProfileState, session: inout ProfileSession
-    ) -> [(account: String, value: Data?)] {
-        let account = Self.rememberAccount(for: session.username)
-        let previous = state.rememberedUsername
-        let previousAccount = previous.map(Self.rememberAccount(for:))
-        var before: [(account: String, value: Data?)] = [(account, secretStore.data(for: account))]
-        if let previousAccount, previousAccount != account { before.append((previousAccount, secretStore.data(for: previousAccount))) }
+    // MARK: - Remember-me and the keychain
 
+    /// What the keychain held for a session's account before this login touched it, and whether the key is stored now.
+    /// The keychain is read and written before the transaction (so no lock is held while a keychain prompt is up), and
+    /// `rollBack` / `finish` settle it afterwards.
+    struct RememberStep {
+        let account: String
+        let before: Data?
+        /// Remember-me is on and the key is in the keychain.
+        let stored: Bool
+    }
+
+    /// Stores the vault key for a remembered login (or, with remember-me off, only notes what was there). Call it
+    /// outside every lock.
+    func storeRememberKey(_ rememberMe: Bool, username: String, key: SymmetricKey) -> RememberStep {
+        let account = Self.rememberAccount(for: username)
+        let before = secretStore.data(for: account)
+        let stored = rememberMe && secretStore.set(key.rawData, for: account)
+        return RememberStep(account: account, before: before, stored: stored)
+    }
+
+    /// The in-memory half of remember-me, run inside the transaction: with the key stored, `rememberedUsername`
+    /// becomes this user; otherwise it is cleared.
+    func applyRememberChoice(_ rememberMe: Bool, step: RememberStep, state: inout ProfileState, session: inout ProfileSession) {
         state.rememberMe = rememberMe
-        if rememberMe, secretStore.set(session.vaultKey.rawData, for: account) {
-            if let previousAccount, previousAccount != account { secretStore.remove(previousAccount) }
+        if step.stored {
             state.rememberedUsername = session.username
             session.remembered = true
         } else {
-            if let previousAccount { secretStore.remove(previousAccount) }
-            secretStore.remove(account)
             state.rememberedUsername = nil
             session.remembered = false
         }
-        return before
     }
 
-    func restore(_ secrets: [(account: String, value: Data?)]) {
-        for (account, value) in secrets {
-            if let value { secretStore.set(value, for: account) } else { secretStore.remove(account) }
+    /// Puts the keychain back as it was when the transaction failed.
+    func rollBack(_ step: RememberStep) {
+        if let before = step.before { secretStore.set(before, for: step.account) } else { secretStore.remove(step.account) }
+    }
+
+    /// After a successful transaction: drop a key that did not become the remembered one and the one of the user who
+    /// was remembered before.
+    func finish(_ step: RememberStep, previouslyRemembered: String?) {
+        if !step.stored { secretStore.remove(step.account) }
+        if let previous = previouslyRemembered {
+            let previousAccount = Self.rememberAccount(for: previous)
+            if previousAccount != step.account { secretStore.remove(previousAccount) }
         }
     }
 }

@@ -31,6 +31,18 @@ public actor MediaLibraryIndex {
     private var isLoaded = false
     private let subscribers = ChangeSubscribers()
 
+    /// Lists one folder; `MediaFolderScanner.list` except in tests, which script the order scans finish in.
+    typealias Lister = @Sendable (_ path: String, _ now: Date) async -> MediaFolderScanner.Listing
+    private let lister: Lister
+
+    /// Scans can overlap (the actor is free while a folder is being listed), and a listing says only how the folder
+    /// looked when its scan began. Every scan takes a ticket when it begins; `appliedScan` holds, per folder, the ticket
+    /// of the newest scan whose result was applied (a "folder is gone" result included). A result whose ticket is
+    /// older than that is stale and dropped, so the order scans finish in never decides which listing wins. A
+    /// counter rather than timestamps: it cannot be thrown off by the system clock changing. Not persisted.
+    private var scanCounter = 0
+    private var appliedScan: [String: Int] = [:]
+
     /// `<Application Support>/SubtitleAdder/media-index.json`.
     public static var defaultFileURL: URL {
         AppDataDirectory.url().appending(path: "media-index.json", directoryHint: .notDirectory)
@@ -39,6 +51,12 @@ public actor MediaLibraryIndex {
     /// Nothing is read or created here; the file is loaded when the index is first asked something.
     public init(fileURL: URL = MediaLibraryIndex.defaultFileURL) {
         self.fileURL = fileURL
+        lister = { path, now in await MediaFolderScanner.list(directory: path, now: now) }
+    }
+
+    init(fileURL: URL, lister: @escaping Lister) {
+        self.fileURL = fileURL
+        self.lister = lister
     }
 
     deinit {
@@ -166,34 +184,74 @@ public actor MediaLibraryIndex {
         return listed
     }
 
-    /// Scans one normalized folder into memory without writing; `changed` says whether memory was modified.
+    /// Scans one normalized folder into memory without writing; `changed` says whether memory was modified. A result
+    /// that a scan begun later has already superseded (see `scanCounter`) changes nothing and reports that newer state.
     private func scanFolder(_ path: String) async -> (result: ScanResult, changed: Bool) {
         let now = Date()
         let empty = DirectorySnapshot(directoryPath: path, subdirectories: [], mediaFiles: [], scannedAtUtc: now)
         guard !path.isEmpty else { return (ScanResult(snapshot: empty, outcome: .missing), false) }
-        switch await MediaFolderScanner.list(directory: path, now: now) {
+        scanCounter += 1
+        let ticket = scanCounter
+        let key = MediaPath.key(path)
+
+        let listing = await lister(path, now)
+
+        switch listing {
         case .missing:
-            return (ScanResult(snapshot: empty, outcome: .missing), removeSubtree(path))
+            // Gone as of this scan's start; a newer scan that saw the folder (or anything below it) wins.
+            if isSuperseded(key, by: ticket) || hasNewerEntry(under: key, than: ticket) { return (current(key, fallback: empty), false) }
+            return (ScanResult(snapshot: empty, outcome: .missing), removeSubtree(path, ticket: ticket))
         case .unreadable:
-            let kept = entries[MediaPath.key(path)]?.snapshot ?? empty
+            let kept = entries[key]?.snapshot ?? empty
             return (ScanResult(snapshot: kept, outcome: .unreadable), false)
-        case .listed(let snapshot):
-            let key = MediaPath.key(path)
+        case .listed(var snapshot):
+            if isSuperseded(key, by: ticket) { return (current(key, fallback: empty), false) }
             let previous = entries[key]?.snapshot.subdirectories ?? []
+            let listed = Set(snapshot.subdirectories.map(MediaPath.key))
+            // Subfolders this listing no longer shows are dropped with their subtrees, except those a scan that began
+            // after this one has found since (they were created after this listing was taken).
+            var gone: [String] = []
+            var kept: [String] = []
+            for old in previous where !listed.contains(MediaPath.key(old)) {
+                if hasNewerEntry(under: MediaPath.key(old), than: ticket) { kept.append(old) } else { gone.append(old) }
+            }
+            if !kept.isEmpty { snapshot.subdirectories = (snapshot.subdirectories + kept).sorted(by: MediaPath.orderedBefore) }
             entries[key] = Entry(snapshot)
-            let current = Set(snapshot.subdirectories.map(MediaPath.key))
-            for gone in previous where !current.contains(MediaPath.key(gone)) { removeSubtree(gone) }
+            appliedScan[key] = ticket
+            for old in gone { removeSubtree(old, ticket: ticket) }
             return (ScanResult(snapshot: snapshot, outcome: .scanned), true)
         }
     }
 
-    /// Drops the entry for `path` and every entry below it, and `path` from its parent's subfolder list.
+    private func isSuperseded(_ key: String, by ticket: Int) -> Bool {
+        (appliedScan[key] ?? 0) > ticket
+    }
+
+    /// Whether a scan that began after `ticket` has applied a listing of the folder `key` or of any folder below it that
+    /// is still in the index.
+    private func hasNewerEntry(under key: String, than ticket: Int) -> Bool {
+        let prefix = key == "/" ? "/" : key + "/"
+        return entries.keys.contains { ($0 == key || $0.hasPrefix(prefix)) && (appliedScan[$0] ?? 0) > ticket }
+    }
+
+    /// The state a newer scan left behind for a stale result to report.
+    private func current(_ key: String, fallback: DirectorySnapshot) -> ScanResult {
+        guard let entry = entries[key] else { return ScanResult(snapshot: fallback, outcome: .missing) }
+        return ScanResult(snapshot: entry.snapshot, outcome: .scanned)
+    }
+
+    /// Drops the entry for `path` and every entry below it, and `path` from its parent's subfolder list. The dropped
+    /// folders keep `ticket` as their newest applied scan, so an older listing of them that finishes later is ignored.
     @discardableResult
-    private func removeSubtree(_ path: String) -> Bool {
+    private func removeSubtree(_ path: String, ticket: Int) -> Bool {
         let key = MediaPath.key(path)
         let prefix = key == "/" ? "/" : key + "/"
         let doomed = entries.keys.filter { $0 == key || $0.hasPrefix(prefix) }
-        for name in doomed { entries[name] = nil }
+        for name in doomed {
+            entries[name] = nil
+            appliedScan[name] = ticket
+        }
+        appliedScan[key] = ticket
         var changed = !doomed.isEmpty
         if let parent = MediaPath.parent(of: MediaPath.normalized(path)).map(MediaPath.key),
            var entry = entries[parent],
@@ -242,10 +300,10 @@ public actor MediaLibraryIndex {
 
     // MARK: Search keys
 
-    /// Case, diacritic and width-insensitive form of `text`; the dotless i of Turkish file names becomes a plain i.
+    /// Case, diacritic and width-insensitive form of `text`; the dotless i of Turkish file names becomes a plain i
+    /// (`TextFolding`, shared with the profile search).
     nonisolated static func fold(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
-            .replacingOccurrences(of: "\u{131}", with: "i")
+        TextFolding.fold(text)
     }
 }
 

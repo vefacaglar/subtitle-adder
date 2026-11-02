@@ -24,6 +24,10 @@ public enum ProfileError: Error, Equatable, Sendable {
     case corruptFileNotPreserved
     /// `profiles.json` was written by a newer version of the format and is left alone.
     case unsupportedFileVersion(Int)
+    /// `profiles.json` exists but could not be read just now (permissions, an I/O error), so this store does not know
+    /// what is in it and refuses to write: replacing it with its own, possibly empty, view would lose the profiles.
+    /// Nothing was changed on disk; every later call reads the file again, so the same call works once it is readable.
+    case fileUnreadable
     /// Key derivation or encryption failed (should not happen).
     case cryptoFailure
 }

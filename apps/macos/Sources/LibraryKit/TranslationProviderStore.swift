@@ -110,9 +110,12 @@ public final class TranslationProviderStore {
 
     @ObservationIgnored private let fileURL: URL
     @ObservationIgnored private let secrets: any SecretStore
+    /// Why the file on disk may not simply be overwritten yet (see `LoadProblem`); `nil` when it may.
+    @ObservationIgnored private var loadProblem: LoadProblem?
 
-    /// Loads the file if it exists; a missing or unreadable one starts empty. `secrets` and `fileURL` are
-    /// injectable for tests.
+    /// Loads the file if it exists. A missing one starts empty; one that cannot be read, cannot be parsed or has
+    /// entries that cannot be parsed starts with what could be read, and the file on disk is not replaced until a copy
+    /// of it is safe (see `save()`). `secrets` and `fileURL` are injectable for tests.
     public init(fileURL: URL = TranslationProviderStore.defaultFileURL, secrets: any SecretStore = KeychainSecretStore()) {
         self.fileURL = fileURL
         self.secrets = secrets
@@ -297,10 +300,37 @@ public final class TranslationProviderStore {
         return secrets.set(key, for: account)
     }
 
+    /// Why the providers file cannot be overwritten right now.
+    private enum LoadProblem {
+        /// It exists but could not be read (permissions, I/O error). Nothing is saved until it can be, and then the
+        /// entries on disk are merged with the edits made meanwhile.
+        case unreadable
+        /// It could not be parsed, or entries of it were skipped. A copy is set aside before the first save.
+        case damaged
+    }
+
+    private enum FileRead {
+        case missing
+        case unreadable
+        case damaged
+        case loaded(PersistedState)
+    }
+
+    /// An element of `providers` that may be unreadable without taking the others down.
+    private struct LossyProfile: Decodable {
+        let value: TranslationProviderProfile?
+
+        init(from decoder: any Decoder) {
+            value = try? TranslationProviderProfile(from: decoder)
+        }
+    }
+
     /// What goes to disk: the Windows file's two top-level fields.
     private struct PersistedState: Codable {
         var activeProviderId: UUID?
         var providers: [TranslationProviderProfile]
+        /// Entries (and a malformed active id) the file had that could not be read; never written.
+        var skipped = 0
 
         init(activeProviderId: UUID?, providers: [TranslationProviderProfile]) {
             self.activeProviderId = activeProviderId
@@ -309,10 +339,19 @@ public final class TranslationProviderStore {
 
         private enum CodingKeys: String, CodingKey { case activeProviderId, providers }
 
+        /// Reads each provider on its own: one with a bad id or field is skipped (and counted), the rest stay. Only a
+        /// file that is not a JSON object of this shape at all fails as a whole.
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            activeProviderId = try container.decodeIfPresent(UUID.self, forKey: .activeProviderId)
-            providers = try container.decodeIfPresent([TranslationProviderProfile].self, forKey: .providers) ?? []
+            do {
+                activeProviderId = try container.decodeIfPresent(UUID.self, forKey: .activeProviderId)
+            } catch {
+                activeProviderId = nil
+                skipped += 1
+            }
+            let lossy = try container.decodeIfPresent([LossyProfile].self, forKey: .providers) ?? []
+            providers = lossy.compactMap(\.value)
+            skipped += lossy.count - providers.count
         }
 
         /// A missing active provider is written as `null`, as the Windows app does.
@@ -323,16 +362,63 @@ public final class TranslationProviderStore {
         }
     }
 
-    private func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let state = try? JSONDecoder().decode(PersistedState.self, from: data)
-        else { return }
-        providers = state.providers
-        activeProviderID = state.activeProviderId.flatMap { id in providers.contains { $0.id == id } ? id : nil }
+    private static func readFile(_ url: URL) -> FileRead {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            var info = stat()
+            return stat(url.path, &info) != 0 && errno == ENOENT ? .missing : .unreadable
+        }
+        guard let state = try? JSONDecoder().decode(PersistedState.self, from: data) else { return .damaged }
+        return .loaded(state)
     }
 
-    /// Atomic write; if the disk refuses it the state stays in memory for this session.
+    private func load() {
+        switch Self.readFile(fileURL) {
+        case .missing: break
+        case .unreadable: loadProblem = .unreadable
+        case .damaged: loadProblem = .damaged
+        case .loaded(let state):
+            providers = state.providers
+            activeProviderID = state.activeProviderId.flatMap { id in providers.contains { $0.id == id } ? id : nil }
+            if state.skipped > 0 { loadProblem = .damaged }
+        }
+    }
+
+    /// Whether the file may be replaced now. A file that is merely missing always may. One that could not be read is
+    /// read again first (it may be readable by now: its entries are merged in, ours win on the same id). One that
+    /// was damaged or only partly readable is copied to `translation-providers.corrupt-<timestamp>.json` first, and
+    /// if the copy cannot be made nothing is saved, so the original is never lost.
+    private func prepareFileForSave() -> Bool {
+        if loadProblem == .unreadable {
+            switch Self.readFile(fileURL) {
+            case .unreadable: return false
+            case .missing: loadProblem = nil
+            case .damaged: loadProblem = .damaged
+            case .loaded(let disk):
+                let known = Set(providers.map(\.id))
+                providers = disk.providers.filter { !known.contains($0.id) } + providers
+                if activeProviderID == nil {
+                    activeProviderID = disk.activeProviderId.flatMap { id in providers.contains { $0.id == id } ? id : nil }
+                }
+                loadProblem = disk.skipped > 0 ? .damaged : nil
+            }
+        }
+        guard loadProblem == .damaged else { return true }
+        do {
+            try ProfileFileIO.preserveDamagedFile(at: fileURL, now: Date())
+            loadProblem = nil
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Atomic write; if the disk refuses it the state stays in memory for this session. Skipped while the file on
+    /// disk could not be loaded and not yet be kept safe (see `prepareFileForSave()`).
     private func save() {
+        guard prepareFileForSave() else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         guard let data = try? encoder.encode(PersistedState(activeProviderId: activeProviderID, providers: providers)) else { return }

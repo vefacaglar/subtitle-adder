@@ -200,7 +200,7 @@ import Testing
 
     // MARK: - Playback progress, thumbnails, ratings
 
-    @Test func progressIsSavedOnlyWhenItMovedHalfASecond() throws {
+    @Test func progressIsKeptOnlyWhenItMovedHalfASecond() throws {
         let video = folder.video("a.mp4")
         let store = folder.makeStore()
         try store.register(username: "emre", password: "pw", rememberMe: false)
@@ -209,11 +209,16 @@ import Testing
 
         let small = try #require(try store.updatePlaybackProgress(video, position: 10.3, duration: 100))
         #expect(small.lastPositionSeconds == 10)
+        #expect(!store.hasUnsavedChanges, "a step under half a second changes nothing")
+        #expect(try store.flushPlaybackProgress() == false)
         #expect(try Data(contentsOf: folder.profilesFile) == saved)
 
         let real = try #require(try store.updatePlaybackProgress(video, position: 10.5, duration: 100))
         #expect(real.lastPositionSeconds == 10.5)
         #expect(real.viewCount == 1, "progress never counts a view")
+        #expect(store.stats(for: video)?.lastPositionSeconds == 10.5, "readers see it at once")
+        #expect(store.hasUnsavedChanges)
+        #expect(try store.flushPlaybackProgress())
         #expect(try Data(contentsOf: folder.profilesFile) != saved)
 
         // A new duration counts as movement too; a position past the duration is cut to it.

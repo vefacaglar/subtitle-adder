@@ -1,6 +1,20 @@
 import CryptoKit
 import Foundation
 
+/// How far a `ProfileStore` lookup goes to recognize a file by its content. Reading a file's slices is disk I/O, so
+/// the choice decides whether a call is safe on the main actor.
+public enum FingerprintMode: Sendable {
+    /// Fingerprint every file (the first time reads up to 192 KB of it; afterwards one `stat`, see `VideoFingerprint`).
+    /// Follows moved and renamed files. Disk I/O on the caller's thread: call it from a background task.
+    case compute
+    /// Use fingerprints computed earlier in this process, one `stat` per file, never reading file contents. Follows
+    /// moved files only if the background `.compute` pass has seen them already.
+    case cachedOnly
+    /// Look files up by path alone. No file system access at all, so it is safe for a main-actor refresh; a moved
+    /// or renamed file is not recognized until a `.compute` call has followed it.
+    case pathOnly
+}
+
 /// Identifies a video by content rather than by where it lives, so moving or renaming a file keeps its history.
 ///
 /// The id is `fp:<length>:<24 hex>`: SHA-256 over the file length (8 bytes, little endian) and up to three 64 KB
@@ -33,18 +47,33 @@ public enum VideoFingerprint {
     }
 
     /// `fp:<length>:<24 hex>` for an existing, non-empty, readable file, else `nil`. Cached by path, size and
-    /// modification time, so asking again for an unchanged file costs one `stat`.
+    /// modification time, so asking again for an unchanged file costs one `stat`; the first time reads up to 192 KB
+    /// of the file, which can stall on a slow or network disk (never call it on the main actor for many files).
     public static func fingerprint(ofNormalizedPath path: String) -> String? {
-        guard !path.isEmpty else { return nil }
-        var info = stat()
-        guard stat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size > 0 else { return nil }
-        let length = Int64(info.st_size)
-        let signature = CachedFingerprint.Signature(
-            length: length, seconds: Int64(info.st_mtimespec.tv_sec), nanoseconds: Int64(info.st_mtimespec.tv_nsec))
+        guard let (signature, length) = signature(ofNormalizedPath: path) else { return nil }
         if let cached = cache.value(for: path, matching: signature) { return cached }
         guard let computed = compute(path: path, length: length) else { return nil }
         cache.store(computed, for: path, signature: signature)
         return computed
+    }
+
+    /// The fingerprint if it was computed earlier in this process and the file has not changed since; one `stat`, the
+    /// file's contents are never read. `nil` for a file not seen yet, which `fingerprint(ofNormalizedPath:)` would read.
+    public static func cachedFingerprint(ofNormalizedPath path: String) -> String? {
+        guard let (signature, _) = signature(ofNormalizedPath: path) else { return nil }
+        return cache.value(for: path, matching: signature)
+    }
+
+    private static func signature(ofNormalizedPath path: String) -> (CachedFingerprint.Signature, length: Int64)? {
+        guard !path.isEmpty else { return nil }
+        var info = stat()
+        guard stat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size > 0 else { return nil }
+        let length = Int64(info.st_size)
+        return (
+            CachedFingerprint.Signature(
+                length: length, seconds: Int64(info.st_mtimespec.tv_sec), nanoseconds: Int64(info.st_mtimespec.tv_nsec)),
+            length
+        )
     }
 
     private static func compute(path: String, length: Int64) -> String? {
