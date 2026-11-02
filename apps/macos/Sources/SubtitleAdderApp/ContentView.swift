@@ -1,4 +1,5 @@
 import EngineKit
+import LibraryKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -12,6 +13,8 @@ struct ContentView: View {
     @State private var runAfterPicking = false
     @State private var exportDocument: TextDocument?
     @State private var chrome = WindowChrome()
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage(SettingsTab.storageKey) private var settingsTab = SettingsTab.general.rawValue
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,12 +60,12 @@ struct ContentView: View {
         }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
         .task { await catalog.load() }
-        // The toolbar's model menu lists what the server offers; a menu can't fetch when it opens, so the list is
-        // filled ahead of time. Typing an address changes it on every key, hence the pause.
-        .task(id: vm.externalLLM?.normalizedURL) {
-            try? await Task.sleep(for: .milliseconds(800))
+        // The toolbar's model menu lists what the active provider offers; a menu can't fetch when it opens, so the list is
+        // filled ahead of time (launch, switching provider), after the window has had a moment to settle.
+        .task(id: vm.providerPrefetchKey) {
+            try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            await vm.refreshExternalModelsIfNeeded()
+            await vm.refreshActiveProviderModelsIfNeeded()
         }
         .onChange(of: catalog.models, initial: true) { _, _ in
             vm.reconcileModelSelection()
@@ -276,18 +279,25 @@ struct ContentView: View {
 
     private static let subtitleTypes: [UTType] = SubtitleParser.extensions.compactMap { UTType(filenameExtension: $0) } + [.plainText]
 
-    /// The model "Çevir…" uses: local LLMs first, then MADLAD and NLLB (the same choice Settings shows), or the models
-    /// of the external server when one is set up.
+    /// The model "Çevir…" uses. With a provider active its models are listed first and the other providers and the local
+    /// models sit in submenus; with the local models active the providers are submenus above them.
     private var translationModelMenu: some View {
         Menu {
-            if vm.isExternalLLMActive {
-                externalModelItems
+            if let active = vm.activeExternalProvider {
+                activeProviderItems(active)
             } else {
+                ForEach(vm.providerStore.providers) { providerSubmenu($0) }
+                if !vm.providerStore.providers.isEmpty { Divider() }
                 localModelItems
             }
+            Divider()
+            Button(L("API sağlayıcılarını yönet…"), systemImage: "gearshape") {
+                settingsTab = SettingsTab.translation.rawValue
+                openSettings()
+            }
         } label: {
-            if vm.isExternalLLMActive {
-                Label(vm.translationModelTitle, systemImage: "network")
+            if let active = vm.activeExternalProvider {
+                Label(vm.translationModelTitle, systemImage: vm.sendsTextOverInternet(active) ? "cloud" : "network")
                     .labelStyle(.titleAndIcon)
             } else {
                 Text(vm.translationModelTitle)
@@ -296,11 +306,21 @@ struct ContentView: View {
         }
         .disabled(vm.isWorking)
         .accessibilityLabel(L("Çeviri modeli"))
-        .help(vm.isExternalLLMActive
-            ? L("Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır.")
-            : L("Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir."))
+        .help(translationModelHelp)
     }
 
+    private var translationModelHelp: String {
+        guard let active = vm.activeExternalProvider else {
+            return L("Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir.")
+        }
+        if vm.sendsTextOverInternet(active) {
+            return L("Çeviri %@ sağlayıcısında yapılır: çevrilecek metin ona gönderilir, ses gönderilmez.", active.name)
+        }
+        return L("Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır.")
+    }
+
+    /// The local models: local LLMs first, then MADLAD and NLLB (the same choice Settings shows). The checkmark is
+    /// only on the default while no provider is active.
     @ViewBuilder private var localModelItems: some View {
         ForEach(catalog.llamaTranslationModels) { translationModelButton($0) }
         if !catalog.llamaTranslationModels.isEmpty, !catalog.classicTranslationModels.isEmpty {
@@ -309,31 +329,61 @@ struct ContentView: View {
         ForEach(catalog.classicTranslationModels) { translationModelButton($0) }
     }
 
-    /// Models the external server listed, then the refresh action.
-    @ViewBuilder private var externalModelItems: some View {
-        ForEach(vm.externalModels, id: \.self) { name in
+    /// The active provider's models at the top level (a checkmark on the current one) and the refresh action, then the
+    /// other providers and the local models as submenus.
+    @ViewBuilder private func activeProviderItems(_ active: TranslationProviderProfile) -> some View {
+        let models = active.availableModels
+        ForEach(models, id: \.self) { name in
             Button {
-                vm.externalLlmModel = name
+                vm.chooseProviderModel(name, for: active.id)
             } label: {
-                if name == vm.externalLlmModel {
+                if name.caseInsensitiveCompare(active.model) == .orderedSame {
                     Label(name, systemImage: "checkmark")
                 } else {
                     Text(name)
                 }
             }
         }
-        if !vm.externalModels.isEmpty { Divider() }
-        Button(L("Uzaktaki modelleri listele"), systemImage: "arrow.clockwise") {
-            Task { await vm.testExternalConnection() }
+        if !models.isEmpty { Divider() }
+        refreshModelsButton(for: active.id)
+        let others = vm.providerStore.providers.filter { $0.id != active.id }
+        if !others.isEmpty || !catalog.translationModels.isEmpty { Divider() }
+        ForEach(others) { providerSubmenu($0) }
+        if !catalog.translationModels.isEmpty {
+            Menu(L("Yerel modeller (Cihaz üzerinde)")) { localModelItems }
         }
-        .disabled(vm.isTestingExternalConnection)
+    }
+
+    /// A provider that is not the active one: pick one of its models (which also activates it), or just activate it
+    /// when no model is known, and ask it for its models. Its current model is in the title.
+    private func providerSubmenu(_ provider: TranslationProviderProfile) -> some View {
+        let shownModel = provider.model.isEmpty ? L("Otomatik") : provider.model
+        let models = provider.availableModels
+        return Menu("\(provider.name) (\(shownModel))") {
+            if models.isEmpty {
+                Button(L("Etkinleştir")) { vm.activateProvider(provider.id) }
+            } else {
+                ForEach(models, id: \.self) { name in
+                    Button(name) { vm.chooseProviderModel(name, for: provider.id) }
+                }
+            }
+            Divider()
+            refreshModelsButton(for: provider.id)
+        }
+    }
+
+    private func refreshModelsButton(for id: UUID) -> some View {
+        Button(L("Uzaktaki modelleri listele"), systemImage: "arrow.clockwise") {
+            Task { await vm.testConnection(of: id) }
+        }
+        .disabled(vm.testingProviders.contains(id))
     }
 
     private func translationModelButton(_ model: EngineModel) -> some View {
         Button {
-            vm.translationModel = model.id
+            vm.chooseLocalTranslationModel(model.id)
         } label: {
-            if model.id == vm.translationModel {
+            if vm.providerStore.activeProviderID == nil, model.id == vm.translationModel {
                 Label(ModelLabel.translationMenuTitle(for: model), systemImage: "checkmark")
             } else {
                 Text(ModelLabel.translationMenuTitle(for: model))

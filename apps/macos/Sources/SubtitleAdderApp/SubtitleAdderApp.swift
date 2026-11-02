@@ -1,6 +1,7 @@
 import AppKit
 import EngineKit
 import Foundation
+import LibraryKit
 import SwiftUI
 
 @main
@@ -23,7 +24,8 @@ struct SubtitleAdderApp: App {
         // Nothing runs yet, so the engine's scratch folder from earlier sessions can go.
         WorkingDirectory.cleanUp()
         let catalog = ModelCatalog()
-        let model = SubtitleViewModel(catalog: catalog)
+        // The real providers file and keychain; the view model migrates the older single LAN server settings once.
+        let model = SubtitleViewModel(catalog: catalog, providerStore: TranslationProviderStore())
         _catalog = State(initialValue: catalog)
         _vm = State(initialValue: model)
         _externalOpen = State(initialValue: ExternalOpenCoalescer { model.openExternalFiles($0) })

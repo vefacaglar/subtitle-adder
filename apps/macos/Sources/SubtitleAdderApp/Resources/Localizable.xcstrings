@@ -225,22 +225,6 @@
         }
       }
     },
-    "Altyazı ve çeviri": {
-      "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Altyazı ve çeviri"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Subtitles and translation"
-          }
-        }
-      }
-    },
     "Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)": {
       "localizations": {
         "tr": {
@@ -3665,34 +3649,562 @@
         }
       }
     },
-    "Harici LLM sunucusu (Yerel ağ)": {
+    "API Sağlayıcısı Ekle": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Harici LLM sunucusu (Yerel ağ)"
+            "value": "API Sağlayıcısı Ekle"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "External LLM server (Local network)"
+            "value": "Add API Provider"
           }
         }
       }
     },
-    "Ağdaki başka bir cihazın LLM sunucusunu kullan": {
+    "API Sağlayıcısını Düzenle": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ağdaki başka bir cihazın LLM sunucusunu kullan"
+            "value": "API Sağlayıcısını Düzenle"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Use an LLM server on another device on the network"
+            "value": "Edit API Provider"
+          }
+        }
+      }
+    },
+    "API anahtarı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API anahtarı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API key"
+          }
+        }
+      }
+    },
+    "API anahtarı Anahtar Zinciri'ne yazılamadı; anahtar kaydedilmedi. Yeniden girip tekrar dene.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API anahtarı Anahtar Zinciri'ne yazılamadı; anahtar kaydedilmedi. Yeniden girip tekrar dene."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API key could not be written to the Keychain, so it was not saved. Enter it again and retry."
+          }
+        }
+      }
+    },
+    "API sağlayıcılarını yönet…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API sağlayıcılarını yönet…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage API providers…"
+          }
+        }
+      }
+    },
+    "API sağlayıcısı ekle…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API sağlayıcısı ekle…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add API provider…"
+          }
+        }
+      }
+    },
+    "Altyazı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtitles"
+          }
+        }
+      }
+    },
+    "Anahtar yalnızca bu Mac'in Anahtar Zinciri'nde saklanır.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar yalnızca bu Mac'in Anahtar Zinciri'nde saklanır."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The key is stored only in this Mac's Keychain."
+          }
+        }
+      }
+    },
+    "Anahtar yok": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar yok"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No key"
+          }
+        }
+      }
+    },
+    "Asenkron çeviri": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Asenkron çeviri"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Asynchronous translation"
+          }
+        }
+      }
+    },
+    "Açıkken konuşma metne dökülürken aynı anda arka planda çeviri yapılır.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Açıkken konuşma metne dökülürken aynı anda arka planda çeviri yapılır."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When on, translates in the background while speech is being transcribed."
+          }
+        }
+      }
+    },
+    "Bulut sağlayıcıları etkinken çevrilecek metin internet üzerinden o sağlayıcıya gönderilir; ses ve video hiçbir durumda gönderilmez. Yerel modellerde ve yerel ağdaki sunucularda metin internete çıkmaz.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bulut sağlayıcıları etkinken çevrilecek metin internet üzerinden o sağlayıcıya gönderilir; ses ve video hiçbir durumda gönderilmez. Yerel modellerde ve yerel ağdaki sunucularda metin internete çıkmaz."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "While a cloud provider is active, the text to translate is sent to that provider over the internet; audio and video are never sent. With local models and servers on your local network, the text does not go out to the internet."
+          }
+        }
+      }
+    },
+    "%@ bir bulut hizmeti: çevrilecek metin ona gönderilir. Ses ve video gönderilmez.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ bir bulut hizmeti: çevrilecek metin ona gönderilir. Ses ve video gönderilmez."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is a cloud service: the text to translate is sent to it. Audio and video are not sent."
+          }
+        }
+      }
+    },
+    "Açıkken eksik modeller indirilmez. Ses hiçbir durumda dışarı gönderilmez; ancak etkin çeviri sağlayıcısı (%@) bir bulut hizmeti olduğundan çevrilecek metin, çevrimdışı modda bile ona gönderilir.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Açıkken eksik modeller indirilmez. Ses hiçbir durumda dışarı gönderilmez; ancak etkin çeviri sağlayıcısı (%@) bir bulut hizmeti olduğundan çevrilecek metin, çevrimdışı modda bile ona gönderilir."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When on, missing models are not downloaded. Audio is never sent anywhere; however, because the active translation provider (%@) is a cloud service, the text to translate is sent to it, even in offline mode."
+          }
+        }
+      }
+    },
+    "Çeviri %@ sağlayıcısında yapılır: çevrilecek metin ona gönderilir, ses gönderilmez.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri %@ sağlayıcısında yapılır: çevrilecek metin ona gönderilir, ses gönderilmez."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation runs on %@: the text to translate is sent to it, audio is not."
+          }
+        }
+      }
+    },
+    "Düzenle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Düzenle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit"
+          }
+        }
+      }
+    },
+    "Etkinleştir": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Etkinleştir"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activate"
+          }
+        }
+      }
+    },
+    "Güncelle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Güncelle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update"
+          }
+        }
+      }
+    },
+    "Kaydet ve Etkinleştir": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kaydet ve Etkinleştir"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save & Activate"
+          }
+        }
+      }
+    },
+    "Kayıtlı API anahtarı da Anahtar Zinciri'nden silinir.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı API anahtarı da Anahtar Zinciri'nden silinir."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved API key is also removed from the Keychain."
+          }
+        }
+      }
+    },
+    "Model": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model"
+          }
+        }
+      }
+    },
+    "Model seçin veya yazın": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model seçin veya yazın"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select or type a model"
+          }
+        }
+      }
+    },
+    "Model seçin veya yazın (örn. glm-5, gpt-4o-mini)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model seçin veya yazın (örn. glm-5, gpt-4o-mini)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select or type a model (e.g. glm-5, gpt-4o-mini)"
+          }
+        }
+      }
+    },
+    "Model:": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model:"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model:"
+          }
+        }
+      }
+    },
+    "Modelleri seç": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modelleri seç"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a model"
+          }
+        }
+      }
+    },
+    "Sağlayıcı adı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sağlayıcı adı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provider name"
+          }
+        }
+      }
+    },
+    "Sağlayıcı türü": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sağlayıcı türü"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provider type"
+          }
+        }
+      }
+    },
+    "Sunucu adresi (Base URL)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunucu adresi (Base URL)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server address (Base URL)"
+          }
+        }
+      }
+    },
+    "Test et": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Test et"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Test"
+          }
+        }
+      }
+    },
+    "Yerel modeller (Cihaz üzerinde)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yerel modeller (Cihaz üzerinde)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local models (On-device)"
+          }
+        }
+      }
+    },
+    "sk-... (Yerel ağ için boş bırakılabilir)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sk-... (Yerel ağ için boş bırakılabilir)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sk-... (Can be left empty for local LAN)"
+          }
+        }
+      }
+    },
+    "Çeviri sağlayıcıları ve API anahtarları": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri sağlayıcıları ve API anahtarları"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation providers & API keys"
+          }
+        }
+      }
+    },
+    "Çeviri tamamen bu bilgisayarda indirilen yerel modellerle yapılır.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri tamamen bu bilgisayarda indirilen yerel modellerle yapılır."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation runs entirely on this computer using downloaded local models."
+          }
+        }
+      }
+    },
+    "Örn. OpenCode Go": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Örn. OpenCode Go"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "e.g. OpenCode Go"
+          }
+        }
+      }
+    },
+    "“%@” sağlayıcısı silinsin mi?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” sağlayıcısı silinsin mi?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete the provider “%@”?"
           }
         }
       }
@@ -3709,22 +4221,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Offloads translation to another PC or Mac on the local network (LM Studio, Ollama, llama-server)."
-          }
-        }
-      }
-    },
-    "Sunucu adresi (IP ve port)": {
-      "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sunucu adresi (IP ve port)"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Server address (IP and port)"
           }
         }
       }
@@ -3825,22 +4321,6 @@
         }
       }
     },
-    "Uzak model adı (isteğe bağlı)": {
-      "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Uzak model adı (isteğe bağlı)"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Remote model name (optional)"
-          }
-        }
-      }
-    },
     "Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır.": {
       "localizations": {
         "tr": {
@@ -3869,38 +4349,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "List remote models"
-          }
-        }
-      }
-    },
-    "Asenkron çeviri (Sadece harici LLM ile)": {
-      "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Asenkron çeviri (Sadece harici LLM ile)"
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Asynchronous translation (External LLM only)"
-          }
-        }
-      }
-    },
-    "Açıkken bu bilgisayar konuşmayı metne dökerken harici cihaz aynı anda çeviri yapar; kapalıyken sıralı çevrilir.": {
-      "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Açıkken bu bilgisayar konuşmayı metne dökerken harici cihaz aynı anda çeviri yapar; kapalıyken sıralı çevrilir."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When on, the external device translates simultaneously while this Mac transcribes speech; when off, translation runs sequentially."
           }
         }
       }
