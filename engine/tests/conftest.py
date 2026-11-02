@@ -7,7 +7,7 @@ import av
 import numpy as np
 import pytest
 
-from subtitle_engine import cuda, i18n
+from subtitle_engine import cuda, i18n, models
 from subtitle_engine.models import Word
 
 
@@ -18,6 +18,12 @@ def _default_language(monkeypatch):
     i18n.set_language(None)
     yield
     i18n.set_language(None)
+
+
+@pytest.fixture(autouse=True)
+def _strict_offline_off(monkeypatch):
+    """`cli.main(["--offline", ...])` writes the environment variable directly; it must not leak into later tests."""
+    monkeypatch.setenv(models.OFFLINE_ENV_VAR, "")  # "" is off, and the teardown restores the original state
 
 
 @pytest.fixture(autouse=True)

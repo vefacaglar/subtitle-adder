@@ -129,6 +129,14 @@ MESSAGES: dict[str, dict[str, str]] = {
         "tr": "Harici LLM sunucusu adresi boş olamaz.",
         "en": "The external LLM server address cannot be empty.",
     },
+    "external_llm_key_insecure": {
+        "tr": "API anahtarı şifrelenmemiş bağlantıyla (http) gönderilmez; adresi https:// ile girin.",
+        "en": "The API key is not sent over an unencrypted (http) connection; enter the address with https://.",
+    },
+    "offline_external_llm": {
+        "tr": "Çevrimdışı mod açık: çeviri internetteki bir sağlayıcıya ({host}) gönderilemez. Çevrimdışı modu kapatın ya da yerel bir model/sunucu seçin.",
+        "en": "Offline mode is on: translation can't be sent to an internet provider ({host}). Turn offline mode off or choose a local model/server.",
+    },
     "not_transcription_model": {
         "tr": "{model} bir konuşma tanıma modeli değil; 'models' komutu geçerli modelleri listeler.",
         "en": "{model} is not a speech recognition model; the 'models' command lists the valid models.",

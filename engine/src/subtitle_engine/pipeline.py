@@ -26,6 +26,17 @@ StageFn = Callable[[str, float | None], None]
 PartialFn = Callable[[list[Sentence], str], None]
 
 MAX_SAFE_PATH_CHARS = 210
+# `<stem>-<SOURCE_HASH_CHARS hex chars of sha256(resolved video path)>.wav`: the hash keeps two videos that share a
+# file stem (`S01/Episode 1.mkv`, `S02/Episode 1.mkv`) from ever sharing a WAV in one `--out-dir`.
+SOURCE_HASH_CHARS = 8
+
+
+def _source_hash(video: Path) -> str:
+    try:
+        resolved = str(video.resolve())
+    except (OSError, RuntimeError):
+        resolved = os.path.abspath(video)
+    return hashlib.sha256(os.path.normcase(resolved).encode("utf-8", errors="replace")).hexdigest()[:SOURCE_HASH_CHARS]
 
 
 def _safe_out_stem(video: Path, out_dir: Path) -> str:
@@ -33,16 +44,24 @@ def _safe_out_stem(video: Path, out_dir: Path) -> str:
 
     A video with a 215-char filename on `D:\\` is under 260 chars in its source folder, but
     `C:\\Users\\User\\AppData\\Local\\Temp\\SubtitleAdder\\<215-char-stem>.wav` exceeds 260 chars
-    and causes Windows/Python to raise `[Errno 2] No such file or directory`.
+    and causes Windows/Python to raise `[Errno 2] No such file or directory`. The budget includes the
+    `-<hash>` part of the WAV name, so the WAV (the longest name; its marker and temp files stay inside the
+    260 - `MAX_SAFE_PATH_CHARS` slack) and the subtitle outputs share one stem.
     """
     stem = video.stem.rstrip(" .") or "video"
-    candidate = out_dir / f"{stem}.wav"
+    wav_extra = 1 + SOURCE_HASH_CHARS
+    candidate = out_dir / f"{stem}{'-' * wav_extra}.wav"
     if len(str(candidate)) <= MAX_SAFE_PATH_CHARS:
         return stem
     digest = hashlib.sha256(stem.encode("utf-8", errors="replace")).hexdigest()[:10]
-    allowed = max(24, MAX_SAFE_PATH_CHARS - len(str(out_dir)) - 20)
+    allowed = max(24, MAX_SAFE_PATH_CHARS - len(str(out_dir)) - 20 - wav_extra)
     prefix = stem[:allowed].rstrip(" .")
     return f"{prefix}_{digest}"
+
+
+def wav_path_for(video: Path, out_dir: Path) -> Path:
+    """The WAV `extract_video_audio` writes for `video`: `<safe_stem>-<hash of the resolved video path>.wav`."""
+    return out_dir / f"{_safe_out_stem(video, out_dir)}-{_source_hash(video)}.wav"
 
 
 @dataclass
@@ -78,8 +97,8 @@ def _source_identity(video: Path) -> dict | None:
 def _wav_matches_source(wav_path: Path, identity: dict | None) -> bool:
     """True when `wav_path` was extracted from exactly the video described by `identity`.
 
-    The WAV name depends only on the video's file stem, so a WAV left in `out_dir` by another video with the same
-    stem, by an earlier version of the video, or by an engine without a marker must never be reused.
+    The WAV name carries a hash of the video's path, but a WAV left in `out_dir` by an earlier version of the same
+    video, by an engine without a marker, or (a hash collision) by another video must never be reused.
     """
     if identity is None:
         return False
@@ -123,18 +142,19 @@ def extract_video_audio(
 ) -> Path:
     """Extracts 16 kHz mono WAV audio for `video` into `out_dir`, reusing a WAV that came from the same video.
 
-    Writes to a PID-scoped temporary file first and atomically renames it to `<safe_stem>.wav` so a
-    concurrent or subsequent `transcribe` process never reads a partially written WAV file.
+    The WAV is `<safe_stem>-<sha256(resolved video path)[:8]>.wav`, so videos that share a stem (different
+    folders or extensions) never share a WAV, even while another extraction runs in the same `out_dir`. It is
+    written to a PID-scoped temporary file first and atomically renamed into place so a concurrent or subsequent
+    `transcribe` process never reads a partially written WAV file.
 
-    The WAV name only depends on the file stem, so an identity marker `<safe_stem>.wav.source.json` (resolved
-    source path, size and `st_mtime_ns` of the video, plus the WAV size) is written next to it after a successful
-    extraction. An existing WAV is reused only when the marker matches the current video; a missing or
-    mismatched marker (another video with the same stem, a replaced/re-encoded video, a WAV left by an older
-    engine) means the audio is extracted again and both files are overwritten.
+    An identity marker `<wav name>.source.json` (resolved source path, size and `st_mtime_ns` of the video, plus
+    the WAV size) is written next to it after a successful extraction. An existing WAV is reused only when the
+    marker matches the current video; a missing or mismatched marker (the same path with changed content, a
+    re-encoded video, a WAV left by an older engine) means the audio is extracted again and both files are
+    overwritten.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    safe_stem = _safe_out_stem(video, out_dir)
-    wav_path = out_dir / f"{safe_stem}.wav"
+    wav_path = wav_path_for(video, out_dir)
     # Taken before extraction: a video modified while it is decoded then fails the check next time.
     identity = _source_identity(video)
     if _wav_matches_source(wav_path, identity):
@@ -145,7 +165,7 @@ def extract_video_audio(
     extract_kwargs: dict = {}
     if "on_progress" in inspect.signature(extract_audio).parameters:
         extract_kwargs["on_progress"] = lambda f: on_stage("extracting_audio", f)
-    tmp_path = out_dir / f"{safe_stem}.{os.getpid()}.tmp.wav"
+    tmp_path = out_dir / f"{wav_path.stem}.{os.getpid()}.tmp.wav"
     try:
         extracted = extract_audio(video, tmp_path, **extract_kwargs)
         if tmp_path.is_file():
@@ -153,20 +173,19 @@ def extract_video_audio(
                 wav_size = tmp_path.stat().st_size
             except OSError:
                 wav_size = -1  # never matches a real WAV, so the result is simply not reused
-            # The old marker describes the WAV about to be replaced; drop it first so a crash between the
-            # rename and the new marker can never pair another video's marker with this audio.
-            with contextlib.suppress(OSError):
-                _source_marker_path(wav_path).unlink(missing_ok=True)
             try:
                 tmp_path.replace(wav_path)
             except OSError:
-                # Another process may have just produced the WAV for this very video.
+                # The target is locked (e.g. still open on Windows) or another process just produced it.
+                # Its marker is untouched, so this check tells the two cases apart.
                 if _wav_matches_source(wav_path, identity):
                     with contextlib.suppress(OSError):
                         tmp_path.unlink(missing_ok=True)
                     return wav_path
-                # The target is locked or belongs to another video: use our own audio as is.
+                # Keep the old WAV and marker as they are and use our own audio.
                 return tmp_path
+            # The marker of the replaced WAV (same path, so same video) names an older size/mtime or WAV size
+            # and cannot match this audio; the new marker replaces it atomically.
             _write_source_marker(wav_path, identity, wav_size)
             return wav_path
         return extracted
@@ -206,10 +225,6 @@ def run(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     safe_stem = _safe_out_stem(video, out_dir)
-    wav_path = out_dir / f"{safe_stem}.wav"
-    extract_kwargs: dict = {}
-    if "on_progress" in inspect.signature(extract_audio).parameters:
-        extract_kwargs["on_progress"] = lambda f: on_stage("extracting_audio", f)
     audio = extract_video_audio(video, out_dir, on_stage=on_stage)
 
     # If a catalog model is not cached we download it here, so progress is reported
@@ -237,8 +252,7 @@ def run(
 
     # Self-heal if an external cleaner removed the temp WAV while models were downloading/loading.
     if isinstance(audio, Path) and not audio.is_file() and video.is_file():
-        audio.parent.mkdir(parents=True, exist_ok=True)
-        audio = extract_audio(video, wav_path, **extract_kwargs)
+        audio = extract_video_audio(video, out_dir, on_stage=on_stage)
 
     on_stage("transcribing", 0.0)
     transcribe_kwargs: dict = {
@@ -268,8 +282,7 @@ def run(
         gc.collect()
         # Self-heal if an external cleaner removed the temp WAV during a long transcription run.
         if isinstance(audio, Path) and not audio.is_file() and video.is_file():
-            audio.parent.mkdir(parents=True, exist_ok=True)
-            audio = extract_audio(video, wav_path, **extract_kwargs)
+            audio = extract_video_audio(video, out_dir, on_stage=on_stage)
         on_stage("diarizing", 0.0)
         diarizer = (diarizer_factory or diarization.create_diarizer)()
         diarize_kwargs: dict = {

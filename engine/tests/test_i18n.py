@@ -125,7 +125,7 @@ def test_external_llm_failure_names_the_server_not_llama_cpp(monkeypatch):
         raise translate.urllib.error.URLError("[Errno 61] Connection refused")
 
     monkeypatch.setattr(translate.urllib.request, "urlopen", refuse)
-    monkeypatch.setattr(translate, "_resolve_lan_url", lambda url: url)
+    monkeypatch.setattr(translate, "_resolve_lan_url", lambda url, **kwargs: url)
     translator = translate.LlamaTranslator(
         "gemma-4-e4b", external_url="192.168.1.50:1234", external_model="qwen3"
     )
