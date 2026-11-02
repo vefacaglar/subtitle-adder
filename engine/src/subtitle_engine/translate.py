@@ -36,6 +36,7 @@ BatchFn = Callable[[list[Sentence]], None]
 
 EXTERNAL_LLM_URL_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_URL"
 EXTERNAL_LLM_MODEL_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL"
+EXTERNAL_LLM_API_KEY_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY"
 
 
 def external_llm_url() -> str | None:
@@ -50,8 +51,14 @@ def external_llm_model() -> str | None:
     return raw or None
 
 
+def external_llm_api_key() -> str | None:
+    """Returns the optional API key for the external OpenAI-compatible LLM server."""
+    raw = os.environ.get(EXTERNAL_LLM_API_KEY_ENV_VAR, "").strip()
+    return raw or None
+
+
 def normalize_external_chat_url(raw_url: str) -> str:
-    """Normalizes a base LAN server address (LM Studio, Ollama, or llama-server) to its chat completions endpoint."""
+    """Normalizes a base LAN or cloud server address to its OpenAI-compatible chat completions endpoint."""
     url = raw_url.strip().rstrip("/")
     # Nothing but slashes or a bare scheme ("http://" loses its slashes above) names no server.
     if url.lower() in {"", "http:", "https:"}:
@@ -67,14 +74,14 @@ def normalize_external_chat_url(raw_url: str) -> str:
     lower = url.lower()
     if lower.endswith(("/v1/chat/completions", "/chat/completions", "/api/chat")):
         return url
-    if lower.endswith("/v1"):
+    if lower.endswith(("/v1", "/openai")):
         return f"{url}/chat/completions"
     return f"{url}/v1/chat/completions"
 
 
 def _external_models_url(chat_url: str) -> str | None:
     lower = chat_url.lower()
-    if lower.endswith("/v1/chat/completions"):
+    if lower.endswith("/chat/completions"):
         return chat_url[: -len("/chat/completions")] + "/models"
     if lower.endswith("/api/chat"):
         return chat_url[: -len("/api/chat")] + "/v1/models"
@@ -610,7 +617,10 @@ def _temp_checkpoint_path(
     sentences: list[Sentence],
     system_prompt: str = "",
 ) -> Path:
-    """Path in `%TEMP%/SubtitleAdder/translations/` where translated chunks are saved incrementally."""
+    """Path in `%TEMP%/SubtitleAdder/translations/` where translated chunks are saved incrementally.
+
+    Only hashes the URL, model, language pair, prompt, and sentences (never raw API keys).
+    """
     digest = hashlib.sha256()
     ext_model = external_llm_model() or ""
     digest.update(f"quality-v6|{model_id}|{external_llm_url() or ''}|{ext_model}|{source or ''}|{target}|{system_prompt}\n".encode("utf-8"))
@@ -657,6 +667,7 @@ class LlamaTranslator:
         completion_fn: Callable[[list[dict[str, str]]], str] | None = None,
         external_url: str | None = None,
         external_model: str | None = None,
+        external_api_key: str | None = None,
     ):
         from . import llama
 
@@ -665,6 +676,9 @@ class LlamaTranslator:
         )
         resolved_external_model = external_model if external_model is not None else (
             external_llm_model() if completion_fn is None else None
+        )
+        resolved_external_api_key = external_api_key if external_api_key is not None else (
+            external_llm_api_key() if completion_fn is None else None
         )
         info = models.find(model_id)
         if info is None or info.kind != "translation" or (info.backend != "llama" and not resolved_external_url):
@@ -676,6 +690,7 @@ class LlamaTranslator:
             normalize_external_chat_url(resolved_external_url) if resolved_external_url else None
         )
         self._external_model = (resolved_external_model or "").strip() or None
+        self._external_api_key = (resolved_external_api_key or "").strip() or None
         self._resolved_external_model: str | None = self._external_model
         self._process: subprocess.Popen | None = None
         self._stderr_file = None
@@ -777,6 +792,16 @@ class LlamaTranslator:
         with contextlib.suppress(Exception):
             self.close()
 
+    def _request_headers(self) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "SubtitleAdder/1.0",
+        }
+        if self._external_api_key:
+            headers["Authorization"] = f"Bearer {self._external_api_key}"
+        return headers
+
     def _discover_external_model(self) -> str:
         if self._resolved_external_model:
             return self._resolved_external_model
@@ -784,7 +809,7 @@ class LlamaTranslator:
             models_url = _external_models_url(self._external_chat_url)
             if models_url:
                 try:
-                    req = urllib.request.Request(models_url, method="GET")
+                    req = urllib.request.Request(models_url, headers=self._request_headers(), method="GET")
                     with urllib.request.urlopen(req, timeout=2.5) as resp:
                         payload = json.loads(resp.read().decode("utf-8"))
                     items = payload.get("data") or payload.get("models") or []
@@ -826,16 +851,35 @@ class LlamaTranslator:
                 "cache_prompt": False,
                 **profile_for_model(self._info.id).generation_options(ollama=False),
             }
+        headers = self._request_headers()
         payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=300.0) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            try:
+                with urllib.request.urlopen(req, timeout=300.0) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as http_exc:
+                if (
+                    self._external_chat_url is not None
+                    and http_exc.code in (400, 422)
+                    and "chat_template_kwargs" in body
+                ):
+                    retry_body = {k: v for k, v in body.items() if k != "chat_template_kwargs"}
+                    retry_req = urllib.request.Request(
+                        url,
+                        data=json.dumps(retry_body).encode("utf-8"),
+                        headers=headers,
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(retry_req, timeout=300.0) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                else:
+                    raise
         except Exception as exc:
             if self._external_chat_url is not None:
                 raise ModelError(t("external_llm_unreachable", url=url, error=str(exc))) from exc

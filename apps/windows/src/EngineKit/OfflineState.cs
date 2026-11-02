@@ -28,6 +28,7 @@ public sealed class ExternalLlmState
     private volatile bool _enabled;
     private volatile string _url = "";
     private volatile string _model = "";
+    private volatile string _apiKey = "";
     private volatile string? _cachedResolvedHostIp;
 
     public bool Enabled
@@ -53,9 +54,17 @@ public sealed class ExternalLlmState
         set => _model = value ?? "";
     }
 
+    public string ApiKey
+    {
+        get => _apiKey;
+        set => _apiKey = value ?? "";
+    }
+
     public string? ActiveUrl => _enabled && !string.IsNullOrWhiteSpace(_url) ? _url.Trim() : null;
 
     public string? ActiveModel => _enabled && !string.IsNullOrWhiteSpace(_model) ? _model.Trim() : null;
+
+    public string? ActiveApiKey => _enabled && !string.IsNullOrWhiteSpace(_apiKey) ? _apiKey.Trim() : null;
 
     /// <summary>
     /// Resolves <c>.local</c> mDNS hostnames (e.g. <c>mac-studio.local</c>) dynamically at launch time to their current
