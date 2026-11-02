@@ -61,6 +61,22 @@
                 <string>app.subtitleadder.ssa</string>
             </array>
         </dict>
+        <!-- The same subtitles by file name extension. Launch Services prefers LSItemContentTypes where an entry has
+             it, and those are the app's own imported types: if another installed app exports its own type for .srt, the
+             file no longer carries ours and the entry above does not match it. This entry has no content types, so it
+             is matched by extension whatever type the system gives the file. -->
+        <dict>
+            <key>CFBundleTypeName</key><string>Altyazı / Subtitle (.srt .vtt .ass .ssa)</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>srt</string>
+                <string>vtt</string>
+                <string>ass</string>
+                <string>ssa</string>
+            </array>
+        </dict>
     </array>
     <!-- Types the system has no (or, on older systems, may have no) declaration for. SubRip and SubStation Alpha are
          dynamic types without this; WebVTT, Matroska and WebM are declared by recent systems and repeated here as a
