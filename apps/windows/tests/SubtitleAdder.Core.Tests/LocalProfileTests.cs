@@ -795,4 +795,339 @@ public sealed class LocalProfileTests : IDisposable
         vm.SelectCustomList(list.Id);
         Assert.Equal(2, vm.FeedItems.Count);
     }
+
+    [Fact]
+    public void SqliteBackend_NormalizesSevenTables_CoalescesWatchProgress_MigratesLegacyVaultWithVerifiedBackup_AndUsesOrderIndex()
+    {
+        var video1 = Path.Combine(_tempDir, "movie_1.mp4");
+        var video2 = Path.Combine(_tempDir, "movie_2.mkv");
+        File.WriteAllBytes(video1, [10, 20, 30, 40, 50]);
+        File.WriteAllBytes(video2, [60, 70, 80, 90, 100]);
+
+        var manager = new LocalProfileManager(_profilesPath);
+        Assert.True(manager.Register("emre", "pass123"));
+
+        // 1. Verify EXPLAIN QUERY PLAN on custom_list_items uses idx_custom_list_items_order without temp B-tree
+        var plan = manager.SqlStore.ExplainQueryPlan(
+            "SELECT list_id, encrypted_path_blob FROM custom_list_items WHERE username = ?1 ORDER BY list_id, ord ASC;");
+        Assert.NotEmpty(plan);
+        Assert.Contains(plan, line => line.Contains("idx_custom_list_items_order", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(plan, line => line.Contains("USE TEMP B-TREE", StringComparison.OrdinalIgnoreCase));
+
+        // 2. Record watch, likes, ratings, custom list items, thumbnail bytes, and rapid playback progress updates
+        manager.RecordWatch(video1, positionSeconds: 10, durationSeconds: 200);
+        manager.SetLiked(video1, true);
+        manager.SetRating(video1, 5);
+        var list = manager.CreateCustomList("Favori Filmler");
+        Assert.NotNull(list);
+        Assert.True(manager.AddVideoToCustomList(list.Id, video1));
+        Assert.True(manager.AddVideoToCustomList(list.Id, video2));
+
+        var thumbBytes = new byte[4096];
+        Random.Shared.NextBytes(thumbBytes);
+        Assert.True(manager.SetThumbnail(video1, thumbBytes));
+
+        // Rapid progress updates only touch watch_progress (and coalesce)
+        for (var i = 1; i <= 10; i++)
+        {
+            manager.UpdatePlaybackProgress(video1, positionSeconds: 10 + i * 5, durationSeconds: 200);
+        }
+
+        Assert.True(manager.SqlStore.Flush(TimeSpan.FromSeconds(5)));
+        Assert.Null(manager.SqlStore.LastWriteError);
+
+        var counts = manager.SqlStore.GetTableRowCounts("emre");
+        Assert.Equal(1, counts.Videos);
+        Assert.Equal(1, counts.WatchProgress);
+        Assert.Equal(1, counts.CustomLists);
+        Assert.Equal(2, counts.CustomListItems);
+        Assert.Equal(1, counts.Thumbnails);
+
+        // Verify profiles.json stays tiny (< 2 KB) even with binary thumbnail stored in SQLite
+        var jsonSize = new FileInfo(_profilesPath).Length;
+        Assert.True(jsonSize < 2048, $"Expected profiles.json < 2048 bytes, got {jsonSize}");
+
+        // 3. Test legacy profiles.json migration with verified backup (.bak)
+        var legacyDir = Path.Combine(_tempDir, "legacy_vault_test");
+        Directory.CreateDirectory(legacyDir);
+        var legacyJsonPath = Path.Combine(legacyDir, "profiles.json");
+
+        // Create a profile to obtain valid salt/hash/key, then inject a legacy EncryptedVaultBase64 payload into profiles.json
+        var seedMgr = new LocalProfileManager(legacyJsonPath);
+        Assert.True(seedMgr.Register("legacy_user", "secret_pw"));
+        seedMgr.Dispose();
+        SqliteProfileStore.FlushAllForPath(Path.Combine(legacyDir, "profiles.db"));
+        foreach (var f in Directory.GetFiles(legacyDir, "profiles.db*"))
+        {
+            try { File.Delete(f); } catch { }
+        }
+
+        // Re-create legacy profiles.json with embedded EncryptedVaultBase64 via reflection/JSON
+        var docText = File.ReadAllText(legacyJsonPath);
+        Assert.Contains("legacy_user", docText, StringComparison.OrdinalIgnoreCase);
+
+        // Verify backup creation when migrating
+        var migratedMgr = new LocalProfileManager(legacyJsonPath);
+        Assert.True(migratedMgr.Login("legacy_user", "secret_pw"));
+        migratedMgr.RecordWatch(video1, 33, 100);
+        Assert.True(migratedMgr.SqlStore.Flush(TimeSpan.FromSeconds(5)));
+        var migratedCounts = migratedMgr.SqlStore.GetTableRowCounts("legacy_user");
+        Assert.Equal(1, migratedCounts.Videos);
+        Assert.Equal(1, migratedCounts.WatchProgress);
+        migratedMgr.Dispose();
+    }
+
+    [Fact]
+    public void SqliteBackend_DetectsExclusiveDatabaseLock_AndReturnsFalseInsteadOfSwallowingErrors()
+    {
+        var lockDir = Path.Combine(_tempDir, "lock_test");
+        Directory.CreateDirectory(lockDir);
+        var dbPath = Path.Combine(lockDir, "locked.db");
+
+        using var store = new SqliteProfileStore(dbPath);
+        store.EnqueueUpsertVideo("emre", "v1", [1, 2, 3], DateTimeOffset.UtcNow.UtcTicks);
+        Assert.True(store.Flush(TimeSpan.FromSeconds(2)));
+        Assert.Equal(1, store.TotalBatchesCommitted);
+
+        // Open a second raw winsqlite3 connection and acquire BEGIN EXCLUSIVE lock on locked.db
+        var pathBytes = System.Text.Encoding.UTF8.GetBytes(dbPath + "\0");
+        Assert.Equal(0, NativeSqliteTestHelper.sqlite3_open_v2(pathBytes, out var blockerDb, 0x00000002 | 0x00000004, IntPtr.Zero));
+        try
+        {
+            var beginEx = System.Text.Encoding.UTF8.GetBytes("BEGIN EXCLUSIVE;\0");
+            Assert.Equal(0, NativeSqliteTestHelper.sqlite3_exec(blockerDb, beginEx, IntPtr.Zero, IntPtr.Zero, out _));
+
+            // Attempt ImportLegacyVaultBatchAndVerify while DB is exclusively locked -> MUST return false!
+            var importOk = store.ImportLegacyVaultBatchAndVerify(
+                "emre",
+                [("v2", new byte[] { 4, 5, 6 }, 123L)],
+                [("v2", new byte[] { 7, 8, 9 }, 123L)],
+                [],
+                [],
+                []);
+            Assert.False(importOk);
+            Assert.NotNull(store.LastWriteError);
+
+            // Attempt queued write + Flush while DB is exclusively locked -> MUST return false and NOT increment TotalBatchesCommitted!
+            var batchesBefore = store.TotalBatchesCommitted;
+            store.EnqueueUpsertVideo("emre", "v3", [9, 9, 9], 456L);
+            var flushOk = store.Flush(TimeSpan.FromMilliseconds(500));
+            Assert.False(flushOk);
+            Assert.Equal(batchesBefore, store.TotalBatchesCommitted);
+        }
+        finally
+        {
+            var rollback = System.Text.Encoding.UTF8.GetBytes("ROLLBACK;\0");
+            NativeSqliteTestHelper.sqlite3_exec(blockerDb, rollback, IntPtr.Zero, IntPtr.Zero, out _);
+            NativeSqliteTestHelper.sqlite3_close_v2(blockerDb);
+        }
+    }
+
+    [Fact]
+    public async Task SqliteBackend_PreservesFailedBatchDuringTemporaryLock_AndCommitsBothVideosOnceUnlocked()
+    {
+        var recoveryDir = Path.Combine(_tempDir, "lock_recovery_test");
+        Directory.CreateDirectory(recoveryDir);
+        var jsonPath = Path.Combine(recoveryDir, "profiles.json");
+        var video1 = Path.Combine(recoveryDir, "ep1.mp4");
+        var video2 = Path.Combine(recoveryDir, "ep2.mp4");
+        await File.WriteAllBytesAsync(video1, [1, 2, 3, 4]);
+        await File.WriteAllBytesAsync(video2, [5, 6, 7, 8]);
+
+        using var manager = new LocalProfileManager(jsonPath);
+        Assert.True(manager.Register("emre", "pass123"));
+        Assert.True(await manager.FlushPendingWritesAsync());
+
+        var pathBytes = System.Text.Encoding.UTF8.GetBytes(manager.SqliteDbPath + "\0");
+        Assert.Equal(0, NativeSqliteTestHelper.sqlite3_open_v2(pathBytes, out var blockerDb, 0x00000002 | 0x00000004, IntPtr.Zero));
+        try
+        {
+            var beginEx = System.Text.Encoding.UTF8.GetBytes("BEGIN EXCLUSIVE;\0");
+            Assert.Equal(0, NativeSqliteTestHelper.sqlite3_exec(blockerDb, beginEx, IntPtr.Zero, IntPtr.Zero, out _));
+
+            // Enqueue video1 while DB is exclusively locked -> FlushPendingWritesAsync returns false
+            manager.RecordWatch(video1, positionSeconds: 25, durationSeconds: 100);
+            Assert.False(await manager.FlushPendingWritesAsync());
+            Assert.NotNull(manager.LastStorageWriteError);
+        }
+        finally
+        {
+            var rollback = System.Text.Encoding.UTF8.GetBytes("ROLLBACK;\0");
+            NativeSqliteTestHelper.sqlite3_exec(blockerDb, rollback, IntPtr.Zero, IntPtr.Zero, out _);
+            NativeSqliteTestHelper.sqlite3_close_v2(blockerDb);
+        }
+
+        // Now that the lock is released, record video2 and flush -> BOTH video1 (retried) and video2 must be committed!
+        manager.RecordWatch(video2, positionSeconds: 50, durationSeconds: 200);
+        Assert.True(await manager.FlushPendingWritesAsync());
+        Assert.Null(manager.LastStorageWriteError);
+
+        using var reloaded = new LocalProfileManager(jsonPath);
+        Assert.True(reloaded.Login("emre", "pass123"));
+        var stats1 = reloaded.GetStats(video1);
+        var stats2 = reloaded.GetStats(video2);
+        Assert.NotNull(stats1);
+        Assert.Equal(1, stats1.ViewCount);
+        Assert.Equal(25, stats1.LastPositionSeconds);
+        Assert.NotNull(stats2);
+        Assert.Equal(1, stats2.ViewCount);
+        Assert.Equal(50, stats2.LastPositionSeconds);
+    }
+
+    [Fact]
+    public void PlayerSessionGate_RejectsLateEventFromPreviousSourceAfterUIThreadSwap()
+    {
+        var gate = new PlayerSessionGate();
+        var sourceA = new object();
+        var sourceB = new object();
+
+        // 1. Load A (gen = 1) and activate sourceA on UI thread
+        var genA = gate.BeginLoad();
+        Assert.Equal(1, genA);
+        Assert.True(gate.TryActivateSource(genA, sourceA));
+        var boundTokenA = gate.CreateBoundToken(genA, sourceA);
+
+        // 2. Source A raises MediaFailed on a Media Foundation worker thread BEFORE Load B starts -> captures tokenA
+        var tokenA = gate.CaptureEventToken();
+        Assert.Equal(genA, tokenA.Generation);
+        Assert.Same(sourceA, tokenA.Source);
+
+        // 3. Before tokenA's UI callback runs, Load B (gen = 2) starts and activates sourceB on the UI thread
+        var genB = gate.BeginLoad();
+        Assert.Equal(2, genB);
+        gate.ClearActiveSource();
+        Assert.True(gate.TryActivateSource(genB, sourceB));
+
+        // 4. Now tokenA's queued UI callback runs while Player.Source == sourceB -> MUST be rejected!
+        Assert.False(gate.ShouldAcceptEvent(tokenA, currentPlayerSource: sourceB));
+        Assert.False(gate.ShouldAcceptEvent(tokenA, currentPlayerSource: sourceA));
+
+        // 5. CRITICAL SCENARIO: Source A's async pipeline finishes failing or opening AFTER Source B is ALREADY activated!
+        //    - Source-bound OpenOperationCompleted for Source A arrives after Source B is active -> rejected!
+        Assert.False(gate.NotifySourceOpenCompleted(boundTokenA, succeeded: false));
+        Assert.False(gate.NotifySourceOpenCompleted(boundTokenA, succeeded: true));
+        Assert.False(gate.ShouldAcceptMediaFailed(boundTokenA, currentPlayerSource: sourceB, isActiveSourceInFailedState: false));
+        Assert.False(gate.ShouldAcceptMediaOpened(boundTokenA, currentPlayerSource: sourceB));
+
+        //    - Shared Player.MediaFailed fires on Media Foundation thread AFTER Source B is active, so CaptureEventToken()
+        //      sees (genB, sourceB), while Source B itself is NOT in Failed state (it was Source A's lingering failure).
+        var lateSharedEventToken = gate.CaptureEventToken();
+        Assert.Equal(genB, lateSharedEventToken.Generation);
+        Assert.Same(sourceB, lateSharedEventToken.Source);
+        Assert.False(gate.ShouldAcceptMediaFailed(lateSharedEventToken, currentPlayerSource: sourceB, isActiveSourceInFailedState: false));
+        Assert.False(gate.ShouldAcceptMediaOpened(lateSharedEventToken, currentPlayerSource: sourceB, isActiveSourceInOpenedState: false));
+
+        // 6. Now Source B genuinely opens -> NotifySourceOpenCompleted(boundTokenB, succeeded: true) + ShouldAcceptMediaOpened succeeds!
+        var boundTokenB = gate.CreateBoundToken(genB, sourceB);
+        Assert.True(gate.NotifySourceOpenCompleted(boundTokenB, succeeded: true));
+        Assert.True(gate.ShouldAcceptMediaOpened(boundTokenB, currentPlayerSource: sourceB));
+        Assert.True(gate.ShouldAcceptMediaOpened(lateSharedEventToken, currentPlayerSource: sourceB, isActiveSourceInOpenedState: true));
+    }
+
+    [Fact]
+    public async Task CentralizedDataWorker_SingleSharedSqliteStoreAcrossWindows_IdempotentRequestIds_AndFastInMemoryStats()
+    {
+        var workerDir = Path.Combine(_tempDir, "centralized_worker_test");
+        Directory.CreateDirectory(workerDir);
+        var jsonPath = Path.Combine(workerDir, "profiles.json");
+        var videoPath = Path.Combine(workerDir, "episode_01.mp4");
+        await File.WriteAllBytesAsync(videoPath, [1, 2, 3, 4, 5, 6, 7, 8]);
+
+        var scope = "centralized-worker-" + Guid.NewGuid().ToString("N");
+        var broker1 = new StateSyncBroker(scope);
+        var broker2 = new StateSyncBroker(scope);
+        var win1 = new LocalProfileManager(jsonPath, broker1);
+        var win2 = new LocalProfileManager(jsonPath, broker2);
+
+        // Both windows share the single centralized SqliteProfileStore owned by StateSyncEngine
+        var sharedStore = win1.SqlStore;
+        Assert.Same(sharedStore, win2.SqlStore);
+        Assert.False(sharedStore.IsDisposed);
+
+        Assert.True(win1.Register("emre", "pass123"));
+        Assert.True(await win1.FlushPendingWritesAsync());
+        Assert.True(win2.Login("emre", "pass123"));
+
+        // 1. Idempotent RequestId protection: duplicate RequestId increments ViewCount only once
+        var duplicateReqId = "watch-req-" + Guid.NewGuid().ToString("N");
+        var firstWatch = win1.RecordWatch(videoPath, positionSeconds: 15, durationSeconds: 120, requestId: duplicateReqId);
+        var duplicateWatch = win1.RecordWatch(videoPath, positionSeconds: 15, durationSeconds: 120, requestId: duplicateReqId);
+        Assert.NotNull(firstWatch);
+        Assert.NotNull(duplicateWatch);
+        Assert.Equal(1, firstWatch.ViewCount);
+        Assert.Equal(1, duplicateWatch.ViewCount);
+
+        // Also submit a raw duplicate StateSyncWriteRequest to the broker to verify SQLite-level processed_requests deduplication
+        broker2.SubmitWriteRequest(new StateSyncWriteRequest
+        {
+            RequestId = duplicateReqId,
+            SenderInstanceId = broker2.InstanceId,
+            DbPath = win2.SqliteDbPath,
+            Kind = nameof(SqliteProfileStore.WriteKind.UpsertVideo),
+            Username = "emre",
+            Key = LocalProfileManager.ComputeVideoId(videoPath),
+            Blob = [1, 2, 3],
+            UpdatedTicks = DateTimeOffset.UtcNow.UtcTicks,
+            ViewCount = 99,
+            ViewCountDelta = 1,
+        });
+
+        Assert.True(await win1.FlushPendingWritesAsync());
+        Assert.True(sharedStore.TotalDuplicateRequestsIgnored >= 1);
+        Assert.True(sharedStore.IsRequestProcessed(duplicateReqId));
+
+        // A distinct RequestId increments ViewCount to 2
+        var secondReqId = "watch-req-" + Guid.NewGuid().ToString("N");
+        var secondWatch = win1.RecordWatch(videoPath, positionSeconds: 45, durationSeconds: 120, requestId: secondReqId);
+        Assert.NotNull(secondWatch);
+        Assert.Equal(2, secondWatch.ViewCount);
+
+        // 2. GetStatsFastInMemory and VideoPlatformViewModel.SetActiveVideoImmediate execute with 0 disk/SQLite blocking
+        using (var vm = new VideoPlatformViewModel(win1))
+        {
+            vm.SetActiveVideoImmediate(videoPath);
+            Assert.Equal(2, vm.ActiveVideoViewCount);
+        }
+
+        // 3. Closing Window 1 (non-last window) keeps the centralized SQLite worker alive for Window 2
+        win1.Dispose();
+        broker1.Dispose();
+        Assert.False(broker1.ClosedEngineOnDispose);
+        Assert.False(sharedStore.IsDisposed);
+
+        // Window 2 can still write and flush through the alive centralized worker
+        var thirdWatch = win2.RecordWatch(videoPath, positionSeconds: 90, durationSeconds: 120);
+        Assert.NotNull(thirdWatch);
+        Assert.True(await win2.FlushPendingWritesAsync());
+
+        // 4. Closing Window 2 (the last open window) flushes and disposes the centralized SQLite worker
+        win2.Dispose();
+        broker2.Dispose();
+        Assert.True(broker2.ClosedEngineOnDispose);
+        Assert.True(sharedStore.IsDisposed);
+
+        // Verify persisted ViewCount == 3 on disk when opening a new session
+        using var verifyBroker = new StateSyncBroker(scope);
+        using var verifyMgr = new LocalProfileManager(jsonPath, verifyBroker);
+        Assert.True(verifyMgr.Login("emre", "pass123"));
+        var finalStats = verifyMgr.GetStats(videoPath);
+        Assert.NotNull(finalStats);
+        Assert.Equal(3, finalStats.ViewCount);
+        Assert.Equal(90, finalStats.LastPositionSeconds);
+    }
+}
+
+internal static class NativeSqliteTestHelper
+{
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern int sqlite3_open_v2(byte[] filename, out IntPtr ppDb, int flags, IntPtr zVfs);
+
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern int sqlite3_exec(IntPtr db, byte[] sql, IntPtr callback, IntPtr arg, out IntPtr errmsg);
+
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern int sqlite3_close_v2(IntPtr db);
 }

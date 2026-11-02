@@ -1,4 +1,6 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using SubtitleAdder.Core;
 using Windows.System.UserProfile;
 
@@ -10,6 +12,7 @@ namespace SubtitleAdder;
 /// </summary>
 public partial class App : Application
 {
+    public FontFamily UiFont { get; private set; } = new("XamlAutoFontFamily");
     private MainWindow? _window;
     private SettingsWindow? _settingsWindow;
     private SingleInstanceCoordinator? _singleInstance;
@@ -91,6 +94,27 @@ public partial class App : Application
         var ui = new SynchronizationContextDispatcher();
         LocalizedStrings.Shared.Dispatcher = ui;
         Appearance = new AppearanceSettings(Settings);
+        UiFont = new FontFamily(string.IsNullOrWhiteSpace(Appearance.UiFontFamily)
+            ? "XamlAutoFontFamily" : Appearance.UiFontFamily);
+        // Override text before windows/control templates are created; leave symbol/icon fonts alone.
+        Resources["ContentControlThemeFontFamily"] = UiFont;
+        // WinUI's named text styles set XamlAutoFontFamily directly rather than using the control font
+        // resource. Wrap them without mutating sealed styles, preserving their sizes/weights/margins.
+        foreach (var key in new[]
+        {
+            "BaseTextBlockStyle", "HeaderTextBlockStyle", "SubheaderTextBlockStyle", "TitleTextBlockStyle",
+            "SubtitleTextBlockStyle", "BodyTextBlockStyle", "CaptionTextBlockStyle", "BodyStrongTextBlockStyle",
+            "BodyLargeTextBlockStyle", "BodyLargeStrongTextBlockStyle", "TitleLargeTextBlockStyle",
+            "DisplayTextBlockStyle", "SectionHeaderStyle", "SecondaryTextStyle",
+        })
+        {
+            if (Resources.TryGetValue(key, out var resource) && resource is Style original)
+            {
+                var style = new Style { TargetType = typeof(TextBlock), BasedOn = original };
+                style.Setters.Add(new Setter(TextBlock.FontFamilyProperty, UiFont));
+                Resources[key] = style;
+            }
+        }
         Catalog = ModelCatalog.Default();
         ViewModel = new SubtitleViewModel(Catalog, Settings, ui);
         Providers = TranslationProviderManager.Shared;

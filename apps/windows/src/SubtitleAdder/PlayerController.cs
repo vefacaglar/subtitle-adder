@@ -19,8 +19,8 @@ public sealed class PlayerController : IDisposable
     private readonly DispatcherQueue _queue;
     private readonly DispatcherQueueTimer _timer;
     private readonly SemaphoreSlim _sourceGate = new(1, 1);
+    private readonly PlayerSessionGate _sessionGate = new();
     private IReadOnlyList<Sentence> _sentences = [];
-    private int _loadGeneration;
     private MediaSource? _source;                   // disposed when replaced so the old file is not kept open
     private IRandomAccessStream? _randomAccessStream;
     private BufferedVideoStream? _bufferedStream;   // 8 MB chunked RAM read-ahead cache
@@ -35,30 +35,83 @@ public sealed class PlayerController : IDisposable
     {
         _queue = queue;
         Player.AutoPlay = false;
-        Player.MediaOpened += (_, _) => _queue.TryEnqueue(() =>
+        Player.MediaOpened += (_, _) =>
         {
-            if (_disposed) return;
-            _mediaReady = true;
-            UpdateVideoSize();
-            if (_seekWhenReady is { } target)
+            var eventToken = _sessionGate.CaptureEventToken();
+            _queue.TryEnqueue(() =>
             {
-                _seekWhenReady = null;
-                Seek(target);
-            }
-            if (_autoPlayWhenReady)
-            {
-                _autoPlayWhenReady = false;
-                Player.Play();
-                IsPlaying = true;
-            }
-            Tick();
-        });
-        Player.MediaFailed += (_, e) => _queue.TryEnqueue(() =>
+                var isSourceOpened = _source?.State == MediaSourceState.Opened || _sessionGate.HasActiveSourceOpened;
+                if (_disposed || !_sessionGate.ShouldAcceptMediaOpened(eventToken, Player.Source, isSourceOpened))
+                {
+                    return;
+                }
+                _mediaReady = true;
+                UpdateVideoSize();
+                if (_seekWhenReady is { } target)
+                {
+                    _seekWhenReady = null;
+                    Seek(target);
+                }
+                if (_autoPlayWhenReady)
+                {
+                    _autoPlayWhenReady = false;
+                    Player.Play();
+                    IsPlaying = true;
+                }
+                Tick();
+            });
+        };
+        Player.MediaFailed += (sender, e) =>
         {
-            _mediaReady = false;
-            Failed?.Invoke(e.ErrorMessage);
-        });
-        Player.PlaybackSession.NaturalVideoSizeChanged += (_, _) => _queue.TryEnqueue(UpdateVideoSize);
+            var eventToken = _sessionGate.CaptureEventToken();
+            var err = e.Error;
+            var errMsg = e.ErrorMessage;
+            var extErr = e.ExtendedErrorCode;
+            _queue.TryEnqueue(() =>
+            {
+                var isSourceFailed = _source?.State == MediaSourceState.Failed || _sessionGate.HasActiveSourceFailed;
+                if (_disposed || _currentPath is null || !_sessionGate.ShouldAcceptMediaFailed(eventToken, Player.Source, isSourceFailed))
+                {
+                    return;
+                }
+                _mediaReady = false;
+                IsPlaying = false;
+                Ticked?.Invoke();
+                if (err == MediaPlayerError.Aborted) return;
+                var details = !string.IsNullOrWhiteSpace(errMsg)
+                    ? errMsg.Trim()
+                    : extErr is { } ex && !string.IsNullOrWhiteSpace(ex.Message)
+                        ? $"{err}: {ex.Message.Trim()} (0x{ex.HResult:X8})"
+                        : $"{err} (0x{extErr?.HResult ?? 0:X8})";
+                var failedPath = _currentPath;
+                DiagnosticLog.Write("Player", $"MediaFailed gen={eventToken.Generation} path='{failedPath}': {details}");
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        File.AppendAllText(
+                            Path.Combine(Path.GetTempPath(), "SubtitleAdder-player.log"),
+                            $"{DateTimeOffset.Now:O} [{failedPath}] {details}\n");
+                    }
+                    catch
+                    {
+                    }
+                });
+                Failed?.Invoke(details);
+            });
+        };
+        Player.PlaybackSession.NaturalVideoSizeChanged += (_, _) =>
+        {
+            var eventToken = _sessionGate.CaptureEventToken();
+            _queue.TryEnqueue(() =>
+            {
+                if (_disposed || !_sessionGate.ShouldAcceptEvent(eventToken, Player.Source))
+                {
+                    return;
+                }
+                UpdateVideoSize();
+            });
+        };
         _timer = queue.CreateTimer();
         _timer.Interval = TimeSpan.FromMilliseconds(100);
         _timer.Tick += (_, _) => Tick();
@@ -92,7 +145,7 @@ public sealed class PlayerController : IDisposable
 
     public void Load(string? path, bool autoPlay = false)
     {
-        var generation = Interlocked.Increment(ref _loadGeneration);
+        var generation = _sessionGate.BeginLoad();
         _currentPath = path;
         _mediaReady = false;
         _timeline.Reset();
@@ -113,30 +166,22 @@ public sealed class PlayerController : IDisposable
     private async Task SwitchSourceAsync(string? path, int generation)
     {
         await _sourceGate.WaitAsync().ConfigureAwait(false);
-        MediaSource? oldSource = null;
-        IRandomAccessStream? oldRandomStream = null;
-        BufferedVideoStream? oldBufferedStream = null;
         try
         {
-            if (_disposed) return;
-
-            oldSource = _source;
-            oldRandomStream = _randomAccessStream;
-            oldBufferedStream = _bufferedStream;
-            _source = null;
-            _randomAccessStream = null;
-            _bufferedStream = null;
-
-            if (path is null || _disposed || generation != Volatile.Read(ref _loadGeneration))
+            static void DisposeMediaTuple(MediaSource? src, IRandomAccessStream? ras, BufferedVideoStream? buf)
             {
-                try
+                if (src is null && ras is null && buf is null) return;
+                _ = Task.Run(() =>
                 {
-                    Player.Pause();
-                    Player.Source = null;
-                }
-                catch
-                {
-                }
+                    try { src?.Dispose(); } catch { }
+                    try { ras?.Dispose(); } catch { }
+                    try { buf?.Dispose(); } catch { }
+                });
+            }
+
+            // Never touch _source, _randomAccessStream, or _bufferedStream if this request is already stale or disposed.
+            if (_disposed || !_sessionGate.IsCurrentLoad(generation))
+            {
                 return;
             }
 
@@ -144,60 +189,134 @@ public sealed class PlayerController : IDisposable
             IRandomAccessStream? newRandomStream = null;
             BufferedVideoStream? newBufferedStream = null;
 
-            try
+            if (path is not null)
             {
-                if (File.Exists(path))
-                {
-                    newBufferedStream = new BufferedVideoStream(path);
-                    newRandomStream = newBufferedStream.AsRandomAccessStream();
-                    newSource = MediaSource.CreateFromStream(newRandomStream, BufferedVideoStream.GetMimeType(path));
-                }
-                else
-                {
-                    newSource = MediaSource.CreateFromUri(new Uri(path));
-                }
-            }
-            catch
-            {
-                try { newRandomStream?.Dispose(); } catch { }
-                try { newBufferedStream?.Dispose(); } catch { }
-                newRandomStream = null;
-                newBufferedStream = null;
-                newSource = MediaSource.CreateFromUri(new Uri(path));
-            }
-
-            if (_disposed || generation != Volatile.Read(ref _loadGeneration))
-            {
-                try { newSource?.Dispose(); } catch { }
-                try { newRandomStream?.Dispose(); } catch { }
-                try { newBufferedStream?.Dispose(); } catch { }
-                return;
-            }
-
-            _bufferedStream = newBufferedStream;
-            _randomAccessStream = newRandomStream;
-            _source = newSource;
-            _queue.TryEnqueue(() =>
-            {
-                if (_disposed || generation != Volatile.Read(ref _loadGeneration)) return;
                 try
                 {
-                    Player.Source = newSource;
-                    if (_autoPlayWhenReady)
+                    if (File.Exists(path))
                     {
-                        Player.Play();
-                        IsPlaying = true;
-                        Ticked?.Invoke();
+                        newBufferedStream = new BufferedVideoStream(path);
+                        newRandomStream = newBufferedStream.AsRandomAccessStream();
+                        newSource = MediaSource.CreateFromStream(newRandomStream, BufferedVideoStream.GetMimeType(path));
+                    }
+                    else
+                    {
+                        newSource = MediaSource.CreateFromUri(new Uri(path));
                     }
                 }
                 catch
                 {
+                    try { newRandomStream?.Dispose(); } catch { }
+                    try { newBufferedStream?.Dispose(); } catch { }
+                    newRandomStream = null;
+                    newBufferedStream = null;
+                    newSource = MediaSource.CreateFromUri(new Uri(path));
                 }
-            });
+
+                if (_disposed || !_sessionGate.IsCurrentLoad(generation))
+                {
+                    DisposeMediaTuple(newSource, newRandomStream, newBufferedStream);
+                    return;
+                }
+
+                var boundSource = newSource;
+                var boundGen = generation;
+                var boundPath = path;
+                var boundToken = _sessionGate.CreateBoundToken(boundGen, boundSource);
+                boundSource.StateChanged += (_, args) =>
+                {
+                    if (args.NewState == MediaSourceState.Opened)
+                    {
+                        _sessionGate.NotifySourceStateChanged(boundToken, isOpened: true, isFailed: false);
+                    }
+                    else if (args.NewState == MediaSourceState.Failed)
+                    {
+                        _sessionGate.NotifySourceStateChanged(boundToken, isOpened: false, isFailed: true);
+                    }
+                };
+                boundSource.OpenOperationCompleted += (_, args) =>
+                {
+                    var openErr = args.Error?.ExtendedError;
+                    if (openErr is null)
+                    {
+                        _sessionGate.NotifySourceOpenCompleted(boundToken, succeeded: true);
+                        return;
+                    }
+                    _sessionGate.NotifySourceOpenCompleted(boundToken, succeeded: false, openErr.Message);
+                    _queue.TryEnqueue(() =>
+                    {
+                        var isSourceFailed = _source?.State == MediaSourceState.Failed || _sessionGate.HasActiveSourceFailed;
+                        if (_disposed || !_sessionGate.ShouldAcceptMediaFailed(boundToken, Player.Source, isSourceFailed))
+                        {
+                            return;
+                        }
+                        DiagnosticLog.Write("Player", $"OpenOperationCompleted error gen={boundGen} path='{boundPath}': {openErr.Message} (0x{openErr.HResult:X8})");
+                    });
+                };
+            }
+
+            MediaSource? oldSourceToDispose = null;
+            IRandomAccessStream? oldRandomToDispose = null;
+            BufferedVideoStream? oldBufferedToDispose = null;
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            if (!_queue.TryEnqueue(() =>
+                {
+                    if (_disposed || !_sessionGate.IsCurrentLoad(generation))
+                    {
+                        tcs.TrySetResult(false);
+                        return;
+                    }
+
+                    oldSourceToDispose = _source;
+                    oldRandomToDispose = _randomAccessStream;
+                    oldBufferedToDispose = _bufferedStream;
+                    _source = newSource;
+                    _randomAccessStream = newRandomStream;
+                    _bufferedStream = newBufferedStream;
+
+                    try
+                    {
+                        _sessionGate.ClearActiveSource();
+                        Player.Pause();
+                        Player.Source = null;
+
+                        if (newSource is not null && _sessionGate.TryActivateSource(generation, newSource))
+                        {
+                            Player.Source = newSource;
+                            if (_autoPlayWhenReady)
+                            {
+                                Player.Play();
+                                IsPlaying = true;
+                                Ticked?.Invoke();
+                            }
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    finally
+                    {
+                        tcs.TrySetResult(true);
+                    }
+                }))
+            {
+                DisposeMediaTuple(newSource, newRandomStream, newBufferedStream);
+                return;
+            }
+
+            var applied = await tcs.Task.ConfigureAwait(false);
+            if (!applied)
+            {
+                DisposeMediaTuple(newSource, newRandomStream, newBufferedStream);
+                return;
+            }
+
+            DisposeMediaTuple(oldSourceToDispose, oldRandomToDispose, oldBufferedToDispose);
         }
         catch (Exception error)
         {
-            if (!_disposed && generation == Volatile.Read(ref _loadGeneration))
+            if (!_disposed && _sessionGate.IsCurrentLoad(generation) && !string.IsNullOrWhiteSpace(error.Message))
             {
                 var message = error.Message;
                 _queue.TryEnqueue(() => Failed?.Invoke(message));
@@ -206,15 +325,6 @@ public sealed class PlayerController : IDisposable
         finally
         {
             _sourceGate.Release();
-            if (oldSource is not null || oldRandomStream is not null || oldBufferedStream is not null)
-            {
-                _ = Task.Run(() =>
-                {
-                    try { oldSource?.Dispose(); } catch { }
-                    try { oldRandomStream?.Dispose(); } catch { }
-                    try { oldBufferedStream?.Dispose(); } catch { }
-                });
-            }
         }
     }
 
@@ -330,7 +440,8 @@ public sealed class PlayerController : IDisposable
         if (_disposed) return;
         _disposed = true;
         _mediaReady = false;
-        Interlocked.Increment(ref _loadGeneration);
+        _sessionGate.BeginLoad();
+        _sessionGate.ClearActiveSource();
         _timer.Stop();
         var player = Player;
         // Media Foundation pipeline/decoder teardown can block for up to a second on the UI thread;

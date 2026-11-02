@@ -153,6 +153,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
 
     private readonly LocalProfileManager _profileManager;
     private readonly LanguageState _languageState;
+    private readonly IUiDispatcher? _ui;
     private readonly List<string> _discoveredPaths = [];
 
     private string? _authError;
@@ -167,10 +168,11 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     private int _activeVideoRating;
     private bool _rememberMe = true;
 
-    public VideoPlatformViewModel(LocalProfileManager? profileManager = null, LanguageState? languageState = null)
+    public VideoPlatformViewModel(LocalProfileManager? profileManager = null, LanguageState? languageState = null, IUiDispatcher? ui = null)
     {
         _profileManager = profileManager ?? new LocalProfileManager();
         _languageState = languageState ?? LanguageState.Shared;
+        _ui = ui;
         _rememberMe = _profileManager.RememberMe;
 
         _profileManager.StateChanged += OnProfileManagerStateChanged;
@@ -425,6 +427,28 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
         RefreshFeed();
     }
 
+    /// <summary>
+    /// Updates the active video path and engagement bar stats immediately without recording a watch yet.
+    /// </summary>
+    public void SetActiveVideoImmediate(string? videoPath)
+    {
+        var normalized = LocalProfileManager.NormalizeVideoPath(videoPath);
+        ActiveVideoPath = normalized.Length > 0 ? normalized : null;
+        RefreshActiveVideoStats();
+    }
+
+    /// <summary>
+    /// Records a watch for <paramref name="videoPath"/> if a profile is logged in (safe to invoke from a debounced background task).
+    /// </summary>
+    public void RecordWatchOnly(string? videoPath)
+    {
+        var normalized = LocalProfileManager.NormalizeVideoPath(videoPath);
+        if (IsLoggedIn && normalized.Length > 0)
+        {
+            _profileManager.RecordWatch(normalized);
+        }
+    }
+
     /// <summary>Updates playback resume progress for the active video without incrementing view count.</summary>
     public void UpdateActiveVideoProgress(double positionSeconds, double durationSeconds)
     {
@@ -617,7 +641,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
             return;
         }
 
-        var stats = _profileManager.GetStats(path);
+        var stats = _profileManager.GetStatsFastInMemory(path);
         ActiveVideoViewCount = stats?.ViewCount ?? 0;
         ActiveVideoIsLiked = stats?.IsLiked ?? false;
         ActiveVideoRating = stats?.Rating ?? 0;
@@ -625,7 +649,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
 
     private void OnProfileManagerStateChanged(object? sender, EventArgs e)
     {
-        SyncFromProfileManager();
+        (_ui ?? LocalizedStrings.Shared.Dispatcher).Post(SyncFromProfileManager);
     }
 
     private void SyncFromProfileManager()
@@ -648,9 +672,12 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
 
     private void OnLanguageChanged(object? sender, UILanguage language)
     {
-        RefreshFeed();
-        OnPropertyChanged(string.Empty);
-        LocalizationChanged?.Invoke(this, EventArgs.Empty);
+        (_ui ?? LocalizedStrings.Shared.Dispatcher).Post(() =>
+        {
+            RefreshFeed();
+            OnPropertyChanged(string.Empty);
+            LocalizationChanged?.Invoke(this, EventArgs.Empty);
+        });
     }
 
     public void Dispose()

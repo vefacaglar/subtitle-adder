@@ -17,6 +17,9 @@ struct PlayerView: View {
     @Binding var hideSubtitlePanel: Bool
     let isFullScreen: Bool
     let toggleFullScreen: () -> Void
+    /// The local video platform; its engagement bar (views, favorite, stars, lists) sits at the top left while a
+    /// profile is logged in.
+    var platform: VideoPlatformModel?
     private let overlay = OverlayStyleStorage()
     /// The pointer is over the player; the overlay panel stays visible then, and always while paused.
     @State private var isPointerInside = false
@@ -36,8 +39,7 @@ struct PlayerView: View {
                     .frame(width: rect.width, height: rect.height)
                     .allowsHitTesting(false)
                 VStack {
-                    controls
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    overlayPanels
                         .opacity(isPanelVisible ? 1 : 0)
                         .allowsHitTesting(isPanelVisible)
                     Spacer()
@@ -55,6 +57,26 @@ struct PlayerView: View {
             case .togglePlayback: model.togglePlayback()
             case .toggleFullScreen: toggleFullScreen()
             }
+        }
+    }
+
+    /// The engagement bar at the top left and the overlay panel at the top right; in a player too narrow for both, the bar
+    /// goes on a line of its own below the panel. Both fade together.
+    @ViewBuilder private var overlayPanels: some View {
+        if let platform, platform.isLoggedIn, platform.engagement.isLoaded {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    EngagementBar(model: platform)
+                    Spacer(minLength: 0)
+                    controls
+                }
+                VStack(alignment: .trailing, spacing: 6) {
+                    controls
+                    EngagementBar(model: platform).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        } else {
+            controls.frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 

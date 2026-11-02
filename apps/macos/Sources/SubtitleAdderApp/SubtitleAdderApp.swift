@@ -9,6 +9,7 @@ struct SubtitleAdderApp: App {
     @State private var catalog: ModelCatalog
     @State private var vm: SubtitleViewModel
     @State private var explorer: FileExplorerModel
+    @State private var platform: VideoPlatformModel
     @State private var language: AppLanguage
     /// Finder hands several files over one by one; they are opened together.
     @State private var externalOpen: ExternalOpenCoalescer
@@ -35,6 +36,9 @@ struct SubtitleAdderApp: App {
         _externalOpen = State(initialValue: opener)
         let explorer = FileExplorerModel()
         _explorer = State(initialValue: explorer)
+        // The real profiles file and keychain; the platform shares the explorer's media index.
+        let platform = VideoPlatformModel(store: ProfileStore(), index: explorer.index)
+        _platform = State(initialValue: platform)
         // A subtitle written next to a video gets its badge in the sidebar.
         model.onSubtitleSaved = { url in Task { await explorer.subtitleSaved(at: url) } }
         // On quit, clear the scratch folder again unless a job is still running (the next launch gets it then).
@@ -42,6 +46,8 @@ struct SubtitleAdderApp: App {
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { _ in
             MainActor.assumeIsolated {
+                // Where the video in the player was, so it resumes there.
+                platform.prepareForQuit()
                 if !model.isWorking { WorkingDirectory.cleanUp() }
             }
         }
@@ -49,7 +55,7 @@ struct SubtitleAdderApp: App {
 
     var body: some Scene {
         WindowGroup("Subtitle Adder") {
-            ContentView(vm: vm, catalog: catalog, explorer: explorer)
+            ContentView(vm: vm, catalog: catalog, explorer: explorer, platform: platform)
                 .frame(minWidth: 760, minHeight: 600)
                 // Opening with "Open With" from Finder / dropping on the Dock: don't open a new window, hand it to the open one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])

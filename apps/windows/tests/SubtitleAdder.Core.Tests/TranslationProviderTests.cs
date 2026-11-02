@@ -58,10 +58,10 @@ public sealed class TranslationProviderTests : IDisposable
 
         var openCode = TranslationProviderManager.GetPreset("opencode-go");
         Assert.Equal("OpenCode Go", openCode.Name);
-        Assert.Equal("https://opencode.ai/zen/go/v1", openCode.BaseUrl);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1", openCode.BaseUrl);
         Assert.True(openCode.RequiresApiKey);
-        Assert.Contains("glm-5", openCode.SuggestedModels);
-        Assert.Contains("qwen3-235b", openCode.SuggestedModels);
+        Assert.Contains("glm-5.3-flash", openCode.SuggestedModels);
+        Assert.Contains("deepseek-v4.1-flash", openCode.SuggestedModels);
     }
 
     [Fact]
@@ -83,7 +83,7 @@ public sealed class TranslationProviderTests : IDisposable
         Assert.Equal(openCode.Id, manager.ActiveProviderId);
         Assert.True(manager.IsExternalProviderActive);
         Assert.True(ExternalLlmState.Shared.Enabled);
-        Assert.Equal("https://opencode.ai/zen/go/v1", ExternalLlmState.Shared.Url);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1", ExternalLlmState.Shared.Url);
         Assert.Equal("kimi-k2.5", ExternalLlmState.Shared.Model);
         Assert.Equal("sk-oc-1234567890", ExternalLlmState.Shared.ApiKey);
         Assert.Equal("sk-••••7890", openCode.MaskedApiKey);
@@ -191,11 +191,206 @@ public sealed class TranslationProviderTests : IDisposable
         Assert.True(success);
         Assert.Contains("glm-5", models);
         Assert.Equal(2, requests.Count);
-        Assert.Equal("https://opencode.ai/zen/go/v1/models", requests[0].Url);
+        Assert.Equal("https://opencode.ai/inference/go/v1/models", requests[0].Url);
         Assert.Equal("Bearer sk-opencode-secret", requests[0].Auth);
-        Assert.Equal("https://opencode.ai/zen/go/v1/chat/completions", requests[1].Url);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1/chat/completions", requests[1].Url);
         Assert.Equal("Bearer sk-opencode-secret", requests[1].Auth);
         Assert.Equal("POST", requests[1].Method);
+    }
+
+    [Fact]
+    public void CloudProvidersNeverOverwriteUserLanSettingsOnViewModelOrLanProfile()
+    {
+        var manager = new TranslationProviderManager(_filePath);
+        var (vm, _, _) = Make.ViewModel();
+        vm.ExternalLlmEnabled = true;
+        vm.ExternalLlmUrl = "http://mac-studio.local:11434";
+        vm.ExternalLlmModel = "gemma4:e4b";
+        vm.ExternalLlmAsync = true;
+
+        // 1. Initial migration creates a LAN profile from the user's mac-studio settings
+        manager.EnsureMigratedFromViewModel(vm);
+        var lanProfile = Assert.Single(manager.Providers, p => p.PresetId == "lan");
+        Assert.Equal("http://mac-studio.local:11434", lanProfile.BaseUrl);
+        Assert.Equal("gemma4:e4b", lanProfile.Model);
+
+        // 2. User adds and activates OpenCode Go and OpenRouter cloud providers
+        var openCode = manager.AddProvider(
+            presetId: "opencode-go",
+            apiKey: "oc_sk_test_123456",
+            model: "deepseek-v4.1-flash",
+            setActive: true);
+        var openRouter = manager.AddProvider(
+            presetId: "openrouter",
+            apiKey: "sk-or-test-654321",
+            model: "google/gemma-3-27b-it",
+            setActive: false);
+
+        // 3. ApplyToViewModel and SyncFromLegacyLanSettings while OpenCode Go is active
+        manager.ApplyToViewModel(vm);
+        manager.SyncFromLegacyLanSettings(vm);
+
+        Assert.Equal("http://mac-studio.local:11434", vm.ExternalLlmUrl);
+        Assert.Equal("gemma4:e4b", vm.ExternalLlmModel);
+        Assert.Equal("OpenCode Go", vm.ActiveProviderName);
+        Assert.Equal("deepseek-v4.1-flash", vm.ActiveProviderModel);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1", ExternalLlmState.Shared.Url);
+        Assert.Equal("deepseek-v4.1-flash", ExternalLlmState.Shared.Model);
+        Assert.Equal("oc_sk_test_123456", ExternalLlmState.Shared.ApiKey);
+
+        // 4. Switch to OpenRouter and repeat
+        manager.SetActiveProvider(openRouter.Id);
+        manager.ApplyToViewModel(vm);
+        manager.SyncFromLegacyLanSettings(vm);
+
+        Assert.Equal("http://mac-studio.local:11434", vm.ExternalLlmUrl);
+        Assert.Equal("gemma4:e4b", vm.ExternalLlmModel);
+        Assert.Equal("OpenRouter", vm.ActiveProviderName);
+        Assert.Equal("google/gemma-3-27b-it", vm.ActiveProviderModel);
+        Assert.Equal("https://openrouter.ai/api/v1", ExternalLlmState.Shared.Url);
+
+        // 5. Verify the LAN profile's BaseUrl and Model were never overwritten by cloud URLs
+        var preservedLan = Assert.Single(manager.Providers, p => p.Id == lanProfile.Id);
+        Assert.Equal("http://mac-studio.local:11434", preservedLan.BaseUrl);
+        Assert.Equal("gemma4:e4b", preservedLan.Model);
+    }
+
+    [Fact]
+    public void PickerSelectionsKeepCloudLanAndOnDeviceModelsSeparateAndPersisted()
+    {
+        var manager = new TranslationProviderManager(_filePath);
+        var (vm, _, settings) = Make.ViewModel();
+        using var viewModelLifetime = vm;
+        vm.ExternalLlmUrl = "http://lan-server:11434";
+        vm.ExternalLlmModel = "lan-model";
+        vm.ExternalLlmEnabled = true;
+        manager.EnsureMigratedFromViewModel(vm);
+        var lan = Assert.Single(manager.Providers);
+        var cloud = manager.AddProvider("openrouter", model: "cloud-a", apiKey: "test-key");
+        manager.UpdateProviderDiscoveredModels(cloud.Id, ["cloud-b", "cloud-a", " cloud-b "]);
+        manager.ApplyToViewModel(vm);
+
+        Assert.Equal(new[] { "cloud-a", "cloud-b" },
+            TranslationModelSelection.GetModels(manager, vm, cloud.Id).Select(m => m.Id));
+        Assert.True(TranslationModelSelection.SelectModel(manager, vm, cloud.Id, "cloud-b"));
+        Assert.Equal("cloud-b", vm.ActiveProviderModel);
+        Assert.Equal("cloud-b", ExternalLlmState.Shared.Model);
+        Assert.Equal("lan-model", vm.ExternalLlmModel);
+        Assert.Equal("lan-model", settings.GetString(SubtitleViewModel.ExternalLlmModelDefaultsKey));
+        Assert.Equal("http://lan-server:11434", settings.GetString(SubtitleViewModel.ExternalLlmUrlDefaultsKey));
+
+        var localModel = vm.Catalog.TranslationModels.First().Id;
+        Assert.True(TranslationModelSelection.SelectModel(manager, vm, null, localModel));
+        Assert.False(vm.IsExternalLlmActive);
+        Assert.Equal(localModel, vm.TranslationModel);
+        Assert.False(ExternalLlmState.Shared.Enabled);
+        Assert.Equal("", ExternalLlmState.Shared.ApiKey);
+        Assert.True(TranslationModelSelection.SelectModel(manager, vm, lan.Id, "lan-model"));
+        Assert.Equal("http://lan-server:11434", ExternalLlmState.Shared.Url);
+        Assert.Equal("lan-model", ExternalLlmState.Shared.Model);
+
+        var reloaded = new TranslationProviderManager(_filePath);
+        Assert.Equal("cloud-b", reloaded.Providers.Single(p => p.Id == cloud.Id).Model);
+        Assert.Equal("lan-model", reloaded.Providers.Single(p => p.Id == lan.Id).Model);
+    }
+
+    [Fact]
+    public void PickerRejectsAnotherProvidersModelAndRemovedProvider()
+    {
+        var manager = new TranslationProviderManager(_filePath);
+        var (vm, _, _) = Make.ViewModel();
+        using var viewModelLifetime = vm;
+        var active = manager.AddProvider("custom", baseUrl: "https://example.test/v1", model: "cloud-model");
+        var removed = manager.AddProvider("lan", model: "lan-model", setActive: false);
+        manager.ApplyToViewModel(vm);
+        manager.RemoveProvider(removed.Id);
+
+        Assert.False(TranslationModelSelection.SelectModel(manager, vm, active.Id, "lan-model"));
+        Assert.False(TranslationModelSelection.SelectProvider(manager, vm, removed.Id));
+        Assert.Empty(TranslationModelSelection.GetModels(manager, vm, removed.Id));
+        Assert.Equal(active.Id, manager.ActiveProviderId);
+        Assert.Equal("cloud-model", ExternalLlmState.Shared.Model);
+    }
+
+    [Fact]
+    public async Task ModelRefreshFinishingAfterProviderSwitchDoesNotChangeSelection()
+    {
+        var response = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new DeferredHttpHandler(response);
+        var manager = new TranslationProviderManager(_filePath, handler);
+        var (vm, _, _) = Make.ViewModel();
+        using var viewModelLifetime = vm;
+        vm.ExternalLlmUrl = "http://lan-server:11434";
+        vm.ExternalLlmModel = "lan-model";
+        var first = manager.AddProvider("custom", baseUrl: "https://first.test/v1", model: "first-model");
+        var second = manager.AddProvider("custom", baseUrl: "https://second.test/v1", model: "second-model", setActive: false);
+        // Match the application subscription that applies provider notifications to the active view model.
+        manager.PropertyChanged += (_, _) => manager.ApplyToViewModel(vm);
+        manager.ApplyToViewModel(vm);
+        var refresh = manager.TestAndFetchModelsAsync(first.Id);
+        Assert.True(TranslationModelSelection.SelectProvider(manager, vm, second.Id));
+        response.SetResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"data\":[{\"id\":\"first-new-model\"}]}")
+        });
+        Assert.True((await refresh).Success);
+        Assert.Equal(second.Id, manager.ActiveProviderId);
+        Assert.Equal("second-model", ExternalLlmState.Shared.Model);
+        Assert.Equal("second-model", vm.ActiveProviderModel);
+        Assert.Equal("lan-model", vm.ExternalLlmModel);
+        Assert.DoesNotContain(TranslationModelSelection.GetModels(manager, vm, second.Id), m => m.Id == "first-new-model");
+    }
+
+    [Fact]
+    public async Task FailedRefreshKeepsPreviouslyDiscoveredModelsAndSelection()
+    {
+        using var handler = new FakeHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        var manager = new TranslationProviderManager(_filePath, handler);
+        var provider = manager.AddProvider("openrouter", model: "saved-model");
+        manager.UpdateProviderDiscoveredModels(provider.Id, ["saved-model", "other-model"]);
+        Assert.False((await manager.TestAndFetchModelsAsync(provider.Id)).Success);
+        Assert.Equal(new[] { "saved-model", "other-model" }, manager.ActiveProvider!.DiscoveredModels);
+        Assert.Equal("saved-model", manager.ActiveProvider.Model);
+    }
+
+    [Theory]
+    [InlineData("https://opencode.ai/zen/go/v1")]
+    [InlineData("https://opencode.ai/zen/go/v1/chat/completions")]
+    [InlineData("https://opencode.ai/inference/go/openai/v1")]
+    public async Task OpenCodeV2RoutesSavedProfilesAndShowsGatewayRejection(string savedUrl)
+    {
+        var requests = new List<(string Url, string Session)>();
+        using var handler = new FakeHttpHandler(req =>
+        {
+            requests.Add((req.RequestUri!.ToString(), Assert.Single(req.Headers.GetValues("x-opencode-session"))));
+            Assert.Equal("SubtitleAdder/1.0", req.Headers.UserAgent.ToString());
+            Assert.Equal("Bearer sk-private", req.Headers.Authorization!.ToString());
+            return req.Method == HttpMethod.Get
+                ? new HttpResponseMessage(HttpStatusCode.NotFound)
+                : new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("""{"error":{"message":"Global region required (sk-private)"}}"""),
+                };
+        });
+        var manager = new TranslationProviderManager(_filePath, handler);
+        var provider = manager.AddProvider("opencode-go", baseUrl: savedUrl, apiKey: "sk-private", model: "deepseek-v4.1-flash");
+        var result = await manager.TestAndFetchModelsAsync(provider.Id);
+        Assert.False(result.Success);
+        Assert.Contains("HTTP 400: Global region required", result.Message);
+        Assert.DoesNotContain("sk-private", result.Message);
+        Assert.Equal("https://opencode.ai/inference/go/v1/models", requests[0].Url);
+        Assert.Equal("https://opencode.ai/inference/go/openai/v1/chat/completions", requests[1].Url);
+        Assert.Equal(requests[0].Session, requests[1].Session);
+        var unchanged = Assert.Single(manager.Providers);
+        Assert.Equal(savedUrl, unchanged.BaseUrl);
+        Assert.Equal("deepseek-v4.1-flash", unchanged.Model);
+        Assert.Equal("sk-private", unchanged.ApiKey);
+    }
+
+    private sealed class DeferredHttpHandler(TaskCompletionSource<HttpResponseMessage> response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            response.Task.WaitAsync(cancellationToken);
     }
 
     private sealed class FakeHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler

@@ -8,6 +8,7 @@ namespace SubtitleAdder.Core;
 public static class AppearanceKeys
 {
     public const string Theme = "appTheme";
+    public const string UiFont = "appFontFamily";
     public const string OverlayFont = "overlayFontFamily";
     public const string OverlaySize = "overlayFontSize";
     public const string OverlayTextColor = "overlayTextColor";
@@ -57,24 +58,36 @@ public enum OverlayBackground
 
     /// <summary>No box; a soft shadow keeps the text readable.</summary>
     Shadow,
+
+    /// <summary>No box; an opaque black outline surrounds the glyphs.</summary>
+    Outline,
 }
 
 public static class OverlayBackgrounds
 {
-    public static IReadOnlyList<OverlayBackground> All { get; } = [OverlayBackground.Box, OverlayBackground.Shadow];
+    public static IReadOnlyList<OverlayBackground> All { get; } = [OverlayBackground.Box, OverlayBackground.Shadow, OverlayBackground.Outline];
 
-    public static string RawValue(this OverlayBackground background) =>
-        background == OverlayBackground.Shadow ? "shadow" : "box";
+    public static string RawValue(this OverlayBackground background) => background switch
+    {
+        OverlayBackground.Shadow => "shadow",
+        OverlayBackground.Outline => "outline",
+        _ => "box",
+    };
 
     public static OverlayBackground? Parse(string? raw) => raw switch
     {
         "box" => OverlayBackground.Box,
         "shadow" => OverlayBackground.Shadow,
+        "outline" => OverlayBackground.Outline,
         _ => null,
     };
 
-    public static string Title(this OverlayBackground background) =>
-        background == OverlayBackground.Shadow ? L("Gölge") : L("Kutu");
+    public static string Title(this OverlayBackground background) => background switch
+    {
+        OverlayBackground.Shadow => L("Gölge"),
+        OverlayBackground.Outline => L("Kontur"),
+        _ => L("Kutu"),
+    };
 }
 
 /// <summary>How the subtitle over the video looks. Only affects the in-app preview, never exported files.</summary>
@@ -113,6 +126,9 @@ public sealed record OverlayStyle
     public double BackgroundOpacity { get; }
 
     public double FontSize(double videoHeight) => Math.Max(12, videoHeight * SizeFraction);
+
+    /// <summary>Outline radius in device-independent pixels, bounded for small and full-screen video.</summary>
+    public double OutlineThickness(double videoHeight) => Math.Clamp(FontSize(videoHeight) * 0.045, 1.0, 2.5);
 
     /// <summary>The text color; white if the stored value is malformed.</summary>
     public RgbColor TextColor => HexColor.ParseRgb(TextHex) ?? new RgbColor(255, 255, 255);
@@ -157,6 +173,7 @@ public sealed class AppearanceSettings : ObservableObject
         _store.Changed += (_, key) =>
         {
             if (key == AppearanceKeys.Theme) OnPropertyChanged(nameof(Theme));
+            else if (key == AppearanceKeys.UiFont) OnPropertyChanged(nameof(UiFontFamily));
             else if (key.StartsWith("overlay", StringComparison.Ordinal)) RaiseStyle();
         };
     }
@@ -165,6 +182,13 @@ public sealed class AppearanceSettings : ObservableObject
     {
         get => ThemeChoices.Parse(_store.GetString(AppearanceKeys.Theme)) ?? ThemeChoice.System;
         set => _store.SetString(AppearanceKeys.Theme, value.RawValue());
+    }
+
+    /// <summary>Application text font, applied at startup. Empty means the Windows system font.</summary>
+    public string UiFontFamily
+    {
+        get => _store.GetString(AppearanceKeys.UiFont) ?? "";
+        set => _store.SetString(AppearanceKeys.UiFont, value.Trim());
     }
 
     /// <summary>Empty means the system font.</summary>

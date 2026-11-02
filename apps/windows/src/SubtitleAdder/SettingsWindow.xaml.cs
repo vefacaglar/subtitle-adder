@@ -20,6 +20,10 @@ public sealed partial class SettingsWindow : Window
     private readonly AppLanguage _language = App.Current.Language;
     private readonly AppearanceSettings _appearance = App.Current.Appearance;
     private bool _syncing;
+    private bool _closed;
+    private readonly SettingsRefreshSubscription _settingsRefresh;
+    private long? _cacheUsedBytes;
+    private bool _cacheBusy;
     private int? _freedMB;   // shown in FreedBar; its text is rebuilt on a language switch
 
     public SettingsWindow()
@@ -27,23 +31,23 @@ public sealed partial class SettingsWindow : Window
         InitializeComponent();
         WindowChrome.Setup(this, Root, AppTitleBar, minWidth: 640, minHeight: 520, defaultWidth: 860, defaultHeight: 760, sizeKey: "settingsWindow");
 
-        _vm.PropertyChanged += OnChanged;
+        _settingsRefresh = new SettingsRefreshSubscription(_vm,
+            action => DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => action()),
+            Refresh);
         _catalog.PropertyChanged += OnCatalogChanged;
         _appearance.PropertyChanged += OnChanged;
         _language.PropertyChanged += OnChanged;
         Closed += (_, _) =>
         {
-            _vm.PropertyChanged -= OnChanged;
+            _closed = true;
+            _settingsRefresh.Dispose();
             _catalog.PropertyChanged -= OnCatalogChanged;
             _appearance.PropertyChanged -= OnChanged;
             _language.PropertyChanged -= OnChanged;
         };
         PreviewArea.SizeChanged += (_, _) => UpdatePreview();
-        Root.Loaded += async (_, _) =>
-        {
-            await _catalog.LoadAsync();
-            if (_vm.IsExternalLlmActive) await _vm.RefreshExternalModelsAsync();
-        };
+        // Opening General must not start model discovery or scan the cache on the UI thread.
+        Root.Loaded += async (_, _) => await RefreshCacheUsageAsync();
 
         Refresh(refill: true);
         UpdateModels();
@@ -64,7 +68,8 @@ public sealed partial class SettingsWindow : Window
     public static string RatingText(EngineModel model) =>
         L("Hız %lld/5 · Doğruluk %lld/5", (long)Math.Clamp(model.Speed, 0, 5), (long)Math.Clamp(model.Accuracy, 0, 5));
 
-    private void OnChanged(object? sender, PropertyChangedEventArgs e) => Refresh(refill: string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == nameof(AppLanguage.Effective));
+    private void OnChanged(object? sender, PropertyChangedEventArgs e) =>
+        _settingsRefresh.RequestRefresh(refill: string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == nameof(AppLanguage.Effective));
 
     private static readonly HashSet<string> ModelListProperties =
     [
@@ -74,13 +79,14 @@ public sealed partial class SettingsWindow : Window
 
     private void OnCatalogChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (_closed) return;
         // One catalog change raises several notifications; only these affect the model page, and unchanged lists are
         // not rebuilt (that would drop keyboard focus from a card). Models also fires on a language switch: rebind then.
         if (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == nameof(ModelCatalog.Models))
             UpdateModels(force: true);
         else if (ModelListProperties.Contains(e.PropertyName))
             UpdateModels();
-        if (e.PropertyName == nameof(ModelCatalog.Models)) Refresh(refill: false);
+        if (e.PropertyName == nameof(ModelCatalog.Models)) _settingsRefresh.RequestRefresh();
     }
 
     private void Nav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -111,6 +117,7 @@ public sealed partial class SettingsWindow : Window
 
     private void Refresh(bool refill)
     {
+        if (_closed) return;
         UpdatePageTitle();
         Fill(UiLanguageBox, LanguageChoices.All.Select(c => c.Title()), IndexOf(LanguageChoices.All, c => c == _language.Choice), refill);
         Fill(SpeechLanguageBox, SubtitleLanguage.All.Select(l => l.Title), IndexOf(SubtitleLanguage.All, l => l.Code == _vm.Language), refill);
@@ -128,8 +135,7 @@ public sealed partial class SettingsWindow : Window
         {
             VideoCacheSizeBox.Value = _vm.VideoCacheMaxSizeGb;
         }
-        VideoCacheUsageLabel.Text = _vm.VideoCacheUsageText;
-        ClearVideoCacheButton.IsEnabled = _vm.VideoCacheUsedBytes > 0;
+        UpdateCacheUsageLabel();
         ExternalLlmSwitch.IsOn = _vm.ExternalLlmEnabled;
         if (ExternalLlmUrlBox.Text != _vm.ExternalLlmUrl) ExternalLlmUrlBox.Text = _vm.ExternalLlmUrl;
         ExternalLlmAsyncSwitch.IsOn = _vm.ExternalLlmAsync;
@@ -149,6 +155,8 @@ public sealed partial class SettingsWindow : Window
 
         Fill(ThemeBox, ThemeChoices.All.Select(t => t.Title()), IndexOf(ThemeChoices.All, t => t == _appearance.Theme), refill);
         var families = SystemFonts.Families;
+        Fill(UiFontBox, [L("Sistem"), .. families],
+            _appearance.UiFontFamily.Length == 0 ? 0 : IndexOf(families, f => f == _appearance.UiFontFamily) is var uiIndex and >= 0 ? uiIndex + 1 : 0, refill);
         Fill(FontBox, [L("Sistem"), .. families],
             _appearance.FontFamily.Length == 0 ? 0 : IndexOf(families, f => f == _appearance.FontFamily) is var i and >= 0 ? i + 1 : 0, refill);
         Fill(BackgroundBox, OverlayBackgrounds.All.Select(b => b.Title()), IndexOf(OverlayBackgrounds.All, b => b == _appearance.Background), refill);
@@ -169,7 +177,7 @@ public sealed partial class SettingsWindow : Window
         ColorSwatch.Background = new SolidColorBrush(Ui.Color(style.TextColor));
         ColorHex.Text = style.TextHex.ToUpperInvariant();
         UpdatePreview();
-        UpdateFileAssociationStatus();
+        if (refill) UpdateFileAssociationStatus();
         if (refill && _freedMB is { } freed && FreedBar.IsOpen) FreedBar.Message = FreedText(freed);
         if (refill) UpdateModels(force: true);
     }
@@ -285,16 +293,39 @@ public sealed partial class SettingsWindow : Window
         }
         var gb = Math.Clamp((int)Math.Round(args.NewValue), SubtitleViewModel.MinVideoCacheMaxSizeGb, SubtitleViewModel.MaxVideoCacheMaxSizeGb);
         _vm.VideoCacheMaxSizeGb = gb;
-        VideoCacheUsageLabel.Text = _vm.VideoCacheUsageText;
-        ClearVideoCacheButton.IsEnabled = _vm.VideoCacheUsedBytes > 0;
+        UpdateCacheUsageLabel();
     }
 
-    private void ClearVideoCacheButton_Click(object sender, RoutedEventArgs e)
+    private void UpdateCacheUsageLabel()
     {
-        _vm.ClearVideoCache();
-        VideoCacheUsageLabel.Text = _vm.VideoCacheUsageText;
-        ClearVideoCacheButton.IsEnabled = false;
+        VideoCacheUsageLabel.Text = _cacheUsedBytes is { } used
+            ? L("Şifreli önbellek kullanımı: %@ / %lld GB", SubtitleViewModel.FormatByteSize(used), (long)_vm.VideoCacheMaxSizeGb)
+            : L("Önbellek kullanımı hesaplanıyor…");
+        ClearVideoCacheButton.IsEnabled = !_cacheBusy && _cacheUsedBytes is > 0;
     }
+
+    private async Task RefreshCacheUsageAsync(bool clear = false)
+    {
+        if (_closed || _cacheBusy) return;
+        _cacheBusy = true;
+        UpdateCacheUsageLabel();
+        try
+        {
+            var used = await Task.Run(() =>
+            {
+                if (clear) _vm.VideoCacheStore.ClearAll();
+                return _vm.VideoCacheStore.GetTotalUsedBytes();
+            });
+            if (!_closed) _cacheUsedBytes = used;
+        }
+        finally
+        {
+            _cacheBusy = false;
+            if (!_closed) UpdateCacheUsageLabel();
+        }
+    }
+
+    private async void ClearVideoCacheButton_Click(object sender, RoutedEventArgs e) => await RefreshCacheUsageAsync(clear: true);
 
     private void UpdateFileAssociationStatus()
     {
@@ -437,6 +468,12 @@ public sealed partial class SettingsWindow : Window
     {
         if (_syncing || BackgroundBox.SelectedIndex < 0) return;
         _appearance.Background = OverlayBackgrounds.All[BackgroundBox.SelectedIndex];
+    }
+
+    private void UiFontBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncing || UiFontBox.SelectedIndex < 0) return;
+        _appearance.UiFontFamily = UiFontBox.SelectedIndex == 0 ? "" : SystemFonts.Families[UiFontBox.SelectedIndex - 1];
     }
 
     private void SizeSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)

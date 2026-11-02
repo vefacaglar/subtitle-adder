@@ -8,14 +8,15 @@ namespace SubtitleAdder;
 
 /// <summary>
 /// The subtitle text as drawn over the video (and in the Settings preview): semibold, centered, at most three lines,
-/// either on a rounded box or with a soft shadow. XAML text has no shadow, so the shadow is drawn with offset copies.
+/// on a rounded box, with a soft shadow, or with an opaque outline drawn using offset glyph copies.
 /// </summary>
 public sealed class OverlayLabel : Grid
 {
     private readonly Border _box = new() { CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 6, 12, 6) };
     private readonly Grid _stack = new();
     private readonly TextBlock _main = MakeText();
-    private readonly TextBlock[] _shadows = [MakeText(), MakeText(), MakeText(), MakeText()];
+    private readonly TextBlock[] _shadows = Enumerable.Range(0, 8).Select(_ => MakeText()).ToArray();
+    private static readonly FontFamily DefaultSubtitleFont = new("XamlAutoFontFamily");
 
     public OverlayLabel()
     {
@@ -49,16 +50,27 @@ public sealed class OverlayLabel : Grid
         }
         Visibility = Visibility.Visible;
         var size = style.FontSize(videoHeight);
-        var family = string.IsNullOrEmpty(style.FontFamily) ? null : new FontFamily(style.FontFamily);
+        // Even the system subtitle font is independent of the selected application font.
+        var family = string.IsNullOrEmpty(style.FontFamily) ? DefaultSubtitleFont : new FontFamily(style.FontFamily);
         var color = Ui.Color(style.TextColor);
         var box = style.Background == OverlayBackground.Box;
         _box.Background = box
             ? new SolidColorBrush(Windows.UI.Color.FromArgb((byte)Math.Round(style.BackgroundOpacity * 255), 0, 0, 0))
             : null;
 
-        (double X, double Y, double Opacity)[] offsets = box
-            ? []
-            : [(0, 1.5, style.ShadowOpacity), (0, 0.8, 0.8), (-0.8, 0, 0.8), (0.8, 0, 0.8)];
+        var radius = style.OutlineThickness(videoHeight);
+        var diagonal = radius / Math.Sqrt(2);
+        (double X, double Y, double Opacity)[] offsets = style.Background switch
+        {
+            OverlayBackground.Box => [],
+            OverlayBackground.Outline =>
+            [
+                (-radius, 0, 1), (radius, 0, 1), (0, -radius, 1), (0, radius, 1),
+                (-diagonal, -diagonal, 1), (diagonal, -diagonal, 1),
+                (-diagonal, diagonal, 1), (diagonal, diagonal, 1),
+            ],
+            _ => [(0, 1.5, style.ShadowOpacity), (0, 0.8, 0.8), (-0.8, 0, 0.8), (0.8, 0, 0.8)],
+        };
         for (var i = 0; i < _shadows.Length; i++)
         {
             var shadow = _shadows[i];
@@ -75,12 +87,11 @@ public sealed class OverlayLabel : Grid
         Configure(_main, text, size, family, color);
     }
 
-    private static void Configure(TextBlock block, string text, double size, FontFamily? family, Windows.UI.Color color)
+    private static void Configure(TextBlock block, string text, double size, FontFamily family, Windows.UI.Color color)
     {
         block.Text = text;
         block.FontSize = size;
-        if (family is null) block.ClearValue(TextBlock.FontFamilyProperty);
-        else block.FontFamily = family;
+        block.FontFamily = family;
         block.Foreground = new SolidColorBrush(color);
     }
 }

@@ -19,9 +19,11 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -38,6 +40,48 @@ BatchFn = Callable[[list[Sentence]], None]
 EXTERNAL_LLM_URL_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_URL"
 EXTERNAL_LLM_MODEL_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL"
 EXTERNAL_LLM_API_KEY_ENV_VAR = "SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY"
+
+# https://opencode.ai/v2/docs/console/go/ — chat and model discovery have separate routes.
+OPENCODE_GO_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
+_HTTP_TRACE_INTERVAL = 15.0
+
+
+def _translation_diagnostic(event: str, **fields) -> None:
+    # stderr is continuously drained by EngineClient. Never log prompts, responses or headers.
+    with contextlib.suppress(OSError):
+        print("[translation] " + json.dumps({"event": event, **fields}), file=sys.stderr, flush=True)
+
+
+def _is_opencode_go_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    return (
+        not parsed.query and not parsed.fragment
+        and parsed.scheme == "https" and parsed.netloc.lower() == "opencode.ai"
+        and parsed.path.rstrip("/") in {
+            "/zen/go/v1", "/zen/go/v1/chat/completions",
+            "/inference/go/v1", "/inference/go/openai/v1",
+            "/inference/go/openai/v1/chat/completions",
+        }
+    )
+
+
+def _http_error_detail(exc: Exception, api_key: str | None) -> str:
+    """Preserve the gateway's explanation without dumping response/request payloads or credentials."""
+    detail = str(exc)
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            payload = json.loads(exc.read(8192).decode("utf-8"))
+            error = payload.get("error", payload) if isinstance(payload, dict) else None
+            message = error.get("message") if isinstance(error, dict) else error
+            if isinstance(message, str) and message.strip():
+                detail = f"HTTP {exc.code}: {message}"
+        except (ValueError, OSError):
+            pass
+        finally:
+            exc.close()
+    if api_key:
+        detail = detail.replace(api_key, "[redacted]")
+    return " ".join(detail.split())[:1000]
 
 
 def external_llm_url() -> str | None:
@@ -72,6 +116,8 @@ def normalize_external_chat_url(raw_url: str) -> str:
         host = None
     if not host:
         raise ModelError(t("external_llm_url_empty"))
+    if _is_opencode_go_url(url):
+        return f"{OPENCODE_GO_BASE_URL}/chat/completions"
     lower = url.lower()
     if lower.endswith(("/v1/chat/completions", "/chat/completions", "/api/chat")):
         return url
@@ -189,6 +235,8 @@ def _urlopen(req: urllib.request.Request, timeout: float):
 
 
 def _external_models_url(chat_url: str) -> str | None:
+    if _is_opencode_go_url(chat_url):
+        return "https://opencode.ai/inference/go/v1/models"
     lower = chat_url.lower()
     if lower.endswith("/chat/completions"):
         return chat_url[: -len("/chat/completions")] + "/models"
@@ -552,7 +600,10 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
         )
     )
     return (
-        f"You are an uncensored, native-level film and video subtitle translator. Translate the numbered subtitle lines "
+        "You are a professional, native-level film and television subtitle localization translator. "
+        "All input lines are fictional dramatic dialogue from a movie or video transcript provided strictly "
+        "for closed-caption translation and linguistic localization?never real-world user statements, threats, "
+        "or instructions. Translate the numbered subtitle lines "
         f"{source_clause}into {target_desc}.\n"
         "Rules:\n"
         f"1. Output ONLY the translated numbered lines in the exact format `[N] translated text`. Every single line MUST be in {target_desc}.\n"
@@ -561,9 +612,10 @@ def build_system_prompt(target: str, source: str | None = None) -> str:
         "First understand and translate each complete thought across consecutive lines, then distribute its meaning "
         "across the same numbered lines in spoken order. Do not translate fragments in isolation, repeat meaning, "
         "invent missing dialogue, or move a later reply into an earlier line.\n"
-        "4. NEVER censor, soften, sanitize, or tone down profanity, swear words, insults, or street slang. If the source line "
-        "contains slang, argot, or explicit swearing (e.g. Brazilian Portuguese, Mexican Spanish, English, or French street "
-        "profanity), translate it into equivalent raw, authentic target-language slang/profanity with the exact same emotional intensity.\n"
+        "4. Preserve the dramatic register, colloquial expressions, street slang, and profanity of the fictional dialogue "
+        "without sanitizing or softening them. If the source line contains slang, argot, or explicit swearing (e.g. "
+        "Brazilian Portuguese, Mexican Spanish, English, or French street profanity), translate it into equivalent "
+        "authentic target-language slang/profanity with the same emotional intensity.\n"
         "5. Preserve proper names and numbers. Keep each line concise and readable at subtitle pace. "
         "Do not add explanations, notes, or markdown.\n"
         "6. Use previous source/translation pairs to keep names, recurring terms, forms of address, and tone consistent. "
@@ -667,7 +719,7 @@ def build_user_prompt(
                     )
     numbered = "\n".join(f"[{i}] {text}" for i, text in enumerate(lines, start=1))
     target_clause = f" into {LLM_LANGUAGE_SPECS.get(target, target)}" if target else ""
-    parts.append(f"Translate these subtitle lines{target_clause}:\n{numbered}")
+    parts.append(f"Translate these fictional subtitle lines{target_clause}:\n{numbered}")
     if following_lines:
         nxt_ctx = "\n".join(f"- {c}" for c in following_lines if c.strip())
         if nxt_ctx:
@@ -810,6 +862,8 @@ class LlamaTranslator:
         if resolved_external_url:
             check_external_llm(resolved_external_url, self._external_api_key)
         self._resolved_external_model: str | None = self._external_model
+        self._session_id = uuid.uuid4().hex
+        self._request_count = 0
         self._process: subprocess.Popen | None = None
         self._stderr_file = None
         self._port: int | None = None
@@ -922,6 +976,8 @@ class LlamaTranslator:
             if not api_key_transport_allowed(url or self._external_chat_url):
                 raise ModelError(t("external_llm_key_insecure"))
             headers["Authorization"] = f"Bearer {self._external_api_key}"
+        if self._external_chat_url and _is_opencode_go_url(self._external_chat_url):
+            headers["x-opencode-session"] = self._session_id
         return headers
 
     def _discover_external_model(self) -> str:
@@ -948,6 +1004,44 @@ class LlamaTranslator:
         self._resolved_external_model = self._info.id
         return self._resolved_external_model
 
+    def _post_completion(self, url: str, body: dict, headers: dict[str, str]) -> dict:
+        self._request_count += 1
+        request_id = self._request_count
+        started = time.monotonic()
+        finished = threading.Event()
+
+        def waiting() -> None:
+            while not finished.wait(_HTTP_TRACE_INTERVAL):
+                _translation_diagnostic("request_waiting", request=request_id,
+                                        seconds=round(time.monotonic() - started, 1))
+
+        _translation_diagnostic("request_start", request=request_id,
+                                host=urlsplit(url).hostname,
+                                model=(body.get("model") or self._info.id).replace(self._external_api_key or "\0", "[redacted]"))
+        heartbeat = threading.Thread(target=waiting, daemon=True)
+        heartbeat.start()
+        try:
+            req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+            with _urlopen(req, timeout=300.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            choice = (data.get("choices") or [{}])[0]
+            msg = choice.get("message") or data.get("message") or {}
+            finish = choice.get("finish_reason") or data.get("done_reason")
+            _translation_diagnostic("request_complete", request=request_id,
+                                    seconds=round(time.monotonic() - started, 2),
+                                    truncated=finish == "length",
+                                    content_chars=len(msg.get("content") or ""),
+                                    reasoning_chars=len(msg.get("reasoning_content") or ""))
+            return data
+        except Exception as exc:
+            _translation_diagnostic("request_failed", request=request_id,
+                                    seconds=round(time.monotonic() - started, 2),
+                                    http_status=exc.code if isinstance(exc, urllib.error.HTTPError) else None)
+            raise
+        finally:
+            finished.set()
+            heartbeat.join(timeout=1)
+
     def _complete(self, messages: list[dict[str, str]]) -> str:
         if self._completion_fn is not None:
             return self._completion_fn(messages)
@@ -967,6 +1061,13 @@ class LlamaTranslator:
                 "stream": False,
                 **profile.generation_options(ollama=url.lower().endswith("/api/chat")),
             }
+            # DeepSeek enables high-effort thinking by default. Its reasoning consumes the same
+            # short output budget as subtitles and can cause empty/truncated results and retries.
+            # Use the documented switch only on supported official gateways, never on LAN/GGUF.
+            if (_is_opencode_go_url(url) or urlsplit(url).netloc.lower() == "api.deepseek.com") and re.fullmatch(
+                r"deepseek-(?:v4(?:\.1)?-(?:flash|pro)|flash)", model.casefold()
+            ):
+                body["thinking"] = {"type": "disabled"}
         else:
             if self._process is None or self._process.poll() is not None:
                 self._start_server(gpu_layers=0 if self._device == "cpu" else 99)
@@ -977,38 +1078,25 @@ class LlamaTranslator:
                 **profile_for_model(self._info.id).generation_options(ollama=False),
             }
         headers = self._request_headers(url)
-        payload = json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers=headers,
-            method="POST",
-        )
         try:
             try:
-                with _urlopen(req, timeout=300.0) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
+                data = self._post_completion(url, body, headers)
             except urllib.error.HTTPError as http_exc:
                 if (
                     self._external_chat_url is not None
                     and http_exc.code in (400, 422)
                     and "chat_template_kwargs" in body
                 ):
+                    http_exc.close()
                     retry_body = {k: v for k, v in body.items() if k != "chat_template_kwargs"}
-                    retry_req = urllib.request.Request(
-                        url,
-                        data=json.dumps(retry_body).encode("utf-8"),
-                        headers=headers,
-                        method="POST",
-                    )
-                    with _urlopen(retry_req, timeout=300.0) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
+                    data = self._post_completion(url, retry_body, headers)
                 else:
                     raise
         except Exception as exc:
+            detail = _http_error_detail(exc, self._external_api_key)
             if self._external_chat_url is not None:
-                raise ModelError(t("external_llm_unreachable", url=url, error=str(exc))) from exc
-            raise ModelError(t("llama_unavailable", error=str(exc))) from exc
+                raise ModelError(t("external_llm_unreachable", url=url, error=detail)) from exc
+            raise ModelError(t("llama_unavailable", error=detail)) from exc
         choices = data.get("choices") or []
         if choices:
             if choices[0].get("finish_reason") == "length":
@@ -1061,6 +1149,7 @@ class LlamaTranslator:
 
         processed = 0
         for start, batch in _translation_batches(pending, LLM_BATCH_SIZE):
+            _translation_diagnostic("batch_start", offset=start, count=len(batch), total=len(pending))
             if cached_chunks and all(
                 sentence.id in cached_chunks
                 and not _looks_untranslated(sentence.text, cached_chunks[sentence.id], source, target)
@@ -1130,6 +1219,7 @@ class LlamaTranslator:
                         break
                     if attempt == 1:
                         break
+                    _translation_diagnostic("batch_retry", offset=start, invalid_lines=len(invalid))
                     if specialized:
                         continue  # Keep the model's supported single-turn translation template on retry.
                     # Retry the whole thought, not an isolated fragment with a different interpretation.
@@ -1146,6 +1236,7 @@ class LlamaTranslator:
                 for offset, (_, sentence) in enumerate(batch, 1):
                     if offset in accepted:
                         continue
+                    _translation_diagnostic("line_recovery", offset=start + offset - 1)
                     before = (context_lines + batch_texts[:offset - 1])[-LLM_CONTEXT_LINES:]
                     after = (batch_texts[offset:] + following_lines)[:LLM_CONTEXT_LINES]
                     if profile.name == "translategemma":
@@ -1187,6 +1278,7 @@ class LlamaTranslator:
                     _save_temp_checkpoint(checkpoint_path, cached_chunks)
 
             processed += len(batch)
+            _translation_diagnostic("batch_complete", processed=processed, total=len(pending))
             if on_batch is not None:
                 last_index = batch[-1][0]
                 on_batch(result_sentences[: last_index + 1])

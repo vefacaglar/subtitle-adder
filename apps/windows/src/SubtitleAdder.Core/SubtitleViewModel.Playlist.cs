@@ -164,6 +164,29 @@ public sealed partial class SubtitleViewModel
         {
             return;
         }
+        var target = _playlist.FirstOrDefault(i => i.Id == id);
+        if (target is not null &&
+            !_isPlaylistRunning &&
+            string.Equals(_activeJobVideo, target.VideoPath, StringComparison.OrdinalIgnoreCase) &&
+            target.State == PlaylistItemState.Working)
+        {
+            return;
+        }
+        if (target is not null)
+        {
+            var queuedIdx = _queuedVideoJobs.FindIndex(q => string.Equals(q.VideoPath, target.VideoPath, StringComparison.OrdinalIgnoreCase));
+            if (queuedIdx >= 0)
+            {
+                var removedQueued = _queuedVideoJobs[queuedIdx];
+                _queuedVideoJobs.RemoveAt(queuedIdx);
+                removedQueued.Completion.TrySetResult(false);
+                if (GetOrCreateSession(target.VideoPath).Status is JobStatus.Working w && w.Label.Id == "key:Sırada")
+                {
+                    GetOrCreateSession(target.VideoPath).Status = JobStatus.IdleStatus;
+                    if (IsForegroundVideo(target.VideoPath)) Status = JobStatus.IdleStatus;
+                }
+            }
+        }
         var updated = _playlist.Where(i => i.Id != id).ToList();
         if (updated.Count != _playlist.Count) Playlist = updated;
     }
@@ -175,7 +198,87 @@ public sealed partial class SubtitleViewModel
             Playlist = [.. _playlist.Where(i => i.Id == _activePlaylistItemId || i.State == PlaylistItemState.Working)];
             return;
         }
-        Playlist = [];
+        foreach (var q in _queuedVideoJobs)
+        {
+            q.Completion.TrySetResult(false);
+            if (q.VideoPath is not null)
+            {
+                GetOrCreateSession(q.VideoPath).Status = JobStatus.IdleStatus;
+                if (IsForegroundVideo(q.VideoPath)) Status = JobStatus.IdleStatus;
+            }
+        }
+        _queuedVideoJobs.Clear();
+        Playlist = [.. _playlist.Where(i => _isJobRunning && string.Equals(i.VideoPath, _activeJobVideo, StringComparison.OrdinalIgnoreCase) && i.State == PlaylistItemState.Working)];
+    }
+
+    internal void EnsureOrUpdateVideoPlaylistItem(
+        string videoPath,
+        string? sourceLanguage,
+        PlaylistItemState state,
+        LocalizedMessage statusMessage,
+        double? fraction)
+    {
+        if (string.IsNullOrWhiteSpace(videoPath)) return;
+        var cleanFraction = fraction is { } f && double.IsFinite(f) ? Math.Clamp(f, 0.0, 1.0) : (double?)null;
+        var index = -1;
+        for (var i = 0; i < _playlist.Count; i++)
+        {
+            if (string.Equals(_playlist[i].VideoPath, videoPath, StringComparison.OrdinalIgnoreCase))
+            {
+                index = i;
+                break;
+            }
+        }
+
+        var normalizedLang = SubtitleLanguage.FromCode(sourceLanguage ?? "") is not null ? (sourceLanguage ?? "") : "";
+        if (index >= 0)
+        {
+            var existing = _playlist[index];
+            var nextLang = existing.SourceLanguage.Length > 0 ? existing.SourceLanguage : normalizedLang;
+            var updated = new List<PlaylistItem>(_playlist)
+            {
+                [index] = existing with
+                {
+                    SourceLanguage = nextLang,
+                    State = state,
+                    StatusMessage = statusMessage,
+                    Fraction = cleanFraction,
+                },
+            };
+            Playlist = updated;
+        }
+        else
+        {
+            var created = new PlaylistItem(
+                Guid.NewGuid(),
+                videoPath,
+                normalizedLang,
+                state,
+                statusMessage,
+                cleanFraction);
+            var updated = new List<PlaylistItem>(_playlist.Count + 1);
+            updated.AddRange(_playlist);
+            updated.Add(created);
+            Playlist = updated;
+            RaiseCommands();
+        }
+    }
+
+    internal void RemovePendingPlaylistItemForVideo(string videoPath)
+    {
+        if (string.IsNullOrWhiteSpace(videoPath)) return;
+        for (var i = 0; i < _playlist.Count; i++)
+        {
+            if (string.Equals(_playlist[i].VideoPath, videoPath, StringComparison.OrdinalIgnoreCase) &&
+                _playlist[i].State is PlaylistItemState.Pending or PlaylistItemState.Working)
+            {
+                var updated = new List<PlaylistItem>(_playlist);
+                updated.RemoveAt(i);
+                Playlist = updated;
+                RaiseCommands();
+                return;
+            }
+        }
     }
 
     /// <summary>Starts processing all pending/failed items in the playlist using the 3-stage pipeline.</summary>
@@ -294,13 +397,24 @@ public sealed partial class SubtitleViewModel
                     LocalizedMessage.Key("Başlıyor…"),
                     preExtractedDoneIds.Contains(nextItem.Id) ? 1.0 : null);
 
-                // Apply this item's specific source language (or "" for automatic detection) and the shared target language.
-                Language = nextItem.SourceLanguage;
-                TranslationTarget = batchTargetLanguage;
-
-                // Step 1: Open the video cleanly (auto-loads sidecar subtitle if one already exists).
-                if (_video == nextItem.VideoPath) _video = null;
-                OpenVideo(nextItem.VideoPath);
+                // Step 1: Load or create the background session for nextItem.VideoPath without changing Vm.Video or triggering Player.Load.
+                var session = GetOrCreateSession(nextItem.VideoPath);
+                if (session.Sentences.Count == 0 && SubtitleParser.FindSidecarSubtitle(nextItem.VideoPath) is { } sidecar)
+                {
+                    try
+                    {
+                        var parsed = SubtitleParser.ParseFile(sidecar);
+                        if (parsed.Count > 0)
+                        {
+                            session.LoadedSubtitlePath = sidecar;
+                            SetSessionSentences(nextItem.VideoPath, [.. parsed]);
+                            SetSessionStatus(nextItem.VideoPath, JobStatus.FinishedStatus);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
                 if (token.IsCancellationRequested)
                 {
                     UpdatePlaylistItem(nextItem.Id, PlaylistItemState.Pending, LocalizedMessage.Key("Sırada"), null);
@@ -308,9 +422,14 @@ public sealed partial class SubtitleViewModel
                 }
 
                 // Step 2 (Stage 2 — ASR / Diarization): Run speech recognition if sentences aren't already loaded.
-                if (_sentences.Count == 0)
+                if (session.Sentences.Count == 0)
                 {
-                    GenerateCore(chainTranslate: false);
+                    GenerateCoreForVideo(
+                        nextItem.VideoPath,
+                        chainTranslate: false,
+                        sourceLanguageOverride: nextItem.SourceLanguage,
+                        targetLanguageOverride: batchTargetLanguage,
+                        bypassQueueCheck: true);
                     await CurrentJob.ConfigureAwait(true);
                 }
 
@@ -320,9 +439,9 @@ public sealed partial class SubtitleViewModel
                     break;
                 }
 
-                if (_status is JobStatus.Failed || _sentences.Count == 0)
+                if (session.Status is JobStatus.Failed || session.Sentences.Count == 0)
                 {
-                    var errMsg = _status is JobStatus.Failed f1 ? f1.Message : LocalizedMessage.Verbatim(StatusText);
+                    var errMsg = session.Status is JobStatus.Failed f1 ? f1.Message : LocalizedMessage.Verbatim(StatusText);
                     UpdatePlaylistItem(nextItem.Id, PlaylistItemState.Failed, errMsg, null);
                     continue;
                 }
@@ -337,10 +456,14 @@ public sealed partial class SubtitleViewModel
                 pendingTranslations.RemoveAll(t => t.IsCompleted);
 
                 var itemSnapshot = nextItem;
-                var sentencesSnapshot = _sentences.ToList();
-                var preTranslatedSnapshot = new Dictionary<Guid, TranslationEntry>(_translations);
-                var sourceSnapshot = TranslationSource;
-                var targetSnapshot = sourceSnapshot == batchTargetLanguage ? _translationTarget : batchTargetLanguage;
+                var sentencesSnapshot = session.Sentences.ToList();
+                var preTranslatedSnapshot = new Dictionary<Guid, TranslationEntry>(session.Translations);
+                var sourceSnapshot = !string.IsNullOrEmpty(nextItem.SourceLanguage) ? nextItem.SourceLanguage : session.DetectedLanguage;
+                var targetSnapshot = sourceSnapshot is not null &&
+                    sourceSnapshot == batchTargetLanguage &&
+                    SubtitleLanguage.TranslationTargets.FirstOrDefault(l => l.Code != sourceSnapshot) is { } altTarget
+                    ? altTarget.Code
+                    : batchTargetLanguage;
                 var modelSnapshot = _translationModel;
                 var formatSnapshot = _exportFormat;
                 _activePlaylistItemId = null;
@@ -598,10 +721,7 @@ public sealed partial class SubtitleViewModel
                                         Label(EngineStage.Translating, batchFraction, JobPurpose.Translation),
                                         batchFraction);
                                 }
-                                if (_video == videoPath)
-                                {
-                                    ApplyTranslation(translation.Sentences, translation.Language, remaining, mergeIntoExisting: true);
-                                }
+                                ApplySessionTranslation(videoPath, translation.Sentences, translation.Language, remaining, mergeIntoExisting: true);
                             }).ConfigureAwait(false);
                             break;
                         case EngineEvent.Error error:
@@ -637,7 +757,14 @@ public sealed partial class SubtitleViewModel
 
             await _ui.InvokeAsync(() =>
             {
-                if (_video == videoPath)
+                var session = GetOrCreateSession(videoPath);
+                session.SavedSubtitleName = savedName;
+                if (session.Status is not JobStatus.Working)
+                {
+                    session.Status = JobStatus.FinishedStatus;
+                }
+                VideoCardViewModel.InvalidateSidecarCache(videoPath);
+                if (IsForegroundVideo(videoPath))
                 {
                     _savedSubtitleName = savedName;
                     if (_status is not JobStatus.Working) Status = JobStatus.FinishedStatus;
@@ -674,6 +801,7 @@ public sealed partial class SubtitleViewModel
 
     private void UpdatePlaylistItem(Guid id, PlaylistItemState state, LocalizedMessage statusMessage, double? fraction)
     {
+        var cleanFraction = fraction is { } f && double.IsFinite(f) ? Math.Clamp(f, 0.0, 1.0) : (double?)null;
         var index = -1;
         for (var i = 0; i < _playlist.Count; i++)
         {
@@ -686,7 +814,7 @@ public sealed partial class SubtitleViewModel
         if (index < 0) return;
         var updated = new List<PlaylistItem>(_playlist)
         {
-            [index] = _playlist[index] with { State = state, StatusMessage = statusMessage, Fraction = fraction },
+            [index] = _playlist[index] with { State = state, StatusMessage = statusMessage, Fraction = cleanFraction },
         };
         Playlist = updated;
     }

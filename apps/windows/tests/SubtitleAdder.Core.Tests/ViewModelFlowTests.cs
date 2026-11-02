@@ -1031,6 +1031,90 @@ public class ViewModelTranslationTests
             Directory.Delete(rootDir, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task TranslatingVideoA_SwitchingToVideoB_QueuesVideoBSequential_AndSwitchingBackToVideoAShowsLiveProgress()
+    {
+        var rootDir = Path.Combine(Path.GetTempPath(), "subtitle-adder-seq-queue-" + Guid.NewGuid().ToString("N"));
+        var dirA = Path.Combine(rootDir, "DirA");
+        var dirB = Path.Combine(rootDir, "DirB");
+        Directory.CreateDirectory(dirA);
+        Directory.CreateDirectory(dirB);
+        var videoA = Path.Combine(dirA, "EpisodeA.mp4");
+        var videoB = Path.Combine(dirB, "EpisodeB.mp4");
+        await File.WriteAllBytesAsync(videoA, [1, 2, 3, 4]);
+        await File.WriteAllBytesAsync(videoB, [5, 6, 7, 8]);
+
+        try
+        {
+            var engine = new PipelinedTestEngineClient { AutoCompleteExtractAudio = true };
+            var settings = new InMemorySettingsStore();
+            settings.SetBool(SubtitleViewModel.OfflineModeDefaultsKey, false);
+            var vm = new SubtitleViewModel(new ModelCatalog(engine), settings);
+            vm.Language = "en";
+            vm.TranslationTarget = "tr";
+            vm.AutoSaveSubtitle = true;
+
+            // 1. Open Video A and start GenerateAndTranslate
+            vm.OpenVideo(videoA);
+            vm.GenerateAndTranslate();
+            await Make.Eventually(() => engine.TranscribeCalls.Count == 1, "Video A transcribe started");
+            Assert.Equal(videoA, engine.TranscribeCalls[0].Video);
+            Assert.True(vm.IsWorking);
+            Assert.Contains(vm.Playlist, p => p.VideoPath == videoA && p.State == PlaylistItemState.Working);
+
+            // 2. Switch to Video B while Video A is still working -> Video A keeps running in the background!
+            vm.OpenVideo(videoB);
+            Assert.Equal(videoB, vm.Video);
+            Assert.False(vm.IsWorking);
+
+            // 3. Click GenerateAndTranslate on Video B -> Video B is queued sequentially behind Video A ("Sırada")
+            vm.GenerateAndTranslate();
+            Assert.Equal("Sırada", vm.StatusText);
+            Assert.Single(engine.TranscribeCalls); // Video B has NOT started yet
+            Assert.Contains(vm.Playlist, p => p.VideoPath == videoA && p.State == PlaylistItemState.Working);
+            Assert.Contains(vm.Playlist, p => p.VideoPath == videoB && p.State == PlaylistItemState.Pending && p.StatusText == "Sırada");
+
+            // 4. Switch back to Video A -> UI immediately reflects Video A's live background progress!
+            vm.OpenVideo(videoA);
+            Assert.Equal(videoA, vm.Video);
+            Assert.True(vm.IsWorking);
+            engine.TranscribeCalls[0].Channel.Writer.TryWrite(new EngineEvent.Stage(EngineStage.Transcribing, 0.45));
+            await Make.Eventually(() => vm.StatusFraction == 0.45, "Video A live progress shown when switched back");
+
+            // 5. Switch back to Video B while Video A finishes ASR + Translation -> Video B starts automatically!
+            vm.OpenVideo(videoB);
+            Assert.Equal(videoB, vm.Video);
+            engine.FinishTranscribe(0, Make.Result("en", "", new Sentence(1, 0, 2, "Hello from A")));
+            await Make.Eventually(() => engine.TranslateCalls.Count == 1, "Video A translation started");
+            var reqA = engine.TranslateCalls[0].Sentences;
+            engine.FinishTranslate(0, new EngineEvent.Translation("tr", [new Sentence(reqA[0].Id, reqA[0].Start, reqA[0].End, "A'dan merhaba")]));
+
+            await Make.Eventually(() => engine.TranscribeCalls.Count == 2, "Video B automatically started after Video A finished");
+            Assert.Equal(videoB, engine.TranscribeCalls[1].Video);
+            Assert.Equal("A'dan merhaba", await File.ReadAllTextAsync(Path.Combine(dirA, "EpisodeA.srt")));
+
+            engine.FinishTranscribe(1, Make.Result("en", "", new Sentence(1, 0, 2, "Hello from B")));
+            await Make.Eventually(() => engine.TranslateCalls.Count == 2, "Video B translation started");
+            var reqB = engine.TranslateCalls[1].Sentences;
+            engine.FinishTranslate(1, new EngineEvent.Translation("tr", [new Sentence(reqB[0].Id, reqB[0].Start, reqB[0].End, "B'den merhaba")]));
+
+            await Make.Eventually(() =>
+                vm.Playlist.All(p => p.State == PlaylistItemState.Completed) &&
+                File.Exists(Path.Combine(dirB, "EpisodeB.srt")),
+                "Video B completed and saved");
+
+            Assert.Equal("B'den merhaba", await File.ReadAllTextAsync(Path.Combine(dirB, "EpisodeB.srt")));
+            Assert.Equal(videoB, vm.Video);
+            Assert.Single(vm.Sentences);
+            Assert.Equal("Hello from B", vm.Sentences[0].Text);
+            Assert.Equal("B'den merhaba", vm.Translations[vm.Sentences[0].Uid].Text);
+        }
+        finally
+        {
+            Directory.Delete(rootDir, recursive: true);
+        }
+    }
 }
 
 internal sealed class PipelinedTestEngineClient : IEngineClient
