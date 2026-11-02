@@ -90,6 +90,14 @@ private struct GeneralSettingsTab: View {
             }
 
             Section {
+                Toggle(L("Video açıldığında otomatik oynat"), isOn: $vm.autoPlayVideo)
+            } header: {
+                Text(L("Medya oynatıcı"))
+            } footer: {
+                Text(L("Bir video seçildiğinde veya çift tıklanarak açıldığında oynatmayı hemen başlatır."))
+            }
+
+            Section {
                 Toggle(L("Çevrimdışı mod"), isOn: $vm.offlineMode)
             } header: {
                 Text(L("Gizlilik"))

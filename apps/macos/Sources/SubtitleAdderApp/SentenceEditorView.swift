@@ -28,6 +28,8 @@ struct SentenceEditorView: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .onAppear { vm.undoManager = undoManager }
+        // The panel can go away while a line is being edited (hidden, full screen, layout switch); keep what was typed.
+        .onDisappear { finishEditing() }
         .onChange(of: undoManager) { _, new in vm.undoManager = new }
         .onChange(of: focusedUID) { old, new in
             if let new, let sentence = vm.sentences.first(where: { $0.uid == new }) {
@@ -87,12 +89,8 @@ struct SentenceEditorView: View {
                 finishEditing()
                 vm.deleteSelected()
             }
-            .onKeyPress(.space) {
-                // Let the space key type a space while the text field is focused.
-                guard focusedUID == nil, focusedTranslationUID == nil else { return .ignored }
-                player.togglePlayback()
-                return .handled
-            }
+            // Space (play/pause) is handled for the whole window by `WindowChrome`'s player keys, before this list
+            // sees it, and it never fires while a text field is being edited; a second handler here would toggle twice.
         }
     }
 

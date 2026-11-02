@@ -90,6 +90,12 @@ private struct LayoutCommands: Commands {
         CommandGroup(after: .toolbar) {
             Toggle(L("Tiyatro modu"), isOn: $vm.isTheaterMode)
             Toggle(L("Altyazıları sağa / alta al"), isOn: $vm.sideBySideLayout)
+                .disabled(vm.hideSubtitlePanel)
+            // Only while a player is on screen; the E key does the same.
+            Button(vm.hideSubtitlePanel ? L("Altyazı panelini göster") : L("Altyazı panelini gizle")) {
+                focused?.toggleSubtitlePanel()
+            }
+            .disabled(focused.map { !$0.isPlayerShown } ?? true)
         }
     }
 }
