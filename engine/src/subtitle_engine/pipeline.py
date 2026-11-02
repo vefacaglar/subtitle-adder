@@ -78,8 +78,15 @@ def extract_video_audio(
     try:
         extracted = extract_audio(video, tmp_path, **extract_kwargs)
         if tmp_path.is_file():
-            tmp_path.replace(wav_path)
-            return wav_path
+            try:
+                tmp_path.replace(wav_path)
+                return wav_path
+            except OSError:
+                if wav_path.is_file() and wav_path.stat().st_size > 44:
+                    with contextlib.suppress(OSError):
+                        tmp_path.unlink(missing_ok=True)
+                    return wav_path
+                return tmp_path
         return extracted
     except BaseException:
         with contextlib.suppress(OSError):
@@ -195,5 +202,12 @@ def run(
     on_stage("segmenting", None)
     sentences = segment(transcript.words, config, speakers)
     out_dir.mkdir(parents=True, exist_ok=True)
-    outputs = [subtitles.write(sentences, out_dir / f"{safe_stem}.{fmt}", fmt) for fmt in formats]
+    outputs: list[Path] = []
+    for fmt in formats:
+        target_out = out_dir / f"{safe_stem}.{fmt}"
+        try:
+            outputs.append(subtitles.write(sentences, target_out, fmt))
+        except OSError:
+            fallback_out = out_dir / f"{safe_stem}.{os.getpid()}.{fmt}"
+            outputs.append(subtitles.write(sentences, fallback_out, fmt))
     return PipelineResult(audio, transcript.language, transcript.duration, sentences, outputs)

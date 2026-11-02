@@ -938,8 +938,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
         {
             try
             {
-                if (!File.Exists(FilePath)) return;
-                var json = File.ReadAllText(FilePath, Encoding.UTF8);
+                if (AtomicFileStore.ReadAllTextShared(FilePath) is not { } json) return;
                 var state = JsonSerializer.Deserialize<PersistedState>(json, JsonOptions);
                 if (state is null) return;
                 _providers = state.Providers ?? [];
@@ -970,9 +969,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
                 Providers = _providers,
             };
             var json = JsonSerializer.Serialize(state, JsonOptions);
-            var temp = FilePath + ".tmp";
-            File.WriteAllText(temp, json, Encoding.UTF8);
-            File.Move(temp, FilePath, overwrite: true);
+            AtomicFileStore.WriteAllTextAtomic(FilePath, json);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

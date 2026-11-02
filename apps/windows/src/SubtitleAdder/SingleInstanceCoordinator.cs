@@ -6,9 +6,11 @@ using Microsoft.UI.Xaml;
 namespace SubtitleAdder;
 
 /// <summary>
-/// Ensures a single running instance of Subtitle Adder per user session. When the user double-clicks a video or
-/// subtitle file in Explorer while Subtitle Adder is already open, forwards the file paths over a per-user named pipe
-/// to the primary window and brings it to the foreground instead of spawning a duplicate window.
+/// Coordinates multiple instances of Subtitle Adder.
+/// - When the user launches Subtitle Adder directly with NO file arguments (e.g. Start Menu, shortcut, or a second window),
+///   allows the second instance to open normally alongside the first instance without crashing.
+/// - When the user double-clicks a media/subtitle file in Explorer (<c>filePaths.Count &gt; 0</c>), forwards the file paths
+///   to the primary instance if responsive; if forwarding fails, opens the file in the new instance as a safe fallback.
 /// </summary>
 public sealed class SingleInstanceCoordinator : IDisposable
 {
@@ -16,12 +18,12 @@ public sealed class SingleInstanceCoordinator : IDisposable
     private static readonly string MutexName = $@"Local\SubtitleAdder.SingleInstance.{SafeUserName}";
     private static readonly string PipeName = $"SubtitleAdder.SingleInstance.{SafeUserName}";
 
-    private readonly Mutex _mutex;
+    private readonly Mutex? _mutex;
     private readonly bool _ownsMutex;
     private readonly CancellationTokenSource _cts = new();
     private bool _disposed;
 
-    private SingleInstanceCoordinator(Mutex mutex, bool ownsMutex)
+    private SingleInstanceCoordinator(Mutex? mutex, bool ownsMutex)
     {
         _mutex = mutex;
         _ownsMutex = ownsMutex;
@@ -56,15 +58,29 @@ public sealed class SingleInstanceCoordinator : IDisposable
         }
         catch
         {
-            // If mutex creation fails in a restricted sandbox, continue as primary instance.
+            // If mutex creation fails in a restricted sandbox, continue as an independent instance.
+            try { mutex?.Dispose(); } catch { }
             return true;
         }
 
         if (!ownsMutex)
         {
-            ForwardToPrimaryInstance(filePaths);
-            mutex.Dispose();
-            return false;
+            try { mutex.Dispose(); } catch { }
+
+            // If the user explicitly launched a 2nd SubtitleAdder window with no file arguments,
+            // allow the 2nd instance to run concurrently alongside the first instance!
+            if (filePaths.Count == 0)
+            {
+                return true;
+            }
+
+            // If launched with file arguments (e.g. Explorer double-click), try forwarding to the primary instance.
+            // If the primary instance is busy or unreachable, open in this new instance instead of failing.
+            if (ForwardToPrimaryInstance(filePaths))
+            {
+                return false;
+            }
+            return true;
         }
 
         coordinator = new SingleInstanceCoordinator(mutex, ownsMutex: true);
@@ -72,28 +88,22 @@ public sealed class SingleInstanceCoordinator : IDisposable
         return true;
     }
 
-    private static void ForwardToPrimaryInstance(IReadOnlyList<string> filePaths)
+    private static bool ForwardToPrimaryInstance(IReadOnlyList<string> filePaths)
     {
         try
         {
             using var client = new NamedPipeClientStream(".", PipeName, PipeDirection.Out);
-            client.Connect(timeout: 1500);
+            client.Connect(timeout: 1200);
             using var writer = new StreamWriter(client, new UTF8Encoding(false)) { AutoFlush = true };
-            if (filePaths.Count == 0)
+            foreach (var path in filePaths)
             {
-                writer.WriteLine();
+                writer.WriteLine(path);
             }
-            else
-            {
-                foreach (var path in filePaths)
-                {
-                    writer.WriteLine(path);
-                }
-            }
+            return true;
         }
         catch
         {
-            // Ignore pipe connection errors if primary instance is closing.
+            return false;
         }
     }
 
@@ -109,7 +119,7 @@ public sealed class SingleInstanceCoordinator : IDisposable
                     await using var server = new NamedPipeServerStream(
                         PipeName,
                         PipeDirection.In,
-                        maxNumberOfServerInstances: 1,
+                        maxNumberOfServerInstances: NamedPipeServerStream.MaxAllowedServerInstances,
                         PipeTransmissionMode.Byte,
                         PipeOptions.Asynchronous);
 
@@ -132,7 +142,14 @@ public sealed class SingleInstanceCoordinator : IDisposable
                 }
                 catch
                 {
-                    await Task.Delay(200, token).ConfigureAwait(false);
+                    try
+                    {
+                        await Task.Delay(200, token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
                 }
             }
         }, token);
@@ -159,34 +176,41 @@ public sealed class SingleInstanceCoordinator : IDisposable
         }
     }
 
-    private static string SanitizeToken(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return "Default";
-        var chars = value.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray();
-        return new string(chars);
-    }
-
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         try { _cts.Cancel(); } catch { }
-        _cts.Dispose();
-        if (_ownsMutex)
+        try { _cts.Dispose(); } catch { }
+        if (_ownsMutex && _mutex is not null)
         {
-            try { _mutex.ReleaseMutex(); } catch { }
+            try
+            {
+                _mutex.ReleaseMutex();
+            }
+            catch (ApplicationException)
+            {
+                // ReleaseMutex can throw if called from a different thread than the one that acquired it.
+            }
         }
-        _mutex.Dispose();
+        try { _mutex?.Dispose(); } catch { }
+    }
+
+    private static string SanitizeToken(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "default";
+        var chars = raw.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray();
+        return new string(chars);
     }
 
     private const int SW_RESTORE = 9;
 
     [DllImport("user32.dll")]
-    private static extern bool IsIconic(IntPtr hWnd);
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    private static extern bool IsIconic(IntPtr hWnd);
 }

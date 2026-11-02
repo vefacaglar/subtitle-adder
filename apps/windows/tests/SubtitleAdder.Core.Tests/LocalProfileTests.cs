@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace SubtitleAdder.Core.Tests;
 
 public sealed class LocalProfileTests : IDisposable
@@ -111,7 +113,7 @@ public sealed class LocalProfileTests : IDisposable
         var videoPath = Path.Combine(_tempDir, "movie.mkv");
 
         var firstSession = new LocalProfileManager(_profilesPath);
-        Assert.True(firstSession.Register("cinema_fan", "pass99"));
+        Assert.True(firstSession.Register("cinema_fan", "pass99", rememberMe: false));
         firstSession.RecordWatch(videoPath, positionSeconds: 15, durationSeconds: 300);
         firstSession.RecordWatch(videoPath, positionSeconds: 180, durationSeconds: 300);
         firstSession.UpdatePlaybackProgress(videoPath, positionSeconds: 210, durationSeconds: 300);
@@ -131,6 +133,132 @@ public sealed class LocalProfileTests : IDisposable
         Assert.Equal(210, restored.LastPositionSeconds);
         Assert.Equal(300, restored.DurationSeconds);
         Assert.NotNull(restored.LastWatchedAtUtc);
+    }
+
+    [Fact]
+    public void RememberMe_DefaultTrue_AutoRestoresEncryptedSessionAcrossNewInstancesUntilLogout()
+    {
+        var videoPath = Path.Combine(_tempDir, "remembered_show.mp4");
+
+        var firstSession = new LocalProfileManager(_profilesPath);
+        Assert.True(firstSession.Register("emre", "pass2026")); // default rememberMe = true
+        Assert.True(firstSession.RememberMe);
+        firstSession.RecordWatch(videoPath, positionSeconds: 50, durationSeconds: 200);
+        firstSession.SetLiked(videoPath, true);
+
+        // A 2nd instance or app restart automatically unlocks the profile without re-entering the password
+        var secondSession = new LocalProfileManager(_profilesPath);
+        Assert.True(secondSession.IsLoggedIn);
+        Assert.Equal("emre", secondSession.CurrentUsername);
+        Assert.Equal("emre", secondSession.LastUsername);
+        var stats = secondSession.GetStats(videoPath);
+        Assert.NotNull(stats);
+        Assert.Equal(1, stats.ViewCount);
+        Assert.True(stats.IsLiked);
+
+        // Logging out clears the remembered key so a 3rd instance starts logged out
+        secondSession.Logout();
+        var thirdSession = new LocalProfileManager(_profilesPath);
+        Assert.False(thirdSession.IsLoggedIn);
+        Assert.Equal("emre", thirdSession.LastUsername);
+    }
+
+    [Fact]
+    public void EncryptedVaultAndThumbnails_NeverExposePlaintextVideoNamesListsOrThumbnailsOnDisk()
+    {
+        var secretVideoPath = Path.Combine(_tempDir, "TopSecret_Project_Alpha_2026.mkv");
+        const string secretListName = "Gizli Özel Koleksiyonum";
+        var sampleThumbBytes = Encoding.UTF8.GetBytes("FAKE_PNG_THUMBNAIL_PAYLOAD_987654321");
+
+        var manager = new LocalProfileManager(_profilesPath);
+        Assert.True(manager.Register("vault_user", "UltraStrongVaultPass!99", rememberMe: false));
+        manager.RecordWatch(secretVideoPath, positionSeconds: 33, durationSeconds: 100);
+        manager.SetLiked(secretVideoPath, true);
+        manager.SetRating(secretVideoPath, 5);
+        var list = manager.CreateCustomList(secretListName);
+        Assert.NotNull(list);
+        Assert.True(manager.AddVideoToCustomList(list.Id, secretVideoPath));
+        Assert.True(manager.SetThumbnail(secretVideoPath, sampleThumbBytes));
+
+        // Inspect raw profiles.json on disk: must NOT contain video filename, folder path, custom list name, or thumbnail payload
+        var rawJson = File.ReadAllText(_profilesPath);
+        Assert.Contains("encryptedVaultBase64", rawJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("TopSecret_Project_Alpha_2026", rawJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(secretListName, rawJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(Convert.ToBase64String(sampleThumbBytes), rawJson, StringComparison.Ordinal);
+
+        // Reload in a fresh manager, log in with password, and verify everything + thumbnail bytes decrypt cleanly
+        var reloaded = new LocalProfileManager(_profilesPath);
+        Assert.False(reloaded.IsLoggedIn);
+        Assert.Null(reloaded.GetThumbnail(secretVideoPath));
+
+        Assert.True(reloaded.Login("vault_user", "UltraStrongVaultPass!99"));
+        var stats = reloaded.GetStats(secretVideoPath);
+        Assert.NotNull(stats);
+        Assert.Equal(1, stats.ViewCount);
+        Assert.True(stats.IsLiked);
+        Assert.Equal(5, stats.Rating);
+        Assert.NotNull(stats.ThumbnailBytes);
+        Assert.Equal(sampleThumbBytes, stats.ThumbnailBytes);
+        Assert.Equal(sampleThumbBytes, reloaded.GetThumbnail(secretVideoPath));
+
+        var feed = reloaded.GetFeed(VideoFeedFilter.History);
+        Assert.Single(feed);
+        Assert.Equal(sampleThumbBytes, feed[0].ThumbnailBytes);
+    }
+
+    [Fact]
+    public void CrossInstanceLiveSync_TwoConcurrentInstancesLoggedIntoSameProfileMergeAllHistoryLikesRatingsAndLists()
+    {
+        var video1 = Path.Combine(_tempDir, "Instance1_Episode01.mp4");
+        var video2 = Path.Combine(_tempDir, "Instance2_Episode02.mp4");
+
+        // Instance 1 registers and logs in (with RememberMe = true)
+        var instance1 = new LocalProfileManager(_profilesPath);
+        Assert.True(instance1.Register("shared_user", "shared_pass_123"));
+
+        // Instance 2 opens concurrently while Instance 1 is still open and auto-restores the same profile
+        var instance2 = new LocalProfileManager(_profilesPath);
+        Assert.True(instance2.IsLoggedIn);
+        Assert.Equal("shared_user", instance2.CurrentUsername);
+
+        // Instance 1 watches video1 and likes it
+        instance1.RecordWatch(video1, positionSeconds: 30, durationSeconds: 120);
+        instance1.SetLiked(video1, true);
+
+        // Instance 2 watches video2, rates it 5 stars, and creates a custom list containing video2
+        instance2.RecordWatch(video2, positionSeconds: 90, durationSeconds: 180);
+        instance2.SetRating(video2, 5);
+        var listFrom2 = instance2.CreateCustomList("İki Pencere Ortak Liste");
+        Assert.NotNull(listFrom2);
+        Assert.True(instance2.AddVideoToCustomList(listFrom2.Id, video2));
+
+        // Instance 1 watches video1 a second time AND adds video1 to the custom list created by Instance 2
+        instance1.RecordWatch(video1, positionSeconds: 60, durationSeconds: 120);
+        Assert.True(instance1.AddVideoToCustomList(listFrom2.Id, video1));
+
+        // Verify BOTH Instance 1 and Instance 2 see BOTH video1 (2 views, liked) and video2 (1 view, 5 stars) and the merged custom list
+        var history1 = instance1.GetFeed(VideoFeedFilter.History);
+        var history2 = instance2.GetFeed(VideoFeedFilter.History);
+        Assert.Equal(2, history1.Count);
+        Assert.Equal(2, history2.Count);
+
+        var v1OnInst2 = instance2.GetStats(video1);
+        Assert.NotNull(v1OnInst2);
+        Assert.Equal(2, v1OnInst2.ViewCount);
+        Assert.True(v1OnInst2.IsLiked);
+
+        var v2OnInst1 = instance1.GetStats(video2);
+        Assert.NotNull(v2OnInst1);
+        Assert.Equal(1, v2OnInst1.ViewCount);
+        Assert.Equal(5, v2OnInst1.Rating);
+
+        var listsOn1 = instance1.GetCustomLists();
+        var listsOn2 = instance2.GetCustomLists();
+        Assert.Single(listsOn1);
+        Assert.Single(listsOn2);
+        Assert.Equal(2, listsOn1[0].VideoPaths.Count);
+        Assert.Equal(2, listsOn2[0].VideoPaths.Count);
     }
 
     [Fact]

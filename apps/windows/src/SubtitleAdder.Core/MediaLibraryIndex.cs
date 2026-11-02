@@ -398,8 +398,7 @@ public sealed class MediaLibraryIndex
     {
         try
         {
-            if (!File.Exists(FilePath)) return;
-            var json = File.ReadAllText(FilePath);
+            if (AtomicFileStore.ReadAllTextShared(FilePath) is not { } json) return;
             var persisted = JsonSerializer.Deserialize<PersistedIndex>(json, JsonOptions);
             if (persisted?.Directories is null) return;
 
@@ -459,19 +458,8 @@ public sealed class MediaLibraryIndex
                 };
             }
 
-            try
-            {
-                var dir = Path.GetDirectoryName(FilePath);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                var json = JsonSerializer.Serialize(payload, JsonOptions);
-                var tempPath = FilePath + ".tmp";
-                File.WriteAllText(tempPath, json);
-                File.Move(tempPath, FilePath, overwrite: true);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Keep in-memory state if disk write fails.
-            }
+            var json = JsonSerializer.Serialize(payload, JsonOptions);
+            AtomicFileStore.WriteAllTextAtomic(FilePath, json);
         }
     }
 

@@ -35,10 +35,12 @@ public sealed class VideoCardViewModel
             ? Path.GetExtension(subPath).TrimStart('.').ToUpperInvariant()
             : null;
         CustomListNames = customListNames ?? [];
+        ThumbnailBytes = stats.ThumbnailBytes;
     }
 
     public VideoUserStats Stats { get; }
     public string VideoPath { get; }
+    public byte[]? ThumbnailBytes { get; }
     public string FileName { get; }
     public string Title { get; }
     public string Extension { get; }
@@ -137,11 +139,13 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     private int _activeVideoViewCount;
     private bool _activeVideoIsLiked;
     private int _activeVideoRating;
+    private bool _rememberMe = true;
 
     public VideoPlatformViewModel(LocalProfileManager? profileManager = null, LanguageState? languageState = null)
     {
         _profileManager = profileManager ?? new LocalProfileManager();
         _languageState = languageState ?? LanguageState.Shared;
+        _rememberMe = _profileManager.RememberMe;
 
         _profileManager.StateChanged += OnProfileManagerStateChanged;
         _languageState.LanguageChanged += OnLanguageChanged;
@@ -160,6 +164,16 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
 
     /// <summary>Currently logged-in username, or <c>null</c> when logged out.</summary>
     public string? CurrentUsername => _profileManager.CurrentUsername;
+
+    /// <summary>Most recently used username on this machine for convenience pre-filling.</summary>
+    public string? LastUsername => _profileManager.LastUsername;
+
+    /// <summary>Whether "Girişi hatırla" (remember login across restarts and instances) is checked (default <c>true</c>).</summary>
+    public bool RememberMe
+    {
+        get => _rememberMe;
+        set => SetProperty(ref _rememberMe, value);
+    }
 
     /// <summary>All registered profile usernames on this machine.</summary>
     public IReadOnlyList<string> RegisteredUsernames => _profileManager.RegisteredUsernames;
@@ -299,9 +313,11 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     public int TotalViewsCount => _profileManager.TotalViewsCount;
 
     /// <summary>Attempts to log in with an existing local profile username and password.</summary>
-    public bool TryLogin(string username, string password)
+    public bool TryLogin(string username, string password, bool? rememberMe = null)
     {
-        if (_profileManager.Login(username, password, out var error))
+        var remember = rememberMe ?? _rememberMe;
+        RememberMe = remember;
+        if (_profileManager.Login(username, password, out var error, remember))
         {
             AuthError = null;
             SyncFromProfileManager();
@@ -312,9 +328,11 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     }
 
     /// <summary>Attempts to register a new local profile and log it in immediately.</summary>
-    public bool TryRegister(string username, string password)
+    public bool TryRegister(string username, string password, bool? rememberMe = null)
     {
-        if (_profileManager.Register(username, password, out var error))
+        var remember = rememberMe ?? _rememberMe;
+        RememberMe = remember;
+        if (_profileManager.Register(username, password, out var error, remember))
         {
             AuthError = null;
             SyncFromProfileManager();
@@ -323,6 +341,18 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
         AuthError = error;
         return false;
     }
+
+    /// <summary>Stores an encrypted thumbnail (<c>byte[]</c>) for <paramref name="videoPath"/> inside the active user's AES-256-GCM vault.</summary>
+    public bool SaveEncryptedThumbnail(string videoPath, byte[] thumbnailBytes)
+    {
+        if (!IsLoggedIn || string.IsNullOrWhiteSpace(videoPath) || thumbnailBytes is not { Length: > 0 })
+            return false;
+        return _profileManager.SetThumbnail(videoPath, thumbnailBytes);
+    }
+
+    /// <summary>Retrieves the decrypted thumbnail (<c>byte[]</c>) for <paramref name="videoPath"/> from the active user's vault.</summary>
+    public byte[]? GetEncryptedThumbnail(string? videoPath) =>
+        IsLoggedIn ? _profileManager.GetThumbnail(videoPath) : null;
 
     /// <summary>Logs out of the active profile and clears personal engagement state from the UI.</summary>
     public void Logout()
@@ -579,6 +609,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     {
         OnPropertyChanged(nameof(IsLoggedIn));
         OnPropertyChanged(nameof(CurrentUsername));
+        OnPropertyChanged(nameof(LastUsername));
         OnPropertyChanged(nameof(RegisteredUsernames));
         OnPropertyChanged(nameof(HasActiveVideo));
         OnPropertyChanged(nameof(RequiresAuthForCurrentTab));

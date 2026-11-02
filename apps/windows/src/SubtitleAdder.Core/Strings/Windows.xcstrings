@@ -3728,6 +3728,23 @@
           }
         }
       }
+    },
+    "Girişi hatırla": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remember login"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Girişi hatırla"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

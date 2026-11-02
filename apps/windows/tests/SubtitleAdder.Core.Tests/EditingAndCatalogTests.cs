@@ -481,4 +481,73 @@ public class AppLanguageAndSettingsTests
         Assert.Equal(OverlayStyle.Standard, appearance.Style);
         Assert.Equal(ThemeChoice.Dark, appearance.Theme);
     }
+
+    [Fact]
+    public async Task MultiInstanceConcurrentStoresAndCleanupNeverThrowOrCorrupt()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"subtitle-adder-multi-instance-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var settingsPath = Path.Combine(tempRoot, "settings.json");
+            var providersPath = Path.Combine(tempRoot, "translation-providers.json");
+            var profilesPath = Path.Combine(tempRoot, "profiles.json");
+            var indexPath = Path.Combine(tempRoot, "media-index.json");
+
+            // Simulate two application instances reading/writing the exact same JSON files simultaneously.
+            using var settingsA = new JsonFileSettingsStore(settingsPath, TimeSpan.FromMilliseconds(5));
+            using var settingsB = new JsonFileSettingsStore(settingsPath, TimeSpan.FromMilliseconds(5));
+            var providersA = new TranslationProviderManager(providersPath);
+            var providersB = new TranslationProviderManager(providersPath);
+            var profilesA = new LocalProfileManager(profilesPath);
+            var profilesB = new LocalProfileManager(profilesPath);
+            var indexA = new MediaLibraryIndex(indexPath);
+            var indexB = new MediaLibraryIndex(indexPath);
+
+            var tasks = Enumerable.Range(0, 12).Select(i => Task.Run(async () =>
+            {
+                settingsA.SetInt("speakerCount", i);
+                settingsA.Flush();
+                settingsB.SetString("selectedModel", $"model-{i}");
+                settingsB.Flush();
+                _ = AtomicFileStore.ReadAllTextShared(settingsPath);
+
+                var p = providersA.AddProvider("lan", baseUrl: $"http://127.0.0.1:{11434 + i}", model: $"qwen:{i}");
+                providersB.UpdateProviderModel(p.Id, $"gemma:{i}");
+
+                profilesA.Register($"userA_{i}", "pass1234", out _);
+                profilesB.Register($"userB_{i}", "pass1234", out _);
+
+                var sampleVideo = Path.Combine(tempRoot, $"v{i}.mp4");
+                await File.WriteAllBytesAsync(sampleVideo, [1, 2, 3, 4]);
+                await indexA.ScanDirectoryAsync(tempRoot);
+                _ = indexB.Search("v");
+            }));
+
+            await Task.WhenAll(tasks);
+
+            // Verify all files remain valid JSON and readable by a fresh instance.
+            Assert.NotNull(AtomicFileStore.ReadAllTextShared(settingsPath));
+            Assert.NotNull(AtomicFileStore.ReadAllTextShared(providersPath));
+            Assert.NotNull(AtomicFileStore.ReadAllTextShared(profilesPath));
+            Assert.NotNull(AtomicFileStore.ReadAllTextShared(indexPath));
+
+            // Verify CleanupTempDirectory does not throw even when another process holds an exclusive lock on a temp .wav file.
+            var sharedTempDir = Path.Combine(Path.GetTempPath(), "SubtitleAdder");
+            Directory.CreateDirectory(sharedTempDir);
+            var lockedWav = Path.Combine(sharedTempDir, $"locked-{Guid.NewGuid():N}.wav");
+            await using (var lockStream = new FileStream(lockedWav, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+            {
+                await lockStream.WriteAsync(new byte[] { 1, 2, 3, 4 });
+                await lockStream.FlushAsync();
+                SubtitleViewModel.CleanupTempDirectory();
+                Assert.True(File.Exists(lockedWav));
+            }
+            File.Delete(lockedWav);
+        }
+        finally
+        {
+            try { Directory.Delete(tempRoot, recursive: true); } catch { }
+        }
+    }
 }

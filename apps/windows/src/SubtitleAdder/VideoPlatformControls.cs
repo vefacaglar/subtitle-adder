@@ -7,8 +7,12 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using SubtitleAdder.Core;
 using Windows.Foundation;
+using Windows.Storage;
+using Windows.Storage.FileProperties;
+using Windows.Storage.Streams;
 using Windows.System;
 using static SubtitleAdder.Core.Strings;
 
@@ -33,6 +37,7 @@ public sealed class ProfileStatusButton : Grid
     private readonly StackPanel _registeredChipsPanel;
     private readonly TextBox _usernameBox;
     private readonly PasswordBox _passwordBox;
+    private readonly CheckBox _rememberCheckBox;
     private readonly TextBlock _errorText;
     private readonly Button _loginButton;
     private readonly Button _registerButton;
@@ -124,6 +129,15 @@ public sealed class ProfileStatusButton : Grid
             }
         };
 
+        _rememberCheckBox = new CheckBox
+        {
+            IsChecked = _vm.RememberMe,
+            FontSize = 12,
+            MinWidth = 0,
+        };
+        _rememberCheckBox.Checked += (_, _) => _vm.RememberMe = true;
+        _rememberCheckBox.Unchecked += (_, _) => _vm.RememberMe = false;
+
         _errorText = new TextBlock
         {
             FontSize = 12,
@@ -157,6 +171,7 @@ public sealed class ProfileStatusButton : Grid
         _loggedOutPanel.Children.Add(_registeredChipsPanel);
         _loggedOutPanel.Children.Add(_usernameBox);
         _loggedOutPanel.Children.Add(_passwordBox);
+        _loggedOutPanel.Children.Add(_rememberCheckBox);
         _loggedOutPanel.Children.Add(_errorText);
         _loggedOutPanel.Children.Add(_loginButton);
         _loggedOutPanel.Children.Add(_registerButton);
@@ -258,12 +273,22 @@ public sealed class ProfileStatusButton : Grid
         vm.LocalizationChanged -= OnLocalizationChanged;
     }
 
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e) => Refresh();
-    private void OnLocalizationChanged(object? sender, EventArgs e) => Refresh();
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e) => SafeRefresh();
+    private void OnLocalizationChanged(object? sender, EventArgs e) => SafeRefresh();
+
+    private void SafeRefresh()
+    {
+        if (DispatcherQueue is { } dq && !dq.HasThreadAccess)
+        {
+            dq.TryEnqueue(Refresh);
+            return;
+        }
+        Refresh();
+    }
 
     private void AttemptLogin()
     {
-        if (_vm.TryLogin(_usernameBox.Text, _passwordBox.Password))
+        if (_vm.TryLogin(_usernameBox.Text, _passwordBox.Password, _rememberCheckBox.IsChecked == true))
         {
             _passwordBox.Password = "";
             Refresh();
@@ -276,7 +301,7 @@ public sealed class ProfileStatusButton : Grid
 
     private void AttemptRegister()
     {
-        if (_vm.TryRegister(_usernameBox.Text, _passwordBox.Password))
+        if (_vm.TryRegister(_usernameBox.Text, _passwordBox.Password, _rememberCheckBox.IsChecked == true))
         {
             _passwordBox.Password = "";
             Refresh();
@@ -315,6 +340,8 @@ public sealed class ProfileStatusButton : Grid
         _flyoutSubtitleLoggedOut.Text = L("İzleme geçmişi, görüntülenme sayısı, beğeni ve yıldız puanları profilinize özel kaydedilir.");
         _usernameBox.PlaceholderText = L("Kullanıcı adı");
         _passwordBox.PlaceholderText = L("Şifre");
+        _rememberCheckBox.Content = L("Girişi hatırla");
+        _rememberCheckBox.IsChecked = _vm.RememberMe;
         _loginButton.Content = L("Giriş yap");
         _registerButton.Content = L("Yeni profil oluştur");
 
@@ -331,6 +358,10 @@ public sealed class ProfileStatusButton : Grid
         }
         else
         {
+            if (string.IsNullOrWhiteSpace(_usernameBox.Text) && !string.IsNullOrWhiteSpace(_vm.LastUsername))
+            {
+                _usernameBox.Text = _vm.LastUsername;
+            }
             RebuildRegisteredUserChips();
             RefreshError();
         }
@@ -631,8 +662,18 @@ public sealed class PlayerEngagementBar : Grid
         vm.LocalizationChanged -= OnLocalizationChanged;
     }
 
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e) => Refresh();
-    private void OnLocalizationChanged(object? sender, EventArgs e) => Refresh();
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e) => SafeRefresh();
+    private void OnLocalizationChanged(object? sender, EventArgs e) => SafeRefresh();
+
+    private void SafeRefresh()
+    {
+        if (DispatcherQueue is { } dq && !dq.HasThreadAccess)
+        {
+            dq.TryEnqueue(Refresh);
+            return;
+        }
+        Refresh();
+    }
 
     public void Refresh()
     {
@@ -706,6 +747,7 @@ public sealed class VideoPlatformHubView : Grid
     private readonly StackPanel _authExistingProfilesRow;
     private readonly TextBox _authUsernameBox;
     private readonly PasswordBox _authPasswordBox;
+    private readonly CheckBox _authRememberCheckBox;
     private readonly TextBlock _authErrorText;
     private readonly Button _authLoginButton;
     private readonly Button _authRegisterButton;
@@ -778,6 +820,7 @@ public sealed class VideoPlatformHubView : Grid
             out _authExistingProfilesRow,
             out _authUsernameBox,
             out _authPasswordBox,
+            out _authRememberCheckBox,
             out _authErrorText,
             out _authLoginButton,
             out _authRegisterButton);
@@ -1201,6 +1244,7 @@ public sealed class VideoPlatformHubView : Grid
         out StackPanel existingProfilesRow,
         out TextBox usernameBox,
         out PasswordBox passwordBox,
+        out CheckBox rememberCheckBox,
         out TextBlock errorText,
         out Button loginBtn,
         out Button registerBtn)
@@ -1290,6 +1334,16 @@ public sealed class VideoPlatformHubView : Grid
         };
         stack.Children.Add(passwordBox);
 
+        rememberCheckBox = new CheckBox
+        {
+            IsChecked = _vm.RememberMe,
+            FontSize = 12.5,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        rememberCheckBox.Checked += (_, _) => _vm.RememberMe = true;
+        rememberCheckBox.Unchecked += (_, _) => _vm.RememberMe = false;
+        stack.Children.Add(rememberCheckBox);
+
         errorText = new TextBlock
         {
             FontSize = 12,
@@ -1330,7 +1384,7 @@ public sealed class VideoPlatformHubView : Grid
 
     private void AttemptInlineLogin()
     {
-        if (_vm.TryLogin(_authUsernameBox.Text, _authPasswordBox.Password))
+        if (_vm.TryLogin(_authUsernameBox.Text, _authPasswordBox.Password, _authRememberCheckBox.IsChecked == true))
         {
             _showExplicitSignInCard = false;
             _authPasswordBox.Password = "";
@@ -1344,7 +1398,7 @@ public sealed class VideoPlatformHubView : Grid
 
     private void AttemptInlineRegister()
     {
-        if (_vm.TryRegister(_authUsernameBox.Text, _authPasswordBox.Password))
+        if (_vm.TryRegister(_authUsernameBox.Text, _authPasswordBox.Password, _authRememberCheckBox.IsChecked == true))
         {
             _showExplicitSignInCard = false;
             _authPasswordBox.Password = "";
@@ -1370,8 +1424,18 @@ public sealed class VideoPlatformHubView : Grid
         }
     }
 
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e) => Refresh();
-    private void OnLocalizationChanged(object? sender, EventArgs e) => Refresh();
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e) => SafeRefresh();
+    private void OnLocalizationChanged(object? sender, EventArgs e) => SafeRefresh();
+
+    private void SafeRefresh()
+    {
+        if (DispatcherQueue is { } dq && !dq.HasThreadAccess)
+        {
+            dq.TryEnqueue(Refresh);
+            return;
+        }
+        Refresh();
+    }
 
     public void Refresh()
     {
@@ -1445,8 +1509,15 @@ public sealed class VideoPlatformHubView : Grid
             _authDescription.Text = L("İzleme geçmişi, görüntülenme sayısı, favoriler, yıldız puanları ve özel listeleriniz yerel profilinize kaydedilir. Devam etmek için giriş yapın veya yeni profil oluşturun.");
             _authUsernameBox.PlaceholderText = L("Kullanıcı adı");
             _authPasswordBox.PlaceholderText = L("Şifre");
+            _authRememberCheckBox.Content = L("Girişi hatırla");
+            _authRememberCheckBox.IsChecked = _vm.RememberMe;
             _authLoginButton.Content = L("Giriş yap");
             _authRegisterButton.Content = L("Profil oluştur");
+
+            if (string.IsNullOrWhiteSpace(_authUsernameBox.Text) && !string.IsNullOrWhiteSpace(_vm.LastUsername))
+            {
+                _authUsernameBox.Text = _vm.LastUsername;
+            }
 
             RebuildAuthExistingProfileChips();
             RefreshAuthGateError();
@@ -1622,7 +1693,7 @@ public sealed class VideoPlatformHubView : Grid
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(192) });
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        // Left: Dark 16:9 cinema preview header (192x108) with play glyph, CC badge, view count pill, and progress bar
+        // Left: Dark 16:9 cinema preview header (192x108) with encrypted thumbnail image, play glyph, CC badge, view count pill, and progress bar
         var thumbBg = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
         thumbBg.GradientStops.Add(new GradientStop { Color = ColorHelper.FromArgb(0xFF, 0x16, 0x18, 0x22), Offset = 0 });
         thumbBg.GradientStops.Add(new GradientStop { Color = ColorHelper.FromArgb(0xFF, 0x25, 0x2A, 0x3A), Offset = 1 });
@@ -1633,6 +1704,17 @@ public sealed class VideoPlatformHubView : Grid
             Height = 108,
             Background = thumbBg,
         };
+
+        var thumbImage = new Image
+        {
+            Width = 192,
+            Height = 108,
+            Stretch = Stretch.UniformToFill,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        thumbGrid.Children.Add(thumbImage);
+        _ = LoadOrCaptureCardThumbnailAsync(item, thumbImage);
 
         var playCircle = new Border
         {
@@ -2033,6 +2115,71 @@ public sealed class VideoPlatformHubView : Grid
 
         card.Child = layout;
         return card;
+    }
+
+    private async Task LoadOrCaptureCardThumbnailAsync(VideoCardViewModel item, Image targetImage)
+    {
+        try
+        {
+            var bytes = item.ThumbnailBytes ?? _vm.GetEncryptedThumbnail(item.VideoPath);
+            if (bytes is { Length: > 0 })
+            {
+                await ApplyThumbnailBytesToImageAsync(bytes, targetImage);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(item.VideoPath) || !File.Exists(item.VideoPath))
+            {
+                return;
+            }
+
+            var file = await StorageFile.GetFileFromPathAsync(item.VideoPath);
+            using var thumb = await file.GetThumbnailAsync(ThumbnailMode.VideosView, 240, ThumbnailOptions.UseCurrentScale);
+            if (thumb is null || thumb.Size == 0)
+            {
+                return;
+            }
+
+            var capturedBytes = new byte[thumb.Size];
+            using (var reader = new DataReader(thumb.GetInputStreamAt(0)))
+            {
+                await reader.LoadAsync((uint)thumb.Size);
+                reader.ReadBytes(capturedBytes);
+            }
+
+            if (capturedBytes.Length > 0)
+            {
+                if (_vm.IsLoggedIn)
+                {
+                    _vm.SaveEncryptedThumbnail(item.VideoPath, capturedBytes);
+                }
+                await ApplyThumbnailBytesToImageAsync(capturedBytes, targetImage);
+            }
+        }
+        catch
+        {
+            // Ignore thumbnail extraction errors for unsupported or inaccessible files.
+        }
+    }
+
+    private static async Task ApplyThumbnailBytesToImageAsync(byte[] bytes, Image targetImage)
+    {
+        using var stream = new InMemoryRandomAccessStream();
+        using (var writer = new DataWriter(stream))
+        {
+            writer.WriteBytes(bytes);
+            await writer.StoreAsync();
+            await writer.FlushAsync();
+            writer.DetachStream();
+        }
+        stream.Seek(0);
+
+        var bmp = new BitmapImage
+        {
+            DecodePixelWidth = 192,
+        };
+        await bmp.SetSourceAsync(stream);
+        targetImage.Source = bmp;
     }
 
     private static Border MakeBadge(string text, Windows.UI.Color bg, Windows.UI.Color fg) =>

@@ -131,7 +131,7 @@ public sealed class JsonFileSettingsStore : InMemorySettingsStore, IDisposable
         var values = new Dictionary<string, JsonNode?>(StringComparer.Ordinal);
         try
         {
-            if (File.Exists(path) && JsonNode.Parse(File.ReadAllText(path)) is JsonObject root)
+            if (AtomicFileStore.ReadAllTextShared(path) is { } json && JsonNode.Parse(json) is JsonObject root)
             {
                 foreach (var (key, node) in root) values[key] = node?.DeepClone();
             }
@@ -168,17 +168,7 @@ public sealed class JsonFileSettingsStore : InMemorySettingsStore, IDisposable
                 _dirty = false;
                 json = Snapshot().ToJsonString(WriteOptions);
             }
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-                var temp = FilePath + ".tmp";
-                File.WriteAllText(temp, json);
-                File.Move(temp, FilePath, overwrite: true);
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-            {
-                // The value stays in memory for this session.
-            }
+            AtomicFileStore.WriteAllTextAtomic(FilePath, json);
         }
     }
 
@@ -186,5 +176,91 @@ public sealed class JsonFileSettingsStore : InMemorySettingsStore, IDisposable
     {
         _saveTimer.Dispose();
         Flush();
+    }
+}
+
+/// <summary>
+/// Cross-process safe file reader/writer with PID+GUID-scoped temporary files, shared read handles, and retry backoff
+/// so two concurrently running Subtitle Adder instances never crash on <c>settings.json</c>, <c>media-index.json</c>,
+/// <c>profiles.json</c>, or <c>translation-providers.json</c>.
+/// </summary>
+public static class AtomicFileStore
+{
+    public static string? ReadAllTextShared(string path, int maxAttempts = 5)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+                using var stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream, System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                return reader.ReadToEnd();
+            }
+            catch (FileNotFoundException)
+            {
+                return null;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt == maxAttempts) return null;
+                Thread.Sleep(15 * attempt);
+            }
+        }
+        return null;
+    }
+
+    public static bool WriteAllTextAtomic(string path, string content, int maxAttempts = 5)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        var tempPath = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            File.WriteAllText(tempPath, content, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                try
+                {
+                    File.Move(tempPath, path, overwrite: true);
+                    return true;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    if (attempt == maxAttempts) return false;
+                    Thread.Sleep(15 * attempt);
+                }
+            }
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempPath)) File.Delete(tempPath);
+            }
+            catch
+            {
+                // Ignore temp cleanup errors.
+            }
+        }
     }
 }

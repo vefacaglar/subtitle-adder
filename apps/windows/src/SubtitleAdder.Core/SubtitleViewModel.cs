@@ -1672,12 +1672,73 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         try
         {
             var tempDir = Path.Combine(Path.GetTempPath(), "SubtitleAdder");
-            if (Directory.Exists(tempDir))
-                Directory.Delete(tempDir, recursive: true);
+            if (!Directory.Exists(tempDir)) return;
+
+            var anotherInstanceRunning = IsAnotherInstanceOrEngineRunning();
+            var nowUtc = DateTime.UtcNow;
+
+            foreach (var file in Directory.EnumerateFiles(tempDir, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    if (anotherInstanceRunning)
+                    {
+                        // Do not delete recently created/modified temp files (.wav, .srt, .tmp) that may belong to another active instance.
+                        var age = nowUtc - File.GetLastWriteTimeUtc(file);
+                        if (age < TimeSpan.FromHours(2)) continue;
+                    }
+                    File.Delete(file);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    // Skip files currently locked by another running instance or child engine process.
+                }
+            }
+
+            if (!anotherInstanceRunning)
+            {
+                try
+                {
+                    if (!Directory.EnumerateFileSystemEntries(tempDir).Any())
+                    {
+                        Directory.Delete(tempDir, recursive: false);
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                }
+            }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            // Ignore locked files if a child process is still exiting.
+            // Ignore locked files if another instance or child process is active.
         }
+    }
+
+    private static bool IsAnotherInstanceOrEngineRunning()
+    {
+        try
+        {
+            var currentPid = Environment.ProcessId;
+            foreach (var proc in System.Diagnostics.Process.GetProcessesByName("SubtitleAdder"))
+            {
+                using (proc)
+                {
+                    if (proc.Id != currentPid) return true;
+                }
+            }
+            foreach (var proc in System.Diagnostics.Process.GetProcessesByName("subtitle-engine"))
+            {
+                using (proc)
+                {
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // Ignore process enumeration restrictions.
+        }
+        return false;
     }
 }

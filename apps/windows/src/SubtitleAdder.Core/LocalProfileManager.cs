@@ -47,6 +47,9 @@ public sealed record VideoUserStats
     public DateTimeOffset UpdatedAtUtc { get; init; }
 
     [JsonIgnore]
+    public byte[]? ThumbnailBytes { get; init; }
+
+    [JsonIgnore]
     public bool HasWatched => ViewCount > 0 || LastWatchedAtUtc is not null;
 
     [JsonIgnore]
@@ -104,12 +107,24 @@ public sealed class LocalProfileManager
 
     private readonly Lock _sync = new();
     private readonly Dictionary<string, ProfileEntry> _profiles = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, byte[]> _sessionVaultKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly string _mutexName;
+    private readonly FileSystemWatcher? _watcher;
     private ProfileEntry? _activeProfile;
+    private string? _activeUsername;
+    private bool _rememberMe = true;
+    private string? _lastUsername;
+    private string? _rememberedUsername;
+    private string? _rememberedProtectedKeyBase64;
+    private string? _lastSyncedJson;
 
     public LocalProfileManager(string? filePath = null)
     {
-        FilePath = string.IsNullOrWhiteSpace(filePath) ? DefaultPath : filePath;
+        FilePath = string.IsNullOrWhiteSpace(filePath) ? DefaultPath : Path.GetFullPath(filePath);
+        var pathHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(FilePath.ToUpperInvariant())))[..16];
+        _mutexName = $@"Local\SubtitleAdder.Profiles.{pathHash}";
         LoadFromDisk();
+        _watcher = TryStartWatcher();
     }
 
     /// <summary>Default storage path: <c>%LOCALAPPDATA%\SubtitleAdder\profiles.json</c>.</summary>
@@ -124,12 +139,34 @@ public sealed class LocalProfileManager
     /// <summary>Raised whenever authentication state, active profile video stats, or custom lists change.</summary>
     public event EventHandler? StateChanged;
 
+    /// <summary>Whether the user opted to remember their login across app restarts.</summary>
+    public bool RememberMe
+    {
+        get
+        {
+            lock (_sync) return _rememberMe;
+        }
+    }
+
+    /// <summary>Most recently logged-in username (for pre-filling the login box).</summary>
+    public string? LastUsername
+    {
+        get
+        {
+            lock (_sync) return _lastUsername;
+        }
+    }
+
     /// <summary>True when a user profile is currently authenticated.</summary>
     public bool IsLoggedIn
     {
         get
         {
-            lock (_sync) return _activeProfile is not null;
+            lock (_sync)
+            {
+                SyncFromDiskLocked();
+                return _activeProfile is not null;
+            }
         }
     }
 
@@ -138,7 +175,11 @@ public sealed class LocalProfileManager
     {
         get
         {
-            lock (_sync) return _activeProfile?.Username;
+            lock (_sync)
+            {
+                SyncFromDiskLocked();
+                return _activeProfile?.Username;
+            }
         }
     }
 
@@ -152,6 +193,7 @@ public sealed class LocalProfileManager
         {
             lock (_sync)
             {
+                SyncFromDiskLocked();
                 return _profiles.Values
                     .Select(p => p.Username)
                     .OrderBy(u => u, StringComparer.CurrentCultureIgnoreCase)
@@ -167,6 +209,7 @@ public sealed class LocalProfileManager
         {
             lock (_sync)
             {
+                SyncFromDiskLocked();
                 if (_activeProfile is null) return 0;
                 return _activeProfile.Videos.Values.Count(v => v.ViewCount > 0);
             }
@@ -180,6 +223,7 @@ public sealed class LocalProfileManager
         {
             lock (_sync)
             {
+                SyncFromDiskLocked();
                 if (_activeProfile is null) return 0;
                 return _activeProfile.Videos.Values.Sum(v => v.ViewCount);
             }
@@ -193,6 +237,7 @@ public sealed class LocalProfileManager
         {
             lock (_sync)
             {
+                SyncFromDiskLocked();
                 if (_activeProfile is null) return 0;
                 return _activeProfile.Videos.Values.Count(v => v.IsLiked);
             }
@@ -206,6 +251,7 @@ public sealed class LocalProfileManager
         {
             lock (_sync)
             {
+                SyncFromDiskLocked();
                 if (_activeProfile is null) return 0;
                 return _activeProfile.Videos.Values.Count(v => v.Rating > 0);
             }
@@ -301,11 +347,12 @@ public sealed class LocalProfileManager
         }
     }
 
-    /// <summary>Registers a new local profile with PBKDF2-SHA256 password hashing and logs it in immediately.</summary>
-    public bool Register(string username, string password) => Register(username, password, out _);
+    /// <summary>Registers a new local profile with PBKDF2-SHA256 password hashing and AES-256-GCM vault encryption.</summary>
+    public bool Register(string username, string password, bool rememberMe = true) =>
+        Register(username, password, out _, rememberMe);
 
-    /// <summary>Registers a new local profile with PBKDF2-SHA256 password hashing and logs it in immediately.</summary>
-    public bool Register(string username, string password, out string? error)
+    /// <summary>Registers a new local profile with PBKDF2-SHA256 password hashing and AES-256-GCM vault encryption.</summary>
+    public bool Register(string username, string password, out string? error, bool rememberMe = true)
     {
         var cleanUser = (username ?? "").Trim();
         if (cleanUser.Length == 0)
@@ -321,6 +368,8 @@ public sealed class LocalProfileManager
 
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_profiles.ContainsKey(cleanUser))
             {
                 error = LastError = L("Bu kullanıcı adı zaten kayıtlı.");
@@ -328,18 +377,32 @@ public sealed class LocalProfileManager
             }
 
             var salt = RandomNumberGenerator.GetBytes(SaltByteLength);
-            var hash = HashPassword(password, salt, Pbkdf2Iterations, HashByteLength);
+            var (authHash, vaultKey) = DeriveAuthHashAndVaultKey(password, salt, Pbkdf2Iterations);
             var entry = new ProfileEntry
             {
                 Username = cleanUser,
                 SaltBase64 = Convert.ToBase64String(salt),
-                PasswordHashBase64 = Convert.ToBase64String(hash),
+                PasswordHashBase64 = Convert.ToBase64String(authHash),
                 Iterations = Pbkdf2Iterations,
                 CreatedAtUtc = DateTimeOffset.UtcNow,
             };
 
+            _sessionVaultKeys[cleanUser] = vaultKey;
             _profiles[cleanUser] = entry;
             _activeProfile = entry;
+            _activeUsername = entry.Username;
+            _lastUsername = entry.Username;
+            _rememberMe = rememberMe;
+            if (rememberMe)
+            {
+                _rememberedUsername = entry.Username;
+                _rememberedProtectedKeyBase64 = ProtectVaultKey(vaultKey, salt);
+            }
+            else
+            {
+                _rememberedUsername = null;
+                _rememberedProtectedKeyBase64 = null;
+            }
             LastError = error = null;
             SaveToDiskLocked();
         }
@@ -348,11 +411,12 @@ public sealed class LocalProfileManager
         return true;
     }
 
-    /// <summary>Authenticates an existing local profile using constant-time PBKDF2 hash comparison.</summary>
-    public bool Login(string username, string password) => Login(username, password, out _);
+    /// <summary>Authenticates an existing local profile using constant-time PBKDF2 hash comparison and unlocks its AES-256-GCM vault.</summary>
+    public bool Login(string username, string password, bool rememberMe = true) =>
+        Login(username, password, out _, rememberMe);
 
-    /// <summary>Authenticates an existing local profile using constant-time PBKDF2 hash comparison.</summary>
-    public bool Login(string username, string password, out string? error)
+    /// <summary>Authenticates an existing local profile using constant-time PBKDF2 hash comparison and unlocks its AES-256-GCM vault.</summary>
+    public bool Login(string username, string password, out string? error, bool rememberMe = true)
     {
         var cleanUser = (username ?? "").Trim();
         if (cleanUser.Length == 0 || string.IsNullOrEmpty(password))
@@ -363,29 +427,66 @@ public sealed class LocalProfileManager
 
         lock (_sync)
         {
-            if (!_profiles.TryGetValue(cleanUser, out var entry) || !VerifyPassword(password, entry))
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
+            if (!_profiles.TryGetValue(cleanUser, out var entry) ||
+                !TryVerifyAndUnlockProfileLocked(password, entry, out var vaultKey))
             {
                 error = LastError = L("Kullanıcı adı veya şifre hatalı.");
                 return false;
             }
 
+            _sessionVaultKeys[entry.Username] = vaultKey;
+            DecryptIntoProfileEntryLocked(entry, vaultKey);
             _activeProfile = entry;
+            _activeUsername = entry.Username;
+            _lastUsername = entry.Username;
+            _rememberMe = rememberMe;
+            var saltBytes = Convert.FromBase64String(entry.SaltBase64);
+            if (rememberMe)
+            {
+                _rememberedUsername = entry.Username;
+                _rememberedProtectedKeyBase64 = ProtectVaultKey(vaultKey, saltBytes);
+            }
+            else
+            {
+                _rememberedUsername = null;
+                _rememberedProtectedKeyBase64 = null;
+            }
             LastError = error = null;
+            SaveToDiskLocked();
         }
 
         StateChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
 
-    /// <summary>Logs out of the active profile so personal watch history, likes, ratings, and lists are locked.</summary>
+    /// <summary>Logs out of the active profile, clears remembered session keys, and locks all personal data in memory.</summary>
     public void Logout()
     {
         var changed = false;
         lock (_sync)
         {
-            if (_activeProfile is not null)
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
+            if (_activeProfile is not null || _activeUsername is not null || _rememberedUsername is not null)
             {
+                if (_activeUsername is { } user)
+                {
+                    _sessionVaultKeys.Remove(user);
+                    if (_profiles.TryGetValue(user, out var entry))
+                    {
+                        // Lock in-memory decrypted vault when logging out
+                        entry.Videos.Clear();
+                        entry.CustomLists.Clear();
+                        entry.Thumbnails.Clear();
+                    }
+                }
                 _activeProfile = null;
+                _activeUsername = null;
+                _rememberedUsername = null;
+                _rememberedProtectedKeyBase64 = null;
+                SaveToDiskLocked();
                 changed = true;
             }
             LastError = null;
@@ -409,17 +510,27 @@ public sealed class LocalProfileManager
 
         lock (_sync)
         {
-            if (!_profiles.TryGetValue(cleanUser, out var entry) || !VerifyPassword(password, entry))
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
+            if (!_profiles.TryGetValue(cleanUser, out var entry) ||
+                !TryVerifyAndUnlockProfileLocked(password, entry, out _))
             {
                 error = LastError = L("Kullanıcı adı veya şifre hatalı.");
                 return false;
             }
 
             _profiles.Remove(cleanUser);
+            _sessionVaultKeys.Remove(entry.Username);
             if (_activeProfile is not null &&
                 string.Equals(_activeProfile.Username, entry.Username, StringComparison.OrdinalIgnoreCase))
             {
                 _activeProfile = null;
+                _activeUsername = null;
+            }
+            if (string.Equals(_rememberedUsername, entry.Username, StringComparison.OrdinalIgnoreCase))
+            {
+                _rememberedUsername = null;
+                _rememberedProtectedKeyBase64 = null;
             }
             LastError = error = null;
             SaveToDiskLocked();
@@ -442,6 +553,8 @@ public sealed class LocalProfileManager
         VideoUserStats updated;
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return null;
             var now = DateTimeOffset.UtcNow;
             var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
@@ -477,6 +590,8 @@ public sealed class LocalProfileManager
         VideoUserStats updated;
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return null;
             var now = DateTimeOffset.UtcNow;
             var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
@@ -506,6 +621,8 @@ public sealed class LocalProfileManager
     {
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return false;
             var now = DateTimeOffset.UtcNow;
             var listedPaths = _activeProfile.CustomLists
@@ -547,6 +664,8 @@ public sealed class LocalProfileManager
         bool newLiked;
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return false;
             var now = DateTimeOffset.UtcNow;
             var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
@@ -572,6 +691,8 @@ public sealed class LocalProfileManager
         VideoUserStats updated;
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return null;
             var now = DateTimeOffset.UtcNow;
             var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
@@ -598,6 +719,8 @@ public sealed class LocalProfileManager
         VideoUserStats updated;
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return null;
             var now = DateTimeOffset.UtcNow;
             var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
@@ -627,10 +750,16 @@ public sealed class LocalProfileManager
         var migrated = false;
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return null;
-            if (!ResolveAndMigrateVideoKeyLocked(_activeProfile, normalized, out _, out result, out migrated))
+            if (!ResolveAndMigrateVideoKeyLocked(_activeProfile, normalized, out var key, out result, out migrated) || result is null)
             {
                 return null;
+            }
+            if (_activeProfile.Thumbnails.TryGetValue(key, out var b64) && TryDecodeBase64(b64) is { } thumbBytes)
+            {
+                result = result with { ThumbnailBytes = thumbBytes };
             }
             if (migrated)
             {
@@ -640,6 +769,46 @@ public sealed class LocalProfileManager
 
         if (migrated) StateChanged?.Invoke(this, EventArgs.Empty);
         return result;
+    }
+
+    /// <summary>
+    /// Stores an encrypted video thumbnail image (<paramref name="thumbnailBytes"/>) inside the active profile's
+    /// AES-256-GCM vault on disk. Never writes a plaintext image file to disk.
+    /// </summary>
+    public bool SetThumbnail(string videoPath, byte[] thumbnailBytes)
+    {
+        var normalized = NormalizeVideoPath(videoPath);
+        if (normalized.Length == 0 || thumbnailBytes is null || thumbnailBytes.Length == 0)
+            return false;
+
+        lock (_sync)
+        {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
+            if (_activeProfile is null) return false;
+            var (key, _) = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
+            _activeProfile.Thumbnails[key] = Convert.ToBase64String(thumbnailBytes);
+            SaveToDiskLocked();
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Retrieves and decrypts the thumbnail image bytes for <paramref name="videoPath"/> from the active profile's
+    /// AES-256-GCM vault, or <c>null</c> when logged out or if no thumbnail has been stored yet.
+    /// </summary>
+    public byte[]? GetThumbnail(string? videoPath)
+    {
+        var normalized = NormalizeVideoPath(videoPath);
+        if (normalized.Length == 0) return null;
+
+        lock (_sync)
+        {
+            SyncFromDiskLocked();
+            if (_activeProfile is null) return null;
+            return TryGetThumbnailBytesLocked(_activeProfile, normalized);
+        }
     }
 
     // MARK: - Custom User Lists ("Listelerim / Ayrı Liste Oluşturduklarım")
@@ -653,6 +822,8 @@ public sealed class LocalProfileManager
         UserVideoList created;
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return null;
             if (_activeProfile.CustomLists.Any(l => string.Equals(l.Name, cleanName, StringComparison.CurrentCultureIgnoreCase)))
             {
@@ -684,6 +855,8 @@ public sealed class LocalProfileManager
 
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return false;
             var idx = _activeProfile.CustomLists.FindIndex(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
             if (idx < 0) return false;
@@ -714,6 +887,8 @@ public sealed class LocalProfileManager
 
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return false;
             var removed = _activeProfile.CustomLists.RemoveAll(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
             if (removed == 0) return false;
@@ -732,6 +907,8 @@ public sealed class LocalProfileManager
 
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return false;
             var idx = _activeProfile.CustomLists.FindIndex(l => string.Equals(l.Id, listId, StringComparison.OrdinalIgnoreCase));
             if (idx < 0) return false;
@@ -766,6 +943,8 @@ public sealed class LocalProfileManager
 
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return false;
             _ = ResolveAndMigrateVideoKeyLocked(_activeProfile, normalized, out _, out _, out _);
 
@@ -799,6 +978,8 @@ public sealed class LocalProfileManager
         bool nowInList;
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return false;
             _ = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
 
@@ -836,6 +1017,8 @@ public sealed class LocalProfileManager
     {
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return [];
             return _activeProfile.CustomLists.ToList();
         }
@@ -849,6 +1032,8 @@ public sealed class LocalProfileManager
 
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return [];
             if (ResolveAndMigrateVideoKeyLocked(_activeProfile, normalized, out _, out _, out var migrated) && migrated)
             {
@@ -868,6 +1053,8 @@ public sealed class LocalProfileManager
 
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             if (_activeProfile is null) return false;
             if (ResolveAndMigrateVideoKeyLocked(_activeProfile, normalized, out _, out _, out var migrated) && migrated)
             {
@@ -891,6 +1078,8 @@ public sealed class LocalProfileManager
     {
         lock (_sync)
         {
+            using var crossLock = AcquireCrossProcessMutex();
+            SyncFromDiskLocked();
             var now = DateTimeOffset.UtcNow;
 
             if (_activeProfile is null)
@@ -944,11 +1133,14 @@ public sealed class LocalProfileManager
 
             // Build path-keyed map of all profile videos + discovered videos + custom list videos
             var mergedByPath = new Dictionary<string, VideoUserStats>(StringComparer.OrdinalIgnoreCase);
-            foreach (var video in _activeProfile.Videos.Values)
+            foreach (var (key, video) in _activeProfile.Videos)
             {
                 if (!string.IsNullOrEmpty(video.VideoPath))
                 {
-                    mergedByPath[video.VideoPath] = video;
+                    var withThumb = _activeProfile.Thumbnails.TryGetValue(key, out var b64) && TryDecodeBase64(b64) is { } tb
+                        ? video with { ThumbnailBytes = tb }
+                        : video;
+                    mergedByPath[video.VideoPath] = withThumb;
                 }
             }
 
@@ -1166,6 +1358,10 @@ public sealed class LocalProfileManager
             if (keyChanged)
             {
                 profile.Videos.Remove(foundKey);
+                if (profile.Thumbnails.Remove(foundKey, out var migratedThumb))
+                {
+                    profile.Thumbnails[canonicalKey] = migratedThumb;
+                }
             }
             profile.Videos[canonicalKey] = updated;
 
@@ -1234,24 +1430,33 @@ public sealed class LocalProfileManager
         return double.IsFinite(fallback) && fallback > 0 ? fallback : 0;
     }
 
-    private static byte[] HashPassword(string password, byte[] salt, int iterations, int hashByteLength) =>
-        Rfc2898DeriveBytes.Pbkdf2(
+    private static (byte[] AuthHash, byte[] VaultKey) DeriveAuthHashAndVaultKey(string password, byte[] salt, int iterations)
+    {
+        var derived = Rfc2898DeriveBytes.Pbkdf2(
             Encoding.UTF8.GetBytes(password),
             salt,
             iterations,
             HashAlgorithmName.SHA256,
-            hashByteLength);
+            HashByteLength * 2);
+        return (derived[..HashByteLength], derived[HashByteLength..]);
+    }
 
-    private static bool VerifyPassword(string password, ProfileEntry entry)
+    private static bool TryVerifyAndUnlockProfileLocked(string password, ProfileEntry entry, out byte[] vaultKey)
     {
+        vaultKey = [];
         try
         {
             var salt = Convert.FromBase64String(entry.SaltBase64);
             var expectedHash = Convert.FromBase64String(entry.PasswordHashBase64);
             if (salt.Length == 0 || expectedHash.Length == 0) return false;
             var iterations = entry.Iterations > 0 ? entry.Iterations : Pbkdf2Iterations;
-            var actualHash = HashPassword(password, salt, iterations, expectedHash.Length);
-            return CryptographicOperations.FixedTimeEquals(actualHash, expectedHash);
+            var (actualHash, candidateVaultKey) = DeriveAuthHashAndVaultKey(password, salt, iterations);
+            if (!CryptographicOperations.FixedTimeEquals(actualHash, expectedHash))
+            {
+                return false;
+            }
+            vaultKey = candidateVaultKey;
+            return true;
         }
         catch (FormatException)
         {
@@ -1259,83 +1464,276 @@ public sealed class LocalProfileManager
         }
     }
 
+    private static string EncryptVault(ProfileSecretVault vault, byte[] vaultKey)
+    {
+        var plaintext = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(vault, JsonOptions));
+        var nonce = RandomNumberGenerator.GetBytes(12);
+        var ciphertext = new byte[plaintext.Length];
+        var tag = new byte[16];
+
+        using var aes = new AesGcm(vaultKey, 16);
+        aes.Encrypt(nonce, plaintext, ciphertext, tag);
+
+        var combined = new byte[12 + 16 + ciphertext.Length];
+        Buffer.BlockCopy(nonce, 0, combined, 0, 12);
+        Buffer.BlockCopy(tag, 0, combined, 12, 16);
+        Buffer.BlockCopy(ciphertext, 0, combined, 28, ciphertext.Length);
+        return Convert.ToBase64String(combined);
+    }
+
+    private static ProfileSecretVault? DecryptVault(string? encryptedBase64, byte[] vaultKey)
+    {
+        if (string.IsNullOrWhiteSpace(encryptedBase64) || vaultKey.Length != 32) return null;
+        try
+        {
+            var combined = Convert.FromBase64String(encryptedBase64);
+            if (combined.Length < 28) return null;
+            var nonce = combined.AsSpan(0, 12);
+            var tag = combined.AsSpan(12, 16);
+            var ciphertext = combined.AsSpan(28);
+            var plaintext = new byte[ciphertext.Length];
+
+            using var aes = new AesGcm(vaultKey, 16);
+            aes.Decrypt(nonce, ciphertext, tag, plaintext);
+            return JsonSerializer.Deserialize<ProfileSecretVault>(plaintext, JsonOptions);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string ProtectVaultKey(byte[] vaultKey, byte[] salt)
+    {
+        // Derive a current-OS-user bound wrapping key so the vault key is never stored in plaintext on disk.
+        var userEntropy = Encoding.UTF8.GetBytes($"SubtitleAdder.RememberKey.{Environment.UserName}.{Environment.MachineName}");
+        var wrapKey = Rfc2898DeriveBytes.Pbkdf2(userEntropy, salt, 10_000, HashAlgorithmName.SHA256, 32);
+        var nonce = RandomNumberGenerator.GetBytes(12);
+        var cipher = new byte[vaultKey.Length];
+        var tag = new byte[16];
+        using var aes = new AesGcm(wrapKey, 16);
+        aes.Encrypt(nonce, vaultKey, cipher, tag);
+
+        var combined = new byte[12 + 16 + cipher.Length];
+        Buffer.BlockCopy(nonce, 0, combined, 0, 12);
+        Buffer.BlockCopy(tag, 0, combined, 12, 16);
+        Buffer.BlockCopy(cipher, 0, combined, 28, cipher.Length);
+        return Convert.ToBase64String(combined);
+    }
+
+    private static byte[]? UnprotectVaultKey(string? protectedBase64, byte[] salt)
+    {
+        if (string.IsNullOrWhiteSpace(protectedBase64)) return null;
+        try
+        {
+            var combined = Convert.FromBase64String(protectedBase64);
+            if (combined.Length < 28 + 32) return null;
+            var userEntropy = Encoding.UTF8.GetBytes($"SubtitleAdder.RememberKey.{Environment.UserName}.{Environment.MachineName}");
+            var wrapKey = Rfc2898DeriveBytes.Pbkdf2(userEntropy, salt, 10_000, HashAlgorithmName.SHA256, 32);
+            var nonce = combined.AsSpan(0, 12);
+            var tag = combined.AsSpan(12, 16);
+            var cipher = combined.AsSpan(28);
+            var plain = new byte[cipher.Length];
+            using var aes = new AesGcm(wrapKey, 16);
+            aes.Decrypt(nonce, cipher, tag, plain);
+            return plain.Length == 32 ? plain : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static byte[]? TryDecodeBase64(string? b64)
+    {
+        if (string.IsNullOrWhiteSpace(b64)) return null;
+        try { return Convert.FromBase64String(b64); }
+        catch { return null; }
+    }
+
+    private static byte[]? TryGetThumbnailBytesLocked(ProfileEntry profile, string normalizedPath)
+    {
+        if (ResolveAndMigrateVideoKeyLocked(profile, normalizedPath, out var key, out _, out _) &&
+            profile.Thumbnails.TryGetValue(key, out var b64))
+        {
+            return TryDecodeBase64(b64);
+        }
+        var fp = TryComputeFingerprintOnly(normalizedPath);
+        if (fp is not null && profile.Thumbnails.TryGetValue(fp, out var b64Fp))
+        {
+            return TryDecodeBase64(b64Fp);
+        }
+        if (profile.Thumbnails.TryGetValue(normalizedPath, out var b64Path))
+        {
+            return TryDecodeBase64(b64Path);
+        }
+        return null;
+    }
+
+    private static void DecryptIntoProfileEntryLocked(ProfileEntry entry, byte[] vaultKey)
+    {
+        if (string.IsNullOrWhiteSpace(entry.EncryptedVaultBase64)) return;
+        var vault = DecryptVault(entry.EncryptedVaultBase64, vaultKey);
+        if (vault is null) return;
+
+        entry.Videos.Clear();
+        entry.CustomLists.Clear();
+        entry.Thumbnails.Clear();
+
+        if (vault.Videos is not null)
+        {
+            foreach (var video in vault.Videos)
+            {
+                var norm = NormalizeVideoPath(video.VideoPath);
+                if (norm.Length == 0) continue;
+                var fp = !string.IsNullOrWhiteSpace(video.ContentFingerprint)
+                    ? video.ContentFingerprint.Trim()
+                    : TryComputeFingerprintOnly(norm);
+                var key = fp ?? norm;
+                entry.Videos[key] = video with
+                {
+                    ContentFingerprint = fp,
+                    VideoPath = norm,
+                    FileName = string.IsNullOrWhiteSpace(video.FileName) ? Path.GetFileName(norm) : video.FileName,
+                    DirectoryPath = video.DirectoryPath ?? (Path.GetDirectoryName(norm) ?? ""),
+                    Rating = Math.Clamp(video.Rating, 0, 5),
+                    ViewCount = Math.Max(0, video.ViewCount),
+                };
+            }
+        }
+
+        if (vault.CustomLists is not null)
+        {
+            foreach (var list in vault.CustomLists)
+            {
+                if (string.IsNullOrWhiteSpace(list.Id) || string.IsNullOrWhiteSpace(list.Name))
+                    continue;
+                var normalizedPaths = (list.VideoPaths ?? [])
+                    .Select(NormalizeVideoPath)
+                    .Where(p => p.Length > 0)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                entry.CustomLists.Add(list with
+                {
+                    Name = list.Name.Trim(),
+                    VideoPaths = normalizedPaths,
+                });
+            }
+        }
+
+        if (vault.Thumbnails is not null)
+        {
+            foreach (var (k, v) in vault.Thumbnails)
+            {
+                if (!string.IsNullOrWhiteSpace(k) && !string.IsNullOrWhiteSpace(v))
+                {
+                    entry.Thumbnails[k] = v;
+                }
+            }
+        }
+    }
+
     private void LoadFromDisk()
     {
         lock (_sync)
         {
-            _profiles.Clear();
-            try
+            SyncFromDiskLocked(force: true);
+        }
+    }
+
+    private bool SyncFromDiskLocked(bool force = false)
+    {
+        try
+        {
+            if (AtomicFileStore.ReadAllTextShared(FilePath) is not { } json)
             {
-                if (!File.Exists(FilePath)) return;
-                var json = File.ReadAllText(FilePath, Encoding.UTF8);
-                var doc = JsonSerializer.Deserialize<ProfilesDocument>(json, JsonOptions);
-                if (doc?.Profiles is null) return;
-                foreach (var dto in doc.Profiles)
+                if (force)
                 {
-                    if (string.IsNullOrWhiteSpace(dto.Username) ||
-                        string.IsNullOrWhiteSpace(dto.SaltBase64) ||
-                        string.IsNullOrWhiteSpace(dto.PasswordHashBase64))
-                    {
-                        continue;
-                    }
-
-                    var entry = new ProfileEntry
-                    {
-                        Username = dto.Username.Trim(),
-                        SaltBase64 = dto.SaltBase64,
-                        PasswordHashBase64 = dto.PasswordHashBase64,
-                        Iterations = dto.Iterations > 0 ? dto.Iterations : Pbkdf2Iterations,
-                        CreatedAtUtc = dto.CreatedAtUtc,
-                    };
-
-                    if (dto.Videos is not null)
-                    {
-                        foreach (var video in dto.Videos)
-                        {
-                            var norm = NormalizeVideoPath(video.VideoPath);
-                            if (norm.Length == 0) continue;
-                            var fp = !string.IsNullOrWhiteSpace(video.ContentFingerprint)
-                                ? video.ContentFingerprint.Trim()
-                                : TryComputeFingerprintOnly(norm);
-                            var key = fp ?? norm;
-                            entry.Videos[key] = video with
-                            {
-                                ContentFingerprint = fp,
-                                VideoPath = norm,
-                                FileName = string.IsNullOrWhiteSpace(video.FileName) ? Path.GetFileName(norm) : video.FileName,
-                                DirectoryPath = video.DirectoryPath ?? (Path.GetDirectoryName(norm) ?? ""),
-                                Rating = Math.Clamp(video.Rating, 0, 5),
-                                ViewCount = Math.Max(0, video.ViewCount),
-                            };
-                        }
-                    }
-
-                    if (dto.CustomLists is not null)
-                    {
-                        foreach (var list in dto.CustomLists)
-                        {
-                            if (string.IsNullOrWhiteSpace(list.Id) || string.IsNullOrWhiteSpace(list.Name))
-                                continue;
-                            var normalizedPaths = (list.VideoPaths ?? [])
-                                .Select(NormalizeVideoPath)
-                                .Where(p => p.Length > 0)
-                                .Distinct(StringComparer.OrdinalIgnoreCase)
-                                .ToList();
-                            entry.CustomLists.Add(list with
-                            {
-                                Name = list.Name.Trim(),
-                                VideoPaths = normalizedPaths,
-                            });
-                        }
-                    }
-
-                    _profiles[entry.Username] = entry;
+                    _profiles.Clear();
+                    _lastSyncedJson = null;
                 }
+                return false;
             }
-            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+
+            if (!force && string.Equals(json, _lastSyncedJson, StringComparison.Ordinal))
             {
-                // Corrupt or inaccessible profile store starts clean in memory.
+                return false;
             }
+
+            var doc = JsonSerializer.Deserialize<ProfilesDocument>(json, JsonOptions);
+            if (doc?.Profiles is null) return false;
+
+            _profiles.Clear();
+            _rememberMe = doc.RememberMe;
+            if (!string.IsNullOrWhiteSpace(doc.LastUsername))
+            {
+                _lastUsername = doc.LastUsername.Trim();
+            }
+            _rememberedUsername = string.IsNullOrWhiteSpace(doc.RememberedUsername) ? null : doc.RememberedUsername.Trim();
+            _rememberedProtectedKeyBase64 = string.IsNullOrWhiteSpace(doc.RememberedProtectedKeyBase64) ? null : doc.RememberedProtectedKeyBase64.Trim();
+
+            foreach (var dto in doc.Profiles)
+            {
+                if (string.IsNullOrWhiteSpace(dto.Username) ||
+                    string.IsNullOrWhiteSpace(dto.SaltBase64) ||
+                    string.IsNullOrWhiteSpace(dto.PasswordHashBase64))
+                {
+                    continue;
+                }
+
+                var entry = new ProfileEntry
+                {
+                    Username = dto.Username.Trim(),
+                    SaltBase64 = dto.SaltBase64,
+                    PasswordHashBase64 = dto.PasswordHashBase64,
+                    Iterations = dto.Iterations > 0 ? dto.Iterations : Pbkdf2Iterations,
+                    CreatedAtUtc = dto.CreatedAtUtc,
+                    EncryptedVaultBase64 = dto.EncryptedVaultBase64,
+                };
+
+                // If this session doesn't have the vault key yet, check if the remembered key on disk unlocks this profile
+                if (!_sessionVaultKeys.ContainsKey(entry.Username) &&
+                    _rememberMe &&
+                    string.Equals(_rememberedUsername, entry.Username, StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrWhiteSpace(_rememberedProtectedKeyBase64))
+                {
+                    try
+                    {
+                        var saltBytes = Convert.FromBase64String(entry.SaltBase64);
+                        if (UnprotectVaultKey(_rememberedProtectedKeyBase64, saltBytes) is { } restoredKey)
+                        {
+                            _sessionVaultKeys[entry.Username] = restoredKey;
+                            if (force && _activeUsername is null)
+                            {
+                                _activeUsername = entry.Username;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                if (_sessionVaultKeys.TryGetValue(entry.Username, out var vaultKey))
+                {
+                    DecryptIntoProfileEntryLocked(entry, vaultKey);
+                }
+
+                _profiles[entry.Username] = entry;
+            }
+
+            if (_activeUsername is not null)
+            {
+                _activeProfile = _profiles.TryGetValue(_activeUsername, out var active) ? active : null;
+                if (_activeProfile is null) _activeUsername = null;
+            }
+
+            _lastSyncedJson = json;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 
@@ -1346,9 +1744,30 @@ public sealed class LocalProfileManager
             var dir = Path.GetDirectoryName(FilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
+            foreach (var entry in _profiles.Values)
+            {
+                if (_sessionVaultKeys.TryGetValue(entry.Username, out var vaultKey))
+                {
+                    var vault = new ProfileSecretVault
+                    {
+                        Videos = entry.Videos.Values
+                            .OrderBy(v => v.VideoPath, StringComparer.OrdinalIgnoreCase)
+                            .Select(v => v with { ThumbnailBytes = null })
+                            .ToList(),
+                        CustomLists = entry.CustomLists.ToList(),
+                        Thumbnails = new Dictionary<string, string>(entry.Thumbnails, StringComparer.OrdinalIgnoreCase),
+                    };
+                    entry.EncryptedVaultBase64 = EncryptVault(vault, vaultKey);
+                }
+            }
+
             var doc = new ProfilesDocument
             {
-                Version = 1,
+                Version = 2,
+                RememberMe = _rememberMe,
+                LastUsername = _lastUsername,
+                RememberedUsername = _rememberMe ? _rememberedUsername : null,
+                RememberedProtectedKeyBase64 = _rememberMe ? _rememberedProtectedKeyBase64 : null,
                 Profiles = _profiles.Values
                     .OrderBy(p => p.Username, StringComparer.OrdinalIgnoreCase)
                     .Select(p => new ProfileDto
@@ -1358,22 +1777,95 @@ public sealed class LocalProfileManager
                         PasswordHashBase64 = p.PasswordHashBase64,
                         Iterations = p.Iterations,
                         CreatedAtUtc = p.CreatedAtUtc,
-                        Videos = p.Videos.Values
-                            .OrderBy(v => v.VideoPath, StringComparer.OrdinalIgnoreCase)
-                            .ToList(),
-                        CustomLists = p.CustomLists.ToList(),
+                        EncryptedVaultBase64 = p.EncryptedVaultBase64,
                     })
                     .ToList(),
             };
 
             var json = JsonSerializer.Serialize(doc, JsonOptions);
-            var tempPath = $"{FilePath}.{Guid.NewGuid():N}.tmp";
-            File.WriteAllText(tempPath, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            File.Move(tempPath, FilePath, overwrite: true);
+            if (AtomicFileStore.WriteAllTextAtomic(FilePath, json))
+            {
+                _lastSyncedJson = json;
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Keep changes in memory if disk write is blocked.
+        }
+    }
+
+    private FileSystemWatcher? TryStartWatcher()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(FilePath);
+            var fileName = Path.GetFileName(FilePath);
+            if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(fileName)) return null;
+            Directory.CreateDirectory(dir);
+            var watcher = new FileSystemWatcher(dir, fileName)
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
+                EnableRaisingEvents = true,
+            };
+            void OnFileEvent(object sender, FileSystemEventArgs e)
+            {
+                var updated = false;
+                lock (_sync)
+                {
+                    updated = SyncFromDiskLocked(force: false);
+                }
+                if (updated)
+                {
+                    StateChanged?.Invoke(this, EventArgs.Empty);
+                }
+            }
+            watcher.Changed += OnFileEvent;
+            watcher.Created += OnFileEvent;
+            watcher.Renamed += (s, e) => OnFileEvent(s, e);
+            return watcher;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private CrossProcessMutexScope AcquireCrossProcessMutex() => new(_mutexName);
+
+    private readonly struct CrossProcessMutexScope : IDisposable
+    {
+        private readonly Mutex? _mutex;
+        private readonly bool _acquired;
+
+        public CrossProcessMutexScope(string mutexName)
+        {
+            try
+            {
+                _mutex = new Mutex(initiallyOwned: false, mutexName);
+                try
+                {
+                    _acquired = _mutex.WaitOne(2000);
+                }
+                catch (AbandonedMutexException)
+                {
+                    _acquired = true;
+                }
+            }
+            catch
+            {
+                _mutex = null;
+                _acquired = false;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_mutex is null) return;
+            if (_acquired)
+            {
+                try { _mutex.ReleaseMutex(); } catch { }
+            }
+            try { _mutex.Dispose(); } catch { }
         }
     }
 
@@ -1384,13 +1876,26 @@ public sealed class LocalProfileManager
         public required string PasswordHashBase64 { get; init; }
         public int Iterations { get; init; } = Pbkdf2Iterations;
         public DateTimeOffset CreatedAtUtc { get; init; }
+        public string? EncryptedVaultBase64 { get; set; }
         public Dictionary<string, VideoUserStats> Videos { get; } = new(StringComparer.OrdinalIgnoreCase);
         public List<UserVideoList> CustomLists { get; } = [];
+        public Dictionary<string, string> Thumbnails { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class ProfileSecretVault
+    {
+        public List<VideoUserStats> Videos { get; set; } = [];
+        public List<UserVideoList> CustomLists { get; set; } = [];
+        public Dictionary<string, string> Thumbnails { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private sealed class ProfilesDocument
     {
-        public int Version { get; set; } = 1;
+        public int Version { get; set; } = 2;
+        public bool RememberMe { get; set; } = true;
+        public string? LastUsername { get; set; }
+        public string? RememberedUsername { get; set; }
+        public string? RememberedProtectedKeyBase64 { get; set; }
         public List<ProfileDto> Profiles { get; set; } = [];
     }
 
@@ -1401,7 +1906,6 @@ public sealed class LocalProfileManager
         public string PasswordHashBase64 { get; set; } = "";
         public int Iterations { get; set; } = Pbkdf2Iterations;
         public DateTimeOffset CreatedAtUtc { get; set; }
-        public List<VideoUserStats> Videos { get; set; } = [];
-        public List<UserVideoList> CustomLists { get; set; } = [];
+        public string? EncryptedVaultBase64 { get; set; }
     }
 }
