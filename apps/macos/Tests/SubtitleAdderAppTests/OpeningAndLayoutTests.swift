@@ -206,6 +206,12 @@ import Testing
 
     // MARK: - Coalescing
 
+    /// Polls instead of sleeping a fixed time: other suites keep the main actor busy, which delays the timer.
+    private func waitUntil(timeout: Double = 5, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    }
+
     @Test func severalURLsInQuickSuccessionArriveAsOneBatch() async throws {
         var batches: [[URL]] = []
         let coalescer = ExternalOpenCoalescer(quietPeriod: .milliseconds(40), maxWait: .seconds(1)) { batches.append($0) }
@@ -216,29 +222,25 @@ import Testing
         coalescer.receive(c)
         coalescer.receive(URL(string: "https://example.com/x.mp4")!)
         #expect(batches.isEmpty)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitUntil { !batches.isEmpty }
         #expect(batches == [[a, b, c]])
 
         // A later open is a batch of its own.
         coalescer.receive(b)
-        try await Task.sleep(for: .milliseconds(250))
+        try await waitUntil { batches.count > 1 }
         #expect(batches == [[a, b, c], [b]])
     }
 
-    @Test func eachURLRestartsTheQuietPeriodUpToTheMaximumWait() async throws {
-        var batches: [[URL]] = []
-        let coalescer = ExternalOpenCoalescer(quietPeriod: .milliseconds(120), maxWait: .milliseconds(300)) { batches.append($0) }
-        let urls = (0..<6).map { URL(filePath: "/tmp/\($0).mp4") }
-        // Five URLs 80 ms apart never leave a quiet period, so only the maximum wait releases the first batch.
-        for url in urls.prefix(5) {
-            coalescer.receive(url)
-            try await Task.sleep(for: .milliseconds(80))
+    @Test func theWaitForAnotherURLShrinksSoTheBatchIsOutByTheMaximumWait() {
+        let quiet = Duration.milliseconds(250), maxWait = Duration.seconds(1)
+        func delay(_ sinceFirst: Duration) -> Duration {
+            ExternalOpenCoalescer.delay(quietPeriod: quiet, maxWait: maxWait, sinceFirst: sinceFirst)
         }
-        #expect(batches.count == 1)
-        #expect(batches.first?.count ?? 0 >= 3)
-        coalescer.receive(urls[5])
-        try await Task.sleep(for: .milliseconds(400))
-        #expect(batches.flatMap { $0 } == urls)
+        #expect(delay(.zero) == quiet)
+        #expect(delay(.milliseconds(700)) == quiet)
+        #expect(delay(.milliseconds(900)) == .milliseconds(100))
+        #expect(delay(.seconds(1)) == .zero)
+        #expect(delay(.seconds(5)) == .zero)
     }
 
     @Test func flushDeliversImmediatelyAndOnlyOnce() async throws {
