@@ -22,6 +22,45 @@ import Testing
         #expect(normalize("http://") == nil)
     }
 
+    @Test func aPublicAddressTypedWithoutASchemeGetsHTTPSSoTheKeyIsNeverSentInTheClear() {
+        let normalize = ExternalLLMServer.normalizeBaseURL
+        #expect(normalize("api.openai.com/v1") == "https://api.openai.com/v1")
+        #expect(normalize("api.openai.com") == "https://api.openai.com")
+        #expect(normalize("  api.groq.com/openai/v1/chat/completions ") == "https://api.groq.com/openai/v1")
+        #expect(normalize("openrouter.ai/api/v1/models") == "https://openrouter.ai/api/v1")
+        #expect(normalize("llm.example.com:8443") == "https://llm.example.com:8443")
+        #expect(normalize("8.8.8.8:1234") == "https://8.8.8.8:1234")
+        // 172.32 is outside 172.16/12 and 100.128 outside 100.64/10: those are public addresses.
+        #expect(normalize("172.32.0.1:80") == "https://172.32.0.1:80")
+        #expect(normalize("100.128.0.1") == "https://100.128.0.1")
+    }
+
+    @Test func localAddressesTypedWithoutASchemeKeepPlainHTTP() {
+        let normalize = ExternalLLMServer.normalizeBaseURL
+        #expect(normalize("localhost:11434") == "http://localhost:11434")
+        #expect(normalize("127.0.0.1:1234/v1") == "http://127.0.0.1:1234/v1")
+        #expect(normalize("[::1]:8080") == "http://[::1]:8080")
+        #expect(normalize("10.0.0.2:8080") == "http://10.0.0.2:8080")
+        #expect(normalize("172.16.5.5:1234") == "http://172.16.5.5:1234")
+        #expect(normalize("100.100.1.1:1234") == "http://100.100.1.1:1234")
+        #expect(normalize("mac-studio.local:11434") == "http://mac-studio.local:11434")
+        #expect(normalize("nas.lan") == "http://nas.lan")
+        #expect(normalize("my-mac:1234") == "http://my-mac:1234")
+    }
+
+    @Test func aSchemeTheUserTypedIsNeverChanged() {
+        let normalize = ExternalLLMServer.normalizeBaseURL
+        #expect(normalize("http://api.openai.com/v1") == "http://api.openai.com/v1")
+        #expect(normalize("https://localhost:1234") == "https://localhost:1234")
+        #expect(normalize("HTTP://example.com") == "HTTP://example.com")
+    }
+
+    @Test func aBareAddressWithoutAHostIsStillRejected() {
+        #expect(ExternalLLMServer.normalizeBaseURL("/v1") == nil)
+        #expect(ExternalLLMServer.normalizeBaseURL("a b") == nil)
+        #expect(ExternalLLMServer.normalizeBaseURL("https://") == nil)
+    }
+
     @Test func presetAddressesSurviveNormalization() {
         for preset in TranslationProviderPreset.all where !preset.baseURL.isEmpty {
             #expect(ExternalLLMServer.normalizeBaseURL(preset.baseURL) == preset.baseURL, "\(preset.id)")
@@ -330,7 +369,16 @@ import Testing
 
         // The whole test over a real URLSession: only the last endpoint lists models.
         StubProtocol.responses["http://stub.test:1/models"] = (404, "")
-        let result = await ExternalLLMServer.testConnection(rawURL: "stub.test:1", fetch: fetch)
+        let result = await ExternalLLMServer.testConnection(rawURL: "http://stub.test:1", fetch: fetch)
         #expect(result.models == ["m1"])
+    }
+
+    @Test func theDefaultFetchSharesOneEphemeralSession() {
+        // Every default `Fetch` runs over the same session: building one per call leaked a session (and its
+        // connections) each time.
+        let session = ExternalLLMServer.sharedSession
+        #expect(session === ExternalLLMServer.sharedSession)
+        // Ephemeral: caches live in memory only, nothing about a request (the key) reaches the disk.
+        #expect(session.configuration.urlCache?.diskCapacity == 0)
     }
 }
