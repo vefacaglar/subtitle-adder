@@ -82,15 +82,17 @@ public struct EngineClient: Sendable {
     }
 
     /// Environment for the engine process: the parent's plus `SUBTITLE_ENGINE_LANG`, `SUBTITLE_ENGINE_OFFLINE`
-    /// and, with an external LLM, `SUBTITLE_ENGINE_EXTERNAL_LLM_URL` / `_MODEL` / `_API_KEY` (removed otherwise).
+    /// and, for `translate` (`forTranslation`) with an external LLM, `SUBTITLE_ENGINE_EXTERNAL_LLM_URL` / `_MODEL` /
+    /// `_API_KEY`. Those three are removed in every other case, an inherited value included.
     func processEnvironment(
         language: UILanguage,
         settings: EngineLaunchSettings = EngineLaunchState.shared.settings,
-        base: [String: String] = ProcessInfo.processInfo.environment
+        base: [String: String] = ProcessInfo.processInfo.environment,
+        forTranslation: Bool = false
     ) -> [String: String] {
         var env = base
         env["SUBTITLE_ENGINE_LANG"] = language.rawValue
-        settings.apply(to: &env)
+        settings.apply(to: &env, forTranslation: forTranslation)
         return env
     }
 
@@ -172,15 +174,17 @@ public struct EngineClient: Sendable {
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
-        return stream(args, stdin: input)
+        return stream(args, stdin: input, forTranslation: true)
     }
 
     /// Shared process stream: decodes the JSON events on stdout and throws the error at the end of the stream.
-    private func stream(_ arguments: [String], stdin input: Data?) -> AsyncThrowingStream<EngineEvent, Error> {
+    private func stream(
+        _ arguments: [String], stdin input: Data?, forTranslation: Bool = false
+    ) -> AsyncThrowingStream<EngineEvent, Error> {
         AsyncThrowingStream { continuation in
             let run: RunningEngine
             do {
-                run = try start(arguments, stdin: input)
+                run = try start(arguments, stdin: input, forTranslation: forTranslation)
             } catch {
                 continuation.finish(throwing: error)
                 return
@@ -285,12 +289,15 @@ public struct EngineClient: Sendable {
         }
     }
 
-    private func start(_ args: [String], stdin input: Data?) throws -> RunningEngine {
+    /// `forTranslation` is true only for `translate`: it alone gets the external LLM's address, model and API key.
+    private func start(_ args: [String], stdin input: Data?, forTranslation: Bool = false) throws -> RunningEngine {
         let process = Process()
         process.executableURL = command.executable
         process.arguments = command.arguments + args
         let lang = resolvedLanguage()
-        process.environment = processEnvironment(language: lang, settings: resolvedLaunchSettings())
+        process.environment = processEnvironment(
+            language: lang, settings: resolvedLaunchSettings(), forTranslation: forTranslation
+        )
         let stdout = Pipe()
         process.standardOutput = stdout
         // stderr goes to a file: so model download progress can't fill the pipe buffer and hang the process.
@@ -387,6 +394,11 @@ private struct RunningEngine: @unchecked Sendable {
         return all
     }
 
+    /// Reads stdout on a thread of its own until the pipe reaches EOF, which is when the thread ends. EOF comes when every
+    /// holder of the write end has closed it: the engine, and any child process of it that inherited stdout. Such a child
+    /// that outlives the engine would keep this thread (and `lines()`) alive after the engine has exited; the engine
+    /// starts none today, and a future one that daemonizes must redirect stdout. Terminating the process does not stop the
+    /// thread by itself either; only EOF does.
     private func readInBackground(chunk: @escaping @Sendable (Data) -> Void, finish: @escaping @Sendable () -> Void) {
         let handle = stdout
         Thread.detachNewThread {
@@ -425,24 +437,38 @@ private struct RunningEngine: @unchecked Sendable {
 }
 
 /// Cuts the chunks of a pipe into lines (`\n` or `\r\n`). Only the thread that reads the pipe touches it.
-private final class LineSplitter: @unchecked Sendable {
+///
+/// A single event line can be megabytes (a `partial` or `result` snapshot of a long video) and arrives in 64 KiB chunks,
+/// so each chunk is searched only from where the previous one ended: looking through the whole buffer every time would
+/// make a line of n chunks cost n² bytes of scanning.
+final class LineSplitter: @unchecked Sendable {
     private var buffer = Data()
+    /// Bytes at the start of `buffer` already known to contain no newline.
+    private var scanned = 0
 
     func feed(_ chunk: Data) -> [String] {
         buffer.append(chunk)
         var lines: [String] = []
-        while let newline = buffer.firstIndex(of: 0x0A) {
-            var line = buffer.subdata(in: buffer.startIndex..<newline)
-            buffer.removeSubrange(buffer.startIndex...newline)
+        var lineStart = 0
+        var cursor = scanned
+        while let newline = buffer[cursor...].firstIndex(of: 0x0A) {
+            var line = buffer.subdata(in: lineStart..<newline)
             if line.last == 0x0D { line.removeLast() }
             lines.append(String(decoding: line, as: UTF8.self))
+            lineStart = newline + 1
+            cursor = lineStart
         }
+        if lineStart > 0 { buffer.removeSubrange(0..<lineStart) }
+        scanned = buffer.count
         return lines
     }
 
     /// The last line when the output doesn't end with a newline.
     func rest() -> [String] {
-        defer { buffer = Data() }
+        defer {
+            buffer = Data()
+            scanned = 0
+        }
         return buffer.isEmpty ? [] : [String(decoding: buffer, as: UTF8.self)]
     }
 }

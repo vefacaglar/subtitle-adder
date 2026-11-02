@@ -40,11 +40,14 @@ public struct EngineLaunchSettings: Sendable, Equatable {
         self.externalLLM = externalLLM
     }
 
-    /// Adds the engine variables to `env`; the external LLM ones are removed when no usable server is configured, and
-    /// the API key also when it is blank (an inherited key must never reach a server that needs none).
-    func apply(to env: inout [String: String]) {
+    /// Adds the engine variables to `env`. The external LLM variables (address, model and above all the API key) are only
+    /// for `translate`, the one command that talks to the server: with `forTranslation` false they are removed, so a
+    /// transcription, a render or a model listing never carries a secret it has no use for. For `translate` they are
+    /// removed when no usable server is configured, and the API key also when it is blank (an inherited key must never
+    /// reach a server that needs none).
+    func apply(to env: inout [String: String], forTranslation: Bool = true) {
         env["SUBTITLE_ENGINE_OFFLINE"] = offline ? "1" : "0"
-        if let externalLLM, let url = externalLLM.normalizedURL {
+        if forTranslation, let externalLLM, let url = externalLLM.normalizedURL {
             env["SUBTITLE_ENGINE_EXTERNAL_LLM_URL"] = url
             env["SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL"] = externalLLM.model.trimmingCharacters(in: .whitespacesAndNewlines)
             let key = externalLLM.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
