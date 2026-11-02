@@ -1905,6 +1905,22 @@
         }
       }
     },
+    "Ses hazır · Sırada": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ses hazır · Sırada"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio ready · Queued"
+          }
+        }
+      }
+    },
     "Seçilenleri yeniden çevir": {
       "localizations": {
         "tr": {

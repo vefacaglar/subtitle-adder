@@ -239,8 +239,10 @@ final class SubtitleViewModel {
     /// The item the foreground job (transcription, or translation in sequential mode) belongs to.
     @ObservationIgnored var activePlaylistItemID: UUID?
     @ObservationIgnored var playlistTask: Task<Void, Never>?
-    /// Translate-and-save tasks of items handed to the external server, and the last one (the next waits for it).
+    /// Translate-and-save tasks of the items handed off after recognition, in order (each waits for the one before).
     @ObservationIgnored var playlistBackground: [Task<Void, Never>] = []
+    /// Audio extraction and scheduling state of the run under way.
+    @ObservationIgnored var playlistPipeline: PlaylistPipeline?
 
     private(set) var video: URL?
     /// The subtitle file the lines came from (import or sidecar); where "Altyazıyı kaydet" writes when there is no video.
@@ -512,7 +514,7 @@ final class SubtitleViewModel {
         linesSourceLanguage = nil
         modelNotice = nil
         status = .working(.key("Başlıyor…"), fraction: nil)
-        let outDir = WorkingDirectory.ensureExists()
+        let outDir = engineOutDirectory(for: video)
         let options = EngineClient.TranscribeOptions(
             language: language.isEmpty ? nil : language,
             model: model,
