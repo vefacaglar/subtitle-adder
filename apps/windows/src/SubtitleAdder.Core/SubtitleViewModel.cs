@@ -1674,13 +1674,14 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             var tempDir = Path.Combine(Path.GetTempPath(), "SubtitleAdder");
             if (!Directory.Exists(tempDir)) return;
 
-            var anotherInstanceRunning = IsAnotherInstanceOrEngineRunning();
+            var anotherInstanceRunning = StateSyncBroker.Shared.HasOtherActiveInstances || IsAnotherInstanceOrEngineRunning();
             var nowUtc = DateTime.UtcNow;
 
             foreach (var file in Directory.EnumerateFiles(tempDir, "*", SearchOption.AllDirectories))
             {
                 try
                 {
+                    if ((StateSyncBroker.TotalActiveInProcessBrokers > 0 || anotherInstanceRunning) && file.Contains("broker-", StringComparison.OrdinalIgnoreCase)) continue;
                     if (anotherInstanceRunning)
                     {
                         // Do not delete recently created/modified temp files (.wav, .srt, .tmp) that may belong to another active instance.

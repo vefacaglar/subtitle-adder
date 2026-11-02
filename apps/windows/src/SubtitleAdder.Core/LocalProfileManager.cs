@@ -1780,7 +1780,7 @@ public sealed class LocalProfileManager : IDisposable
                         if (UnprotectVaultKey(_rememberedProtectedKeyBase64, saltBytes) is { } restoredKey)
                         {
                             _sessionVaultKeys[entry.Username] = restoredKey;
-                            if (force && _activeUsername is null)
+                            if (_activeUsername is null)
                             {
                                 _activeUsername = entry.Username;
                             }
@@ -1947,6 +1947,13 @@ public sealed class LocalProfileManager : IDisposable
             lock (_sync)
             {
                 updated = SyncFromDiskLocked(force: false);
+                if (evt.Kind == StateSyncEventKind.ProfileLogout && _rememberedUsername is null && _activeUsername is not null)
+                {
+                    _sessionVaultKeys.Remove(_activeUsername);
+                    _activeProfile = null;
+                    _activeUsername = null;
+                    updated = true;
+                }
             }
             if (updated)
             {

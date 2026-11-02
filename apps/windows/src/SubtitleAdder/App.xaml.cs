@@ -114,6 +114,7 @@ public partial class App : Application
         {
             _settingsWindow?.Close();
             _singleInstance?.Dispose();
+            StateSyncBroker.Shared.Dispose();
             ViewModel.Dispose();
             (Settings as IDisposable)?.Dispose();   // writes pending settings
         };

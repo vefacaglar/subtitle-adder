@@ -64,22 +64,36 @@ public sealed record StateSyncEvent
 }
 
 /// <summary>
-/// Shared background Pub/Sub communication engine that coordinates all state updates across 1..N running
+/// Shared background Pub/Sub communication broker and engine that coordinates all state updates across 1..N running
 /// <c>SubtitleAdder</c> instances without <see cref="FileSystemWatcher"/> polling.
 /// <para>
-/// Topology:
+/// Lifecycle ("Last Window Closes the Engine"):
 /// <list type="bullet">
-/// <item><description>Any number of open instances (1, 2, 5, 10+) share a single Named Pipe channel (<c>SubtitleAdder.StateBroker.&lt;Hash&gt;</c>).</description></item>
-/// <item><description>One instance automatically acquires an exclusive handle lock and acts as the Named Pipe Hub Leader, accepting connections from all other open instances and fanning out topic-filtered <see cref="StateSyncEvent"/> messages.</description></item>
-/// <item><description>If the Leader window is closed, one of the remaining open instances automatically takes over as the new Hub Leader within milliseconds and all other instances reconnect seamlessly without losing queued events.</description></item>
+/// <item><description>The first application instance that opens starts the shared background Pub/Sub Engine (<c>SubtitleAdder.StateBroker.&lt;Hash&gt;</c>).</description></item>
+/// <item><description>Subsequent instances (2nd, 3rd, 4th, 5th+) register their active instance slot and connect to the running Engine over Named Pipes.</description></item>
+/// <item><description>If the 1st instance (or any other instance) closes while other instances are still open (<see cref="HasOtherActiveInstances"/> is <c>true</c>), the Engine stays alive so remaining windows continue communicating without interruption.</description></item>
+/// <item><description>Only when the very last open instance closes (<see cref="ActiveInstanceCount"/> drops to <c>0</c>) does that last instance shut down the Engine (<see cref="ClosedEngineOnDispose"/> = <c>true</c>) and clean up lock/slot resources.</description></item>
 /// </list>
 /// </para>
 /// </summary>
 public sealed class StateSyncBroker : IDisposable
 {
+    private static readonly ConcurrentDictionary<string, StateSyncEngine> EnginesByScope = new(StringComparer.Ordinal);
+    private static int _totalActiveInProcessBrokers;
+
     public static StateSyncBroker Shared { get; } = new();
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    /// <summary>Total number of currently active (non-disposed) <see cref="StateSyncBroker"/> instances in this process.</summary>
+    public static int TotalActiveInProcessBrokers => Volatile.Read(ref _totalActiveInProcessBrokers);
+
+    /// <summary>Returns <c>true</c> if the shared Pub/Sub Engine for <paramref name="channelScope"/> is currently running.</summary>
+    public static bool IsChannelEngineRunning(string? channelScope = null)
+    {
+        var hash = ComputeScopeHash(channelScope);
+        return EnginesByScope.TryGetValue(hash, out var engine) && engine.IsRunning;
+    }
+
+    internal static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -87,54 +101,86 @@ public sealed class StateSyncBroker : IDisposable
 
     private sealed record SubscriptionEntry(string Topic, Action<StateSyncEvent> Handler);
 
+    private readonly string _scopeHash;
     private readonly string _pipeName;
-    private readonly string _lockFilePath;
+    private readonly string _instancesDir;
+    private readonly StateSyncEngine _engine;
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<Guid, SubscriptionEntry> _inProcessSubscribers = new();
-    private readonly ConcurrentDictionary<Guid, StreamWriter> _connectedClients = new();
     private readonly ConcurrentQueue<string> _pendingOutboundLines = new();
     private readonly Lock _clientWriteLock = new();
 
-    private StreamWriter? _outboundClientWriter;
-    private volatile bool _isLeader;
+    private FileStream? _instanceSlotStream;
+    private NamedPipeClientStream? _activeClientStream;
     private volatile bool _isConnectedToLeader;
     private volatile bool _disposed;
+    private volatile bool _closedEngineOnDispose;
 
     public StateSyncBroker(string? channelScope = null)
     {
-        var rawScope = string.IsNullOrWhiteSpace(channelScope)
+        InstanceId = Guid.NewGuid().ToString("N");
+        ChannelScope = string.IsNullOrWhiteSpace(channelScope)
             ? $"{Environment.UserDomainName}\\{Environment.UserName}"
-            : channelScope;
-        var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(rawScope)))[..16];
-        _pipeName = $"SubtitleAdder.StateBroker.{hash}";
+            : channelScope.Trim();
 
-        var lockDir = Path.Combine(Path.GetTempPath(), "SubtitleAdder");
-        try { Directory.CreateDirectory(lockDir); } catch { }
-        _lockFilePath = Path.Combine(lockDir, $"state-broker-{hash}.lock");
+        _scopeHash = ComputeScopeHash(ChannelScope);
+        _pipeName = $"SubtitleAdder.StateBroker.{_scopeHash}";
 
-        _ = Task.Run(() => RunBrokerLoopAsync(_cts.Token));
+        var baseDir = Path.Combine(Path.GetTempPath(), "SubtitleAdder", $"broker-{_scopeHash}");
+        _instancesDir = Path.Combine(baseDir, "instances");
+        try { Directory.CreateDirectory(_instancesDir); } catch { }
+
+        _instanceSlotStream = TryCreateInstanceSlotFile(_instancesDir, InstanceId);
+        Interlocked.Increment(ref _totalActiveInProcessBrokers);
+
+        _engine = AcquireOrStartEngine(_scopeHash, _pipeName, baseDir, _instancesDir, InstanceId);
+        _ = Task.Run(() => RunClientLoopAsync(_cts.Token));
     }
 
-    /// <summary>True when this broker instance is currently the active Named Pipe Hub Leader.</summary>
-    public bool IsLeader => _isLeader;
+    /// <summary>Unique identifier of this broker/window instance.</summary>
+    public string InstanceId { get; }
 
-    /// <summary>True when this broker instance is connected as a client to the active Named Pipe Hub Leader.</summary>
-    public bool IsConnectedToLeader => _isConnectedToLeader;
+    /// <summary>Channel scope name shared by communicating instances.</summary>
+    public string ChannelScope { get; }
 
-    /// <summary>True when this broker is either the active Hub Leader or connected to the active Hub Leader.</summary>
-    public bool IsReady => _isLeader || _isConnectedToLeader;
+    /// <summary>True while the shared background Pub/Sub Engine for this channel is running.</summary>
+    public bool IsEngineRunning => _engine.IsRunning;
 
-    /// <summary>Number of remote instances currently connected to this broker when acting as Hub Leader.</summary>
-    public int ConnectedClientCount => _connectedClients.Count;
+    /// <summary>True when this process's shared Engine is actively hosting the Named Pipe Hub Server.</summary>
+    public bool IsLeader => !_disposed && _engine.IsHostingPipeServer;
 
-    /// <summary>Waits until this broker instance has either become the Hub Leader or connected to the Hub Leader.</summary>
+    /// <summary>True when this broker instance is connected over Named Pipe to the running Engine.</summary>
+    public bool IsConnectedToLeader => !_disposed && _isConnectedToLeader;
+
+    /// <summary>True when the Engine is running and this broker instance is connected to it.</summary>
+    public bool IsReady => !_disposed && _engine.IsRunning && _isConnectedToLeader;
+
+    /// <summary>Number of client instances currently connected to the shared Named Pipe Engine.</summary>
+    public int ConnectedClientCount => _engine.ConnectedClientCount;
+
+    /// <summary>Total number of currently open application/broker instances sharing this channel.</summary>
+    public int ActiveInstanceCount => _engine.GetActiveInstanceCount();
+
+    /// <summary>True when at least one other application/broker instance is still open on this channel.</summary>
+    public bool HasOtherActiveInstances => ActiveInstanceCount > (_disposed ? 0 : 1);
+
+    /// <summary>True when this is the last remaining open application/broker instance on this channel.</summary>
+    public bool IsLastInstance => !_disposed && ActiveInstanceCount <= 1;
+
+    /// <summary>
+    /// True if and only if this instance was the last remaining open instance when <see cref="Dispose"/> was called
+    /// and therefore shut down the shared Pub/Sub Engine. False if other instances were still open when this instance closed.
+    /// </summary>
+    public bool ClosedEngineOnDispose => _closedEngineOnDispose;
+
+    /// <summary>Waits until this broker instance is connected to the shared Pub/Sub Engine.</summary>
     public async Task<bool> WaitUntilReadyAsync(TimeSpan timeout)
     {
         var deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
         while (!_disposed && Environment.TickCount64 < deadline)
         {
             if (IsReady) return true;
-            await Task.Delay(15).ConfigureAwait(false);
+            await Task.Delay(10).ConfigureAwait(false);
         }
         return IsReady;
     }
@@ -160,7 +206,7 @@ public sealed class StateSyncBroker : IDisposable
         Publish(syncEvent with { Topic = string.IsNullOrWhiteSpace(topic) ? StateSyncTopics.Profiles : topic.Trim() });
     }
 
-    /// <summary>Publishes a state sync event to all local and remote instances connected via the broker.</summary>
+    /// <summary>Publishes a state sync event to all local and remote instances connected via the shared Engine.</summary>
     public void Publish(StateSyncEvent syncEvent)
     {
         if (_disposed || syncEvent is null) return;
@@ -168,15 +214,11 @@ public sealed class StateSyncBroker : IDisposable
         // 1. Deliver immediately to topic-matching subscribers attached to this broker instance.
         DispatchToLocalSubscribers(syncEvent);
 
-        // 2. Broadcast over the Named Pipe hub to all other running instances (1..N).
+        // 2. Broadcast over the Named Pipe Engine to all other running instances (1..N).
         try
         {
             var jsonLine = JsonSerializer.Serialize(syncEvent, JsonOptions);
-            if (_isLeader)
-            {
-                BroadcastToConnectedPipeClients(jsonLine, excludeClientId: null);
-            }
-            else if (!TrySendToLeaderPipe(jsonLine))
+            if (!TrySendToEnginePipe(jsonLine))
             {
                 EnqueuePendingLine(jsonLine);
             }
@@ -199,11 +241,7 @@ public sealed class StateSyncBroker : IDisposable
     {
         while (_pendingOutboundLines.TryDequeue(out var line))
         {
-            if (_isLeader)
-            {
-                BroadcastToConnectedPipeClients(line, excludeClientId: null);
-            }
-            else if (!TrySendToLeaderPipe(line))
+            if (!TrySendToEnginePipe(line))
             {
                 EnqueuePendingLine(line);
                 break;
@@ -233,189 +271,51 @@ public sealed class StateSyncBroker : IDisposable
         }
     }
 
-    private bool TrySendToLeaderPipe(string jsonLine)
+    private bool TrySendToEnginePipe(string jsonLine)
     {
         lock (_clientWriteLock)
         {
-            if (_outboundClientWriter is null) return false;
+            var stream = _activeClientStream;
+            if (stream is null || !stream.IsConnected) return false;
             try
             {
-                _outboundClientWriter.WriteLine(jsonLine);
-                _outboundClientWriter.Flush();
+                var bytes = Encoding.UTF8.GetBytes(jsonLine + "\n");
+                stream.Write(bytes, 0, bytes.Length);
                 return true;
             }
             catch
             {
-                _outboundClientWriter = null;
                 _isConnectedToLeader = false;
                 return false;
             }
         }
     }
 
-    private void BroadcastToConnectedPipeClients(string jsonLine, Guid? excludeClientId)
-    {
-        foreach (var (clientId, writer) in _connectedClients)
-        {
-            if (excludeClientId.HasValue && clientId == excludeClientId.Value)
-                continue;
-
-            try
-            {
-                lock (writer)
-                {
-                    writer.WriteLine(jsonLine);
-                    writer.Flush();
-                }
-            }
-            catch
-            {
-                _connectedClients.TryRemove(clientId, out _);
-            }
-        }
-    }
-
-    private FileStream? TryAcquireLeaderLock()
-    {
-        try
-        {
-            return new FileStream(
-                _lockFilePath,
-                FileMode.OpenOrCreate,
-                FileAccess.ReadWrite,
-                FileShare.None,
-                bufferSize: 1,
-                FileOptions.None);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
-    }
-
-    private async Task RunBrokerLoopAsync(CancellationToken ct)
+    private async Task RunClientLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested && !_disposed)
         {
-            FileStream? leaderLock = null;
+            NamedPipeClientStream? client = null;
             try
             {
-                leaderLock = TryAcquireLeaderLock();
-                if (leaderLock is not null)
+                client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                await client.ConnectAsync(150, ct).ConfigureAwait(false);
+
+                lock (_clientWriteLock)
                 {
-                    _isLeader = true;
-                    _isConnectedToLeader = false;
-                    FlushPendingOutboundLines();
-                    await RunLeaderServerLoopAsync(ct).ConfigureAwait(false);
+                    if (_disposed || ct.IsCancellationRequested)
+                    {
+                        try { client.Dispose(); } catch { }
+                        break;
+                    }
+                    _activeClientStream = client;
+                    _isConnectedToLeader = true;
                 }
-                else
-                {
-                    _isLeader = false;
-                    await RunClientConnectionAsync(ct).ConfigureAwait(false);
-                }
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                break;
-            }
-            catch
-            {
-                // Transient pipe/lock error; retry after short backoff allowing instant leader election.
-            }
-            finally
-            {
-                _isLeader = false;
-                _isConnectedToLeader = false;
-                if (leaderLock is not null)
-                {
-                    try { leaderLock.Dispose(); } catch { }
-                }
-            }
 
-            if (!ct.IsCancellationRequested && !_disposed)
-            {
-                try
-                {
-                    await Task.Delay(25, ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-            }
-        }
-    }
+                FlushPendingOutboundLines();
 
-    private async Task RunLeaderServerLoopAsync(CancellationToken ct)
-    {
-        // Maintain 6 concurrent accept loops so even if 5+ app instances start or failover simultaneously,
-        // every client connects on the first attempt without waiting.
-        const int concurrentAcceptLoops = 6;
-        var loops = new Task[concurrentAcceptLoops];
-        for (var i = 0; i < concurrentAcceptLoops; i++)
-        {
-            loops[i] = AcceptClientsLoopAsync(ct);
-        }
-
-        try
-        {
-            await Task.WhenAll(loops).ConfigureAwait(false);
-        }
-        finally
-        {
-            foreach (var (_, writer) in _connectedClients)
-            {
-                try { writer.Dispose(); } catch { }
-            }
-            _connectedClients.Clear();
-        }
-    }
-
-    private async Task AcceptClientsLoopAsync(CancellationToken ct)
-    {
-        var clientTasks = new List<Task>();
-        while (!ct.IsCancellationRequested && !_disposed)
-        {
-            var server = new NamedPipeServerStream(
-                _pipeName,
-                PipeDirection.InOut,
-                NamedPipeServerStream.MaxAllowedServerInstances,
-                PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous);
-
-            try
-            {
-                await server.WaitForConnectionAsync(ct).ConfigureAwait(false);
-                clientTasks.RemoveAll(t => t.IsCompleted);
-                clientTasks.Add(Task.Run(() => HandleConnectedClientAsync(server, ct), CancellationToken.None));
-            }
-            catch
-            {
-                try { await server.DisposeAsync().ConfigureAwait(false); } catch { }
-                if (ct.IsCancellationRequested || _disposed) break;
-            }
-        }
-
-        try { await Task.WhenAll(clientTasks).ConfigureAwait(false); } catch { }
-    }
-
-    private async Task HandleConnectedClientAsync(NamedPipeServerStream server, CancellationToken ct)
-    {
-        var clientId = Guid.NewGuid();
-        using var reg = ct.Register(() =>
-        {
-            try { server.Dispose(); } catch { }
-        });
-
-        await using (server)
-        {
-            using var reader = new StreamReader(server, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
-            using var writer = new StreamWriter(server, new UTF8Encoding(false), bufferSize: 4096, leaveOpen: true);
-            _connectedClients[clientId] = writer;
-
-            try
-            {
-                while (!ct.IsCancellationRequested && !_disposed && server.IsConnected)
+                using var reader = new StreamReader(client, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
+                while (!ct.IsCancellationRequested && !_disposed && client.IsConnected)
                 {
                     var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
                     if (line is null) break;
@@ -430,77 +330,46 @@ public sealed class StateSyncBroker : IDisposable
                     {
                     }
 
-                    if (evt is not null)
+                    if (evt is not null && !string.Equals(evt.SenderInstanceId, InstanceId, StringComparison.Ordinal))
                     {
                         DispatchToLocalSubscribers(evt);
-                        BroadcastToConnectedPipeClients(line, excludeClientId: clientId);
                     }
                 }
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested || _disposed)
+            {
+                break;
+            }
             catch
             {
-                // Client disconnected or broker shutting down.
+                // Transient disconnect; reconnect while broker is active.
             }
             finally
             {
-                _connectedClients.TryRemove(clientId, out _);
+                lock (_clientWriteLock)
+                {
+                    if (ReferenceEquals(_activeClientStream, client))
+                    {
+                        _activeClientStream = null;
+                    }
+                    _isConnectedToLeader = false;
+                }
+                if (client is not null)
+                {
+                    try { client.Dispose(); } catch { }
+                }
             }
-        }
-    }
 
-    private async Task RunClientConnectionAsync(CancellationToken ct)
-    {
-        await using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-        using var reg = ct.Register(() =>
-        {
-            try { client.Dispose(); } catch { }
-        });
-
-        await client.ConnectAsync(200, ct).ConfigureAwait(false);
-
-        using var reader = new StreamReader(client, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
-        using var writer = new StreamWriter(client, new UTF8Encoding(false), bufferSize: 4096, leaveOpen: true);
-
-        lock (_clientWriteLock)
-        {
-            _outboundClientWriter = writer;
-            _isConnectedToLeader = true;
-        }
-
-        FlushPendingOutboundLines();
-
-        try
-        {
-            while (!ct.IsCancellationRequested && !_disposed && client.IsConnected)
+            if (!ct.IsCancellationRequested && !_disposed)
             {
-                var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
-                if (line is null) break;
-                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                StateSyncEvent? evt = null;
                 try
                 {
-                    evt = JsonSerializer.Deserialize<StateSyncEvent>(line, JsonOptions);
+                    await Task.Delay(15, ct).ConfigureAwait(false);
                 }
-                catch
+                catch (OperationCanceledException)
                 {
+                    break;
                 }
-
-                if (evt is not null)
-                {
-                    DispatchToLocalSubscribers(evt);
-                }
-            }
-        }
-        finally
-        {
-            lock (_clientWriteLock)
-            {
-                if (ReferenceEquals(_outboundClientWriter, writer))
-                {
-                    _outboundClientWriter = null;
-                }
-                _isConnectedToLeader = false;
             }
         }
     }
@@ -509,14 +378,401 @@ public sealed class StateSyncBroker : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+
+        Interlocked.Decrement(ref _totalActiveInProcessBrokers);
         try { _cts.Cancel(); } catch { }
-        foreach (var (_, writer) in _connectedClients)
+
+        lock (_clientWriteLock)
         {
-            try { writer.Dispose(); } catch { }
+            _isConnectedToLeader = false;
+            var client = _activeClientStream;
+            _activeClientStream = null;
+            if (client is not null)
+            {
+                try { client.Dispose(); } catch { }
+            }
         }
-        _connectedClients.Clear();
+
+        var slot = Interlocked.Exchange(ref _instanceSlotStream, null);
+        if (slot is not null)
+        {
+            try { slot.Dispose(); } catch { }
+        }
+
+        // Unregister this instance from the shared Engine; ONLY the last closing instance shuts down the Engine!
+        _closedEngineOnDispose = ReleaseInstanceAndShutdownEngineIfLast(_scopeHash, _engine, InstanceId);
+
         try { _cts.Dispose(); } catch { }
         _inProcessSubscribers.Clear();
+    }
+
+    private static string ComputeScopeHash(string? channelScope)
+    {
+        var rawScope = string.IsNullOrWhiteSpace(channelScope)
+            ? $"{Environment.UserDomainName}\\{Environment.UserName}"
+            : channelScope.Trim();
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(rawScope)))[..16];
+    }
+
+    private static FileStream? TryCreateInstanceSlotFile(string instancesDir, string instanceId)
+    {
+        try
+        {
+            Directory.CreateDirectory(instancesDir);
+            var slotPath = Path.Combine(instancesDir, $"instance-{instanceId}.slot");
+            return new FileStream(
+                slotPath,
+                FileMode.Create,
+                FileAccess.ReadWrite,
+                FileShare.None,
+                bufferSize: 1,
+                FileOptions.DeleteOnClose);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static StateSyncEngine AcquireOrStartEngine(
+        string scopeHash,
+        string pipeName,
+        string baseDir,
+        string instancesDir,
+        string instanceId)
+    {
+        while (true)
+        {
+            var engine = EnginesByScope.GetOrAdd(
+                scopeHash,
+                _ => new StateSyncEngine(scopeHash, pipeName, baseDir, instancesDir));
+            if (engine.TryRegisterInstance(instanceId))
+            {
+                return engine;
+            }
+            EnginesByScope.TryRemove(KeyValuePair.Create(scopeHash, engine));
+        }
+    }
+
+    private static bool ReleaseInstanceAndShutdownEngineIfLast(
+        string scopeHash,
+        StateSyncEngine engine,
+        string instanceId)
+    {
+        var shutDown = engine.UnregisterInstanceAndShutdownIfLast(instanceId);
+        if (shutDown)
+        {
+            EnginesByScope.TryRemove(KeyValuePair.Create(scopeHash, engine));
+        }
+        return shutDown;
+    }
+
+    /// <summary>
+    /// Decoupled background Named Pipe Hub Engine shared by all open <see cref="StateSyncBroker"/> instances
+    /// on the same channel. Stays alive across window closes and only shuts down when the last open instance closes.
+    /// </summary>
+    private sealed class StateSyncEngine
+    {
+        private readonly string _scopeHash;
+        private readonly string _pipeName;
+        private readonly string _baseDir;
+        private readonly string _instancesDir;
+        private readonly string _lockFilePath;
+        private readonly CancellationTokenSource _cts = new();
+        private readonly ConcurrentDictionary<string, byte> _registeredInstances = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<Guid, NamedPipeServerStream> _allServerStreams = new();
+        private readonly ConcurrentDictionary<Guid, ConnectedClientSession> _connectedClients = new();
+        private readonly Lock _lifecycleLock = new();
+
+        private FileStream? _leaderLockStream;
+        private volatile bool _isRunning = true;
+        private volatile bool _isHostingPipeServer;
+
+        private sealed class ConnectedClientSession(NamedPipeServerStream stream)
+        {
+            public NamedPipeServerStream Stream { get; } = stream;
+            public Lock WriteLock { get; } = new();
+        }
+
+        public StateSyncEngine(string scopeHash, string pipeName, string baseDir, string instancesDir)
+        {
+            _scopeHash = scopeHash;
+            _pipeName = pipeName;
+            _baseDir = baseDir;
+            _instancesDir = instancesDir;
+            try { Directory.CreateDirectory(_baseDir); } catch { }
+            _lockFilePath = Path.Combine(_baseDir, $"engine-{_scopeHash}.lock");
+
+            _ = Task.Run(() => RunEngineLoopAsync(_cts.Token));
+        }
+
+        public bool IsRunning => _isRunning;
+        public bool IsHostingPipeServer => _isHostingPipeServer;
+        public int ConnectedClientCount => _connectedClients.Count;
+
+        public bool TryRegisterInstance(string instanceId)
+        {
+            lock (_lifecycleLock)
+            {
+                if (!_isRunning) return false;
+                _registeredInstances[instanceId] = 1;
+                return true;
+            }
+        }
+
+        public int GetActiveInstanceCount()
+        {
+            lock (_lifecycleLock)
+            {
+                if (!_isRunning) return 0;
+                var inProcessCount = _registeredInstances.Count;
+                var crossProcessSlotCount = CountActiveSlotFiles();
+                return Math.Max(inProcessCount, crossProcessSlotCount);
+            }
+        }
+
+        public bool UnregisterInstanceAndShutdownIfLast(string instanceId)
+        {
+            lock (_lifecycleLock)
+            {
+                _registeredInstances.TryRemove(instanceId, out _);
+                if (!_isRunning) return false;
+
+                var remainingInProcess = _registeredInstances.Count;
+                var remainingSlotFiles = CountActiveSlotFiles();
+                var totalRemaining = Math.Max(remainingInProcess, remainingSlotFiles);
+
+                if (totalRemaining > 0)
+                {
+                    // Other application windows are still open -> keep the Engine running!
+                    return false;
+                }
+
+                // This was the LAST open application window -> shut down the Engine now!
+                _isRunning = false;
+                _isHostingPipeServer = false;
+            }
+
+            ShutdownEngineCore();
+            return true;
+        }
+
+        private int CountActiveSlotFiles()
+        {
+            try
+            {
+                if (!Directory.Exists(_instancesDir)) return 0;
+                var activeCount = 0;
+                foreach (var file in Directory.EnumerateFiles(_instancesDir, "instance-*.slot"))
+                {
+                    try
+                    {
+                        // Slot files of live instances are held with FileShare.None.
+                        // If we can open/delete one exclusively, it was an orphaned file; otherwise it is actively held.
+                        File.Delete(file);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        activeCount++;
+                    }
+                }
+                return activeCount;
+            }
+            catch
+            {
+                return _registeredInstances.Count;
+            }
+        }
+
+        private FileStream? TryAcquireEngineLock()
+        {
+            try
+            {
+                Directory.CreateDirectory(_baseDir);
+                return new FileStream(
+                    _lockFilePath,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 1,
+                    FileOptions.None);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        private async Task RunEngineLoopAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested && _isRunning)
+            {
+                var lockStream = TryAcquireEngineLock();
+                if (lockStream is not null)
+                {
+                    _leaderLockStream = lockStream;
+                    _isHostingPipeServer = true;
+                    try
+                    {
+                        var accept1 = AcceptClientsLoopAsync(ct);
+                        var accept2 = AcceptClientsLoopAsync(ct);
+                        await Task.WhenAll(accept1, accept2).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                    }
+                    finally
+                    {
+                        _isHostingPipeServer = false;
+                        var held = Interlocked.Exchange(ref _leaderLockStream, null);
+                        if (held is not null)
+                        {
+                            try { held.Dispose(); } catch { }
+                        }
+                    }
+                }
+                else
+                {
+                    // Another OS process is currently hosting the Named Pipe Engine for this scope;
+                    // standby and automatically take over if that process exits while our instances are still open.
+                    _isHostingPipeServer = false;
+                    try
+                    {
+                        await Task.Delay(25, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        private async Task AcceptClientsLoopAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested && _isRunning)
+            {
+                var streamId = Guid.NewGuid();
+                NamedPipeServerStream? server = null;
+                try
+                {
+                    server = new NamedPipeServerStream(
+                        _pipeName,
+                        PipeDirection.InOut,
+                        NamedPipeServerStream.MaxAllowedServerInstances,
+                        PipeTransmissionMode.Byte,
+                        PipeOptions.Asynchronous);
+                    _allServerStreams[streamId] = server;
+
+                    await server.WaitForConnectionAsync(ct).ConfigureAwait(false);
+                    if (ct.IsCancellationRequested || !_isRunning)
+                    {
+                        _allServerStreams.TryRemove(streamId, out _);
+                        try { server.Dispose(); } catch { }
+                        break;
+                    }
+
+                    _ = Task.Run(() => HandleConnectedClientAsync(streamId, server, ct), CancellationToken.None);
+                }
+                catch
+                {
+                    _allServerStreams.TryRemove(streamId, out _);
+                    if (server is not null)
+                    {
+                        try { server.Dispose(); } catch { }
+                    }
+                    if (ct.IsCancellationRequested || !_isRunning) break;
+                }
+            }
+        }
+
+        private async Task HandleConnectedClientAsync(Guid streamId, NamedPipeServerStream server, CancellationToken ct)
+        {
+            var session = new ConnectedClientSession(server);
+            _connectedClients[streamId] = session;
+
+            try
+            {
+                using var reader = new StreamReader(server, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
+                while (!ct.IsCancellationRequested && _isRunning && server.IsConnected)
+                {
+                    var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
+                    if (line is null) break;
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+
+                    BroadcastToOtherClients(line, excludeClientId: streamId);
+                }
+            }
+            catch
+            {
+                // Client disconnected or Engine shutting down.
+            }
+            finally
+            {
+                _connectedClients.TryRemove(streamId, out _);
+                _allServerStreams.TryRemove(streamId, out _);
+                try { server.Dispose(); } catch { }
+            }
+        }
+
+        private void BroadcastToOtherClients(string jsonLine, Guid excludeClientId)
+        {
+            var bytes = Encoding.UTF8.GetBytes(jsonLine + "\n");
+            foreach (var (clientId, session) in _connectedClients)
+            {
+                if (clientId == excludeClientId) continue;
+                try
+                {
+                    lock (session.WriteLock)
+                    {
+                        if (session.Stream.IsConnected)
+                        {
+                            session.Stream.Write(bytes, 0, bytes.Length);
+                        }
+                    }
+                }
+                catch
+                {
+                    _connectedClients.TryRemove(clientId, out _);
+                }
+            }
+        }
+
+        private void ShutdownEngineCore()
+        {
+            try { _cts.Cancel(); } catch { }
+
+            var heldLock = Interlocked.Exchange(ref _leaderLockStream, null);
+            if (heldLock is not null)
+            {
+                try { heldLock.Dispose(); } catch { }
+            }
+
+            foreach (var (id, stream) in _allServerStreams)
+            {
+                _allServerStreams.TryRemove(id, out _);
+                try { stream.Dispose(); } catch { }
+            }
+            _connectedClients.Clear();
+
+            try
+            {
+                if (File.Exists(_lockFilePath)) File.Delete(_lockFilePath);
+                if (Directory.Exists(_instancesDir) && !Directory.EnumerateFileSystemEntries(_instancesDir).Any())
+                {
+                    Directory.Delete(_instancesDir, recursive: false);
+                }
+                if (Directory.Exists(_baseDir) && !Directory.EnumerateFileSystemEntries(_baseDir).Any())
+                {
+                    Directory.Delete(_baseDir, recursive: false);
+                }
+            }
+            catch
+            {
+            }
+
+            try { _cts.Dispose(); } catch { }
+        }
     }
 
     private sealed class SubscriptionToken(StateSyncBroker broker, Guid id) : IDisposable

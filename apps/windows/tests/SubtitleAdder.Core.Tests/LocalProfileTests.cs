@@ -308,10 +308,24 @@ public sealed class LocalProfileTests : IDisposable
     }
 
     [Fact]
-    public async Task StateSyncBroker_FiveConcurrentInstancesCommunicateViaNamedPipeAndAutoElectNewLeaderOnFailover()
+    public async Task StateSyncBroker_FiveConcurrentInstancesCommunicateViaNamedPipeAndLastWindowClosesEngine()
     {
         var channelScope = $"test-broker-5-instances-{Guid.NewGuid():N}";
-        var brokers = Enumerable.Range(0, 5).Select(_ => new StateSyncBroker(channelScope)).ToList();
+        Assert.False(StateSyncBroker.IsChannelEngineRunning(channelScope));
+
+        // 1. Open 1st application window -> starts the shared background Pub/Sub Engine
+        var firstBroker = new StateSyncBroker(channelScope);
+        Assert.True(StateSyncBroker.IsChannelEngineRunning(channelScope));
+        Assert.Equal(1, firstBroker.ActiveInstanceCount);
+        Assert.True(firstBroker.IsLastInstance);
+
+        // 2. Open 2nd, 3rd, 4th, 5th application windows -> all connect to the shared Engine
+        var brokers = new List<StateSyncBroker> { firstBroker };
+        for (var i = 1; i < 5; i++)
+        {
+            brokers.Add(new StateSyncBroker(channelScope));
+        }
+
         var managers = new List<LocalProfileManager>();
 
         try
@@ -321,15 +335,15 @@ public sealed class LocalProfileTests : IDisposable
                 Assert.True(await b.WaitUntilReadyAsync(TimeSpan.FromSeconds(5)));
             }
 
-            // Wait briefly for all 4 clients to finish registering in the leader's client table
-            var leader = brokers.Single(b => b.IsLeader);
-            var deadline = Environment.TickCount64 + 3000;
-            while (leader.ConnectedClientCount < 4 && Environment.TickCount64 < deadline)
+            await WaitUntilAsync(() => brokers[0].ConnectedClientCount == 5, timeoutMs: 3000);
+            Assert.Equal(5, brokers[0].ActiveInstanceCount);
+            Assert.All(brokers, b =>
             {
-                await Task.Delay(20);
-            }
-            Assert.Equal(4, leader.ConnectedClientCount);
-            Assert.Equal(4, brokers.Count(b => b.IsConnectedToLeader));
+                Assert.True(b.IsEngineRunning);
+                Assert.True(b.IsConnectedToLeader);
+                Assert.True(b.HasOtherActiveInstances);
+                Assert.False(b.IsLastInstance);
+            });
 
             // Create 5 LocalProfileManager instances, each bound to its own StateSyncBroker node
             for (var i = 0; i < 5; i++)
@@ -340,11 +354,11 @@ public sealed class LocalProfileTests : IDisposable
             var ep1 = Path.Combine(_tempDir, "Episode_01.mp4");
             var ep2 = Path.Combine(_tempDir, "Episode_02.mp4");
 
-            // Instance 0 registers and logs in -> broadcast over Named Pipe hub to Instances 1..4
+            // Instance 0 registers and logs in -> broadcast over Named Pipe Engine to Instances 1..4
             Assert.True(managers[0].Register("five_window_user", "Pass!12345"));
             await WaitUntilAsync(() => managers.All(m => m.IsLoggedIn && m.CurrentUsername == "five_window_user"));
 
-            // Instance 2 watches ep1 and likes it -> broadcast over Named Pipe hub to all 5 instances
+            // Instance 2 watches ep1 and likes it -> broadcast over Named Pipe Engine to all 5 instances
             managers[2].RecordWatch(ep1, positionSeconds: 10, durationSeconds: 100);
             managers[2].SetLiked(ep1, true);
             await WaitUntilAsync(() => managers.All(m => m.GetStats(ep1) is { ViewCount: 1, IsLiked: true }));
@@ -365,32 +379,46 @@ public sealed class LocalProfileTests : IDisposable
                 m.GetThumbnail(ep1) is { Length: > 0 }));
             Assert.Equal(0, stateChangedEvents);
 
-            // Simulate closing the Leader window: dispose the current Leader broker & manager
-            var leaderIndex = brokers.IndexOf(leader);
-            managers[leaderIndex].Dispose();
-            managers.RemoveAt(leaderIndex);
-            leader.Dispose();
-            brokers.RemoveAt(leaderIndex);
+            // 3. Close the 1st window (the one that originally started the Engine!):
+            // Because Windows 2, 3, 4, 5 are still open, the Engine MUST NOT close!
+            managers[0].Dispose();
+            brokers[0].Dispose();
+            Assert.False(brokers[0].ClosedEngineOnDispose);
+            Assert.True(StateSyncBroker.IsChannelEngineRunning(channelScope));
+            Assert.Equal(4, brokers[1].ActiveInstanceCount);
+            await WaitUntilAsync(() => brokers[1].ConnectedClientCount == 4, timeoutMs: 3000);
 
-            // Verify automatic leader failover among the remaining 4 instances
-            await WaitUntilAsync(() =>
-                brokers.Count(b => b.IsLeader) == 1 &&
-                brokers.Count(b => b.IsConnectedToLeader) == 3,
-                timeoutMs: 5000);
-
-            var newLeader = brokers.Single(b => b.IsLeader);
-            await WaitUntilAsync(() => newLeader.ConnectedClientCount == 3, timeoutMs: 3000);
-
-            // One of the remaining client instances records a watch on ep2 and creates a custom list -> all 4 remaining instances receive it
-            var clientManager = managers.First(m => !m.Broker.IsLeader);
-            clientManager.RecordWatch(ep2, positionSeconds: 25, durationSeconds: 120);
-            var sharedList = clientManager.CreateCustomList("Beş Pencere Ortak Liste");
+            // Verify the remaining 4 open instances continue communicating via the Engine without interruption
+            managers[2].RecordWatch(ep2, positionSeconds: 25, durationSeconds: 120);
+            var sharedList = managers[2].CreateCustomList("Beş Pencere Ortak Liste");
             Assert.NotNull(sharedList);
-            Assert.True(clientManager.AddVideoToCustomList(sharedList.Id, ep2));
+            Assert.True(managers[2].AddVideoToCustomList(sharedList.Id, ep2));
 
-            await WaitUntilAsync(() => managers.All(m =>
+            await WaitUntilAsync(() => managers.Skip(1).All(m =>
                 m.GetStats(ep2)?.ViewCount == 1 &&
                 m.GetCustomLists().Any(l => l.Name == "Beş Pencere Ortak Liste" && l.VideoPaths.Contains(ep2))));
+
+            // 4. Close Windows 2, 3, and 4 one by one -> Engine stays alive while at least 1 window remains open
+            for (var i = 1; i <= 3; i++)
+            {
+                managers[i].Dispose();
+                brokers[i].Dispose();
+                Assert.False(brokers[i].ClosedEngineOnDispose);
+                Assert.True(StateSyncBroker.IsChannelEngineRunning(channelScope));
+                Assert.Equal(5 - (i + 1), brokers[4].ActiveInstanceCount);
+            }
+
+            // Window 5 (index 4) is now the last remaining open window
+            Assert.True(brokers[4].IsLastInstance);
+            Assert.False(brokers[4].HasOtherActiveInstances);
+            Assert.True(brokers[4].IsEngineRunning);
+
+            // 5. Close Window 5 (the LAST window) -> IT shuts down the Engine!
+            managers[4].Dispose();
+            brokers[4].Dispose();
+            Assert.True(brokers[4].ClosedEngineOnDispose);
+            Assert.False(brokers[4].IsEngineRunning);
+            Assert.False(StateSyncBroker.IsChannelEngineRunning(channelScope));
         }
         finally
         {

@@ -922,12 +922,13 @@ public sealed partial class TranslationProviderManager : ObservableObject
         return merged;
     }
 
-    private void NotifyStateChanged()
+    private void NotifyStateChanged(bool publishToBroker = true)
     {
         OnPropertyChanged(nameof(Providers));
         OnPropertyChanged(nameof(ActiveProviderId));
         OnPropertyChanged(nameof(ActiveProvider));
         OnPropertyChanged(nameof(IsExternalProviderActive));
+        if (publishToBroker) _broker.Publish(StateSyncTopics.Providers, new StateSyncEvent { Topic = StateSyncTopics.Providers, Kind = StateSyncEventKind.ProvidersUpdated, SenderInstanceId = _instanceId, ScopePath = FilePath });
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
@@ -974,16 +975,7 @@ public sealed partial class TranslationProviderManager : ObservableObject
                 Providers = _providers,
             };
             var json = JsonSerializer.Serialize(state, JsonOptions);
-            if (AtomicFileStore.WriteAllTextAtomic(FilePath, json))
-            {
-                _broker.Publish(StateSyncTopics.Providers, new StateSyncEvent
-                {
-                    Topic = StateSyncTopics.Providers,
-                    Kind = StateSyncEventKind.ProvidersUpdated,
-                    SenderInstanceId = _instanceId,
-                    ScopePath = FilePath,
-                });
-            }
+            AtomicFileStore.WriteAllTextAtomic(FilePath, json);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -1000,6 +992,6 @@ public sealed partial class TranslationProviderManager : ObservableObject
         }
         LoadFromDisk();
         SyncToEngineState();
-        NotifyStateChanged();
+        NotifyStateChanged(publishToBroker: false);
     }
 }
