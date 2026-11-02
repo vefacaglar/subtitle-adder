@@ -213,14 +213,15 @@ import Testing
     @Test func aGatewayWithoutAModelListIsProbedWithOneChatRequest() async throws {
         let recorder = Recorder()
         let result = await ExternalLLMServer.testConnection(
-            rawURL: "https://opencode.ai/zen/go/v1", apiKey: "sk-oc", model: "kimi-k2.5", presetID: "opencode-go",
-            fetch: fetch(recorder, ["/zen/go/v1/chat/completions": (200, #"{"choices": []}"#)])
+            rawURL: "https://opencode.ai/inference/go/openai/v1", apiKey: "sk-oc", model: "kimi-k3.1-pro",
+            presetID: "opencode-go",
+            fetch: fetch(recorder, ["/inference/go/openai/v1/chat/completions": (200, #"{"choices": []}"#)])
         )
         guard case .reachable(let host, _, let models) = result else { Issue.record("\(result)"); return }
         #expect(host == "opencode.ai")
         #expect(models.isEmpty)
         #expect(recorder.urls == [
-            "https://opencode.ai/zen/go/v1/models", "https://opencode.ai/zen/go/v1/chat/completions",
+            "https://opencode.ai/inference/go/v1/models", "https://opencode.ai/inference/go/openai/v1/chat/completions",
         ])
         #expect(recorder.methods == ["GET", "POST"])
         let probe = recorder.requests[1]
@@ -228,11 +229,98 @@ import Testing
         #expect(probe.value(forHTTPHeaderField: "Content-Type") == "application/json")
         let body = try #require(probe.httpBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(json["model"] as? String == "kimi-k2.5")
+        #expect(json["model"] as? String == "kimi-k3.1-pro")
         #expect(json["max_tokens"] as? Int == 1)
         #expect(json["stream"] as? Bool == false)
         let messages = try #require(json["messages"] as? [[String: String]])
         #expect(messages == [["role": "user", "content": "hi"]])
+    }
+
+    // MARK: OpenCode Go v2
+
+    @Test func recognizesTheFiveOpenCodeGoAddresses() {
+        for url in [
+            "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1/chat/completions",
+            "https://opencode.ai/inference/go/v1", "https://opencode.ai/inference/go/openai/v1",
+            "https://opencode.ai/inference/go/openai/v1/chat/completions",
+            "https://OpenCode.ai/inference/go/openai/v1/",
+        ] {
+            #expect(ExternalLLMServer.isOpenCodeGo(url), "\(url)")
+        }
+    }
+
+    @Test func otherAddressesAreNotOpenCodeGo() {
+        for url in [
+            "http://opencode.ai/inference/go/openai/v1", "https://opencode.ai/v1", "https://opencode.ai/zen/go/v1?x=1",
+            "https://opencode.ai/zen/go/v1#top", "https://opencode.ai:8443/zen/go/v1",
+            "https://proxy.example.com/inference/go/openai/v1", "https://api.openai.com/v1", "not a url", "",
+        ] {
+            #expect(!ExternalLLMServer.isOpenCodeGo(url), "\(url)")
+        }
+        // A non-OpenCode /v1 proxy keeps the generic routes.
+        #expect(ExternalLLMServer.modelEndpoints(for: "https://proxy.example.com/zen/go/v1")
+            == ["https://proxy.example.com/zen/go/v1/models"])
+        #expect(ExternalLLMServer.chatEndpoint(for: "https://proxy.example.com/zen/go/v1")
+            == "https://proxy.example.com/zen/go/v1/chat/completions")
+    }
+
+    @Test func everyOpenCodeGoAddressUsesTheTwoV2Routes() {
+        for url in [
+            "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1/chat/completions",
+            "https://opencode.ai/inference/go/v1", "https://opencode.ai/inference/go/openai/v1",
+            "https://opencode.ai/inference/go/openai/v1/chat/completions",
+        ] {
+            #expect(ExternalLLMServer.modelEndpoints(for: url) == ["https://opencode.ai/inference/go/v1/models"], "\(url)")
+            #expect(
+                ExternalLLMServer.chatEndpoint(for: url) == "https://opencode.ai/inference/go/openai/v1/chat/completions",
+                "\(url)"
+            )
+        }
+    }
+
+    @Test func theSessionHeaderIsTheSameOnDiscoveryAndChatAndAbsentElsewhere() async {
+        let recorder = Recorder()
+        _ = await ExternalLLMServer.testConnection(
+            rawURL: "https://opencode.ai/zen/go/v1", apiKey: "sk-oc", fetch: fetch(recorder)
+        )
+        #expect(recorder.requests.count == 2)
+        let sessions = recorder.requests.map { $0.value(forHTTPHeaderField: "x-opencode-session") }
+        #expect(sessions[0] == ExternalLLMServer.openCodeSessionID)
+        #expect(sessions[0] == sessions[1])
+        #expect(UUID(uuidString: sessions[0] ?? "") != nil)
+
+        let other = Recorder()
+        _ = await ExternalLLMServer.testConnection(rawURL: "https://x.test/v1", apiKey: "k", fetch: fetch(other))
+        for request in other.requests { #expect(request.value(forHTTPHeaderField: "x-opencode-session") == nil) }
+    }
+
+    @Test func gatewayErrorMessagesAreReadFromTheBody() {
+        let detail = ExternalLLMServer.httpErrorDetail(status:body:apiKey:)
+        #expect(detail(429, Data(#"{"error": {"message": "Rate limited,\n slow  down"}}"#.utf8), "")
+            == "HTTP 429: Rate limited, slow down")
+        #expect(detail(402, Data(#"{"error": "Out of credits"}"#.utf8), "") == "HTTP 402: Out of credits")
+        #expect(detail(500, Data(#"{"message": "boom"}"#.utf8), "") == "HTTP 500: boom")
+        // HTML, empty or non-string messages give just the status.
+        #expect(detail(502, Data("<html><body>Bad gateway</body></html>".utf8), "") == "HTTP 502")
+        #expect(detail(503, Data(), "") == "HTTP 503")
+        #expect(detail(400, Data(#"{"error": {"message": 5}}"#.utf8), "") == "HTTP 400")
+        #expect(detail(400, Data(#"{"error": {"message": "  "}}"#.utf8), "") == "HTTP 400")
+        // The key is redacted when present, and the text is capped.
+        #expect(detail(401, Data(#"{"error": {"message": "bad key sk-secret"}}"#.utf8), " sk-secret ")
+            == "HTTP 401: bad key [redacted]")
+        let long = Data(("{\"error\": \"" + String(repeating: "x", count: 3000) + "\"}").utf8)
+        #expect(detail(500, long, "").count == 1000)
+    }
+
+    @Test func aFailedRequestReportsTheGatewayMessage() async {
+        let result = await ExternalLLMServer.testConnection(
+            rawURL: "https://opencode.ai/inference/go/openai/v1", apiKey: "sk-oc",
+            fetch: fetch(Recorder(), [
+                "/inference/go/v1/models": (500, #"{"error": {"message": "upstream down"}}"#),
+                "/inference/go/openai/v1/chat/completions": (503, #"{"error": {"message": "model sk-oc offline"}}"#),
+            ])
+        )
+        #expect(result == .unreachable(reason: "HTTP 503: model [redacted] offline"))
     }
 
     @Test func theProbeModelIsTheChosenOneThenThePresetsFirstThenAGenericOne() async throws {

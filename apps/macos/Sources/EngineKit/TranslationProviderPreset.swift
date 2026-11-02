@@ -31,8 +31,10 @@ public struct TranslationProviderPreset: Sendable, Equatable, Identifiable {
     /// All presets in display order; `custom` is last.
     public static let all: [TranslationProviderPreset] = [
         TranslationProviderPreset(
-            id: "opencode-go", rawName: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1", requiresAPIKey: true,
-            suggestedModels: ["glm-5", "kimi-k2.5", "minimax-m2.5", "deepseek-v3", "qwen3-235b"], localizesName: false
+            id: "opencode-go", rawName: "OpenCode Go", baseURL: "https://opencode.ai/inference/go/openai/v1",
+            requiresAPIKey: true,
+            suggestedModels: ["glm-5.3-flash", "kimi-k3.1-pro", "minimax-m3.1-flash", "deepseek-v4.1-flash", "deepseek-v4-pro"],
+            localizesName: false
         ),
         TranslationProviderPreset(
             id: "openrouter", rawName: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", requiresAPIKey: true,
