@@ -39,6 +39,10 @@ public sealed partial class MainWindow : Window
     private bool _isTheaterMode;
     private bool _isFullScreen;
     private bool _pointerOverPlayer;
+    private bool _isEditorHidden;
+    private bool _pointerOverDisplayPicker;
+    private bool _hudIdleHidden;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _hudHideTimer;
     private LocalizedMessage? _shownError;
     private Func<string>? _saveError;   // rebuilt on a language switch
 
@@ -55,6 +59,7 @@ public sealed partial class MainWindow : Window
         {
             SplitButton.IsEnabled = Vm.CanSplitSelected(_player.CurrentTime);
             PreviewControls.Synchronize(_player.CurrentTime, _player.Duration, _player.IsPlaying, _player.IsMuted, _player.Volume);
+            UpdatePreviewControlVisibility();
         };
         PreviewControls.SeekRequested += _player.Seek;
         PreviewControls.PlayPauseRequested += _player.TogglePlayback;
@@ -67,6 +72,18 @@ public sealed partial class MainWindow : Window
         Splitter.TargetColumn = PlayerCol;
         Splitter.OtherColumn = EditorCol;
         _isSideBySide = App.Current.Settings.GetBool("sideBySideLayout") ?? false;
+        _isEditorHidden = App.Current.Settings.GetBool("hideSubtitlePanel") ?? false;
+        _hudHideTimer = DispatcherQueue.CreateTimer();
+        _hudHideTimer.Interval = TimeSpan.FromMilliseconds(2500);
+        _hudHideTimer.IsRepeating = false;
+        _hudHideTimer.Tick += (_, _) =>
+        {
+            if (_player.IsPlaying && !PreviewControls.IsInteracting && !_pointerOverDisplayPicker)
+            {
+                _hudIdleHidden = true;
+                UpdatePreviewControlVisibility();
+            }
+        };
         ApplyWorkspaceLayout();
 
         // Buttons follow the commands' CanExecute (wired here rather than through Command bindings).
@@ -101,6 +118,7 @@ public sealed partial class MainWindow : Window
             Vm.Catalog.PropertyChanged -= OnCatalogChanged;
             App.Current.Appearance.PropertyChanged -= OnAppearanceChanged;
             // Detach the XAML surface first so window destruction never waits on Media Foundation teardown.
+            _hudHideTimer.Stop();
             PlayerElement.SetMediaPlayer(null);
             _player.Dispose();
         };
@@ -205,7 +223,7 @@ public sealed partial class MainWindow : Window
 
     private void OnVideoChanged()
     {
-        _player.Load(Vm.IsPlaylistRunning ? null : Vm.Video);
+        _player.Load(Vm.IsPlaylistRunning ? null : Vm.Video, autoPlay: !Vm.IsPlaylistRunning && Vm.AutoPlayVideo);
         Title = Vm.WindowTitle;
         TitleFile.Text = Vm.Video is null ? "" : "— " + Vm.WindowTitle;
         DropZone.Visibility = Vm.Video is null && !Vm.HasSentences ? Visibility.Visible : Visibility.Collapsed;
@@ -426,6 +444,20 @@ public sealed partial class MainWindow : Window
         UpdatePickers();
     }
 
+    private void SubtitlePanel_Click(object sender, RoutedEventArgs e)
+    {
+        _isEditorHidden = SubtitlePanelButton.IsChecked == false;
+        App.Current.Settings.SetBool("hideSubtitlePanel", _isEditorHidden);
+        ApplyWorkspaceLayout();
+    }
+
+    private void ToggleSubtitlePanel()
+    {
+        _isEditorHidden = !_isEditorHidden;
+        App.Current.Settings.SetBool("hideSubtitlePanel", _isEditorHidden);
+        ApplyWorkspaceLayout();
+    }
+
     private void SideBySide_Click(object sender, RoutedEventArgs e)
     {
         _isSideBySide = SideBySideButton.IsChecked == true;
@@ -462,7 +494,9 @@ public sealed partial class MainWindow : Window
 
     private void ApplyWorkspaceLayout()
     {
+        SubtitlePanelButton.IsChecked = !_isEditorHidden;
         SideBySideButton.IsChecked = _isSideBySide;
+        SideBySideButton.IsEnabled = !_isEditorHidden && !_isFullScreen;
         TheaterModeButton.IsChecked = _isTheaterMode;
         FullScreenButton.IsChecked = _isFullScreen;
         FullScreenIcon.Glyph = _isFullScreen ? "\uE73F" : "\uE740";
@@ -471,6 +505,38 @@ public sealed partial class MainWindow : Window
         CommandBar.Visibility = hideTopChrome ? Visibility.Collapsed : Visibility.Visible;
         TitleBarRow.Height = new GridLength(_isFullScreen ? 0 : 48);
         AppTitleBar.Visibility = _isFullScreen ? Visibility.Collapsed : Visibility.Visible;
+        StatusBarGrid.Visibility = _isFullScreen ? Visibility.Collapsed : Visibility.Visible;
+        ContentGrid.Margin = _isFullScreen ? new Thickness(0) : new Thickness(12, 0, 12, 0);
+        PlayerBorder.CornerRadius = new CornerRadius(_isFullScreen ? 0 : 8);
+
+        if (_isEditorHidden || _isFullScreen)
+        {
+            Splitter.Visibility = Visibility.Collapsed;
+            EditorBorder.Visibility = Visibility.Collapsed;
+
+            Grid.SetRow(PlayerBorder, 0);
+            Grid.SetRowSpan(PlayerBorder, 3);
+            Grid.SetColumn(PlayerBorder, 0);
+            Grid.SetColumnSpan(PlayerBorder, 3);
+
+            PlayerRow.MinHeight = 0;
+            PlayerRow.Height = new GridLength(1, GridUnitType.Star);
+            SplitterRow.Height = new GridLength(0);
+            EditorRow.MinHeight = 0;
+            EditorRow.Height = new GridLength(0);
+
+            PlayerCol.MinWidth = 0;
+            PlayerCol.Width = new GridLength(1, GridUnitType.Star);
+            SplitterCol.Width = new GridLength(0);
+            EditorCol.MinWidth = 0;
+            EditorCol.Width = new GridLength(0);
+
+            UpdateOverlay();
+            return;
+        }
+
+        Splitter.Visibility = Visibility.Visible;
+        EditorBorder.Visibility = Visibility.Visible;
 
         if (_isSideBySide)
         {
@@ -955,21 +1021,80 @@ public sealed partial class MainWindow : Window
 
     private void PlayerElement_Tapped(object sender, TappedRoutedEventArgs e) => _player.TogglePlayback();
 
+    private void PlayerElement_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        // Tapped already fired on the first click and toggled playback; restore playback state and toggle full screen.
+        _player.TogglePlayback();
+        SetFullScreen(!_isFullScreen);
+        e.Handled = true;
+    }
+
+    private void PlayerGrid_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        _pointerOverPlayer = true;
+        RevealPlayerHudBriefly();
+    }
+
+    private void PlayerGrid_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        var delta = e.GetCurrentPoint(PlayerGrid).Properties.MouseWheelDelta;
+        if (delta == 0) return;
+        var step = delta > 0 ? 0.05 : -0.05;
+        var baseVolume = _player.IsMuted ? 0.0 : _player.Volume;
+        _player.SetVolume(Math.Clamp(baseVolume + step, 0.0, 1.0));
+        RevealPlayerHudBriefly();
+        e.Handled = true;
+    }
+
+    private void DisplayPicker_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        _pointerOverDisplayPicker = true;
+        RevealPlayerHudBriefly();
+    }
+
+    private void DisplayPicker_PointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        _pointerOverDisplayPicker = false;
+        RestartHudHideTimer();
+    }
+
+    private void RevealPlayerHudBriefly()
+    {
+        _hudIdleHidden = false;
+        UpdatePreviewControlVisibility();
+        RestartHudHideTimer();
+    }
+
+    private void RestartHudHideTimer()
+    {
+        _hudHideTimer.Stop();
+        if (_pointerOverPlayer && !PreviewControls.IsInteracting && !_pointerOverDisplayPicker)
+        {
+            _hudHideTimer.Start();
+        }
+    }
+
     private void PlayerGrid_PointerEntered(object sender, PointerRoutedEventArgs e)
     {
         _pointerOverPlayer = true;
+        RevealPlayerHudBriefly();
         UpdatePreviewControlVisibility();
     }
 
     private void PlayerGrid_PointerExited(object sender, PointerRoutedEventArgs e)
     {
         _pointerOverPlayer = false;
+        _hudHideTimer.Stop();
+        _hudIdleHidden = false;
         UpdatePreviewControlVisibility();
     }
 
     private void UpdatePreviewControlVisibility()
     {
-        var visible = _pointerOverPlayer || PreviewControls.IsInteracting;
+        var visible = (_pointerOverPlayer && !_hudIdleHidden) || PreviewControls.IsInteracting || _pointerOverDisplayPicker;
+        var pickerVisible = visible || !_player.IsPlaying;
+        DisplayPicker.Opacity = pickerVisible ? 1.0 : 0.0;
+        DisplayPicker.IsHitTestVisible = pickerVisible;
         PreviewControls.SetVisible(visible);
     }
 
@@ -1024,7 +1149,14 @@ public sealed partial class MainWindow : Window
         };
         foreach (var ext in SubtitleParser.Extensions) picker.FileTypeFilter.Add(ext);
         var result = await picker.PickSingleFileAsync();
-        if (result?.Path is { Length: > 0 } path) Vm.TryLoadSubtitleFile(path);
+        if (result?.Path is { Length: > 0 } path)
+        {
+            if (Vm.Video is null && SubtitleParser.FindCompanionVideo(path) is { } companionVideo)
+            {
+                Vm.OpenVideo(companionVideo);
+            }
+            Vm.TryLoadSubtitleFile(path);
+        }
     }
 
     private async void SaveSubtitle_Click(object sender, RoutedEventArgs e)
@@ -1286,6 +1418,41 @@ public sealed partial class MainWindow : Window
         if (subtitleFile is not null) Vm.TryLoadSubtitleFile(subtitleFile.Path);
     }
 
+    /// <summary>Opens one or more media or subtitle files received from command-line arguments, "Open with", or a second instance.</summary>
+    public void OpenExternalFiles(IReadOnlyList<string> paths)
+    {
+        if (paths.Count == 0) return;
+        var existing = paths.Where(File.Exists).Select(Path.GetFullPath).ToList();
+        if (existing.Count == 0) return;
+
+        var videoFiles = existing.Where(p => !SubtitleParser.IsSubtitleFile(p)).ToList();
+        var subtitleFile = existing.FirstOrDefault(SubtitleParser.IsSubtitleFile);
+
+        if (videoFiles.Count > 1)
+        {
+            Vm.AddToPlaylist(videoFiles);
+            SwitchTab(playlist: true);
+            return;
+        }
+
+        SwitchTab(playlist: false);
+        if (videoFiles.Count == 1)
+        {
+            Vm.OpenVideo(videoFiles[0]);
+            if (subtitleFile is not null) Vm.TryLoadSubtitleFile(subtitleFile);
+            return;
+        }
+
+        if (subtitleFile is not null)
+        {
+            if (SubtitleParser.FindCompanionVideo(subtitleFile) is { } companionVideo)
+            {
+                Vm.OpenVideo(companionVideo);
+            }
+            Vm.TryLoadSubtitleFile(subtitleFile);
+        }
+    }
+
     // MARK: - Keyboard
 
     private static bool IsDown(VirtualKey key) =>
@@ -1314,6 +1481,52 @@ public sealed partial class MainWindow : Window
             }
             return;
         }
+        var isEditableFocus = e.OriginalSource is TextBox || e.OriginalSource is ComboBox { IsEditable: true };
+        if (!isEditableFocus && !IsDown(VirtualKey.Control) && !IsDown(VirtualKey.Menu))
+        {
+            var shiftKey = IsDown(VirtualKey.Shift);
+            switch (e.Key)
+            {
+                case VirtualKey.Space when e.OriginalSource is not (ButtonBase or ComboBox or ComboBoxItem or ListViewItem or ListView):
+                    e.Handled = true;
+                    _player.TogglePlayback();
+                    RevealPlayerHudBriefly();
+                    return;
+                case VirtualKey.Left:
+                    e.Handled = true;
+                    _player.Seek(_player.CurrentTime - (shiftKey ? 10.0 : 5.0));
+                    RevealPlayerHudBriefly();
+                    return;
+                case VirtualKey.Right:
+                    e.Handled = true;
+                    _player.Seek(_player.CurrentTime + (shiftKey ? 10.0 : 5.0));
+                    RevealPlayerHudBriefly();
+                    return;
+                case VirtualKey.Up when e.OriginalSource is not (ListViewItem or ComboBox or ComboBoxItem) || _isEditorHidden || _isFullScreen:
+                    e.Handled = true;
+                    _player.SetVolume((_player.IsMuted ? 0.0 : _player.Volume) + 0.05);
+                    RevealPlayerHudBriefly();
+                    return;
+                case VirtualKey.Down when e.OriginalSource is not (ListViewItem or ComboBox or ComboBoxItem) || _isEditorHidden || _isFullScreen:
+                    e.Handled = true;
+                    _player.SetVolume((_player.IsMuted ? 0.0 : _player.Volume) - 0.05);
+                    RevealPlayerHudBriefly();
+                    return;
+                case VirtualKey.M:
+                    e.Handled = true;
+                    _player.ToggleMute();
+                    RevealPlayerHudBriefly();
+                    return;
+                case VirtualKey.F:
+                    e.Handled = true;
+                    SetFullScreen(!_isFullScreen);
+                    return;
+                case VirtualKey.E:
+                    e.Handled = true;
+                    ToggleSubtitlePanel();
+                    return;
+            }
+        }
         if (!IsDown(VirtualKey.Control) || IsDown(VirtualKey.Menu)) return;
         var shift = IsDown(VirtualKey.Shift);
         switch (e.Key)
@@ -1335,6 +1548,26 @@ public sealed partial class MainWindow : Window
                 e.Handled = true;
                 Vm.FinishEditing();
                 if (Vm.GenerateCommand.CanExecute(null)) Vm.Generate();
+                break;
+            case VirtualKey.Left when !isEditableFocus:
+                e.Handled = true;
+                _player.Seek(_player.CurrentTime - 10.0);
+                RevealPlayerHudBriefly();
+                break;
+            case VirtualKey.Right when !isEditableFocus:
+                e.Handled = true;
+                _player.Seek(_player.CurrentTime + 10.0);
+                RevealPlayerHudBriefly();
+                break;
+            case VirtualKey.Up when !isEditableFocus:
+                e.Handled = true;
+                _player.SetVolume((_player.IsMuted ? 0.0 : _player.Volume) + 0.05);
+                RevealPlayerHudBriefly();
+                break;
+            case VirtualKey.Down when !isEditableFocus:
+                e.Handled = true;
+                _player.SetVolume((_player.IsMuted ? 0.0 : _player.Volume) - 0.05);
+                RevealPlayerHudBriefly();
                 break;
             case (VirtualKey)188:  // VK_OEM_COMMA
                 e.Handled = true;

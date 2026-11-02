@@ -79,6 +79,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     public const string SpeakerCountDefaultsKey = "speakerCount";
     public const string OfflineModeDefaultsKey = "offlineMode";
     public const string AutoSaveSubtitleDefaultsKey = "autoSaveSubtitle";
+    public const string AutoPlayVideoDefaultsKey = "autoPlayVideo";
     public const string ExternalLlmEnabledDefaultsKey = "externalLlmEnabled";
     public const string ExternalLlmUrlDefaultsKey = "externalLlmUrl";
     public const string ExternalLlmModelDefaultsKey = "externalLlmModel";
@@ -97,6 +98,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
     private int _speakerCount;
     private bool _offlineMode;
     private bool _autoSaveSubtitle;
+    private bool _autoPlayVideo;
     private bool _externalLlmEnabled;
     private string _externalLlmUrl;
     private string _externalLlmModel;
@@ -147,6 +149,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         _offlineMode = settings.GetBool(OfflineModeDefaultsKey) ?? true;
         OfflineState.Shared.Enabled = _offlineMode;
         _autoSaveSubtitle = settings.GetBool(AutoSaveSubtitleDefaultsKey) ?? true;
+        _autoPlayVideo = settings.GetBool(AutoPlayVideoDefaultsKey) ?? true;
         _externalLlmEnabled = settings.GetBool(ExternalLlmEnabledDefaultsKey) ?? false;
         _externalLlmUrl = settings.GetString(ExternalLlmUrlDefaultsKey) ?? "";
         _externalLlmModel = settings.GetString(ExternalLlmModelDefaultsKey) ?? "";
@@ -325,6 +328,17 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         {
             if (!SetProperty(ref _autoSaveSubtitle, value)) return;
             _settings.SetBool(AutoSaveSubtitleDefaultsKey, value);
+        }
+    }
+
+    /// <summary>Automatically starts playback when a video is opened or double-clicked; persistent, on by default.</summary>
+    public bool AutoPlayVideo
+    {
+        get => _autoPlayVideo;
+        set
+        {
+            if (!SetProperty(ref _autoPlayVideo, value)) return;
+            _settings.SetBool(AutoPlayVideoDefaultsKey, value);
         }
     }
 

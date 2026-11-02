@@ -1489,6 +1489,182 @@
         }
       }
     },
+    "Altyazı panelini gizle / göster" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hide / show subtitle panel"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altyazı panelini gizle / göster"
+          }
+        }
+      }
+    },
+    "Medya oynatıcı" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Media player"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Medya oynatıcı"
+          }
+        }
+      }
+    },
+    "Video açıldığında otomatik oynat" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto-play when a video is opened"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video açıldığında otomatik oynat"
+          }
+        }
+      }
+    },
+    "Bir video seçildiğinde veya çift tıklanarak açıldığında oynatmayı hemen başlatır." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starts playback immediately when a video is selected or opened by double-clicking."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bir video seçildiğinde veya çift tıklanarak açıldığında oynatmayı hemen başlatır."
+          }
+        }
+      }
+    },
+    "Varsayılan video oynatıcı ve dosya ilişkilendirme" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Default video player and file associations"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Varsayılan video oynatıcı ve dosya ilişkilendirme"
+          }
+        }
+      }
+    },
+    "Videolara çift tıkladığında doğrudan Subtitle Adder ile açılması için dosya türlerini Windows'a kaydeder." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registers file types with Windows so double-clicking videos opens them directly in Subtitle Adder."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Videolara çift tıkladığında doğrudan Subtitle Adder ile açılması için dosya türlerini Windows'a kaydeder."
+          }
+        }
+      }
+    },
+    "Dosya türlerini kaydet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Register file types"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dosya türlerini kaydet"
+          }
+        }
+      }
+    },
+    "Kaydı kaldır" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unregister"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kaydı kaldır"
+          }
+        }
+      }
+    },
+    "Varsayılan uygulamalar…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Default apps…"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Varsayılan uygulamalar…"
+          }
+        }
+      }
+    },
+    "Dosya türü ilişkilendirmeleri kaldırıldı." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File type associations removed."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dosya türü ilişkilendirmeleri kaldırıldı."
+          }
+        }
+      }
+    },
+    "Video ve altyazı dosya türleri Windows'a kaydedildi. “Varsayılan uygulamalar…”dan Subtitle Adder'ı varsayılan oynatıcı yapabilirsin." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video and subtitle file types registered with Windows. You can set Subtitle Adder as the default player in “Default apps…”."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video ve altyazı dosya türleri Windows'a kaydedildi. “Varsayılan uygulamalar…”dan Subtitle Adder'ı varsayılan oynatıcı yapabilirsin."
+          }
+        }
+      }
+    },
     "Tam ekran" : {
       "localizations" : {
         "en" : {

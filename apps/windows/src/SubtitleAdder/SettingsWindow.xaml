@@ -257,6 +257,51 @@
                             </Grid>
                         </Border>
 
+                        <TextBlock loc:Localize.Text="Medya oynatıcı" Style="{StaticResource SectionHeaderStyle}" />
+                        <Border Style="{StaticResource CardStyle}">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <Grid ColumnSpacing="16" VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xE768;" FontSize="18" />
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock loc:Localize.Text="Video açıldığında otomatik oynat" Style="{StaticResource CardTitleStyle}" />
+                                        <TextBlock loc:Localize.Text="Bir video seçildiğinde veya çift tıklanarak açıldığında oynatmayı hemen başlatır."
+                                                   Style="{StaticResource SecondaryTextStyle}" />
+                                    </StackPanel>
+                                </Grid>
+                                <ToggleSwitch x:Name="AutoPlaySwitch" Grid.Column="1" MinWidth="0" Toggled="AutoPlaySwitch_Toggled"
+                                              OnContent="" OffContent="" loc:Localize.AutomationName="Video açıldığında otomatik oynat" />
+                            </Grid>
+                        </Border>
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel Spacing="10">
+                                <Grid ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <Grid ColumnSpacing="16" VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                        <FontIcon Glyph="&#xE714;" FontSize="18" />
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock loc:Localize.Text="Varsayılan video oynatıcı ve dosya ilişkilendirme" Style="{StaticResource CardTitleStyle}" />
+                                            <TextBlock loc:Localize.Text="Videolara çift tıkladığında doğrudan Subtitle Adder ile açılması için dosya türlerini Windows'a kaydeder."
+                                                       Style="{StaticResource SecondaryTextStyle}" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                        <Button x:Name="RegisterFileTypesButton" Click="RegisterFileTypesButton_Click" VerticalAlignment="Center"
+                                                loc:Localize.AutomationName="Dosya türlerini kaydet">
+                                            <TextBlock x:Name="RegisterFileTypesLabel" loc:Localize.Text="Dosya türlerini kaydet" />
+                                        </Button>
+                                        <Button x:Name="OpenDefaultAppsButton" Click="OpenDefaultAppsButton_Click" VerticalAlignment="Center"
+                                                loc:Localize.AutomationName="Varsayılan uygulamalar…">
+                                            <TextBlock loc:Localize.Text="Varsayılan uygulamalar…" />
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+                                <InfoBar x:Name="FileAssociationBar" IsOpen="False" IsClosable="True" Margin="34,0,0,0" />
+                            </StackPanel>
+                        </Border>
+
                         <TextBlock loc:Localize.Text="Gizlilik" Style="{StaticResource SectionHeaderStyle}" />
                         <Border Style="{StaticResource CardStyle}">
                             <Grid ColumnSpacing="16">

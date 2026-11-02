@@ -123,6 +123,7 @@ public sealed partial class SettingsWindow : Window
         _syncing = true;
         DiarizeSwitch.IsOn = _vm.Diarize;
         OfflineSwitch.IsOn = _vm.OfflineMode;
+        AutoPlaySwitch.IsOn = _vm.AutoPlayVideo;
         ExternalLlmSwitch.IsOn = _vm.ExternalLlmEnabled;
         if (ExternalLlmUrlBox.Text != _vm.ExternalLlmUrl) ExternalLlmUrlBox.Text = _vm.ExternalLlmUrl;
         ExternalLlmAsyncSwitch.IsOn = _vm.ExternalLlmAsync;
@@ -162,6 +163,7 @@ public sealed partial class SettingsWindow : Window
         ColorSwatch.Background = new SolidColorBrush(Ui.Color(style.TextColor));
         ColorHex.Text = style.TextHex.ToUpperInvariant();
         UpdatePreview();
+        UpdateFileAssociationStatus();
         if (refill && _freedMB is { } freed && FreedBar.IsOpen) FreedBar.Message = FreedText(freed);
         if (refill) UpdateModels(force: true);
     }
@@ -257,6 +259,66 @@ public sealed partial class SettingsWindow : Window
     {
         if (_syncing) return;
         _vm.OfflineMode = OfflineSwitch.IsOn;
+    }
+
+    private void AutoPlaySwitch_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_syncing) return;
+        _vm.AutoPlayVideo = AutoPlaySwitch.IsOn;
+    }
+
+    private void UpdateFileAssociationStatus()
+    {
+        var registered = FileAssociationRegistrar.IsRegistered();
+        RegisterFileTypesLabel.Text = registered ? L("Kaydı kaldır") : L("Dosya türlerini kaydet");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(RegisterFileTypesButton, RegisterFileTypesLabel.Text);
+    }
+
+    private void RegisterFileTypesButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (FileAssociationRegistrar.IsRegistered())
+            {
+                FileAssociationRegistrar.Unregister();
+                App.Current.Settings.SetBool("fileAssociationsDisabled", true);
+                FileAssociationBar.Severity = InfoBarSeverity.Informational;
+                FileAssociationBar.Message = L("Dosya türü ilişkilendirmeleri kaldırıldı.");
+            }
+            else
+            {
+                FileAssociationRegistrar.Register();
+                App.Current.Settings.SetBool("fileAssociationsDisabled", false);
+                FileAssociationBar.Severity = InfoBarSeverity.Success;
+                FileAssociationBar.Message = L("Video ve altyazı dosya türleri Windows'a kaydedildi. “Varsayılan uygulamalar…”dan Subtitle Adder'ı varsayılan oynatıcı yapabilirsin.");
+            }
+            FileAssociationBar.IsOpen = true;
+            UpdateFileAssociationStatus();
+        }
+        catch (Exception error)
+        {
+            FileAssociationBar.Severity = InfoBarSeverity.Error;
+            FileAssociationBar.Message = error.Message;
+            FileAssociationBar.IsOpen = true;
+        }
+    }
+
+    private async void OpenDefaultAppsButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!FileAssociationRegistrar.IsRegistered())
+            {
+                FileAssociationRegistrar.Register();
+                App.Current.Settings.SetBool("fileAssociationsDisabled", false);
+                UpdateFileAssociationStatus();
+            }
+            await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:defaultapps"));
+        }
+        catch
+        {
+            // Ignore launcher errors on restricted shells.
+        }
     }
 
     private async void ExternalLlmSwitch_Toggled(object sender, RoutedEventArgs e)

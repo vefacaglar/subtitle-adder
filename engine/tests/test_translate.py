@@ -383,3 +383,67 @@ def test_external_llm_skips_local_model_download_and_posts_to_remote_server(monk
     assert captured_requests[0][1]["model"] == "gemma-3-27b-it"
 
 
+def test_external_llm_api_key_attaches_bearer_header_and_retries_without_chat_template_kwargs(monkeypatch):
+    monkeypatch.setenv(translate.EXTERNAL_LLM_URL_ENV_VAR, "https://opencode.ai/zen/go/v1")
+    monkeypatch.setenv(translate.EXTERNAL_LLM_MODEL_ENV_VAR, "qwen3-235b")
+    monkeypatch.setenv(translate.EXTERNAL_LLM_API_KEY_ENV_VAR, "sk-opencode-test-key-123")
+    monkeypatch.setattr(translate, "_temp_checkpoint_path", lambda *a, **kw: None)
+
+    captured_requests: list[tuple[str, dict[str, str], dict]] = []
+
+    class FakeHttpResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"choices": [{"message": {"content": "[1] Merhaba OpenCode Go!"}}]}
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        headers = {k.lower(): v for k, v in req.header_items()}
+        body = json.loads(req.data.decode("utf-8")) if req.data else {}
+        captured_requests.append((req.full_url, headers, body))
+        if "chat_template_kwargs" in body:
+            raise translate.urllib.error.HTTPError(
+                req.full_url, 400, "Bad Request: unrecognized field chat_template_kwargs", {}, None
+            )
+        return FakeHttpResponse()
+
+    monkeypatch.setattr(translate.urllib.request, "urlopen", fake_urlopen)
+
+    translator = translate.create_translator("madlad-3b")
+    result = translator.translate(
+        [Sentence(id=1, start=0.0, end=1.5, text="Hello OpenCode Go!")],
+        target="tr",
+        source="en",
+    )
+
+    assert [r.text for r in result] == ["Merhaba OpenCode Go!"]
+    assert len(captured_requests) == 2
+    assert captured_requests[0][0] == "https://opencode.ai/zen/go/v1/chat/completions"
+    assert captured_requests[0][1]["authorization"] == "Bearer sk-opencode-test-key-123"
+    assert captured_requests[0][1]["user-agent"] == "SubtitleAdder/1.0"
+    assert "chat_template_kwargs" in captured_requests[0][2]
+    assert "chat_template_kwargs" not in captured_requests[1][2]
+    assert captured_requests[1][1]["authorization"] == "Bearer sk-opencode-test-key-123"
+
+
+def test_temp_checkpoint_path_unaffected_by_external_api_key(monkeypatch):
+    sentences = [Sentence(id=1, start=0.0, end=1.5, text="Hello world")]
+    monkeypatch.setenv(translate.EXTERNAL_LLM_URL_ENV_VAR, "https://opencode.ai/zen/go/v1")
+    monkeypatch.setenv(translate.EXTERNAL_LLM_MODEL_ENV_VAR, "glm-5")
+    monkeypatch.setenv(translate.EXTERNAL_LLM_API_KEY_ENV_VAR, "sk-secret-alpha")
+    path_a = translate._temp_checkpoint_path("gemma-4-e4b", "tr", "en", sentences, "prompt")
+
+    monkeypatch.setenv(translate.EXTERNAL_LLM_API_KEY_ENV_VAR, "sk-secret-beta")
+    path_b = translate._temp_checkpoint_path("gemma-4-e4b", "tr", "en", sentences, "prompt")
+
+    assert path_a == path_b
+    assert "sk-secret" not in str(path_a)
+
+
+

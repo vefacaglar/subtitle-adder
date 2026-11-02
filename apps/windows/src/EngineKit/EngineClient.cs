@@ -270,11 +270,16 @@ public sealed class EngineClient : IEngineClient
         {
             info.Environment["SUBTITLE_ENGINE_EXTERNAL_LLM_URL"] = extUrl;
             info.Environment["SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL"] = ExternalLlmState.Shared.ActiveModel ?? "";
+            if (ExternalLlmState.Shared.ActiveApiKey is { Length: > 0 } apiKey)
+                info.Environment["SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY"] = apiKey;
+            else
+                info.Environment.Remove("SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY");
         }
         else
         {
             info.Environment.Remove("SUBTITLE_ENGINE_EXTERNAL_LLM_URL");
             info.Environment.Remove("SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL");
+            info.Environment.Remove("SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY");
         }
 
         // stderr goes to a file (drained continuously), so model download progress can't fill the pipe and hang the engine.

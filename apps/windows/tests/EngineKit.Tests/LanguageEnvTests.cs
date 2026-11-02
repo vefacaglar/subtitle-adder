@@ -185,4 +185,37 @@ public class LanguageEnvTests
         Assert.Null(UILanguages.Parse("de"));
         Assert.Equal("tr", UILanguage.Tr.Code());
     }
+
+    [Fact]
+    public async Task LaunchPassesExternalLlmApiKeyWhenEnabled()
+    {
+        var savedEnabled = ExternalLlmState.Shared.Enabled;
+        var savedUrl = ExternalLlmState.Shared.Url;
+        var savedModel = ExternalLlmState.Shared.Model;
+        var savedKey = ExternalLlmState.Shared.ApiKey;
+        try
+        {
+            var engine = Fake.Engine("drain\nout ${SUBTITLE_ENGINE_EXTERNAL_LLM_URL}|${SUBTITLE_ENGINE_EXTERNAL_LLM_MODEL}|${SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY}", UILanguage.En);
+
+            ExternalLlmState.Shared.Enabled = true;
+            ExternalLlmState.Shared.Url = "https://opencode.ai/zen/go/v1";
+            ExternalLlmState.Shared.Model = "glm-5";
+            ExternalLlmState.Shared.ApiKey = "sk-opencode-1234";
+            Assert.Equal("https://opencode.ai/zen/go/v1|glm-5|sk-opencode-1234", (await engine.RenderAsync(Sample, SubtitleFormat.Srt)).Trim());
+
+            ExternalLlmState.Shared.ApiKey = "   ";
+            Assert.Equal("https://opencode.ai/zen/go/v1|glm-5|", (await engine.RenderAsync(Sample, SubtitleFormat.Srt)).Trim());
+
+            ExternalLlmState.Shared.Enabled = false;
+            ExternalLlmState.Shared.ApiKey = "sk-opencode-1234";
+            Assert.Equal("||", (await engine.RenderAsync(Sample, SubtitleFormat.Srt)).Trim());
+        }
+        finally
+        {
+            ExternalLlmState.Shared.Enabled = savedEnabled;
+            ExternalLlmState.Shared.Url = savedUrl;
+            ExternalLlmState.Shared.Model = savedModel;
+            ExternalLlmState.Shared.ApiKey = savedKey;
+        }
+    }
 }
