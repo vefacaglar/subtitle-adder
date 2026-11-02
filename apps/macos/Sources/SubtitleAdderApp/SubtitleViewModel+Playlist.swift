@@ -2,9 +2,10 @@ import CryptoKit
 import EngineKit
 import Foundation
 
-/// The two views of the window.
+/// The views of the window, in the order of the tab switcher: the player with the subtitle editor, the local video
+/// platform, and the translation queue (the playlist).
 enum Workspace: Hashable, Sendable {
-    case editor, playlist
+    case editor, platform, playlist
 }
 
 /// One video in the batch playlist. In memory only; the source language belongs to the item, the target does not.

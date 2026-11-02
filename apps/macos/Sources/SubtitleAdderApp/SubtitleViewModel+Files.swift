@@ -75,7 +75,8 @@ extension SubtitleViewModel {
         }
         // The run owns the editor's video and lines until it ends.
         guard !isPlaylistRunning else { return }
-        if external { workspace = .editor }
+        // The platform has no player or lines of its own: what is dropped on it is opened where it can be seen.
+        if external || workspace == .platform { workspace = .editor }
         if let video = videos.first { openVideo(video) }
         if let subtitle {
             openSubtitle(subtitle, findingVideo: videos.isEmpty && (external || video == nil))

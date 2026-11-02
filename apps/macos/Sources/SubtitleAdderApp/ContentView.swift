@@ -7,7 +7,10 @@ struct ContentView: View {
     @Bindable var vm: SubtitleViewModel
     let catalog: ModelCatalog
     let explorer: FileExplorerModel
+    let platform: VideoPlatformModel
     @State private var player = PlayerModel()
+    /// A card's "Oynat" starts the video even when Settings say not to play on open.
+    @State private var forcePlay = false
     @State private var pickingVideo = false
     @State private var pickingSubtitle = false
     /// "Komple çevir" asked for a video first; the pick starts the run.
@@ -50,10 +53,14 @@ struct ContentView: View {
             )
             chrome.onShortcut = { shortcut, isRepeat in actions.perform(shortcut, isRepeat: isRepeat) }
             chrome.isPanelHidden = { vm.hideSubtitlePanel }
+            // What the platform needs from the player: where it is, and when it plays, stops, jumps or lets go.
+            platform.playbackSampler = { [player] in player.position }
+            player.onPlaybackEvent = { [platform] event in platform.handle(event) }
         }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
         .task { await catalog.load() }
         .task { await explorer.start() }
+        .task { await platform.start() }
         // The sidebar highlights the open video and keeps its folder's listing (and subtitle badge) current.
         .onChange(of: vm.video, initial: true) { _, url in Task { await explorer.sync(toVideo: url) } }
         // The toolbar's model menu lists what the active provider offers; a menu can't fetch when it opens, so the list is
@@ -70,12 +77,29 @@ struct ContentView: View {
         // A playlist run goes through many videos; the player stays empty until it is over. A video opened any other
         // way (picker, drop, Open With, a double click) plays by itself when Settings say so; opening the video that
         // is already open changes nothing, so it doesn't restart.
+        // The platform hears about it after the player has let go of the old video, so it can still report where that
+        // was. A video a playlist run opens is not one the user watched: it is never counted.
         .onChange(of: vm.video, initial: true) { _, url in
-            guard !vm.isPlaylistRunning else { return }
-            player.load(url, autoPlay: vm.autoPlayVideo)
+            let running = vm.isPlaylistRunning
+            if !running {
+                player.load(url, autoPlay: vm.autoPlayVideo || forcePlay)
+                forcePlay = false
+            }
+            platform.playerVideoChanged(to: running ? nil : url, countsAsOpen: !running)
         }
         // The end of a run only puts the editor's video back, which is not opening one: it stays paused.
-        .onChange(of: vm.isPlaylistRunning) { _, running in player.load(running ? nil : vm.video) }
+        .onChange(of: vm.isPlaylistRunning) { _, running in
+            player.load(running ? nil : vm.video)
+            platform.playerVideoChanged(to: running ? nil : vm.video, countsAsOpen: false)
+        }
+        .alert(
+            L("İşlem tamamlanamadı"),
+            isPresented: Binding(get: { platform.actionFailure != nil }, set: { if !$0 { platform.actionFailure = nil } })
+        ) {
+            Button(L("Tamam")) { platform.actionFailure = nil }
+        } message: {
+            Text(platform.actionFailure?.message ?? "")
+        }
         // Leaving the editor stops the picture; coming back leaves it as it is.
         .onChange(of: vm.workspace) { _, workspace in
             if workspace != .editor { player.pause() }
@@ -112,6 +136,7 @@ struct ContentView: View {
             }
             switch vm.workspace {
             case .editor: editor
+            case .platform: PlatformView(model: platform, play: playFromPlatform, canPlay: !vm.isPlaylistRunning)
             case .playlist: PlaylistView(vm: vm)
             }
             if !showsFullScreenPlayer {
@@ -139,8 +164,9 @@ struct ContentView: View {
 
     private var workspaceSwitcher: some View {
         Picker(L("Çalışma alanı"), selection: $vm.workspace) {
-            Text(L("Düzenleyici")).tag(Workspace.editor)
-            Text(vm.hasPlaylistItems ? L("Çalma listesi (%lld)", vm.playlist.count) : L("Çalma listesi"))
+            Text(L("Player")).tag(Workspace.editor)
+            Text(L("Platform")).tag(Workspace.platform)
+            Text(vm.hasPlaylistItems ? L("Çeviri listesi (%lld)", vm.playlist.count) : L("Çeviri listesi"))
                 .tag(Workspace.playlist)
         }
         .pickerStyle(.segmented)
@@ -202,8 +228,22 @@ struct ContentView: View {
             theaterMode: $vm.isTheaterMode,
             hideSubtitlePanel: $vm.hideSubtitlePanel,
             isFullScreen: chrome.isFullScreen,
-            toggleFullScreen: { chrome.toggleFullScreen() }
+            toggleFullScreen: { chrome.toggleFullScreen() },
+            platform: platform
         )
+    }
+
+    /// A card's "Oynat": shows the editor with the video and starts it. Nothing here waits for the profile; the view
+    /// is counted in the background once the video is open.
+    private func playFromPlatform(_ url: URL) {
+        guard !vm.isPlaylistRunning else { return }
+        vm.workspace = .editor
+        if vm.video.map(VideoPlatformModel.pathKey) == VideoPlatformModel.pathKey(url) {
+            player.play()
+        } else {
+            forcePlay = true
+            vm.openVideo(url)
+        }
     }
 
     @ToolbarContentBuilder
@@ -220,6 +260,53 @@ struct ContentView: View {
                     .help(L("Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle"))
             }
         }
+        if vm.workspace != .platform {
+            engineToolbar
+        }
+        if vm.workspace == .editor, !vm.sentences.isEmpty {
+            ToolbarItem {
+                Button(L("Çevir…"), systemImage: "translate") { vm.translate() }
+                    .labelStyle(.titleAndIcon)
+                    .disabled(vm.isWorking)
+                    .help(L("Tüm satırları seçili hedef dile yerel modelle çevir"))
+            }
+        }
+        if vm.workspace != .platform {
+            ToolbarItem {
+                translationModelMenu
+            }
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            // The playlist always saves what it translates, so the toggle only belongs to the editor.
+            if vm.workspace == .editor {
+                Toggle(L("Otomatik kaydet"), systemImage: "square.and.arrow.down", isOn: $vm.autoSaveSubtitle)
+                    .help(L("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"))
+            }
+            if vm.isWorking {
+                Button(L("Durdur"), systemImage: "stop.fill") { vm.cancel() }
+                    .labelStyle(.titleAndIcon)
+                    .help(L("Süren altyazı ya da çeviri işini durdur (⌘.)"))
+            } else if vm.workspace == .editor {
+                Button(L("Komple çevir"), systemImage: "wand.and.stars") { generateAndTranslate() }
+                    .labelStyle(.titleAndIcon)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!vm.canGenerateAndTranslate)
+                    .help(L("Altyazıyı üret, seçili dile çevir ve otomatik kaydet"))
+                Button(L("Altyazı üret"), systemImage: "captions.bubble") { vm.generate() }
+                    .labelStyle(.titleAndIcon)
+                    .disabled(vm.video == nil)
+                    .help(L("Videonun sesini metne çevirip altyazı çıkar (⌘↩)"))
+            }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            ProfileToolbarButton(model: platform) { vm.workspace = .platform }
+        }
+    }
+
+    /// The pickers for the recognition language and model, the speakers and the translation language. The platform has
+    /// no use for them.
+    @ToolbarContentBuilder
+    private var engineToolbar: some ToolbarContent {
         ToolbarItemGroup {
             Picker(L("Dil"), selection: $vm.language) {
                 ForEach(SubtitleLanguage.allCases) { language in
@@ -249,39 +336,6 @@ struct ContentView: View {
             .help(vm.translationSource == nil
                 ? L("Çeviri hedef dili. Kaynak dil bilinmiyor; NLLB için önce konuşma dilini seç.")
                 : L("Çeviri hedef dili; kaynak dille aynı olan seçilemez."))
-        }
-        if vm.workspace == .editor, !vm.sentences.isEmpty {
-            ToolbarItem {
-                Button(L("Çevir…"), systemImage: "translate") { vm.translate() }
-                    .labelStyle(.titleAndIcon)
-                    .disabled(vm.isWorking)
-                    .help(L("Tüm satırları seçili hedef dile yerel modelle çevir"))
-            }
-        }
-        ToolbarItem {
-            translationModelMenu
-        }
-        ToolbarItemGroup(placement: .primaryAction) {
-            // The playlist always saves what it translates, so the toggle only belongs to the editor.
-            if vm.workspace == .editor {
-                Toggle(L("Otomatik kaydet"), systemImage: "square.and.arrow.down", isOn: $vm.autoSaveSubtitle)
-                    .help(L("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"))
-            }
-            if vm.isWorking {
-                Button(L("Durdur"), systemImage: "stop.fill") { vm.cancel() }
-                    .labelStyle(.titleAndIcon)
-                    .help(L("Süren altyazı ya da çeviri işini durdur (⌘.)"))
-            } else if vm.workspace == .editor {
-                Button(L("Komple çevir"), systemImage: "wand.and.stars") { generateAndTranslate() }
-                    .labelStyle(.titleAndIcon)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!vm.canGenerateAndTranslate)
-                    .help(L("Altyazıyı üret, seçili dile çevir ve otomatik kaydet"))
-                Button(L("Altyazı üret"), systemImage: "captions.bubble") { vm.generate() }
-                    .labelStyle(.titleAndIcon)
-                    .disabled(vm.video == nil)
-                    .help(L("Videonun sesini metne çevirip altyazı çıkar (⌘↩)"))
-            }
         }
     }
 
@@ -487,7 +541,7 @@ struct ContentView: View {
                 }
                 Text(vm.asyncStatusText)
             case .idle:
-                Text(vm.workspace == .playlist || vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
+                Text(vm.workspace != .editor || vm.video == nil || !vm.sentences.isEmpty ? L("Hazır") : L("Altyazı çıkarmak için sağ üstteki “Altyazı üret”e bas (⌘↩)")).foregroundStyle(.secondary)
             case .working(let label, let fraction):
                 if let fraction {
                     ProgressView(value: fraction).frame(width: 120)
@@ -524,12 +578,14 @@ struct ContentView: View {
                     .lineLimit(1)
                     .help(L("Seçili model bu dil için listede yoktu; en doğru uygun model seçildi."))
             }
-            Picker(L("Biçim"), selection: $vm.exportFormat) {
-                ForEach(SubtitleFormat.allCases) { Text($0.rawValue.uppercased()).tag($0) }
+            if vm.workspace != .platform {
+                Picker(L("Biçim"), selection: $vm.exportFormat) {
+                    ForEach(SubtitleFormat.allCases) { Text($0.rawValue.uppercased()).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 150)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 150)
             if vm.workspace == .editor {
                 exportControls
             }

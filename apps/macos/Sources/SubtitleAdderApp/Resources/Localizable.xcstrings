@@ -2481,6 +2481,1510 @@
         }
       }
     },
+    "İşlem tamamlanamadı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İşlem tamamlanamadı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The action could not be completed"
+          }
+        }
+      }
+    },
+    "Tamam": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tamam"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        }
+      }
+    },
+    "Player": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Player"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Player"
+          }
+        }
+      }
+    },
+    "Platform": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Platform"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Platform"
+          }
+        }
+      }
+    },
+    "Çeviri listesi (%lld)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri listesi (%lld)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation queue (%lld)"
+          }
+        }
+      }
+    },
+    "Çeviri listesi": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri listesi"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation queue"
+          }
+        }
+      }
+    },
+    "Henüz izlenmedi": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Henüz izlenmedi"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not watched yet"
+          }
+        }
+      }
+    },
+    "%lld görüntüleme": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld görüntüleme"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld views"
+          }
+        }
+      }
+    },
+    "Son izleme: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Son izleme: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last watched: %@"
+          }
+        }
+      }
+    },
+    "Altyazı yok": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı yok"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No subtitle"
+          }
+        }
+      }
+    },
+    "Altyazılı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazılı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtitled"
+          }
+        }
+      }
+    },
+    "%lld yıldız": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld yıldız"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld stars"
+          }
+        }
+      }
+    },
+    "+ \"Daha Sonra İzle\" listesi oluştur ve ekle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+ \"Daha Sonra İzle\" listesi oluştur ve ekle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+ Create \"Watch Later\" list and add"
+          }
+        }
+      }
+    },
+    "+ Yeni liste oluştur ve ekle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+ Yeni liste oluştur ve ekle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+ Create new list and add"
+          }
+        }
+      }
+    },
+    "+ Listeye ekle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+ Listeye ekle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+ Add to List"
+          }
+        }
+      }
+    },
+    "Beğenildi": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beğenildi"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liked"
+          }
+        }
+      }
+    },
+    "Beğen": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Beğen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Like"
+          }
+        }
+      }
+    },
+    "Kullanıcı adı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kullanıcı adı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Username"
+          }
+        }
+      }
+    },
+    "Şifre": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Şifre"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Password"
+          }
+        }
+      }
+    },
+    "Girişi hatırla": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Girişi hatırla"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remember login"
+          }
+        }
+      }
+    },
+    "Giriş yap": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Giriş yap"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign In"
+          }
+        }
+      }
+    },
+    "Yerel Video Platformu": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yerel Video Platformu"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Video Platform"
+          }
+        }
+      }
+    },
+    "İzleme geçmişi, görüntülenme sayısı, favoriler, yıldız puanları ve özel listeleriniz yerel profilinize kaydedilir. Devam etmek için giriş yapın veya yeni profil oluşturun.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İzleme geçmişi, görüntülenme sayısı, favoriler, yıldız puanları ve özel listeleriniz yerel profilinize kaydedilir. Devam etmek için giriş yapın veya yeni profil oluşturun."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Watch history, view counts, favorites, star ratings, and custom lists are saved to your local profile. Sign in or create a new profile to continue."
+          }
+        }
+      }
+    },
+    "Profil oluştur": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil oluştur"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create profile"
+          }
+        }
+      }
+    },
+    "Profil": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profile"
+          }
+        }
+      }
+    },
+    "İzleme geçmişi, beğeni ve puanlama için giriş yapın": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İzleme geçmişi, beğeni ve puanlama için giriş yapın"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in for watch history, likes, and ratings"
+          }
+        }
+      }
+    },
+    "Profil / Giriş": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil / Giriş"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profile / Sign In"
+          }
+        }
+      }
+    },
+    "İzleme geçmişi, görüntülenme sayısı, beğeni ve yıldız puanları profilinize özel kaydedilir.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İzleme geçmişi, görüntülenme sayısı, beğeni ve yıldız puanları profilinize özel kaydedilir."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Watch history, view counts, likes, and star ratings are saved to your personal profile."
+          }
+        }
+      }
+    },
+    "Yeni profil oluştur": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yeni profil oluştur"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create new profile"
+          }
+        }
+      }
+    },
+    "Video Platformu": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video Platformu"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video Platform"
+          }
+        }
+      }
+    },
+    "Çıkış yap": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çıkış yap"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign Out"
+          }
+        }
+      }
+    },
+    "Profili sil…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profili sil…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete profile…"
+          }
+        }
+      }
+    },
+    "“%@” profilini silmek için şifresini girin.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” profilini silmek için şifresini girin."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter the password of “%@” to delete the profile."
+          }
+        }
+      }
+    },
+    "Devam": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Devam"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue"
+          }
+        }
+      }
+    },
+    "“%@” profili ve içindeki izleme geçmişi, favoriler, puanlar ve listeler kalıcı olarak silinsin mi? Bu işlem geri alınamaz.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” profili ve içindeki izleme geçmişi, favoriler, puanlar ve listeler kalıcı olarak silinsin mi? Bu işlem geri alınamaz."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permanently delete the profile “%@” with its watch history, favorites, ratings and lists? This cannot be undone."
+          }
+        }
+      }
+    },
+    "Profili sil": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profili sil"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete profile"
+          }
+        }
+      }
+    },
+    "%lld izlenen · %lld beğenilen": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld izlenen · %lld beğenilen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld watched · %lld liked"
+          }
+        }
+      }
+    },
+    "İzleme geçmişi için giriş yapın": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İzleme geçmişi için giriş yapın"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in for watch history"
+          }
+        }
+      }
+    },
+    "Daha Sonra İzle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Daha Sonra İzle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Watch Later"
+          }
+        }
+      }
+    },
+    "Listem": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listem"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "My List"
+          }
+        }
+      }
+    },
+    "Lütfen bir kullanıcı adı girin.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lütfen bir kullanıcı adı girin."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please enter a username."
+          }
+        }
+      }
+    },
+    "Lütfen bir şifre belirleyin.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lütfen bir şifre belirleyin."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please enter a password."
+          }
+        }
+      }
+    },
+    "Kullanıcı adı ve şifre gereklidir.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kullanıcı adı ve şifre gereklidir."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Username and password are required."
+          }
+        }
+      }
+    },
+    "Bu kullanıcı adı zaten kayıtlı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu kullanıcı adı zaten kayıtlı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This username is already registered."
+          }
+        }
+      }
+    },
+    "Kullanıcı adı veya şifre hatalı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kullanıcı adı veya şifre hatalı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Incorrect username or password."
+          }
+        }
+      }
+    },
+    "Şifre doğru, ancak profilin şifreli verisi okunamadı. Dosya değiştirilmedi; başka bir sürümle açmayı deneyin.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Şifre doğru, ancak profilin şifreli verisi okunamadı. Dosya değiştirilmedi; başka bir sürümle açmayı deneyin."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The password is right, but the profile's encrypted data could not be read. The file was left unchanged; try opening it with another version."
+          }
+        }
+      }
+    },
+    "Lütfen bir liste adı girin.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lütfen bir liste adı girin."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please enter a list name."
+          }
+        }
+      }
+    },
+    "Profil dosyası okunamıyor; değişiklikler kaydedilmedi.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil dosyası okunamıyor; değişiklikler kaydedilmedi."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The profile file can't be read; changes weren't saved."
+          }
+        }
+      }
+    },
+    "Bu adda bir liste zaten var.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu adda bir liste zaten var."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A list with this name already exists."
+          }
+        }
+      }
+    },
+    "Profil dosyası şu an başka bir işlem tarafından kullanılıyor. Biraz sonra tekrar deneyin.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil dosyası şu an başka bir işlem tarafından kullanılıyor. Biraz sonra tekrar deneyin."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The profile file is being used by another process right now. Try again in a moment."
+          }
+        }
+      }
+    },
+    "Profil dosyası yazılamadı (hata %lld).": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil dosyası yazılamadı (hata %lld)."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The profile file could not be written (error %lld)."
+          }
+        }
+      }
+    },
+    "Profil dosyası daha yeni bir sürümle oluşturulmuş (sürüm %lld); bu sürüm ona dokunmaz.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil dosyası daha yeni bir sürümle oluşturulmuş (sürüm %lld); bu sürüm ona dokunmaz."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The profile file was created by a newer version (version %lld); this version leaves it alone."
+          }
+        }
+      }
+    },
+    "Profil dosyası bozuk ve yedeği alınamadığı için üzerine yazılmadı.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil dosyası bozuk ve yedeği alınamadığı için üzerine yazılmadı."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The profile file is damaged and could not be backed up, so it was not overwritten."
+          }
+        }
+      }
+    },
+    "Şifreleme işlemi başarısız oldu.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Şifreleme işlemi başarısız oldu."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The encryption failed."
+          }
+        }
+      }
+    },
+    "İzleme geçmişi temizlensin mi?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İzleme geçmişi temizlensin mi?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear the watch history?"
+          }
+        }
+      }
+    },
+    "Geçmişi temizle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geçmişi temizle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear History"
+          }
+        }
+      }
+    },
+    "Favoriler, puanlar ve listeler korunur; görüntülenme sayıları ve kaldığın yerler silinir.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favoriler, puanlar ve listeler korunur; görüntülenme sayıları ve kaldığın yerler silinir."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favorites, ratings and lists are kept; view counts and resume positions are removed."
+          }
+        }
+      }
+    },
+    "“%@” listesi silinsin mi?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” listesi silinsin mi?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete the list “%@”?"
+          }
+        }
+      }
+    },
+    "Listedeki videolar silinmez; yalnızca liste kaldırılır.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listedeki videolar silinmez; yalnızca liste kaldırılır."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The videos in the list are not deleted; only the list is removed."
+          }
+        }
+      }
+    },
+    "Aramayı temizle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aramayı temizle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear search"
+          }
+        }
+      }
+    },
+    "Ara": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ara"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search"
+          }
+        }
+      }
+    },
+    "İndekslenen tüm videolarda ara (yazıp Enter'a basın)…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İndekslenen tüm videolarda ara (yazıp Enter'a basın)…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search all indexed videos (type and press Enter)…"
+          }
+        }
+      }
+    },
+    "Bu listede ara (yazıp Enter'a basın)…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu listede ara (yazıp Enter'a basın)…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search this list (type and press Enter)…"
+          }
+        }
+      }
+    },
+    "Giriş yap / Profil oluştur": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Giriş yap / Profil oluştur"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign In / Create Profile"
+          }
+        }
+      }
+    },
+    "Keşfet": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keşfet"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Explore"
+          }
+        }
+      }
+    },
+    "İzleme geçmişi": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İzleme geçmişi"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Watch history"
+          }
+        }
+      }
+    },
+    "İzleme geçmişi (%lld)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "İzleme geçmişi (%lld)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Watch History (%lld)"
+          }
+        }
+      }
+    },
+    "Favorilerim": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favorilerim"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "My Favorites"
+          }
+        }
+      }
+    },
+    "Favorilerim (%lld)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favorilerim (%lld)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "My Favorites (%lld)"
+          }
+        }
+      }
+    },
+    "Puan verdiklerim": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puan verdiklerim"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rated Videos"
+          }
+        }
+      }
+    },
+    "Puan verdiklerim (%lld)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puan verdiklerim (%lld)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rated Videos (%lld)"
+          }
+        }
+      }
+    },
+    "En çok izlenenler": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En çok izlenenler"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Most watched"
+          }
+        }
+      }
+    },
+    "Listelerim:": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listelerim:"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "My Lists:"
+          }
+        }
+      }
+    },
+    "Henüz özel liste oluşturulmadı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Henüz özel liste oluşturulmadı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No custom lists created yet"
+          }
+        }
+      }
+    },
+    "Yeni liste adı…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yeni liste adı…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New list name…"
+          }
+        }
+      }
+    },
+    "+ Liste oluştur": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+ Liste oluştur"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+ Create List"
+          }
+        }
+      }
+    },
+    "Listeyi sil": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listeyi sil"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete list"
+          }
+        }
+      }
+    },
+    "Yeniden adlandır": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yeniden adlandır"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename"
+          }
+        }
+      }
+    },
+    "\"%@\" için eşleşen video bulunamadı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\"%@\" için eşleşen video bulunamadı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No matching videos found for \"%@\""
+          }
+        }
+      }
+    },
+    "Farklı bir anahtar kelime deneyin veya klasör gezgininden yeni bir video klasörü açın.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Farklı bir anahtar kelime deneyin veya klasör gezgininden yeni bir video klasörü açın."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try a different keyword or open a new video folder in the file explorer."
+          }
+        }
+      }
+    },
+    "Bir video açıp izlediğinizde, favorilere eklediğinizde veya puanladığınızda burada YouTube tarzı kartlar halinde listelenir.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bir video açıp izlediğinizde, favorilere eklediğinizde veya puanladığınızda burada YouTube tarzı kartlar halinde listelenir."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When you open and watch, favorite, or rate a video, it will appear here as a YouTube-style card."
+          }
+        }
+      }
+    },
+    "Henüz izleme geçmişi yok": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Henüz izleme geçmişi yok"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No watch history yet"
+          }
+        }
+      }
+    },
+    "Henüz favorilere eklenen video yok": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Henüz favorilere eklenen video yok"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No favorite videos yet"
+          }
+        }
+      }
+    },
+    "Henüz izlenen video yok": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Henüz izlenen video yok"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No watched videos yet"
+          }
+        }
+      }
+    },
+    "Henüz puanlanan video yok": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Henüz puanlanan video yok"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No rated videos yet"
+          }
+        }
+      }
+    },
+    "\"%@\" listesinde henüz video yok": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\"%@\" listesinde henüz video yok"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No videos in \"%@\" yet"
+          }
+        }
+      }
+    },
+    "Liste": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liste"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "List"
+          }
+        }
+      }
+    },
+    "Herhangi bir video kartındaki veya oynatıcıdaki \"+ Listeye ekle\" düğmesiyle bu listeye video ekleyebilirsiniz.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Herhangi bir video kartındaki veya oynatıcıdaki \"+ Listeye ekle\" düğmesiyle bu listeye video ekleyebilirsiniz."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can add videos to this list using the \"+ Add to List\" button on any video card or in the player."
+          }
+        }
+      }
+    },
+    "Gösterilecek video bulunamadı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gösterilecek video bulunamadı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No videos to display"
+          }
+        }
+      }
+    },
+    "Listeyi yeniden adlandır": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listeyi yeniden adlandır"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename list"
+          }
+        }
+      }
+    },
+    "Altyazı / çeviri dosyası mevcut": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı / çeviri dosyası mevcut"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtitle / translation file available"
+          }
+        }
+      }
+    },
+    "Favori": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favori"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favorite"
+          }
+        }
+      }
+    },
+    "Favorilerde": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favorilerde"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In Favorites"
+          }
+        }
+      }
+    },
+    "Favorilere ekle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Favorilere ekle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add to Favorites"
+          }
+        }
+      }
+    },
     "Klasör okunamadı": {
       "localizations": {
         "tr": {
