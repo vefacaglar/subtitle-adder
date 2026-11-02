@@ -20,7 +20,16 @@ extension SubtitleViewModel {
     /// know, or any id before the catalog has been loaded, are left to the engine, which reports a missing model itself.
     func blockedOffline(_ modelIDs: [String], retry: @escaping @MainActor () -> Void) -> Bool {
         offlineRetry = nil
-        guard offlineMode, catalog.hasLoaded else { return false }
+        guard offlineMode else { return false }
+        // A job that translates (its list carries the translation model) would send the text to the internet.
+        if modelIDs.contains(translationModel), let provider = activeCloudProviderName {
+            status = .failed(LocalizedMessage("\(Self.offlineCloudPrefix)\(provider)") {
+                L("Çevrimdışı mod açık: çeviri internetteki bir sağlayıcıya (%@) gönderilemez. Çevrimdışı modu kapat ya da yerel bir model veya sunucu seç.", provider)
+            })
+            offlineRetry = retry
+            return true
+        }
+        guard catalog.hasLoaded else { return false }
         let translationIDs = Set(catalog.translationModels.map(\.id))
         var missing: [String] = []
         for id in modelIDs where !missing.contains(id) {
@@ -39,6 +48,22 @@ extension SubtitleViewModel {
         offlineRetry = retry
         return true
     }
+
+    /// Title of the status-bar action that resolves the offline block: download the missing model, or send the text
+    /// to the cloud provider.
+    var offlineRetryTitle: String {
+        if case .failed(let message) = status, message.id.hasPrefix(Self.offlineCloudPrefix) {
+            return L("Çevrimdışı modu kapat ve çevir")
+        }
+        return L("Çevrimdışı modu kapat ve indir")
+    }
+
+    /// Whether offline mode keeps the app from contacting `url` (anything outside the local network).
+    func offlineBlocksServer(_ url: String) -> Bool {
+        offlineMode && !ExternalLLM(url: url).isOnLocalNetwork
+    }
+
+    private static let offlineCloudPrefix = "offline-cloud:"
 
     /// Turns offline mode off (persisted) and runs the blocked job again, which downloads the missing model.
     func goOnlineAndRetry() {

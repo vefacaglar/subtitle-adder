@@ -87,8 +87,8 @@ private struct GeneralSettingsTab: View {
                 Text(L("Gizlilik"))
             } footer: {
                 if let provider = vm.activeCloudProviderName {
-                    // A cloud provider gets the text whatever this switch says; only the audio is never sent.
-                    Text(L("Açıkken eksik modeller indirilmez. Ses hiçbir durumda dışarı gönderilmez; ancak etkin çeviri sağlayıcısı (%@) bir bulut hizmeti olduğundan çevrilecek metin, çevrimdışı modda bile ona gönderilir.", provider))
+                    // Offline mode blocks the cloud provider too; only a LAN server stays reachable.
+                    Text(L("Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez; bulut çeviri sağlayıcısı (%@) da kullanılmaz. Kapalıyken çevrilecek metin bu sağlayıcıya gönderilir. Ses hiçbir durumda dışarı gönderilmez.", provider))
                 } else {
                     Text(L("Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez. Ses ve metin hiçbir durumda dışarı gönderilmez."))
                 }

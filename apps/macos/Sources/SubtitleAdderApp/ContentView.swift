@@ -450,7 +450,7 @@ struct ContentView: View {
                     .foregroundStyle(.red)
                     .lineLimit(2)
                 if vm.canGoOnlineAndRetry {
-                    Button(L("Çevrimdışı modu kapat ve indir")) { vm.goOnlineAndRetry() }
+                    Button(vm.offlineRetryTitle) { vm.goOnlineAndRetry() }
                 }
             }
             if let notice = vm.playbackNotice(player.failureMessage) {

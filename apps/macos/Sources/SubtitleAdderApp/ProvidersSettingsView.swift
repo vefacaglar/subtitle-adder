@@ -35,7 +35,7 @@ struct TranslationSettingsTab: View {
             } header: {
                 Text(L("Çeviri sağlayıcıları ve API anahtarları"))
             } footer: {
-                Text(L("Bulut sağlayıcıları etkinken çevrilecek metin internet üzerinden o sağlayıcıya gönderilir; ses ve video hiçbir durumda gönderilmez. Yerel modellerde ve yerel ağdaki sunucularda metin internete çıkmaz."))
+                Text(L("Bulut sağlayıcıları etkinken çevrilecek metin internet üzerinden o sağlayıcıya gönderilir; ses ve video hiçbir durumda gönderilmez. Yerel modellerde ve yerel ağdaki sunucularda metin internete çıkmaz. Çevrimdışı mod açıkken bulut sağlayıcıları kullanılmaz."))
             }
         }
         .formStyle(.grouped)

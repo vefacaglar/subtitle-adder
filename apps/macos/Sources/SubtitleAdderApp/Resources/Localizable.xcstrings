@@ -3409,6 +3409,86 @@
         }
       }
     },
+    "Çevrimdışı modu kapat ve çevir": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çevrimdışı modu kapat ve çevir"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn off offline mode and translate"
+          }
+        }
+      }
+    },
+    "Çevrimdışı mod açık: çeviri internetteki bir sağlayıcıya (%@) gönderilemez. Çevrimdışı modu kapat ya da yerel bir model veya sunucu seç.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çevrimdışı mod açık: çeviri internetteki bir sağlayıcıya (%@) gönderilemez. Çevrimdışı modu kapat ya da yerel bir model veya sunucu seç."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline mode is on: translation can't be sent to an internet provider (%@). Turn offline mode off or choose a local model or server."
+          }
+        }
+      }
+    },
+    "Çevrimdışı mod açık: internetteki sağlayıcılara bağlanılmaz.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çevrimdışı mod açık: internetteki sağlayıcılara bağlanılmaz."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Offline mode is on: internet providers aren't contacted."
+          }
+        }
+      }
+    },
+    "Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez; bulut çeviri sağlayıcısı (%@) da kullanılmaz. Kapalıyken çevrilecek metin bu sağlayıcıya gönderilir. Ses hiçbir durumda dışarı gönderilmez.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez; bulut çeviri sağlayıcısı (%@) da kullanılmaz. Kapalıyken çevrilecek metin bu sağlayıcıya gönderilir. Ses hiçbir durumda dışarı gönderilmez."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When on, the app never connects to the internet and missing models aren't downloaded; the cloud translation provider (%@) isn't used either. When off, the text to translate is sent to this provider. Audio is never sent out."
+          }
+        }
+      }
+    },
+    "Bulut sağlayıcıları etkinken çevrilecek metin internet üzerinden o sağlayıcıya gönderilir; ses ve video hiçbir durumda gönderilmez. Yerel modellerde ve yerel ağdaki sunucularda metin internete çıkmaz. Çevrimdışı mod açıkken bulut sağlayıcıları kullanılmaz.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bulut sağlayıcıları etkinken çevrilecek metin internet üzerinden o sağlayıcıya gönderilir; ses ve video hiçbir durumda gönderilmez. Yerel modellerde ve yerel ağdaki sunucularda metin internete çıkmaz. Çevrimdışı mod açıkken bulut sağlayıcıları kullanılmaz."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "With a cloud provider active, the text to translate is sent to that provider over the internet; audio and video are never sent. With local models and servers on your network the text doesn't leave it. Cloud providers aren't used while offline mode is on."
+          }
+        }
+      }
+    },
     "%@ indirilmemiş. Çevrimdışı mod açıkken model indirilemez.": {
       "localizations": {
         "tr": {
@@ -3793,22 +3873,6 @@
         }
       }
     },
-    "Bulut sağlayıcıları etkinken çevrilecek metin internet üzerinden o sağlayıcıya gönderilir; ses ve video hiçbir durumda gönderilmez. Yerel modellerde ve yerel ağdaki sunucularda metin internete çıkmaz.": {
-      "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bulut sağlayıcıları etkinken çevrilecek metin internet üzerinden o sağlayıcıya gönderilir; ses ve video hiçbir durumda gönderilmez. Yerel modellerde ve yerel ağdaki sunucularda metin internete çıkmaz."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "While a cloud provider is active, the text to translate is sent to that provider over the internet; audio and video are never sent. With local models and servers on your local network, the text does not go out to the internet."
-          }
-        }
-      }
-    },
     "%@ bir bulut hizmeti: çevrilecek metin ona gönderilir. Ses ve video gönderilmez.": {
       "localizations": {
         "tr": {
@@ -3821,22 +3885,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ is a cloud service: the text to translate is sent to it. Audio and video are not sent."
-          }
-        }
-      }
-    },
-    "Açıkken eksik modeller indirilmez. Ses hiçbir durumda dışarı gönderilmez; ancak etkin çeviri sağlayıcısı (%@) bir bulut hizmeti olduğundan çevrilecek metin, çevrimdışı modda bile ona gönderilir.": {
-      "localizations": {
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Açıkken eksik modeller indirilmez. Ses hiçbir durumda dışarı gönderilmez; ancak etkin çeviri sağlayıcısı (%@) bir bulut hizmeti olduğundan çevrilecek metin, çevrimdışı modda bile ona gönderilir."
-          }
-        },
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When on, missing models are not downloaded. Audio is never sent anywhere; however, because the active translation provider (%@) is a cloud service, the text to translate is sent to it, even in offline mode."
           }
         }
       }

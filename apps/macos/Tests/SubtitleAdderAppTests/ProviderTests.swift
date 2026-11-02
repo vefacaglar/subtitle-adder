@@ -264,6 +264,47 @@ import Testing
         #expect(vm.activeCloudProviderName == nil)
     }
 
+    @Test func offlineModeBlocksTranslatingWithACloudProviderButNotWithALANServer() {
+        let env = Env()
+        let (vm, _) = makeModel(env)
+        vm.addProvider(openAI(), key: "sk-1")
+        vm.offlineMode = true
+        var retried = false
+        #expect(vm.blockedOffline([vm.model, vm.translationModel]) { retried = true })
+        guard case .failed(let message) = vm.status else { Issue.record("not blocked"); return }
+        #expect(message.text.contains("OpenAI"))
+        #expect(vm.offlineRetryTitle == "Çevrimdışı modu kapat ve çevir")
+        vm.goOnlineAndRetry()
+        #expect(retried)
+        #expect(!vm.offlineMode)
+        // A job that doesn't translate never reaches the provider.
+        vm.offlineMode = true
+        #expect(!vm.blockedOffline([vm.model]) {})
+        vm.addProvider(lan(), key: "")
+        #expect(!vm.blockedOffline([vm.model, vm.translationModel]) {})
+    }
+
+    @Test func offlineModeSkipsConnectionTestsOfCloudProviders() async {
+        let env = Env()
+        let requests = Requests()
+        let (vm, _) = makeModel(env, fetch: { request in
+            requests.add(request)
+            return (Self.modelsBody(["gemma-3"]), 200)
+        })
+        let cloud = vm.addProvider(openAI(model: ""), key: "sk-live").profile
+        vm.offlineMode = true
+        await vm.testConnection(of: cloud.id)
+        await vm.refreshActiveProviderModelsIfNeeded()
+        let draft = await vm.testConnection(of: ProviderDraft(editing: cloud, key: "sk-live"))
+        #expect(requests.all.isEmpty)
+        #expect(vm.providerNotices[cloud.id]?.isError == true)
+        #expect(draft.notice?.isError == true)
+        // A server on the local network is still tested.
+        let local = vm.addProvider(lan(), key: "").profile
+        await vm.testConnection(of: local.id)
+        #expect(requests.all.count == 1)
+    }
+
     // MARK: - Saving
 
     @Test func aRefusedKeychainWriteIsReported() {

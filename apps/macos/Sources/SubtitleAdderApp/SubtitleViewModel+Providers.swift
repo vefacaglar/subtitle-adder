@@ -138,6 +138,11 @@ extension SubtitleViewModel {
     func testConnection(of id: UUID) async {
         guard let provider = providerStore.providers.first(where: { $0.id == id }) else { return }
         let address = provider.baseURL
+        if offlineBlocksServer(address) {
+            forgetTests(of: id)
+            providerNotices[id] = Self.offlineNotice
+            return
+        }
         let key = providerStore.apiKey(for: id)
         let testID = UUID()
         providerTestIDs[id] = testID
@@ -163,6 +168,7 @@ extension SubtitleViewModel {
 
     /// Tests the settings in the sheet before they are saved.
     func testConnection(of draft: ProviderDraft) async -> ProviderDraftTest {
+        if offlineBlocksServer(draft.baseURL) { return ProviderDraftTest(notice: Self.offlineNotice, models: []) }
         let result = await ExternalLLMServer.testConnection(
             rawURL: draft.baseURL, apiKey: draft.apiKey, model: draft.model, presetID: draft.presetID, fetch: externalFetch
         )
@@ -173,7 +179,7 @@ extension SubtitleViewModel {
     /// is there when opened and can't fetch by itself, so this runs ahead of time (launch, switching provider).
     func refreshActiveProviderModelsIfNeeded() async {
         guard let provider = activeExternalProvider, provider.discoveredModels.isEmpty,
-              !testingProviders.contains(provider.id)
+              !testingProviders.contains(provider.id), !offlineBlocksServer(provider.baseURL)
         else { return }
         await testConnection(of: provider.id)
     }
@@ -184,6 +190,11 @@ extension SubtitleViewModel {
         testingProviders.remove(id)
         providerNotices[id] = nil
     }
+
+    /// Shown instead of testing a cloud provider while offline mode is on.
+    private static let offlineNotice = ExternalConnectionNotice(
+        message: .key("Çevrimdışı mod açık: internetteki sağlayıcılara bağlanılmaz."), isError: true
+    )
 
     /// `nil` for a cancelled test, which says nothing.
     private static func notice(for result: ExternalLLMServer.ConnectionResult) -> ExternalConnectionNotice? {
