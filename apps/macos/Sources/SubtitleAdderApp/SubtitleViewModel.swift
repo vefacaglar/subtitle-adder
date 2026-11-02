@@ -85,6 +85,13 @@ final class SubtitleViewModel {
     /// for the external LLM. Change it only through the provider methods in `SubtitleViewModel+Providers.swift`, which
     /// also hand the result to the engine launcher.
     let providerStore: TranslationProviderStore
+    /// What the app knows about each provider's API key, read off the main actor; the views and the launch settings are
+    /// made from it. See `SubtitleViewModel+ProviderKeys.swift`.
+    var providerKeys: [UUID: ProviderKey] = [:]
+    /// Counts the writes of a provider's key, so a read that was under way when the key changed is dropped.
+    @ObservationIgnored var providerKeyEpochs: [UUID: Int] = [:]
+    /// The read of every saved provider's key started at launch.
+    @ObservationIgnored var providerKeyLoad: Task<Void, Never>?
     /// Result of the last connection test per provider, shown under its row in Settings.
     var providerNotices: [UUID: ExternalConnectionNotice] = [:]
     /// Providers whose connection test is running.
@@ -247,6 +254,9 @@ final class SubtitleViewModel {
     @ObservationIgnored var playlistBackground: [Task<Void, Never>] = []
     /// Audio extraction and scheduling state of the run under way.
     @ObservationIgnored var playlistPipeline: PlaylistPipeline?
+    /// This Mac's memory in bytes; decides whether a local translation may overlap the next video's recognition (see
+    /// `localTranslationOverlapMemory`). Tests set it.
+    @ObservationIgnored var physicalMemory = ProcessInfo.processInfo.physicalMemory
 
     private(set) var video: URL?
     /// The subtitle file the lines came from (import or sidecar); where "Altyazıyı kaydet" writes when there is no video.
@@ -318,13 +328,16 @@ final class SubtitleViewModel {
         self.providerStore.migrateLegacyIfNeeded(defaults: defaults)
         reconcileModelSelection()
         reconcileTranslationTarget()
+        // The keychain is not touched here: the keys are read by a background task, which publishes the launch settings
+        // again once it has them. Until then the active provider goes along without its key.
         publishLaunchSettings()
+        startLoadingProviderKeys()
     }
 
-    /// Hands the offline and external LLM settings to the engine launcher; read at every engine launch. The active
-    /// provider's key is read from the keychain here, so this runs when something changed, not on every view update.
+    /// Hands the offline and external LLM settings to the engine launcher; read at every engine launch. Never touches
+    /// the keychain: the active provider's key comes from the cache (`providerKeys`).
     func publishLaunchSettings() {
-        launchState.settings = EngineLaunchSettings(offline: offlineMode, externalLLM: providerStore.activeExternalLLM?.llm)
+        launchState.settings = EngineLaunchSettings(offline: offlineMode, externalLLM: cachedExternalLLM())
     }
 
     var hasTranslations: Bool { !translations.isEmpty }
@@ -506,9 +519,7 @@ final class SubtitleViewModel {
         isTranslationJobRunning = false
         // Komple çevir and playlist items with an external LLM in async mode: the server translates while the Mac is
         // still transcribing. (A playlist item doesn't chain into `translate`; the run hands it off afterwards.)
-        let asyncTranslate = (thenTranslate || isPlaylistRunning) && isExternalAsyncActive
-        // Every batch of this run goes to the server it started with, even if Settings changes meanwhile.
-        let asyncEngine = pinningLaunchSettings(engine)
+        let wantsAsyncTranslate = (thenTranslate || isPlaylistRunning) && isExternalAsyncActive
         sentences = []
         translations = [:]
         translationDraft = nil
@@ -544,6 +555,16 @@ final class SubtitleViewModel {
             // However it ends (result, error, cancel), the model becomes deletable in Settings.
             defer { if jobID == id { catalog.activeModels = [] } }
             var failed = false
+            var asyncTranslate = wantsAsyncTranslate
+            var asyncEngine = engine
+            if wantsAsyncTranslate {
+                // Every batch of this run goes to the server it starts with, even if Settings changes meanwhile, and with
+                // its real key: read again now, on a background thread. A key that can't be read leaves the translation
+                // to the closing pass, which says why.
+                let problem = await prepareExternalLaunch()
+                guard jobID == id, !Task.isCancelled else { return }
+                if problem == nil { asyncEngine = pinningLaunchSettings(engine) } else { asyncTranslate = false }
+            }
             // With diarization, `downloading_model` can run twice back to back; the tracker tells which model it is.
             var downloadPhases = tracker
             do {

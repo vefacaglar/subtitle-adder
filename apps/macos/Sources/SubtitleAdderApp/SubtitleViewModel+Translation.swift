@@ -121,7 +121,17 @@ extension SubtitleViewModel {
                     try await translationGate.acquire()
                     defer { translationGate.release() }
                     guard jobID == id, !Task.isCancelled else { return }
-                    for try await event in engine.translate(contextualRequest, to: target, from: source, model: model) {
+                    // The provider's key is read again now, on a background thread, and a key that exists but can't be
+                    // read stops the job here instead of sending the text without it.
+                    if let problem = await prepareExternalLaunch() {
+                        guard jobID == id, !Task.isCancelled else { return }
+                        status = .failed(problem)
+                        return
+                    }
+                    guard jobID == id, !Task.isCancelled else { return }
+                    // Launched with the settings just published, i.e. with the key that was just read.
+                    let launching = pinningLaunchSettings(engine)
+                    for try await event in launching.translate(contextualRequest, to: target, from: source, model: model) {
                         guard jobID == id, !Task.isCancelled else { return }
                         switch event {
                         case .stage(let stage, var fraction):

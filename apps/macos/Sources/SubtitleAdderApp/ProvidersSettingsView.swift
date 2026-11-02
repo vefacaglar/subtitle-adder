@@ -19,7 +19,7 @@ struct TranslationSettingsTab: View {
                 ForEach(vm.providerStore.providers) { provider in
                     ProviderRow(
                         vm: vm, provider: provider,
-                        onEdit: { editor = ProviderDraft(editing: provider, key: vm.providerStore.apiKey(for: provider.id)) },
+                        onEdit: { editor = ProviderDraft(editing: provider, key: vm.providerKey(for: provider.id)) },
                         onDelete: { pendingDeletion = provider }
                     )
                 }
@@ -150,7 +150,9 @@ private struct ProviderRow: View {
                                         .background(.quaternary, in: Capsule())
                                 }
                             }
-                            Text("\(provider.baseURL) · \(vm.providerStore.maskedKey(for: provider.id) ?? L("Anahtar yok"))")
+                            // Verbatim: an address is not a localization key. The key line comes from the cache, so
+                            // drawing the row never waits for the keychain.
+                            Text(verbatim: "\(provider.baseURL) · \(vm.providerKeyCaption(for: provider.id))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -284,9 +286,17 @@ private struct ProviderEditorSheet: View {
                     }
                 }
                 Section {
-                    SecureField(
-                        L("API anahtarı"), text: $draft.apiKey, prompt: Text(L("sk-... (Yerel ağ için boş bırakılabilir)"))
-                    )
+                    SecureField(L("API anahtarı"), text: $draft.apiKey, prompt: Text(keyPrompt))
+                    if let note = storedKeyNote {
+                        HStack(spacing: 8) {
+                            Text(note).font(.caption).foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            if draft.canRemoveStoredKey {
+                                Button(L("Kayıtlı anahtarı sil")) { draft.removeStoredKey() }
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
                     caption(L("Anahtar yalnızca bu Mac'in Anahtar Zinciri'nde saklanır."))
                     HStack(spacing: 4) {
                         TextField(
@@ -341,6 +351,13 @@ private struct ProviderEditorSheet: View {
             .padding(12)
         }
         .frame(width: 520, height: 500)
+        // The sheet opens from the cache; a key the keychain hasn't answered for (or refused) is asked again in the
+        // background, never on the main thread.
+        .task {
+            guard !draft.isNew, !draft.storedKey.isSettled else { return }
+            let key = await vm.providerKeyForUse(draft.id)
+            draft.setStoredKey(key)
+        }
         .onDisappear { testTask?.cancel() }
     }
 
@@ -348,6 +365,31 @@ private struct ProviderEditorSheet: View {
         Text(text)
             .font(.caption)
             .foregroundStyle(.secondary)
+    }
+
+    /// The key field starts empty for an existing provider: the stored key is not copied into it (and not shown), and
+    /// stays as it is until something is typed or "Kayıtlı anahtarı sil" is pressed.
+    private var keyPrompt: String {
+        if !draft.isNew {
+            switch draft.storedKey {
+            case .present(let key): return L("Kayıtlı anahtar korunur: %@", TranslationProviderStore.mask(key) ?? "")
+            case .loading: return L("Anahtar okunuyor…")
+            case .unreadable: return L("Anahtar okunamadı; boş bırakırsan korunur")
+            case .absent: break
+            }
+        }
+        return L("sk-... (Yerel ağ için boş bırakılabilir)")
+    }
+
+    private var storedKeyNote: String? {
+        guard !draft.isNew else { return nil }
+        if draft.removesStoredKey { return L("Kayıtlı anahtar kaydedilince silinecek.") }
+        switch draft.storedKey {
+        case .present: return draft.keyEdited ? nil : L("Alan boş bırakılırsa kayıtlı anahtar korunur.")
+        case .unreadable:
+            return draft.keyEdited ? nil : L("Anahtar Zinciri'ndeki anahtar okunamadı. Alan boş bırakılırsa silinmez.")
+        case .loading, .absent: return nil
+        }
     }
 
     /// Picking a provider type refills the name, address and models.
@@ -371,7 +413,7 @@ private struct ProviderEditorSheet: View {
             guard !Task.isCancelled else { return }
             isTesting = false
             // Typing another address or key meanwhile makes the answer about something else.
-            guard let answer = result.notice, draft.baseURL == tested.baseURL, draft.apiKey == tested.apiKey else { return }
+            guard let answer = result.notice, draft.baseURL == tested.baseURL, draft.effectiveKey == tested.effectiveKey else { return }
             notice = answer
             guard !result.models.isEmpty else { return }
             draft.discoveredModels = result.models
@@ -388,7 +430,8 @@ private struct ProviderEditorSheet: View {
             // The provider exists now; saving again (after a refused key) updates it.
             draft.isNew = false
         } else {
-            stored = vm.updateProvider(draft.profile, key: draft.apiKey)?.keyStored ?? true
+            // `nil` while the key field is untouched: the stored key stays, even one that could not be read.
+            stored = vm.updateProvider(draft.profile, key: draft.keyToSave)?.keyStored ?? true
         }
         keyNotStored = !stored
         if stored { dismiss() }

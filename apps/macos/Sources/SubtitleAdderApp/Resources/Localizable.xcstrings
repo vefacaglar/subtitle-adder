@@ -81,6 +81,22 @@
         }
       }
     },
+    "%@ için API anahtarı Anahtar Zinciri'nden okunamadı. Erişime izin verip yeniden dene.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ için API anahtarı Anahtar Zinciri'nden okunamadı. Erişime izin verip yeniden dene."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API key for %@ could not be read from the Keychain. Allow access and try again."
+          }
+        }
+      }
+    },
     "%@ silindi; dosyalarını başka bir model de kullandığı için yer açılmadı.": {
       "localizations": {
         "tr": {
@@ -193,6 +209,22 @@
         }
       }
     },
+    "Alan boş bırakılırsa kayıtlı anahtar korunur.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alan boş bırakılırsa kayıtlı anahtar korunur."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If left empty, the stored key is kept."
+          }
+        }
+      }
+    },
     "Altyazı modeli": {
       "localizations": {
         "tr": {
@@ -269,6 +301,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "Generating subtitles…"
+          }
+        }
+      }
+    },
+    "Anahtar okunamadı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar okunamadı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key could not be read"
+          }
+        }
+      }
+    },
+    "Anahtar okunamadı; boş bırakırsan korunur": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar okunamadı; boş bırakırsan korunur"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key could not be read; it is kept if you leave this empty"
+          }
+        }
+      }
+    },
+    "Anahtar okunuyor…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar okunuyor…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading key…"
+          }
+        }
+      }
+    },
+    "Anahtar Zinciri'ndeki anahtar okunamadı. Alan boş bırakılırsa silinmez.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar Zinciri'ndeki anahtar okunamadı. Alan boş bırakılırsa silinmez."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The key in the Keychain could not be read. It is not deleted if this is left empty."
           }
         }
       }
@@ -749,6 +845,54 @@
           "stringUnit": {
             "state": "translated",
             "value": "General"
+          }
+        }
+      }
+    },
+    "Kayıtlı anahtar kaydedilince silinecek.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı anahtar kaydedilince silinecek."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The stored key will be deleted when you save."
+          }
+        }
+      }
+    },
+    "Kayıtlı anahtar korunur: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı anahtar korunur: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stored key is kept: %@"
+          }
+        }
+      }
+    },
+    "Kayıtlı anahtarı sil": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı anahtarı sil"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete stored key"
           }
         }
       }

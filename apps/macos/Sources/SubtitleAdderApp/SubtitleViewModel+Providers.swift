@@ -74,26 +74,32 @@ extension SubtitleViewModel {
     /// Adds a provider with its key and, unless told otherwise, makes it the active one.
     @discardableResult
     func addProvider(_ profile: TranslationProviderProfile, key: String, activate: Bool = true) -> ProviderSaveResult {
-        let stored = providerStore.add(profile, key: key, setActive: activate)
+        let stored = providerStore.add(profile, setActive: activate)
+        // A new provider with a blank key has nothing in the keychain to remove.
+        let isBlank = key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let keyStored = isBlank ? true : writeKey(key, for: stored.id)
+        if isBlank { recordKeyWritten("", stored: true, for: stored.id) }
         publishLaunchSettings()
-        return ProviderSaveResult(profile: stored, keyStored: keyWasStored(key, for: stored.id))
+        return ProviderSaveResult(profile: stored, keyStored: keyStored)
     }
 
-    /// Replaces a provider's settings. `key` `nil` keeps the stored key, a string replaces it (blank removes it).
-    /// Activation is left as it is. `nil` for an unknown provider.
+    /// Replaces a provider's settings. `key` `nil` keeps the stored key (the sheet passes `nil` while its key field was
+    /// not touched), a string replaces it (blank removes it). Activation is left as it is. `nil` for an unknown provider.
     @discardableResult
     func updateProvider(_ profile: TranslationProviderProfile, key: String? = nil) -> ProviderSaveResult? {
-        guard providerStore.update(profile, key: key) else { return nil }
+        guard providerStore.update(profile) else { return nil }
+        let keyStored = key.map { writeKey($0, for: profile.id) } ?? true
         // The last test, and one still running, were about the old settings.
         forgetTests(of: profile.id)
         publishLaunchSettings()
         let stored = providerStore.providers.first { $0.id == profile.id } ?? profile
-        return ProviderSaveResult(profile: stored, keyStored: key.map { keyWasStored($0, for: profile.id) } ?? true)
+        return ProviderSaveResult(profile: stored, keyStored: keyStored)
     }
 
     /// Removes a provider and its key; when it was the active one, translation goes back to the local models.
     func removeProvider(_ id: UUID) {
         providerStore.remove(id)
+        forgetKey(of: id)
         forgetTests(of: id)
         publishLaunchSettings()
     }
@@ -124,10 +130,13 @@ extension SubtitleViewModel {
         publishLaunchSettings()
     }
 
-    /// The keychain accepted `key` for the provider (a blank key is nothing to store).
-    private func keyWasStored(_ key: String, for id: UUID) -> Bool {
-        let wanted = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        return wanted.isEmpty || providerStore.apiKey(for: id) == wanted
+    /// Stores `key` for the provider (blank removes it) and updates the cache to match. `false` when the keychain
+    /// refused a non-blank key. Writes the keychain on the calling thread: it runs on the user's Save, never at launch.
+    private func writeKey(_ key: String, for id: UUID) -> Bool {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stored = providerStore.setKey(trimmed, for: id)
+        recordKeyWritten(trimmed, stored: stored, for: id)
+        return stored
     }
 
     // MARK: - Connection tests
@@ -143,19 +152,30 @@ extension SubtitleViewModel {
             providerNotices[id] = Self.offlineNotice
             return
         }
-        let key = providerStore.apiKey(for: id)
         let testID = UUID()
         providerTestIDs[id] = testID
         testingProviders.insert(id)
+        // The key comes from the cache; one the keychain hasn't answered for yet is read on a background thread first.
+        let key = await providerKeyForUse(id)
+        guard providerTestIDs[id] == testID else { return }
+        if key == .unreadable {
+            // Testing without a key that exists would report a misleading "unauthorized".
+            providerTestIDs[id] = nil
+            testingProviders.remove(id)
+            providerNotices[id] = ExternalConnectionNotice(
+                message: Self.keyUnreadableMessage(provider.name), isError: true
+            )
+            return
+        }
         let result = await ExternalLLMServer.testConnection(
-            rawURL: address, apiKey: key, model: provider.model, presetID: provider.presetID, fetch: externalFetch
+            rawURL: address, apiKey: key.value, model: provider.model, presetID: provider.presetID, fetch: externalFetch
         )
         // A newer test, an edit or a removal made this answer obsolete.
         guard providerTestIDs[id] == testID else { return }
         providerTestIDs[id] = nil
         testingProviders.remove(id)
         guard let now = providerStore.providers.first(where: { $0.id == id }), now.baseURL == address,
-              providerStore.apiKey(for: id) == key
+              providerKey(for: id) == key
         else { return }
         // A cancelled test (the window that asked went away) didn't hear from the server: the earlier notice and list stand.
         guard let notice = Self.notice(for: result) else { return }
@@ -169,17 +189,21 @@ extension SubtitleViewModel {
     /// Tests the settings in the sheet before they are saved.
     func testConnection(of draft: ProviderDraft) async -> ProviderDraftTest {
         if offlineBlocksServer(draft.baseURL) { return ProviderDraftTest(notice: Self.offlineNotice, models: []) }
+        // An untouched key field means the stored key (from the cache, never the keychain).
         let result = await ExternalLLMServer.testConnection(
-            rawURL: draft.baseURL, apiKey: draft.apiKey, model: draft.model, presetID: draft.presetID, fetch: externalFetch
+            rawURL: draft.baseURL, apiKey: draft.effectiveKey, model: draft.model, presetID: draft.presetID, fetch: externalFetch
         )
         return ProviderDraftTest(notice: Self.notice(for: result), models: result.models)
     }
 
     /// Fills the list of the active provider's models when nothing is known about it yet; the toolbar menu shows what
-    /// is there when opened and can't fetch by itself, so this runs ahead of time (launch, switching provider).
+    /// is there when opened and can't fetch by itself, so this runs ahead of time (launch, switching provider). Only a
+    /// server on the local network is asked by itself; a cloud service is contacted on request ("Test et", "Uzaktaki
+    /// modelleri listele"), like in the Settings tab.
     func refreshActiveProviderModelsIfNeeded() async {
         guard let provider = activeExternalProvider, provider.discoveredModels.isEmpty,
-              !testingProviders.contains(provider.id), !offlineBlocksServer(provider.baseURL)
+              !sendsTextOverInternet(provider), !testingProviders.contains(provider.id),
+              !offlineBlocksServer(provider.baseURL)
         else { return }
         await testConnection(of: provider.id)
     }

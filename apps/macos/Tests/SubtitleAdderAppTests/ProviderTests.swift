@@ -177,10 +177,10 @@ import Testing
         let (vm, state) = makeModel(env)
         #expect(vm.providerStore.providers.count == 1)
         let provider = vm.providerStore.providers[0]
-        #expect(provider.presetID == "lan" && provider.baseURL == "10.0.0.2:1234" && provider.asyncTranslation)
+        #expect(provider.presetID == "lan" && provider.baseURL == "http://10.0.0.2:1234" && provider.asyncTranslation)
         #expect(vm.providerStore.activeProviderID == provider.id)
         // The launch settings are already right when the first engine process starts.
-        #expect(state.settings.externalLLM == ExternalLLM(url: "10.0.0.2:1234", model: "gemma4:e4b"))
+        #expect(state.settings.externalLLM == ExternalLLM(url: "http://10.0.0.2:1234", model: "gemma4:e4b"))
         #expect(vm.isExternalLLMActive && vm.isExternalAsyncActive)
         #expect(vm.translationModelTitle == "Harici: gemma4:e4b (Asenkron)")
 
@@ -295,7 +295,7 @@ import Testing
         vm.offlineMode = true
         await vm.testConnection(of: cloud.id)
         await vm.refreshActiveProviderModelsIfNeeded()
-        let draft = await vm.testConnection(of: ProviderDraft(editing: cloud, key: "sk-live"))
+        let draft = await vm.testConnection(of: ProviderDraft(editing: cloud, key: .present("sk-live")))
         #expect(requests.all.isEmpty)
         #expect(vm.providerNotices[cloud.id]?.isError == true)
         #expect(draft.notice?.isError == true)
@@ -384,9 +384,10 @@ import Testing
         let saved = vm.addProvider(draft.profile, key: draft.apiKey)
         #expect(saved.profile.id == draft.id && saved.profile.presetID == "deepseek")
         #expect(vm.providerStore.providers[0].discoveredModels == ["deepseek-chat", "deepseek-reasoner"])
-        // Editing opens with the stored key and the same identity.
-        let editing = ProviderDraft(editing: saved.profile, key: vm.providerStore.apiKey(for: saved.profile.id))
-        #expect(!editing.isNew && editing.id == draft.id && editing.apiKey == "sk-ds" && editing.preset.id == "deepseek")
+        // Editing opens with the same identity and knows the stored key, without copying it into the field.
+        let editing = ProviderDraft(editing: saved.profile, key: vm.providerKey(for: saved.profile.id))
+        #expect(!editing.isNew && editing.id == draft.id && editing.preset.id == "deepseek")
+        #expect(editing.storedKey == .present("sk-ds") && editing.apiKey.isEmpty && editing.keyToSave == nil)
     }
 
     // MARK: - Connection tests
