@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @Bindable var vm: SubtitleViewModel
     let catalog: ModelCatalog
+    let explorer: FileExplorerModel
     @State private var player = PlayerModel()
     @State private var pickingVideo = false
     @State private var pickingSubtitle = false
@@ -17,15 +18,12 @@ struct ContentView: View {
     @AppStorage(SettingsTab.storageKey) private var settingsTab = SettingsTab.general.rawValue
 
     var body: some View {
-        VStack(spacing: 0) {
-            workspaceSwitcher.padding(.vertical, 8)
-            Divider()
-            switch vm.workspace {
-            case .editor: editor
-            case .playlist: PlaylistView(vm: vm)
-            }
-            Divider()
-            statusBar.padding(.horizontal, 16).padding(.vertical, 10)
+        NavigationSplitView(columnVisibility: sidebarVisibility) {
+            FileExplorerSidebar(model: explorer, vm: vm)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 420)
+        } detail: {
+            workspaceContent
+                .frame(minWidth: Self.detailMinWidth)
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard !urls.isEmpty else { return false }
@@ -50,6 +48,9 @@ struct ContentView: View {
         }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
         .task { await catalog.load() }
+        .task { await explorer.start() }
+        // The sidebar highlights the open video and keeps its folder's listing (and subtitle badge) current.
+        .onChange(of: vm.video, initial: true) { _, url in Task { await explorer.sync(toVideo: url) } }
         // The toolbar's model menu lists what the active provider offers; a menu can't fetch when it opens, so the list is
         // filled ahead of time (launch, switching provider), after the window has had a moment to settle.
         .task(id: vm.providerPrefetchKey) {
@@ -85,6 +86,36 @@ struct ContentView: View {
             defaultFilename: vm.exportFilename
         ) { vm.exportFinished($0) }
     }
+
+    /// Everything right of the sidebar: the workspace switcher, the editor or the playlist, and the status bar.
+    private var workspaceContent: some View {
+        VStack(spacing: 0) {
+            workspaceSwitcher.padding(.vertical, 8)
+            Divider()
+            switch vm.workspace {
+            case .editor: editor
+            case .playlist: PlaylistView(vm: vm)
+            }
+            Divider()
+            statusBar.padding(.horizontal, 16).padding(.vertical, 10)
+        }
+    }
+
+    /// The sidebar follows the stored choice, but a full-screen window hides it without changing that choice, so it is
+    /// back when the window leaves full screen. Theater mode hides only the toolbar, not the sidebar.
+    private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { explorer.isSidebarVisible && !chrome.isFullScreen ? .all : .detailOnly },
+            set: { visibility in
+                // Dragging the divider shut or using the system toggle ends here; what full screen does is not a choice.
+                guard !chrome.isFullScreen else { return }
+                explorer.isSidebarVisible = visibility != .detailOnly
+            }
+        )
+    }
+
+    /// The player and the editor side by side need about this much (see `playerMinWidth`, `editorMinWidth`).
+    private static let detailMinWidth: CGFloat = 600
 
     private var workspaceSwitcher: some View {
         Picker(L("Çalışma alanı"), selection: $vm.workspace) {

@@ -8,6 +8,7 @@ import SwiftUI
 struct SubtitleAdderApp: App {
     @State private var catalog: ModelCatalog
     @State private var vm: SubtitleViewModel
+    @State private var explorer: FileExplorerModel
     @State private var language: AppLanguage
 
     init() {
@@ -26,6 +27,10 @@ struct SubtitleAdderApp: App {
         let model = SubtitleViewModel(catalog: catalog, providerStore: TranslationProviderStore())
         _catalog = State(initialValue: catalog)
         _vm = State(initialValue: model)
+        let explorer = FileExplorerModel()
+        _explorer = State(initialValue: explorer)
+        // A subtitle written next to a video gets its badge in the sidebar.
+        model.onSubtitleSaved = { url in Task { await explorer.subtitleSaved(at: url) } }
         // On quit, clear the scratch folder again unless a job is still running (the next launch gets it then).
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
@@ -38,14 +43,19 @@ struct SubtitleAdderApp: App {
 
     var body: some Scene {
         WindowGroup("Subtitle Adder") {
-            ContentView(vm: vm, catalog: catalog)
+            ContentView(vm: vm, catalog: catalog, explorer: explorer)
                 .frame(minWidth: 760, minHeight: 600)
                 // Opening with "Open With" from Finder / dropping on the Dock: don't open a new window, hand it to the open one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .onOpenURL { vm.openFiles([$0]) }
                 .environment(\.locale, language.effective.locale)
         }
-        .commands { LayoutCommands(vm: vm) }
+        // Room for the sidebar next to the editor and the toolbar.
+        .defaultSize(width: 1180, height: 720)
+        .commands {
+            LayoutCommands(vm: vm)
+            FileExplorerCommands(explorer: explorer)
+        }
         Settings {
             SettingsView(vm: vm, catalog: catalog, language: language)
                 .environment(\.locale, language.effective.locale)

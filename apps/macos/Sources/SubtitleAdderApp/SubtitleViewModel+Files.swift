@@ -125,6 +125,7 @@ extension SubtitleViewModel {
             return nil
         }
         savedSubtitleName = url.lastPathComponent
+        onSubtitleSaved?(url)
         if !isWorking, status != .finished { status = .finished }
         return url
     }

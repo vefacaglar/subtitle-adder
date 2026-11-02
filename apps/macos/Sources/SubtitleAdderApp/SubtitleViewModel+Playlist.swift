@@ -409,6 +409,7 @@ extension SubtitleViewModel {
             )
             return
         }
+        onSubtitleSaved?(url)
         if editorShows(item) { savedSubtitleName = name }
         updatePlaylistItem(item.id, .completed, Self.savedMessage(name), 1)
     }
