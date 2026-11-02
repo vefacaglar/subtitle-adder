@@ -3152,6 +3152,22 @@
           }
         }
       }
+    },
+    "Ses hazır · Sırada": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio ready · Queued"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ses hazır · Sırada"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

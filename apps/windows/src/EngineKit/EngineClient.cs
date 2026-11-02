@@ -73,6 +73,19 @@ public sealed class EngineClient : IEngineClient
     /// <summary>The explicit language, or the app's current UI language (<paramref name="current"/>) when none was set.</summary>
     internal UILanguage ResolvedLanguage(UILanguage? current = null) => Language ?? current ?? LanguageState.Shared.Language;
 
+    /// <summary>Arguments <see cref="ExtractAudio"/> passes; exposed for tests.</summary>
+    internal static List<string> ExtractAudioArguments(string video, string outDir) =>
+        ["extract-audio", video, "--out-dir", outDir, "--json"];
+
+    /// <summary>
+    /// Pre-extracts the 16 kHz mono WAV for <paramref name="video"/> into <paramref name="outDir"/> so a subsequent
+    /// <see cref="Transcribe"/> call can skip audio decoding; yields <see cref="EngineStage.ExtractingAudio"/> stage events
+    /// and finally <see cref="EngineEvent.Result"/> carrying the audio path.
+    /// </summary>
+    public IAsyncEnumerable<EngineEvent> ExtractAudio(
+        string video, string outDir, CancellationToken cancellationToken = default) =>
+        Stream(ExtractAudioArguments(video, outDir), null, cancellationToken);
+
     /// <summary>Arguments <see cref="Transcribe"/> passes; exposed for tests.</summary>
     internal static List<string> TranscribeArguments(string video, string outDir, TranscribeOptions options)
     {

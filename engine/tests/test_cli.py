@@ -222,3 +222,27 @@ def test_render_utf8_pipes_regardless_of_locale_encoding():
     )
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
     assert "こんにちは dünya İş" in proc.stdout.decode("utf-8")
+
+
+
+def test_extract_audio_cli_emits_stage_and_result_and_transcribe_reuses_wav(tone_video, tmp_path, capsys, monkeypatch):
+    from subtitle_engine import pipeline
+
+    code = cli.main(["extract-audio", str(tone_video), "-o", str(tmp_path), "--json"])
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+
+    assert code == 0
+    assert events[0] == {"event": "stage", "stage": "extracting_audio", "fraction": None}
+    assert events[-1]["event"] == "result"
+    wav_path = Path(events[-1]["audio"])
+    assert wav_path == tmp_path / "tone.wav"
+    assert wav_path.is_file() and wav_path.stat().st_size > 44
+    assert not list(tmp_path.glob("*.tmp.wav"))
+
+    # Subsequent transcribe on the same video and out_dir must reuse the pre-extracted WAV without calling extract_audio!
+    monkeypatch.setattr(pipeline, "extract_audio", lambda *a, **kw: pytest.fail("pre-extracted WAV must be reused"))
+    code2, events2 = run_cli(["transcribe", str(tone_video), "-o", str(tmp_path), "--json"], capsys, monkeypatch)
+    assert code2 == 0
+    assert events2[0] == {"event": "stage", "stage": "extracting_audio", "fraction": 1.0}
+    assert events2[-1]["event"] == "result"
+    assert events2[-1]["audio"] == str(wav_path)

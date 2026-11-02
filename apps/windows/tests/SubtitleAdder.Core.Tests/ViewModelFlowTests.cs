@@ -739,7 +739,10 @@ public class ViewModelTranslationTests
         {
             var videoA = Path.Combine(dirA, "ClipA.mp4");
             var videoB = Path.Combine(dirB, "ClipB.mkv");
-            var (vm, engine, _) = Make.ViewModel();
+            var engine = new PipelinedTestEngineClient { AutoCompleteExtractAudio = true };
+            var settings = new InMemorySettingsStore();
+            settings.SetBool(SubtitleViewModel.OfflineModeDefaultsKey, false);
+            var vm = new SubtitleViewModel(new ModelCatalog(engine), settings);
             vm.TranslationTarget = "tr";
 
             vm.AddToPlaylist([videoA, videoB]);
@@ -755,29 +758,28 @@ public class ViewModelTranslationTests
 
             var runTask = vm.RunPlaylistAsync();
 
-            // Video A: transcribe (pt) -> translate (to tr)
+            // Video A: transcribe (pt) -> translate (to tr) while Video B immediately starts transcribing (ja)!
             await Make.Eventually(() => engine.TranscribeCalls.Count == 1, "video A transcribe");
             Assert.Equal(videoA, engine.TranscribeCalls[0].Video);
             Assert.Equal("pt", engine.TranscribeCalls[0].Options.Language);
-            engine.Finish(Make.Result("pt", "", new Sentence(1, 0, 1, "Caralho!")));
+            engine.FinishTranscribe(0, Make.Result("pt", "", new Sentence(1, 0, 1, "Caralho!")));
 
-            await Make.Eventually(() => engine.TranslateCalls.Count == 1, "video A translate");
+            await Make.Eventually(() => engine.TranslateCalls.Count == 1 && engine.TranscribeCalls.Count == 2, "video A translate + video B transcribe");
             Assert.Equal("tr", engine.TranslateCalls[0].To);
             Assert.Equal("pt", engine.TranslateCalls[0].From);
             var reqA = engine.TranslateCalls[0].Sentences;
-            engine.Finish(new EngineEvent.Translation("tr", [new Sentence(reqA[0].Id, reqA[0].Start, reqA[0].End, "Hassiktir!")]));
+            engine.FinishTranslate(0, new EngineEvent.Translation("tr", [new Sentence(reqA[0].Id, reqA[0].Start, reqA[0].End, "Hassiktir!")]));
 
             // Video B: transcribe (ja) -> translate (to tr)
-            await Make.Eventually(() => engine.TranscribeCalls.Count == 2, "video B transcribe");
             Assert.Equal(videoB, engine.TranscribeCalls[1].Video);
             Assert.Equal("ja", engine.TranscribeCalls[1].Options.Language);
-            engine.Finish(Make.Result("ja", "", new Sentence(1, 0, 1, "こんにちは")));
+            engine.FinishTranscribe(1, Make.Result("ja", "", new Sentence(1, 0, 1, "こんにちは")));
 
             await Make.Eventually(() => engine.TranslateCalls.Count == 2, "video B translate");
             Assert.Equal("tr", engine.TranslateCalls[1].To);
             Assert.Equal("ja", engine.TranslateCalls[1].From);
             var reqB = engine.TranslateCalls[1].Sentences;
-            engine.Finish(new EngineEvent.Translation("tr", [new Sentence(reqB[0].Id, reqB[0].Start, reqB[0].End, "Merhaba")]));
+            engine.FinishTranslate(1, new EngineEvent.Translation("tr", [new Sentence(reqB[0].Id, reqB[0].Start, reqB[0].End, "Merhaba")]));
 
             await runTask;
 
@@ -910,6 +912,187 @@ public class ViewModelTranslationTests
         finally
         {
             Directory.Delete(rootDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PipelinedPlaylistOverlapsAudioExtractionTranscriptionAndTranslationAcrossVideos()
+    {
+        using var _ = new LanguageScope(UILanguage.Tr);
+        var rootDir = Path.Combine(Path.GetTempPath(), $"subtitle-adder-pipelined-{Guid.NewGuid()}");
+        Directory.CreateDirectory(rootDir);
+        try
+        {
+            var video1 = Path.Combine(rootDir, "Video1.mp4");
+            var video2 = Path.Combine(rootDir, "Video2.mp4");
+            var video3 = Path.Combine(rootDir, "Video3.mp4");
+            var video4 = Path.Combine(rootDir, "Video4.mp4");
+
+            var engine = new PipelinedTestEngineClient { AutoCompleteExtractAudio = false };
+            var settings = new InMemorySettingsStore();
+            settings.SetBool(SubtitleViewModel.OfflineModeDefaultsKey, false);
+            var vm = new SubtitleViewModel(new ModelCatalog(engine), settings);
+            vm.TranslationTarget = "tr";
+
+            vm.AddToPlaylist([video1, video2, video3, video4], defaultSourceLanguage: "en");
+            var runTask = vm.RunPlaylistAsync();
+
+            // Stage 2 starts transcribing Video 1 while Stage 1 starts lookahead audio extraction for Video 2.
+            await Make.Eventually(() => engine.TranscribeCalls.Count == 1 && engine.ExtractAudioCalls.Count == 1, "video 1 ASR + video 2 audio extract");
+            Assert.Equal(video1, engine.TranscribeCalls[0].Video);
+            Assert.Equal(video2, engine.ExtractAudioCalls[0].Video);
+
+            // Stage 1 finishes pre-extracting Video 2 -> Video 2 becomes "Ses hazır · Sırada", and Stage 1 starts Video 3!
+            engine.FinishExtractAudio(0,
+                new EngineEvent.Stage(EngineStage.ExtractingAudio, 0.5),
+                Make.Result("?", Path.Combine(rootDir, "Video2.wav")));
+            await Make.Eventually(() => vm.Playlist[1].StatusText == "Ses hazır · Sırada" && engine.ExtractAudioCalls.Count == 2, "video 2 audio ready + video 3 extract started");
+            Assert.Equal(1.0, vm.Playlist[1].Fraction);
+            Assert.Equal(video3, engine.ExtractAudioCalls[1].Video);
+
+            // Stage 1 finishes pre-extracting Video 3 while Video 1 is still transcribing.
+            engine.FinishExtractAudio(1,
+                new EngineEvent.Stage(EngineStage.ExtractingAudio, 1.0),
+                Make.Result("?", Path.Combine(rootDir, "Video3.wav")));
+            await Make.Eventually(() => vm.Playlist[2].StatusText == "Ses hazır · Sırada", "video 3 audio ready");
+
+            // Now Video 1 finishes Stage 2 (ASR):
+            // - Video 1 immediately moves to Stage 3 (Translation)
+            // - Video 2 immediately moves to Stage 2 (ASR) without waiting for Video 1's translation
+            // - Video 4 immediately starts Stage 1 (Lookahead Audio Extraction)!
+            engine.FinishTranscribe(0, Make.Result("en", "", new Sentence(1, 0, 1, "Line one")));
+            await Make.Eventually(() =>
+                engine.TranslateCalls.Count == 1 &&
+                engine.TranscribeCalls.Count == 2 &&
+                engine.ExtractAudioCalls.Count == 3,
+                "concurrent 3-stage pipeline across videos 1..4");
+
+            // Emit live progress across all 3 active hardware stages simultaneously:
+            // Video 1: Translating (50%), Video 2: Transcribing (30%), Video 3: Audio ready (100%), Video 4: Extracting audio (40%)
+            engine.TranslateCalls[0].Channel.Writer.TryWrite(new EngineEvent.Stage(EngineStage.Translating, 0.5));
+            engine.TranscribeCalls[1].Channel.Writer.TryWrite(new EngineEvent.Stage(EngineStage.Transcribing, 0.3));
+            engine.ExtractAudioCalls[2].Channel.Writer.TryWrite(new EngineEvent.Stage(EngineStage.ExtractingAudio, 0.4));
+
+            await Make.Eventually(() =>
+                vm.Playlist[0].StatusText == SubtitleViewModel.LabelText(EngineStage.Translating, 0.5, JobPurpose.Translation) &&
+                vm.Playlist[1].StatusText == SubtitleViewModel.LabelText(EngineStage.Transcribing, 0.3, JobPurpose.Transcription) &&
+                vm.Playlist[2].StatusText == "Ses hazır · Sırada" &&
+                vm.Playlist[3].StatusText == SubtitleViewModel.LabelText(EngineStage.ExtractingAudio, 0.4, JobPurpose.Transcription),
+                "all 4 playlist rows showing live concurrent stage statuses");
+
+            // Complete Video 1 translation -> Video1.srt saved while Video 2 is still transcribing!
+            var req1 = engine.TranslateCalls[0].Sentences;
+            engine.FinishTranslate(0, new EngineEvent.Translation("tr", [new Sentence(req1[0].Id, req1[0].Start, req1[0].End, "Satır bir")]));
+            await Make.Eventually(() => vm.Playlist[0].State == PlaylistItemState.Completed, "video 1 completed while video 2 still transcribing");
+            Assert.Equal("Satır bir", await File.ReadAllTextAsync(Path.Combine(rootDir, "Video1.srt")));
+
+            // Complete Video 4 audio extraction, Video 2..4 transcriptions and translations.
+            engine.FinishExtractAudio(2, Make.Result("?", Path.Combine(rootDir, "Video4.wav")));
+            engine.FinishTranscribe(1, Make.Result("en", "", new Sentence(1, 0, 1, "Line two")));
+
+            await Make.Eventually(() => engine.TranslateCalls.Count == 2 && engine.TranscribeCalls.Count == 3, "video 2 translate + video 3 transcribe");
+            var req2 = engine.TranslateCalls[1].Sentences;
+            engine.FinishTranslate(1, new EngineEvent.Translation("tr", [new Sentence(req2[0].Id, req2[0].Start, req2[0].End, "Satır iki")]));
+            engine.FinishTranscribe(2, Make.Result("en", "", new Sentence(1, 0, 1, "Line three")));
+
+            await Make.Eventually(() => engine.TranslateCalls.Count == 3 && engine.TranscribeCalls.Count == 4, "video 3 translate + video 4 transcribe");
+            var req3 = engine.TranslateCalls[2].Sentences;
+            engine.FinishTranslate(2, new EngineEvent.Translation("tr", [new Sentence(req3[0].Id, req3[0].Start, req3[0].End, "Satır üç")]));
+            engine.FinishTranscribe(3, Make.Result("en", "", new Sentence(1, 0, 1, "Line four")));
+
+            await Make.Eventually(() => engine.TranslateCalls.Count == 4, "video 4 translate");
+            var req4 = engine.TranslateCalls[3].Sentences;
+            engine.FinishTranslate(3, new EngineEvent.Translation("tr", [new Sentence(req4[0].Id, req4[0].Start, req4[0].End, "Satır dört")]));
+
+            await runTask;
+
+            Assert.All(vm.Playlist, item => Assert.Equal(PlaylistItemState.Completed, item.State));
+            Assert.Equal("4 / 4 tamamlandı", vm.PlaylistSummaryText);
+            Assert.Equal("Satır iki", await File.ReadAllTextAsync(Path.Combine(rootDir, "Video2.srt")));
+            Assert.Equal("Satır üç", await File.ReadAllTextAsync(Path.Combine(rootDir, "Video3.srt")));
+            Assert.Equal("Satır dört", await File.ReadAllTextAsync(Path.Combine(rootDir, "Video4.srt")));
+        }
+        finally
+        {
+            Directory.Delete(rootDir, recursive: true);
+        }
+    }
+}
+
+internal sealed class PipelinedTestEngineClient : IEngineClient
+{
+    public sealed record ExtractCall(string Video, string OutDir, System.Threading.Channels.Channel<EngineEvent> Channel);
+    public sealed record TranscribeStreamCall(string Video, string OutDir, TranscribeOptions Options, System.Threading.Channels.Channel<EngineEvent> Channel);
+    public sealed record TranslateStreamCall(IReadOnlyList<Sentence> Sentences, string To, string? From, string Model, System.Threading.Channels.Channel<EngineEvent> Channel);
+
+    public bool AutoCompleteExtractAudio { get; set; }
+    public List<ExtractCall> ExtractAudioCalls { get; } = [];
+    public List<TranscribeStreamCall> TranscribeCalls { get; } = [];
+    public List<TranslateStreamCall> TranslateCalls { get; } = [];
+    public IReadOnlyList<EngineModel> CatalogModels { get; set; } = ModelCatalog.FallbackModels;
+
+    public IAsyncEnumerable<EngineEvent> ExtractAudio(string video, string outDir, CancellationToken cancellationToken = default)
+    {
+        if (AutoCompleteExtractAudio) return AsyncEnumerable.Empty<EngineEvent>();
+        var ch = System.Threading.Channels.Channel.CreateUnbounded<EngineEvent>();
+        lock (ExtractAudioCalls) ExtractAudioCalls.Add(new(video, outDir, ch));
+        return ReadChannel(ch, cancellationToken);
+    }
+
+    public IAsyncEnumerable<EngineEvent> Transcribe(string video, string outDir, TranscribeOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        var ch = System.Threading.Channels.Channel.CreateUnbounded<EngineEvent>();
+        lock (TranscribeCalls) TranscribeCalls.Add(new(video, outDir, options ?? new TranscribeOptions(), ch));
+        return ReadChannel(ch, cancellationToken);
+    }
+
+    public IAsyncEnumerable<EngineEvent> Translate(IReadOnlyList<Sentence> sentences, string to, string? from = null, string model = "madlad-3b", CancellationToken cancellationToken = default)
+    {
+        var ch = System.Threading.Channels.Channel.CreateUnbounded<EngineEvent>();
+        lock (TranslateCalls) TranslateCalls.Add(new(sentences, to, from, model, ch));
+        return ReadChannel(ch, cancellationToken);
+    }
+
+    public void FinishExtractAudio(int index, params EngineEvent[] events)
+    {
+        var ch = ExtractAudioCalls[index].Channel;
+        foreach (var e in events) ch.Writer.TryWrite(e);
+        ch.Writer.TryComplete();
+    }
+
+    public void FinishTranscribe(int index, params EngineEvent[] events)
+    {
+        var ch = TranscribeCalls[index].Channel;
+        foreach (var e in events) ch.Writer.TryWrite(e);
+        ch.Writer.TryComplete();
+    }
+
+    public void FinishTranslate(int index, params EngineEvent[] events)
+    {
+        var ch = TranslateCalls[index].Channel;
+        foreach (var e in events) ch.Writer.TryWrite(e);
+        ch.Writer.TryComplete();
+    }
+
+    public Task<string> RenderAsync(IReadOnlyList<Sentence> sentences, SubtitleFormat format, CancellationToken cancellationToken = default) =>
+        Task.FromResult(string.Join("|", sentences.Select(s => s.Text)));
+
+    public Task<IReadOnlyList<EngineModel>> ModelsAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(CatalogModels);
+
+    public Task<int> DeleteModelAsync(string id, CancellationToken cancellationToken = default) =>
+        Task.FromResult(100);
+
+    private static async IAsyncEnumerable<EngineEvent> ReadChannel(
+        System.Threading.Channels.Channel<EngineEvent> channel,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        while (await channel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (channel.Reader.TryRead(out var item))
+            {
+                yield return item;
+            }
         }
     }
 }

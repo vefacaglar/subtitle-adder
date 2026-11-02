@@ -1,7 +1,9 @@
 """The whole pipeline: video -> audio -> transcript -> sentences -> subtitle files."""
+import contextlib
 import gc
 import hashlib
 import inspect
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -51,6 +53,40 @@ class PipelineResult:
     outputs: list[Path]
 
 
+def extract_video_audio(
+    video: Path,
+    out_dir: Path,
+    on_stage: StageFn = lambda stage, fraction: None,
+) -> Path:
+    """Extracts 16 kHz mono WAV audio for `video` into `out_dir`, reusing an existing WAV if present.
+
+    Writes to a PID-scoped temporary file first and atomically renames it to `<safe_stem>.wav` so a
+    concurrent or subsequent `transcribe` process never reads a partially written WAV file.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = _safe_out_stem(video, out_dir)
+    wav_path = out_dir / f"{safe_stem}.wav"
+    if wav_path.is_file() and wav_path.stat().st_size > 44:
+        on_stage("extracting_audio", 1.0)
+        return wav_path
+
+    on_stage("extracting_audio", None)
+    extract_kwargs: dict = {}
+    if "on_progress" in inspect.signature(extract_audio).parameters:
+        extract_kwargs["on_progress"] = lambda f: on_stage("extracting_audio", f)
+    tmp_path = out_dir / f"{safe_stem}.{os.getpid()}.tmp.wav"
+    try:
+        extracted = extract_audio(video, tmp_path, **extract_kwargs)
+        if tmp_path.is_file():
+            tmp_path.replace(wav_path)
+            return wav_path
+        return extracted
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def run(
     video: Path,
     transcriber_factory: Callable[[], Transcriber],
@@ -82,12 +118,10 @@ def run(
     out_dir.mkdir(parents=True, exist_ok=True)
     safe_stem = _safe_out_stem(video, out_dir)
     wav_path = out_dir / f"{safe_stem}.wav"
-
-    on_stage("extracting_audio", None)
     extract_kwargs: dict = {}
     if "on_progress" in inspect.signature(extract_audio).parameters:
         extract_kwargs["on_progress"] = lambda f: on_stage("extracting_audio", f)
-    audio = extract_audio(video, wav_path, **extract_kwargs)
+    audio = extract_video_audio(video, out_dir, on_stage=on_stage)
 
     # If a catalog model is not cached we download it here, so progress is reported
     # before transcription starts. Names outside the catalog are downloaded by faster-whisper.
