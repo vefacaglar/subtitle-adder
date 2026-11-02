@@ -22,8 +22,17 @@ final class PlayerModel {
     /// The current load should start playing as soon as its item is ready (Settings > "Video açıldığında otomatik oynat").
     @ObservationIgnored private var autoPlayWhenReady = false
 
+    /// Reports playback to the video platform: started, stopped at a position, jumped, or about to be replaced. Not
+    /// observed by any view.
+    @ObservationIgnored var onPlaybackEvent: (@MainActor (PlaybackEvent) -> Void)?
+
     private(set) var currentTime: Double = 0
-    private(set) var isPlaying = false
+    private(set) var isPlaying = false {
+        didSet {
+            guard isPlaying != oldValue else { return }
+            onPlaybackEvent?(isPlaying ? .started : .paused(position))
+        }
+    }
     private(set) var videoSize = CGSize(width: 16, height: 9)
     /// Stable identity of the line currently playing; updated only when it changes (to avoid needless redraws).
     private(set) var activeID: UUID?
@@ -82,6 +91,8 @@ final class PlayerModel {
     /// Replaces the video. With `autoPlay` playback starts once the new item is ready (never for `nil`, and not when
     /// the video turns out to be unplayable).
     func load(_ url: URL?, autoPlay: Bool = false) {
+        // Where the video being left was, before anything resets.
+        if player.currentItem != nil { onPlaybackEvent?(.leaving(position)) }
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
@@ -196,6 +207,7 @@ final class PlayerModel {
         currentTime = target
         updateActive()
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        if player.currentItem != nil { onPlaybackEvent?(.seeked(position)) }
     }
 
     /// Moves by `seconds` from the shown position, which is the requested one while a seek settles, so held arrow keys
@@ -230,6 +242,15 @@ final class PlayerModel {
             pause()
         }
     }
+
+    /// The length of the loaded item in seconds; 0 while unknown (or for a stream without an end).
+    var duration: Double {
+        let seconds = player.currentItem?.duration.seconds ?? 0
+        return seconds.isFinite && seconds > 0 ? seconds : 0
+    }
+
+    /// Where playback is now, as the platform records it.
+    var position: PlaybackPosition { PlaybackPosition(seconds: currentTime, duration: duration) }
 
     // MARK: - Volume
 
