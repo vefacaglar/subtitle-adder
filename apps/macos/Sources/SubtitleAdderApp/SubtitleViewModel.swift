@@ -249,6 +249,9 @@ final class SubtitleViewModel {
     var loadedSubtitle: URL?
     /// File name of the last save, shown at the end of the finished status.
     var savedSubtitleName: String?
+    /// Called with the file after every subtitle written next to a video (editor save, auto-save, playlist), so the file
+    /// sidebar can rescan that folder.
+    @ObservationIgnored var onSubtitleSaved: (@MainActor (URL) -> Void)?
 
     struct TextDraft: Equatable {
         var uid: UUID

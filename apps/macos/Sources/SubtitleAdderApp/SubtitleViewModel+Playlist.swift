@@ -576,6 +576,7 @@ extension SubtitleViewModel {
             )
             return
         }
+        onSubtitleSaved?(url)
         if editorShows(item) { savedSubtitleName = name }
         updatePlaylistItem(item.id, .completed, Self.savedMessage(name), 1)
         // Make the translation model that was just downloaded show as "hazır" (ready) in Settings.
