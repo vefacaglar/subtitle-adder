@@ -11,12 +11,16 @@ final class PlayerModel {
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     /// Identifies the current `load`; callbacks of an earlier item compare it and drop out.
-    @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private(set) var loadGeneration = 0
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
     @ObservationIgnored private var failureObserver: (any NSObjectProtocol)?
     /// Whether the current load has already reported a failure (even if the user dismissed it), so a later failure of
     /// the same load doesn't bring the notice back.
     @ObservationIgnored private var failureReported = false
+    /// What the position shows while a seek is still settling (see `PlaybackTimeline`).
+    @ObservationIgnored private var timeline = PlaybackTimeline()
+    /// The current load should start playing as soon as its item is ready (Settings > "Video açıldığında otomatik oynat").
+    @ObservationIgnored private var autoPlayWhenReady = false
 
     private(set) var currentTime: Double = 0
     private(set) var isPlaying = false
@@ -71,19 +75,23 @@ final class PlayerModel {
             forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
-            MainActor.assumeIsolated { self?.tick(time.seconds) }
+            MainActor.assumeIsolated { self?.observe(playerTime: time.seconds) }
         }
     }
 
-    func load(_ url: URL?) {
+    /// Replaces the video. With `autoPlay` playback starts once the new item is ready (never for `nil`, and not when
+    /// the video turns out to be unplayable).
+    func load(_ url: URL?, autoPlay: Bool = false) {
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
         stopObservingItem()
         failure = nil
         failureReported = false
+        autoPlayWhenReady = autoPlay && url != nil
         player.pause()
         isPlaying = false
+        timeline.reset()
         currentTime = 0
         // Don't use the old video's aspect ratio until the new video size arrives.
         videoSize = CGSize(width: 16, height: 9)
@@ -125,6 +133,7 @@ final class PlayerModel {
         guard generation == nil || generation == loadGeneration, !failureReported else { return }
         failureReported = true
         failure = Self.cause(for: error)
+        autoPlayWhenReady = false
         player.pause()
         isPlaying = false
     }
@@ -145,9 +154,15 @@ final class PlayerModel {
     /// Watches the item for a failed status and for failing to play to the end.
     private func observe(_ item: AVPlayerItem, generation: Int) {
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
-            guard item.status == .failed else { return }
-            let error = item.error
-            Task { @MainActor in self?.reportFailure(error, generation: generation) }
+            switch item.status {
+            case .failed:
+                let error = item.error
+                Task { @MainActor in self?.reportFailure(error, generation: generation) }
+            case .readyToPlay:
+                Task { @MainActor in self?.itemReady(generation: generation) }
+            default:
+                break
+            }
         }
         failureObserver = NotificationCenter.default.addObserver(
             forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item, queue: .main
@@ -168,14 +183,38 @@ final class PlayerModel {
         updateActive()
     }
 
+    /// The item of load `generation` can play: starts it when that load asked for auto-play. A stale generation (the
+    /// video was replaced meanwhile), a failed load and a load that already started are ignored.
+    func itemReady(generation: Int) {
+        guard generation == loadGeneration, autoPlayWhenReady, failure == nil else { return }
+        play()
+    }
+
+    /// Moves to `seconds` (kept inside the video). The new position shows at once and holds while the player catches up.
     func seek(to seconds: Double) {
-        let target = max(0, seconds)
+        let target = timeline.seek(to: seconds)
         currentTime = target
         updateActive()
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
+    /// Moves by `seconds` from the shown position, which is the requested one while a seek settles, so held arrow keys
+    /// keep adding up instead of restarting from the stale player time. Does nothing without a video.
+    func seek(by seconds: Double) {
+        guard player.currentItem != nil else { return }
+        seek(to: currentTime + seconds)
+    }
+
+    func play() {
+        guard player.currentItem != nil else { return }
+        autoPlayWhenReady = false
+        player.play()
+        isPlaying = true
+    }
+
+    /// Pauses, and also cancels an auto-play that is still waiting for the item.
     func pause() {
+        autoPlayWhenReady = false
         player.pause()
         isPlaying = false
     }
@@ -186,16 +225,39 @@ final class PlayerModel {
             if let duration = player.currentItem?.duration.seconds, duration.isFinite, currentTime >= duration - 0.05 {
                 seek(to: 0)
             }
-            player.play()
-            isPlaying = true
+            play()
         } else {
-            player.pause()
-            isPlaying = false
+            pause()
         }
     }
 
-    private func tick(_ seconds: Double) {
-        if seconds.isFinite { currentTime = seconds }
+    // MARK: - Volume
+
+    /// Volume of the player (0...1). It lives on the `AVPlayer`, so AVKit's own volume control follows every change
+    /// and the choice lasts for the session, across videos.
+    var volume: Double { Double(player.volume) }
+    var isMuted: Bool { player.isMuted }
+
+    /// Moves the volume by `step` (0.05 is 5 %), counted from silence while muted, and unmutes when it ends above 0.
+    func adjustVolume(by step: Double) {
+        let base = player.isMuted ? 0 : Double(player.volume)
+        // Whole percents, so repeated 5 % steps don't drift.
+        let next = (min(max(base + step, 0), 1) * 100).rounded() / 100
+        player.volume = Float(next)
+        if next > 0, player.isMuted { player.isMuted = false }
+    }
+
+    func toggleMute() {
+        player.isMuted.toggle()
+    }
+
+    // MARK: - Time
+
+    /// The periodic observer's time. `now` is injectable for tests.
+    func observe(playerTime seconds: Double, now: ContinuousClock.Instant = .now) {
+        let duration = player.currentItem?.duration.seconds ?? 0
+        timeline.observe(position: seconds, duration: duration, now: now)
+        if currentTime != timeline.position { currentTime = timeline.position }
         let playing = player.timeControlStatus != .paused
         if playing != isPlaying { isPlaying = playing }
         updateActive()

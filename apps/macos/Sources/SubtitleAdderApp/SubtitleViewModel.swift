@@ -112,6 +112,21 @@ final class SubtitleViewModel {
             defaults.set(sideBySideLayout, forKey: Self.sideBySideLayoutDefaultsKey)
         }
     }
+    /// Hides the subtitle panel so the player fills the area; persistent, off by default. Full screen hides it too,
+    /// without touching this choice.
+    var hideSubtitlePanel: Bool {
+        didSet {
+            guard hideSubtitlePanel != oldValue else { return }
+            defaults.set(hideSubtitlePanel, forKey: Self.hideSubtitlePanelDefaultsKey)
+        }
+    }
+    /// Starts playing a video as soon as it is opened (outside a playlist run); persistent, on by default.
+    var autoPlayVideo: Bool {
+        didSet {
+            guard autoPlayVideo != oldValue else { return }
+            defaults.set(autoPlayVideo, forKey: Self.autoPlayVideoDefaultsKey)
+        }
+    }
     /// Hides the window toolbar so the player and the lines get the room; not persisted.
     var isTheaterMode = false
     /// Separate speakers while transcribing (`--diarize`); persistent, on by default.
@@ -255,6 +270,8 @@ final class SubtitleViewModel {
     private static let diarizeDefaultsKey = "diarizeSpeakers"
     private static let speakerCountDefaultsKey = "speakerCount"
     static let sideBySideLayoutDefaultsKey = "sideBySideLayout"
+    static let hideSubtitlePanelDefaultsKey = "hideSubtitlePanel"
+    static let autoPlayVideoDefaultsKey = "autoPlayVideo"
 
     init(
         catalog: ModelCatalog,
@@ -288,6 +305,8 @@ final class SubtitleViewModel {
         offlineMode = defaults.object(forKey: Self.offlineModeDefaultsKey) as? Bool ?? true
         autoSaveSubtitle = defaults.object(forKey: Self.autoSaveDefaultsKey) as? Bool ?? true
         sideBySideLayout = defaults.bool(forKey: Self.sideBySideLayoutDefaultsKey)
+        hideSubtitlePanel = defaults.bool(forKey: Self.hideSubtitlePanelDefaultsKey)
+        autoPlayVideo = defaults.object(forKey: Self.autoPlayVideoDefaultsKey) as? Bool ?? true
         // Once: the single LAN server of earlier versions becomes the first provider.
         self.providerStore.migrateLegacyIfNeeded(defaults: defaults)
         reconcileModelSelection()

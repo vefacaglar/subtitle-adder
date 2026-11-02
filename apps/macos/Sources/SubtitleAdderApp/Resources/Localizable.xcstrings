@@ -753,6 +753,54 @@
         }
       }
     },
+    "Medya oynatıcı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Medya oynatıcı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Media player"
+          }
+        }
+      }
+    },
+    "Video açıldığında otomatik oynat": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video açıldığında otomatik oynat"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto-play when a video is opened"
+          }
+        }
+      }
+    },
+    "Bir video seçildiğinde veya çift tıklanarak açıldığında oynatmayı hemen başlatır.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bir video seçildiğinde veya çift tıklanarak açıldığında oynatmayı hemen başlatır."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starts playback immediately when a video is selected or opened by double-clicking."
+          }
+        }
+      }
+    },
     "GigaAM (Rusça)": {
       "localizations": {
         "tr": {
@@ -4465,18 +4513,82 @@
         }
       }
     },
-    "Tam ekran (⌃⌘F)": {
+    "Tam ekran (F, ⌃⌘F)": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tam ekran (⌃⌘F)"
+            "value": "Tam ekran (F, ⌃⌘F)"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Full screen (⌃⌘F)"
+            "value": "Full screen (F, ⌃⌘F)"
+          }
+        }
+      }
+    },
+    "Altyazı panelini gizle / göster": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı panelini gizle / göster"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide / show subtitle panel"
+          }
+        }
+      }
+    },
+    "Altyazı panelini gizle / göster (E)": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı panelini gizle / göster (E)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide / show subtitle panel (E)"
+          }
+        }
+      }
+    },
+    "Altyazı panelini gizle": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı panelini gizle"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide Subtitle Panel"
+          }
+        }
+      }
+    },
+    "Altyazı panelini göster": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı panelini göster"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Subtitle Panel"
           }
         }
       }

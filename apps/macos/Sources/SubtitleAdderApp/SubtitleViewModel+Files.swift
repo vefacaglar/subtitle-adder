@@ -44,20 +44,54 @@ extension SubtitleViewModel {
         return true
     }
 
-    /// Files dropped on the window or handed over by Finder: subtitle files by extension, everything else is a video.
-    /// Several videos, or any video while the playlist is showing or running, go to the playlist. One video opens in
-    /// the editor, and a subtitle dropped with it is loaded after it (replacing a sidecar).
+    /// Files dropped on the window: subtitle files by extension, everything else is a video. Several videos, or any
+    /// video while the playlist is showing or running, go to the playlist. One video opens in the editor, and a
+    /// subtitle dropped with it is loaded after it (replacing a sidecar). A subtitle dropped alone while no video is
+    /// open brings its companion video (same name in the same folder) along.
     func openFiles(_ urls: [URL]) {
+        routeFiles(urls, external: false)
+    }
+
+    /// Files handed over by Finder ("Open With", a double click, a drop on the Dock icon). Like a drop, except that it
+    /// is an explicit request to open: a single video (or a subtitle with its companion video) always shows in the
+    /// editor, whichever tab was up, and a subtitle looks for its companion video even when another video is open.
+    /// Missing files and folders are skipped. Finder may deliver several files one by one; see `ExternalOpenCoalescer`.
+    func openExternalFiles(_ urls: [URL]) {
+        let files = urls.filter { url in
+            var isDirectory: ObjCBool = false
+            return url.isFileURL && FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                && !isDirectory.boolValue
+        }
+        guard !files.isEmpty else { return }
+        routeFiles(files, external: true)
+    }
+
+    private func routeFiles(_ urls: [URL], external: Bool) {
         let subtitle = urls.first(where: SubtitleParser.isSubtitleFile)
         let videos = urls.filter { !SubtitleParser.isSubtitleFile($0) }
-        if videos.count > 1 || (!videos.isEmpty && (workspace == .playlist || isPlaylistRunning)) {
+        if videos.count > 1 || (!videos.isEmpty && (isPlaylistRunning || (workspace == .playlist && !external))) {
             openMultipleVideos(videos)
             return
         }
         // The run owns the editor's video and lines until it ends.
         guard !isPlaylistRunning else { return }
+        if external { workspace = .editor }
         if let video = videos.first { openVideo(video) }
-        if let subtitle { loadSubtitleFile(subtitle) }
+        if let subtitle {
+            openSubtitle(subtitle, findingVideo: videos.isEmpty && (external || video == nil))
+        }
+    }
+
+    /// Opens a subtitle file as the lines of the editor. With `findingVideo` its companion video (`Film.srt` and
+    /// `Film.tr.srt` find `Film.mkv`) is opened first, and the subtitle then replaces the sidecar that opening loaded.
+    /// The picker and drops pass whether a video is open: the video someone is working on stays. Returns whether the
+    /// subtitle loaded.
+    @discardableResult
+    func openSubtitle(_ url: URL, findingVideo: Bool? = nil) -> Bool {
+        if findingVideo ?? (video == nil), !isPlaylistRunning, let companion = SubtitleParser.findCompanionVideo(for: url) {
+            openVideo(companion)
+        }
+        return loadSubtitleFile(url)
     }
 
     // MARK: - Saving

@@ -13,9 +13,15 @@ struct PlayerView: View {
     /// Window layout switches that live in the overlay next to the display picker.
     @Binding var sideBySide: Bool
     @Binding var theaterMode: Bool
+    /// The user's choice to hide the subtitle panel (full screen hides it regardless).
+    @Binding var hideSubtitlePanel: Bool
     let isFullScreen: Bool
     let toggleFullScreen: () -> Void
     private let overlay = OverlayStyleStorage()
+    /// The pointer is over the player; the overlay panel stays visible then, and always while paused.
+    @State private var isPointerInside = false
+
+    private var isPanelVisible: Bool { !model.isPlaying || isPointerInside }
 
     var body: some View {
         GeometryReader { geometry in
@@ -23,15 +29,31 @@ struct PlayerView: View {
             ZStack {
                 Color.black
                 NativePlayerView(player: model.player)
+                // Between AVKit's own controls (which stay reachable at the top and bottom) a click on the picture
+                // toggles playback, a double click full screen, and the scroll wheel changes the volume.
+                VideoPointerSurface(onClick: handleClick, onScroll: { model.adjustVolume(by: Double($0) * PlayerShortcut.volumeStep) })
                 SubtitleOverlay(text: activeText, style: overlay.style, videoHeight: rect.height)
                     .frame(width: rect.width, height: rect.height)
                     .allowsHitTesting(false)
                 VStack {
                     controls
                         .frame(maxWidth: .infinity, alignment: .trailing)
+                        .opacity(isPanelVisible ? 1 : 0)
+                        .allowsHitTesting(isPanelVisible)
                     Spacer()
                 }
                 .padding(10)
+            }
+            .animation(.easeInOut(duration: 0.25), value: isPanelVisible)
+            .onHover { isPointerInside = $0 }
+        }
+    }
+
+    private func handleClick(count: Int) {
+        for action in VideoClick.actions(forClickCount: count) {
+            switch action {
+            case .togglePlayback: model.togglePlayback()
+            case .toggleFullScreen: toggleFullScreen()
             }
         }
     }
@@ -50,17 +72,24 @@ struct PlayerView: View {
         HStack(spacing: 8) {
             displayPicker(captioned: captioned, compact: compact)
             Divider().frame(height: 16).overlay(.white.opacity(0.35))
-            layoutButton(
+            LayoutButton(
+                symbol: hideSubtitlePanel || isFullScreen ? "captions.bubble" : "captions.bubble.fill",
+                isOn: !hideSubtitlePanel && !isFullScreen,
+                title: L("Altyazı panelini gizle / göster"), help: L("Altyazı panelini gizle / göster (E)")
+            ) { hideSubtitlePanel.toggle() }
+            .disabled(isFullScreen)
+            LayoutButton(
                 symbol: "rectangle.righthalf.inset.filled", isOn: sideBySide,
                 title: L("Altyazıları sağa / alta al"), help: L("Altyazıları sağa / alta al")
             ) { sideBySide.toggle() }
-            layoutButton(
+            .disabled(hideSubtitlePanel || isFullScreen)
+            LayoutButton(
                 symbol: "rectangle.center.inset.filled", isOn: theaterMode,
                 title: L("Tiyatro modu"), help: L("Tiyatro modu — üst menüleri gizle")
             ) { theaterMode.toggle() }
-            layoutButton(
+            LayoutButton(
                 symbol: isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                isOn: isFullScreen, title: L("Tam ekran"), help: L("Tam ekran (⌃⌘F)")
+                isOn: isFullScreen, title: L("Tam ekran"), help: L("Tam ekran (F, ⌃⌘F)")
             ) { toggleFullScreen() }
         }
         .padding(.horizontal, 8)
@@ -96,22 +125,6 @@ struct PlayerView: View {
         }
     }
 
-    private func layoutButton(
-        symbol: String, isOn: Bool, title: String, help: String, action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .frame(width: 24, height: 22)
-                .foregroundStyle(isOn ? Color.accentColor : .white)
-                .background(isOn ? Color.white.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(isOn ? .isSelected : [])
-    }
-
     private var activeText: String? {
         guard let id = model.activeID else { return nil }
         return OverlayText.compose(sentences: sentences, translations: translations, display: display, uid: id)
@@ -128,6 +141,88 @@ struct PlayerView: View {
             width = height * aspect
         }
         return CGSize(width: width, height: height)
+    }
+}
+
+/// A window layout switch in the overlay panel; dims when disabled.
+private struct LayoutButton: View {
+    let symbol: String
+    let isOn: Bool
+    let title: String
+    let help: String
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .frame(width: 24, height: 22)
+                .foregroundStyle(isOn ? Color.accentColor : .white)
+                .background(isOn ? Color.white.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .contentShape(Rectangle())
+                .opacity(isEnabled ? 1 : 0.4)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
+/// A transparent layer over the picture that reports clicks and scroll-wheel notches, and leaves AVKit's own controls
+/// alone: AVKit draws its control bar along the bottom and small buttons along the top, so those strips are not part
+/// of the surface and their clicks, drags and scrolling go to AVKit as before. A click also moves the keyboard focus
+/// here, out of any text field, so the player keys work right after clicking the video.
+private struct VideoPointerSurface: NSViewRepresentable {
+    /// Called with the click count (1 for a click, 2 for a double click).
+    let onClick: (Int) -> Void
+    /// Called with signed notches; positive is scrolling up.
+    let onScroll: (Int) -> Void
+
+    func makeNSView(context: Context) -> SurfaceView {
+        let view = SurfaceView()
+        view.onClick = onClick
+        view.onScroll = onScroll
+        return view
+    }
+
+    func updateNSView(_ view: SurfaceView, context: Context) {
+        view.onClick = onClick
+        view.onScroll = onScroll
+    }
+
+    final class SurfaceView: NSView {
+        /// Heights of the strips AVKit's controls occupy (its bar is about 36 pt tall, 6 pt above the edge).
+        static let bottomInset: CGFloat = 56
+        static let topInset: CGFloat = 48
+
+        var onClick: ((Int) -> Void)?
+        var onScroll: ((Int) -> Void)?
+        private var notches = ScrollNotches()
+
+        override var acceptsFirstResponder: Bool { true }
+        override var mouseDownCanMoveWindow: Bool { false }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            let local = convert(point, from: superview)
+            guard bounds.contains(local), local.y >= Self.bottomInset, local.y <= bounds.height - Self.topInset else {
+                return nil
+            }
+            return self
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            window?.makeFirstResponder(self)
+            onClick?(event.clickCount)
+        }
+
+        override func scrollWheel(with event: NSEvent) {
+            // The coasting after the fingers lift would keep changing the volume.
+            guard event.momentumPhase.isEmpty else { return }
+            if event.phase.contains(.began) { notches.reset() }
+            let count = notches.add(delta: Double(event.scrollingDeltaY), isPrecise: event.hasPreciseScrollingDeltas)
+            if count != 0 { onScroll?(count) }
+        }
     }
 }
 

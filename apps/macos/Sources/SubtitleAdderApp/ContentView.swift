@@ -18,14 +18,19 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            workspaceSwitcher.padding(.vertical, 8)
-            Divider()
+            // Full screen shows the picture alone.
+            if !showsFullScreenPlayer {
+                workspaceSwitcher.padding(.vertical, 8)
+                Divider()
+            }
             switch vm.workspace {
             case .editor: editor
             case .playlist: PlaylistView(vm: vm)
             }
-            Divider()
-            statusBar.padding(.horizontal, 16).padding(.vertical, 10)
+            if !showsFullScreenPlayer {
+                Divider()
+                statusBar.padding(.horizontal, 16).padding(.vertical, 10)
+            }
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard !urls.isEmpty else { return false }
@@ -47,6 +52,11 @@ struct ContentView: View {
                 vm.isTheaterMode = false
                 return true
             }
+            let actions = PlayerShortcutActions(
+                player: player, vm: vm, isFullScreen: { chrome.isFullScreen }, toggleFullScreen: { chrome.toggleFullScreen() }
+            )
+            chrome.onShortcut = { shortcut, isRepeat in actions.perform(shortcut, isRepeat: isRepeat) }
+            chrome.isPanelHidden = { vm.hideSubtitlePanel }
         }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
         .task { await catalog.load() }
@@ -61,9 +71,19 @@ struct ContentView: View {
             vm.reconcileModelSelection()
             vm.reconcileTranslationModelSelection()
         }
-        // A playlist run goes through many videos; the player stays empty until it is over.
-        .onChange(of: vm.isPlaylistRunning ? nil : vm.video, initial: true) { _, url in player.load(url) }
-        .onChange(of: vm.workspace) { _, _ in player.pause() }
+        // A playlist run goes through many videos; the player stays empty until it is over. A video opened any other
+        // way (picker, drop, Open With, a double click) plays by itself when Settings say so; opening the video that
+        // is already open changes nothing, so it doesn't restart.
+        .onChange(of: vm.video, initial: true) { _, url in
+            guard !vm.isPlaylistRunning else { return }
+            player.load(url, autoPlay: vm.autoPlayVideo)
+        }
+        // The end of a run only puts the editor's video back, which is not opening one: it stays paused.
+        .onChange(of: vm.isPlaylistRunning) { _, running in player.load(running ? nil : vm.video) }
+        // Leaving the editor stops the picture; coming back leaves it as it is.
+        .onChange(of: vm.workspace) { _, workspace in
+            if workspace != .editor { player.pause() }
+        }
         .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
         .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent]) { result in
             let run = runAfterPicking
@@ -75,7 +95,7 @@ struct ContentView: View {
         // A second importer on the same view isn't presented reliably, so it hangs off a background.
         .background {
             Color.clear.fileImporter(isPresented: $pickingSubtitle, allowedContentTypes: Self.subtitleTypes) { result in
-                if case .success(let url) = result { vm.loadSubtitleFile(url) }
+                if case .success(let url) = result { vm.openSubtitle(url) }
             }
         }
         .fileExporter(
@@ -106,7 +126,10 @@ struct ContentView: View {
         } else if vm.isPlaylistRunning {
             SentenceEditorView(vm: vm, player: player)
         } else {
-            if vm.sideBySideLayout {
+            if !vm.showsSubtitlePanel(isFullScreen: chrome.isFullScreen) {
+                // Hidden by the user, or full screen: the player fills the area and the layout comes back as it was.
+                playerView.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if vm.sideBySideLayout {
                 HSplitView {
                     playerView
                         .frame(minWidth: Self.playerMinWidth, idealWidth: 5 * Self.splitUnit, maxHeight: .infinity)
@@ -123,6 +146,9 @@ struct ContentView: View {
             }
         }
     }
+
+    /// Full screen with a player on screen: nothing else is shown (no tab switcher, no status bar).
+    private var showsFullScreenPlayer: Bool { vm.isPlayerShown && chrome.isFullScreen }
 
     // Player and editor start at about 5:4 and can't be dragged below these sizes.
     private static let splitUnit: CGFloat = 80
@@ -143,6 +169,7 @@ struct ContentView: View {
             ),
             sideBySide: $vm.sideBySideLayout,
             theaterMode: $vm.isTheaterMode,
+            hideSubtitlePanel: $vm.hideSubtitlePanel,
             isFullScreen: chrome.isFullScreen,
             toggleFullScreen: { chrome.toggleFullScreen() }
         )
