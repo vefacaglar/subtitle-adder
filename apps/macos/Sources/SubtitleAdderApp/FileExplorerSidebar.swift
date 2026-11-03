@@ -113,14 +113,12 @@ struct FileExplorerSidebar: View {
                     MediaRow(file: file, isActive: isActive, showsFolder: model.isOutsideCurrentFolder(file))
                 }
                 .buttonStyle(.plain)
-                .disabled(vm.isPlaylistRunning)
                 .accessibilityLabel(file.fileName)
                 .accessibilityValue(MediaRow.detail(of: file, showsFolder: model.isOutsideCurrentFolder(file)))
                 .help(file.fullPath)
                 .listRowBackground(isActive ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.18)) : nil)
                 .contextMenu {
                     Button(L("Oynat"), systemImage: "play.fill") { open(file, startPlaying: true) }
-                        .disabled(vm.isPlaylistRunning)
                     Button(L("Çalma listesine ekle"), systemImage: "text.badge.plus") { addToPlaylist(file) }
                     Divider()
                     Button(L("Finder'da göster"), systemImage: "magnifyingglass") {

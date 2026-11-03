@@ -140,7 +140,7 @@ struct ContentView: View {
             }
             switch vm.workspace {
             case .editor: editor
-            case .platform: PlatformView(model: platform, play: playFromPlatform, canPlay: true)
+            case .platform: PlatformView(model: platform, play: playFromPlatform)
             case .playlist: PlaylistView(vm: vm)
             }
             if !showsFullScreenPlayer {
