@@ -9,7 +9,7 @@ import Synchronization
 @MainActor
 @Observable
 final class PlayerEngagement {
-    /// The video in the player (nothing while a playlist run owns it).
+    /// The video in the player.
     private(set) var url: URL?
     /// The numbers below belong to `url`; false until the first refresh after the video changed.
     private(set) var isLoaded = false
@@ -173,7 +173,7 @@ final class VideoPlatformModel {
     @ObservationIgnored let thumbnails: ThumbnailService
     @ObservationIgnored private let queues = StoreQueues()
 
-    /// The video in the player, as far as the platform knows (`nil` while a playlist run owns the player).
+    /// The video in the player, as far as the platform knows.
     @ObservationIgnored private(set) var playerVideo: URL?
     /// Where the player is now; set by the window, read by the progress timer and when the app quits.
     @ObservationIgnored var playbackSampler: (@MainActor () -> PlaybackPosition?)?
@@ -756,8 +756,8 @@ final class VideoPlatformModel {
     // MARK: Watching
 
     /// The video in the player changed. `countsAsOpen` is a video the user opened (the picker, a drop, the sidebar, a
-    /// card): it counts as a view when a profile is logged in. A video a playlist run opens is not passed at all (`nil`),
-    /// and neither is the one the editor gets back when a run ends: only `countsAsOpen` records a watch.
+    /// card): it counts as a view when a profile is logged in. Only `countsAsOpen` records a watch. Jobs and playlist runs
+    /// work in sessions of their own and never change the video in the player.
     func playerVideoChanged(to url: URL?, countsAsOpen: Bool) {
         let same = url.map(Self.pathKey) == playerVideo.map(Self.pathKey)
         guard !same else { return }

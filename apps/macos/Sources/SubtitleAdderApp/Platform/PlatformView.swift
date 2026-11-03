@@ -7,8 +7,6 @@ struct PlatformView: View {
     let model: VideoPlatformModel
     /// Opens a video in the player and starts it.
     let play: (URL) -> Void
-    /// False while a playlist run owns the player: the cards stay, but their play buttons are off.
-    var canPlay = true
 
     @State private var newListName = ""
     @State private var confirmingClearHistory = false
@@ -237,7 +235,7 @@ struct PlatformView: View {
             ScrollView {
                 LazyVStack(spacing: 10) {
                     ForEach(model.cards) { card in
-                        VideoCardView(card: card, model: model, canPlay: canPlay, play: play).equatable()
+                        VideoCardView(card: card, model: model, play: play).equatable()
                     }
                 }
                 .padding(16)

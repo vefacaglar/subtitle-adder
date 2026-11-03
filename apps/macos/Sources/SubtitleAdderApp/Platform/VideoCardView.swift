@@ -6,12 +6,11 @@ import SwiftUI
 struct VideoCardView: View, Equatable {
     let card: VideoCard
     let model: VideoPlatformModel
-    let canPlay: Bool
     let play: (URL) -> Void
     @State private var isHovering = false
 
     nonisolated static func == (lhs: VideoCardView, rhs: VideoCardView) -> Bool {
-        lhs.card == rhs.card && lhs.canPlay == rhs.canPlay
+        lhs.card == rhs.card
     }
 
     private static let thumbnailSize = CGSize(width: 192, height: 108)
@@ -22,7 +21,6 @@ struct VideoCardView: View, Equatable {
                 CardThumbnail(card: card, service: model.thumbnails, size: Self.thumbnailSize)
             }
             .buttonStyle(.plain)
-            .disabled(!canPlay)
             .help(L("Oynat"))
             .accessibilityLabel(L("Oynat"))
             details
@@ -35,7 +33,6 @@ struct VideoCardView: View, Equatable {
         .onHover { isHovering = $0 }
         .contextMenu {
             Button(L("Oynat"), systemImage: "play.fill") { play(card.url) }
-                .disabled(!canPlay)
             Button(L("Finder'da göster"), systemImage: "folder") {
                 NSWorkspace.shared.activateFileViewerSelecting([card.url])
             }
@@ -52,7 +49,6 @@ struct VideoCardView: View, Equatable {
                     .truncationMode(.tail)
             }
             .buttonStyle(.plain)
-            .disabled(!canPlay)
             .help(card.fileName)
             if !card.folderLine.isEmpty {
                 Label(card.folderLine, systemImage: "folder")
@@ -103,7 +99,6 @@ struct VideoCardView: View, Equatable {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(!canPlay)
             if model.isLoggedIn {
                 Button { model.setLiked(!card.isLiked, for: card.url) } label: {
                     Label(
