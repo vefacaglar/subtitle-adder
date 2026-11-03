@@ -202,6 +202,38 @@ import Testing
         #expect(text.contains("Hola.") && !text.contains("Merhaba."))
     }
 
+    @Test func aSaveStillRenderingWhenAnotherVideoOpensStaysWithItsOwnVideo() async throws {
+        let folder = try makeFolder()
+        // The render takes a moment, so there is time to open another video while the save waits for it.
+        let vm = makeModel(engine: try FakeEngine.make(render: "sleep 0.4; cat"))
+        let first = folder.appending(path: "Film.mp4")
+        vm.openVideo(first)
+        vm.sentences = [Sentence(id: 1, start: 0, end: 1, text: "Merhaba.")]
+        var notified: [URL] = []
+        vm.onSubtitleSaved = { notified.append($0) }
+
+        let saving = Task { await vm.saveSubtitle() }
+        try await Task.sleep(for: .milliseconds(150))
+        let second = folder.appending(path: "Baska.mp4")
+        vm.openVideo(second)
+        #expect(vm.video == second)
+        let url = await saving.value
+
+        // The first video's file was written and announced, but the second video's editor knows nothing about it.
+        #expect(url == folder.appending(path: "Film.srt"))
+        #expect(String(decoding: try Data(contentsOf: folder.appending(path: "Film.srt")), as: UTF8.self).contains("Merhaba."))
+        #expect(notified == [folder.appending(path: "Film.srt")])
+        #expect(vm.savedSubtitleName == nil)
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Baska.srt").path))
+
+        // Saving while the same video stays open records the name, as before.
+        vm.sentences = [Sentence(id: 1, start: 0, end: 1, text: "Selam.")]
+        let again = await vm.saveSubtitle()
+        #expect(again == folder.appending(path: "Baska.srt"))
+        #expect(vm.savedSubtitleName == "Baska.srt")
+        #expect(notified.last == folder.appending(path: "Baska.srt"))
+    }
+
     @Test func saveWithoutVideoUsesTheLoadedSubtitleName() async throws {
         let folder = try makeFolder()
         let vm = makeModel(engine: try FakeEngine.make())

@@ -152,6 +152,10 @@ extension SubtitleViewModel {
         commitTranslationDraft()
         let useTranslation = (translated ?? (exportLanguage == .translated)) && hasTranslations
         guard let url = subtitleSaveURL() else { return nil }
+        // The render is awaited; the user may open another video meanwhile. What follows the await belongs to the
+        // video this save started for, not to whatever is open by then.
+        let savedVideo = video
+        let savedLoadedSubtitle = loadedSubtitle
         guard let text = await render(as: exportFormat, translated: useTranslation) else { return nil }
         do {
             try Data(text.utf8).write(to: url, options: .atomic)
@@ -159,8 +163,11 @@ extension SubtitleViewModel {
             reportSaveFailure(error)
             return nil
         }
-        savedSubtitleName = url.lastPathComponent
+        // The file is on disk either way, so the sidebar badge always follows; the editor's own state only changes
+        // when the same video is still open.
         onSubtitleSaved?(url)
+        guard video == savedVideo, loadedSubtitle == savedLoadedSubtitle else { return url }
+        savedSubtitleName = url.lastPathComponent
         if !isWorking, status != .finished { status = .finished }
         return url
     }
