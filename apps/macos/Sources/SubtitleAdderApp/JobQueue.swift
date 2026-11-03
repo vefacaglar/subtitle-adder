@@ -47,6 +47,9 @@ final class JobQueue {
         let session: VideoSession
         let kind: JobKind
         let settings: JobSettings
+        /// The session's status before the job was requested: what it goes back to when the job is taken out of the
+        /// queue (Stop, "Sıradakileri temizle") or never starts.
+        let previousStatus: SubtitleViewModel.Status
     }
 
     enum Disposition: Equatable {
@@ -91,18 +94,28 @@ final class JobQueue {
         return .queued
     }
 
-    /// Takes the video's waiting entry out. Does nothing to a job that is already running.
-    @discardableResult
-    func remove(_ session: VideoSession) -> Bool {
-        guard let index = waiting.firstIndex(where: { $0.session === session }) else { return false }
-        waiting.remove(at: index)
-        return true
+    /// The waiting entry of the video, if it has one.
+    func queuedEntry(for session: VideoSession) -> Entry? { waiting.first { $0.session === session } }
+
+    /// Runs `entry` in place of the job of the same video that holds the lane right now, without the lane going to
+    /// anybody else in between. The caller has cancelled the old job.
+    func takeOver(_ entry: Entry) {
+        guard running?.session === entry.session else { return }
+        running = entry
+        start?(entry)
     }
 
-    /// Empties the waiting line (the running job goes on) and returns the sessions that were in it.
+    /// Takes the video's waiting entry out. Does nothing to a job that is already running.
     @discardableResult
-    func clearWaiting() -> [VideoSession] {
-        let removed = waiting.map(\.session)
+    func remove(_ session: VideoSession) -> Entry? {
+        guard let index = waiting.firstIndex(where: { $0.session === session }) else { return nil }
+        return waiting.remove(at: index)
+    }
+
+    /// Empties the waiting line (the running job goes on) and returns the entries that were in it.
+    @discardableResult
+    func clearWaiting() -> [Entry] {
+        let removed = waiting
         waiting = []
         return removed
     }
@@ -134,6 +147,12 @@ final class JobQueue {
             }
         } onCancel: {
             Task { @MainActor in self.abandonBatchWait() }
+        }
+        // The lane may have been handed over in the same turn as the cancel, before the waiter was taken out: it is
+        // given straight back instead of held by a task that is going away.
+        if granted, Task.isCancelled {
+            releaseBatchSlot()
+            return false
         }
         return granted
     }

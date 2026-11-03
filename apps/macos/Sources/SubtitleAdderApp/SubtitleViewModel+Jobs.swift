@@ -51,10 +51,20 @@ extension SubtitleViewModel {
         guard session.batchItemID == nil else { return }
         let settings = settings ?? currentJobSettings()
         guard preflight(kind, on: session, settings: settings) else { return }
-        // A job that already runs for this video is replaced.
-        if session.job != nil { stopJob(of: session) }
         noteRecentJob(session)
-        let entry = JobQueue.Entry(session: session, kind: kind, settings: settings)
+        // What the video goes back to if the job never runs: its status as it is now, or as it was when an earlier,
+        // still waiting request for it was made. A job that runs now has nothing to go back to.
+        let previous = jobQueue.queuedEntry(for: session)?.previousStatus ?? (session.job == nil ? session.status : .idle)
+        let entry = JobQueue.Entry(session: session, kind: kind, settings: settings, previousStatus: previous)
+        if jobQueue.isRunning(session) {
+            // The video's own running job is replaced in place: the new request runs at once and nobody else gets the
+            // lane in between.
+            stopJob(of: session, advancing: false)
+            jobQueue.takeOver(entry)
+            return
+        }
+        // A job that is somehow running without holding the lane is replaced too.
+        if session.job != nil { stopJob(of: session) }
         if jobQueue.submit(entry) == .queued {
             session.status = .working(.key("Sırada"), fraction: nil)
         }
@@ -81,8 +91,12 @@ extension SubtitleViewModel {
         case .translate(let reuseExisting, let only):
             startTranslation(session, reuseExisting: reuseExisting, only: only, settings: entry.settings)
         }
-        // Nothing was launched (a precondition failed after the wait): the lane is free again.
-        if session.job == nil { jobQueue.jobEnded(session) }
+        // Nothing was launched (a precondition failed after the wait): the video goes back to what it was, unless the
+        // failure said something, and the lane is free again.
+        if session.job == nil {
+            if case .working = session.status { session.status = entry.previousStatus }
+            jobQueue.jobEnded(session)
+        }
     }
 
     // MARK: - Ending
@@ -97,15 +111,26 @@ extension SubtitleViewModel {
     }
 
     /// Cancels the session's job whatever state it is in (running, or waiting in the queue) without touching its
-    /// status. The queue moves on to the next video.
-    func stopJob(of session: VideoSession) {
+    /// status. The queue moves on to the next video, unless `advancing` is off (the caller is about to start a job in its
+    /// place).
+    func stopJob(of session: VideoSession, advancing: Bool = true) {
         jobQueue.remove(session)
         session.job?.cancel()
         session.job = nil
         releaseModels(of: session.jobID)
         session.jobID = UUID()
         session.cancelAsyncTranslation()
-        jobQueue.jobEnded(session)
+        if advancing { jobQueue.jobEnded(session) }
+    }
+
+    /// Takes the video's waiting job out of the queue and puts the video back to what it was before it was requested
+    /// (a finished video is finished again, with its summary and its row in the list). `false` when nothing waited.
+    @discardableResult
+    func dequeue(_ session: VideoSession) -> Bool {
+        guard let entry = jobQueue.remove(session) else { return false }
+        session.status = entry.previousStatus
+        if case .idle = entry.previousStatus { forgetRecentJob(session) }
+        return true
     }
 
     /// Stop. For the video on screen: a waiting job leaves the queue; a running job is cancelled and the queue goes on
@@ -120,7 +145,9 @@ extension SubtitleViewModel {
         if session.batchItemID != nil || session.isPlaylistTranslating {
             // The run puts the item back to waiting, and with it this video's status.
             cancelPlaylist()
-        } else if jobQueue.isQueued(session) || session.job != nil || session.isWorking {
+        } else if dequeue(session) {
+            // Waiting only: the running job and the others in the queue go on.
+        } else if session.job != nil || session.isWorking {
             stopJob(of: session)
             forgetRecentJob(session)
             session.status = .idle
@@ -133,6 +160,7 @@ extension SubtitleViewModel {
     func cancelJob(of video: URL) {
         guard let session = existingSession(for: video) else { return }
         if session.batchItemID != nil { cancelPlaylist(); return }
+        if dequeue(session) { return }
         stopJob(of: session)
         forgetRecentJob(session)
         session.status = .idle
@@ -140,11 +168,17 @@ extension SubtitleViewModel {
 
     /// Removes every waiting job from the queue; the running one is not touched.
     func clearQueue() {
-        for session in jobQueue.clearWaiting() {
-            session.status = .idle
-            forgetRecentJob(session)
+        for entry in jobQueue.clearWaiting() {
+            entry.session.status = entry.previousStatus
+            if case .idle = entry.previousStatus { forgetRecentJob(entry.session) }
         }
     }
+
+    /// The video on screen waits in the queue for its turn.
+    var isQueued: Bool { jobQueue.isQueued(foreground) }
+
+    /// Its place in the waiting line, counted from 1 (the job that runs now is not counted), or `nil`.
+    var queuePosition: Int? { jobQueue.position(of: foreground).map { $0 + 1 } }
 
     /// Stop has something to stop: the job of the video on screen, or, in the list tab, the playlist run (the rows of
     /// single videos have a Stop of their own there).
@@ -167,7 +201,8 @@ extension SubtitleViewModel {
         var needed = [settings.model]
         if settings.diarize { needed.append(Self.diarizationModelID) }
         if thenTranslate { needed.append(settings.translationModel) }
-        let retry: @MainActor () -> Void = { [weak self] in
+        let retry: @MainActor () -> Void = { [weak self, weak session] in
+            guard let session else { return }
             self?.request(.generate(thenTranslate: thenTranslate), on: session, settings: settings)
         }
         return !blockedOffline(needed, session: session, retry: retry)
@@ -311,15 +346,13 @@ extension SubtitleViewModel {
     private func languageDetected(in session: VideoSession, settings: inout JobSettings) {
         let source = session.translationSource(language: settings.language)
         settings.translationTarget = Self.reconciledTarget(settings.translationTarget, source: source)
-        if session === foreground { reconcileTranslationTarget() }
+        if updatesToolbar(for: session) { reconcileTranslationTarget() }
     }
 
-    /// Live transcription snapshot of the video on screen: replaces the lines, keeping the identity of the ones that are
-    /// still there. The language is `"?"` until the engine has detected it.
-    func applyPartial(language: String, sentences snapshot: [Sentence]) {
-        if foreground.applyPartial(language: language, sentences: snapshot) {
-            reconcileTranslationTarget()
-        }
+    /// Whether what happens in `session` may change the toolbar's target language: only for the video on screen, and
+    /// never for a playlist item, whose run has settings of its own.
+    func updatesToolbar(for session: VideoSession) -> Bool {
+        session === foreground && session.batchItemID == nil
     }
 
     // MARK: - Translation
@@ -372,7 +405,8 @@ extension SubtitleViewModel {
             return nil
         }
         let model = settings.translationModel
-        let retry: @MainActor () -> Void = { [weak self] in
+        let retry: @MainActor () -> Void = { [weak self, weak session] in
+            guard let session else { return }
             self?.request(.translate(reuseExisting: reuseExisting, only: selectedLines), on: session, settings: settings)
         }
         if blockedOffline([model], session: session, retry: retry) { return nil }

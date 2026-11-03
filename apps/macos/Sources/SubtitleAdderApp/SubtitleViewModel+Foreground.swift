@@ -74,7 +74,6 @@ extension SubtitleViewModel {
     func translation(for sentence: Sentence) -> TranslationEntry? { foreground.translation(for: sentence) }
     func isTranslationStale(for sentence: Sentence) -> Bool { foreground.isTranslationStale(for: sentence) }
     func needsReview(for sentence: Sentence) -> Bool { foreground.needsReview(for: sentence) }
-    func exportSentences(translated: Bool) -> [Sentence] { foreground.exportSentences(translated: translated) }
 
     // MARK: - Display and export
 
@@ -142,7 +141,6 @@ extension SubtitleViewModel {
     // MARK: - The foreground job's internals (tests look at them)
 
     var job: Task<Void, Never>? { foreground.job }
-    var jobID: UUID { foreground.jobID }
     var asyncTask: Task<Void, Never>? { foreground.asyncTask }
     var asyncQueued: Set<UUID> {
         get { foreground.asyncQueued }
@@ -159,8 +157,4 @@ extension SubtitleViewModel {
 
     /// "N satır · dil: xx" (the language is left out when unknown), plus the translation language and the saved file.
     var finishedSummary: String { foreground.finishedSummary }
-
-    func cancelAsyncTranslation() { foreground.cancelAsyncTranslation() }
-    func nextAsyncBatch() -> [Sentence] { foreground.nextAsyncBatch() }
-    func updateAsyncFraction() { foreground.updateAsyncFraction() }
 }

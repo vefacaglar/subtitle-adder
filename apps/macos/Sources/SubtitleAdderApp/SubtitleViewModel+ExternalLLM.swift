@@ -26,11 +26,6 @@ extension SubtitleViewModel {
         Self.label(for: .translating, fraction: asyncTranslationFraction, purpose: .translation).text
     }
 
-    /// Background translation of the video on screen, with the toolbar's settings as they are now.
-    func startAsyncTranslation(engine: EngineClient) {
-        startAsyncTranslation(foreground, engine: engine, settings: currentJobSettings())
-    }
-
     /// Called with every transcription snapshot of `session`: when enough lines are ready and no batch is on its way,
     /// sends them. The last two lines of a snapshot are still being transcribed, so they wait for the next one.
     func startAsyncTranslation(_ session: VideoSession, engine: EngineClient, settings: JobSettings) {
@@ -103,7 +98,7 @@ extension SubtitleViewModel {
                 switch event {
                 case .translation(let language, let translated):
                     session.applyBackgroundTranslation(translated, language: language, batch: batch)
-                    if session === foreground { translationTarget = language }
+                    if updatesToolbar(for: session) { translationTarget = language }
                     session.updateAsyncFraction()
                 case .stage(let stage, let part):
                     // The model's own progress through this batch, on top of what was translated before it.
@@ -130,11 +125,5 @@ extension SubtitleViewModel {
             return false
         }
         return !Task.isCancelled && session.asyncRunID == run
-    }
-
-    /// Adds the translated lines of a batch to the video on screen; see `VideoSession.applyBackgroundTranslation`.
-    func applyBackgroundTranslation(_ translated: [Sentence], language: String, batch: [Sentence]) {
-        foreground.applyBackgroundTranslation(translated, language: language, batch: batch)
-        translationTarget = language
     }
 }

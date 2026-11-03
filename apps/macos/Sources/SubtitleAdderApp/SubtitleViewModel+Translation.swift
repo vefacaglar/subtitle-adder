@@ -75,7 +75,7 @@ extension SubtitleViewModel {
             pairs, language: language, merge: merge, preserveOtherLanguages: preserveOtherLanguages,
             reviewFallback: reviewFallback
         )
-        if session === foreground { translationTarget = language }
+        if updatesToolbar(for: session) { translationTarget = language }
     }
 
     // MARK: - Editing the translation text
