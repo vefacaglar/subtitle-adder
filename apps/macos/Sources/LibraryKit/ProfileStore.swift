@@ -1,8 +1,11 @@
 import CryptoKit
 import Foundation
 
-/// Local profiles with passwords and an encrypted vault per profile (watch history, favorites, ratings, custom lists,
-/// thumbnails), stored in `profiles.json` in the format the Windows app uses.
+/// Local profiles with passwords and an encrypted vault per profile (watch history, favorites, ratings, custom lists),
+/// stored in `profiles.json` in the format the Windows app uses. The card pictures are not in the vault: each is a small
+/// encrypted file in a capped per-profile folder next to it (`ThumbnailCache`), so storing one never rewrites the vault.
+/// A vault written by an older version still carries its pictures; they are served from there and move to the cache
+/// the next time the vault is saved.
 ///
 /// **Concurrency.** A `final class` that is `Sendable` by construction: all state lives in one value guarded by an
 /// `NSLock`, and every public method is synchronous. A class rather than an actor because the view model needs cheap
@@ -54,6 +57,8 @@ public final class ProfileStore: @unchecked Sendable {
     let secretStore: any SecretStore
     let clock: @Sendable () -> Date
     let lockTimeout: TimeInterval
+    /// The card pictures, kept outside the vault (see `ThumbnailCache`).
+    let thumbnailCache: ThumbnailCache
 
     /// Playback progress is written at most this often (seconds); `flushPlaybackProgress()` writes it at once.
     public static let progressSaveInterval: TimeInterval = 15
@@ -73,9 +78,15 @@ public final class ProfileStore: @unchecked Sendable {
     ///   - watchesFile: watch the folder for changes made by other instances.
     ///   - lockTimeout: how long to wait for the cross-process lock before failing with `.lockUnavailable`.
     ///   - clock: the time source for timestamps (injectable for tests).
+    ///   - thumbnailsFolder: where the encrypted card pictures go; defaults to `thumbnails` next to `profiles.json`.
+    ///   - thumbnailLimits: the cap on the pictures of one profile.
+    ///   - readsFileImmediately: read `profiles.json` here. Pass `false` to keep construction cheap (the app builds
+    ///     the store on the main thread at launch): the first call that needs the file, `refresh()` for one, reads it.
     public init(
         fileURL: URL? = nil, secretStore: any SecretStore = KeychainSecretStore(), watchesFile: Bool = true,
-        lockTimeout: TimeInterval = 5, clock: @escaping @Sendable () -> Date = { Date() }
+        lockTimeout: TimeInterval = 5, clock: @escaping @Sendable () -> Date = { Date() },
+        thumbnailsFolder: URL? = nil, thumbnailLimits: ThumbnailCacheLimits = ThumbnailCacheLimits(),
+        readsFileImmediately: Bool = true
     ) {
         let url = (fileURL ?? AppDataDirectory.file("profiles.json")).standardizedFileURL
         self.fileURL = url
@@ -83,9 +94,12 @@ public final class ProfileStore: @unchecked Sendable {
         self.secretStore = secretStore
         self.clock = clock
         self.lockTimeout = lockTimeout
+        thumbnailCache = ThumbnailCache(
+            root: thumbnailsFolder ?? url.deletingLastPathComponent().appending(path: "thumbnails", directoryHint: .isDirectory),
+            limits: thumbnailLimits)
 
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        lock.withLock { _ = syncLocked(force: true) }
+        if readsFileImmediately { lock.withLock { _ = syncLocked(force: true) } }
         if watchesFile {
             watcher = ProfileFileWatcher(folder: url.deletingLastPathComponent()) { [weak self] in self?.refresh() }
         }
@@ -136,6 +150,15 @@ public final class ProfileStore: @unchecked Sendable {
     /// Whether playback progress or a followed move is held in memory and not yet in the file. A quit path can use it
     /// to decide whether `flushPlaybackProgress()` has anything to do.
     public var hasUnsavedChanges: Bool { read { $0.session?.dirty == true } }
+
+    /// Whether a moved or renamed file was followed in memory and the new path is not in the file yet (playback progress
+    /// alone does not count). A refresh uses it to decide whether `persistPendingMigrations()` has anything to do.
+    public var hasUnsavedMigrations: Bool { read { $0.session?.migrated == true } }
+
+    /// Changes every time a profile is unlocked or locked (a login, a logout, a deleted profile, a remembered login
+    /// restored). Memory only: no sync, no disk, safe on the main actor. A result read under one value belongs to
+    /// that session; one read under an older value than the current one is out of date.
+    public var sessionGeneration: Int { lock.withLock { state.sessionGeneration } }
 
     /// Counts over the unlocked profile (all zero while logged out).
     public func totals() -> ProfileTotals {
@@ -258,14 +281,15 @@ public final class ProfileStore: @unchecked Sendable {
                         session.contents = contents
                         session.loadedCiphertext = record.encryptedVaultBase64
                         session.dirty = !session.pendingProgress.isEmpty
+                        session.migrated = false
                         state.session = session
                     case .failure:
-                        state.session = nil
+                        state.endSession()
                         visible = true
                     }
                 }
             } else {
-                state.session = nil
+                state.endSession()
                 visible = true
             }
         }
@@ -275,7 +299,7 @@ public final class ProfileStore: @unchecked Sendable {
         if let session = state.session, session.remembered, state.effectiveRemembered == nil,
             oldRemembered?.lowercased() == session.usernameKey
         {
-            state.session = nil
+            state.endSession()
             visible = true
         }
         return visible
@@ -329,9 +353,9 @@ public final class ProfileStore: @unchecked Sendable {
                 let current = state.profiles[candidate.name.lowercased()],
                 current.encryptedVaultBase64 == candidate.record.encryptedVaultBase64
             else { return false }
-            state.session = ProfileSession(
+            state.startSession(ProfileSession(
                 usernameKey: current.username.lowercased(), username: current.username, vaultKey: key, contents: contents,
-                loadedCiphertext: current.encryptedVaultBase64, remembered: true)
+                loadedCiphertext: current.encryptedVaultBase64, remembered: true))
             return true
         }
         if restored { hub.yield(.external) }
@@ -366,6 +390,10 @@ public final class ProfileStore: @unchecked Sendable {
 
         var sealed = false
         if var session = working.session, vaultChanged || session.dirty {
+            // Pictures an older vault still carries move to the cache now, so the vault shrinks to what it is for.
+            for picture in session.contents.extractThumbnails() {
+                thumbnailCache.store(picture.data, profile: session.usernameKey, key: picture.key, vaultKey: session.vaultKey)
+            }
             guard let plaintext = try? ProfileJSON.encode(session.contents.payload(), pretty: false) else {
                 throw .writeFailed(errno: EINVAL)
             }
@@ -373,6 +401,7 @@ public final class ProfileStore: @unchecked Sendable {
             working.profiles[session.usernameKey]?.encryptedVaultBase64 = encoded
             session.loadedCiphertext = encoded
             session.dirty = false
+            session.migrated = false
             session.pendingProgress = [:]
             working.session = session
             sealed = true
@@ -484,7 +513,10 @@ public final class ProfileStore: @unchecked Sendable {
             let now = clock()
             var migrated = false
             for probe in probes where state.session?.contents.resolve(probe, now: now)?.migrated == true { migrated = true }
-            if migrated { state.session?.dirty = true }
+            if migrated {
+                state.session?.dirty = true
+                state.session?.migrated = true
+            }
         }
         return state.session?.contents
     }

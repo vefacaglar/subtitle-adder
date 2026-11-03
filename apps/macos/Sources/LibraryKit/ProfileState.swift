@@ -28,6 +28,9 @@ struct ProfileSession: Sendable {
     /// written with the next save of the vault (any save writes all of `contents`), or by an explicit flush. Reads never
     /// write, and an unflushed change is lost if the process ends first.
     var dirty = false
+    /// Part of what `dirty` stands for is a path migration found while reading (not just playback progress), so the
+    /// vault has something worth writing even if no video is playing.
+    var migrated = false
     /// The latest unsaved progress per record key. `contents` already reflects it; this is what an external reload of
     /// the vault re-applies on top of what the other instance wrote.
     var pendingProgress: [String: PendingProgress] = [:]
@@ -57,6 +60,9 @@ struct ProfileState: Sendable {
     var lastUsername: String?
     var rememberedUsername: String?
     var session: ProfileSession?
+    /// Bumped whenever a session starts or ends (a login, a logout, a deleted profile, a restored login), so a reader
+    /// can tell that what it read belongs to a session that is over.
+    var sessionGeneration = 0
 
     var hasSynced = false
     var lastSnapshot: ProfileFileSnapshot?
@@ -67,6 +73,17 @@ struct ProfileState: Sendable {
     var restoreAttemptedGeneration = -1
     /// When a save of the vault last succeeded or, for a throttled progress save, last failed; throttles progress writes.
     var lastVaultSaveAttempt: Date?
+
+    mutating func startSession(_ new: ProfileSession) {
+        session = new
+        sessionGeneration += 1
+    }
+
+    mutating func endSession() {
+        guard session != nil else { return }
+        session = nil
+        sessionGeneration += 1
+    }
 
     /// The remembered username as the apps treat it: only while remember-me is on.
     var effectiveRemembered: String? { rememberMe ? rememberedUsername : nil }

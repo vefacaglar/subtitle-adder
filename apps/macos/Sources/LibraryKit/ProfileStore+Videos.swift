@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Everything here acts on the unlocked profile. While logged out the calls do nothing and return `nil`, `false`,
@@ -48,7 +49,10 @@ extension ProfileStore {
             guard state.session != nil else { return .some(nil) }
             let now = clock()
             let resolution = state.session!.contents.resolve(probe, now: now)
-            if resolution?.migrated == true { state.session!.dirty = true }
+            if resolution?.migrated == true {
+                state.session!.dirty = true
+                state.session!.migrated = true
+            }
             let existing = resolution?.stats ?? VideoUserStats.placeholder(path: probe.path, now: now, fingerprint: probe.fingerprint)
             let (cleanPosition, cleanDuration) = Self.progress(position, duration, existing: existing)
             guard Self.isSignificant(cleanPosition, cleanDuration, existing: existing) else {
@@ -120,14 +124,18 @@ extension ProfileStore {
     /// resume position. Returns `false` while logged out.
     @discardableResult
     public func clearWatchHistory() throws(ProfileError) -> Bool {
-        try transact(fallback: false) { state in
+        var forgotten: [String] = []
+        var profile: String?
+        let cleared = try transact(fallback: false) { state in
             let now = clock()
             var contents = state.session!.contents
+            profile = state.session!.usernameKey
             let listed = Set(contents.customLists.flatMap(\.videoPaths).map { $0.lowercased() })
             for (key, video) in contents.videos {
                 if !video.isLiked, video.rating <= 0, !listed.contains(video.videoPath.lowercased()) {
                     contents.removeVideo(forKey: key)
                     contents.removeThumbnail(forKey: key)
+                    forgotten += VaultContents.thumbnailKeys(for: video)
                 } else {
                     var reset = video
                     reset.viewCount = 0
@@ -141,30 +149,42 @@ extension ProfileStore {
             state.session!.pendingProgress = [:]
             return (true, .vault)
         }
+        // The pictures of the forgotten videos go too, once the history is really cleared.
+        if cleared, let profile, !forgotten.isEmpty { thumbnailCache.remove(profile: profile, keys: forgotten) }
+        return cleared
     }
 
     // MARK: - Thumbnails
 
-    /// Stores an image for a file inside the encrypted vault (never as a plaintext file). Images over 512 KB, empty
-    /// ones and ones for a blank path are ignored. Returns whether the image is now stored; never raises
-    /// `ProfileChange.local`.
+    /// Stores an image for a file in the profile's encrypted picture cache (see `ThumbnailCache`: one AES-GCM file per
+    /// picture, capped, never a plaintext file). Neither the vault nor `profiles.json` is touched and no record is
+    /// created, so browsing many videos costs one small file each. Images over 512 KB, empty ones, ones for a blank
+    /// path and any call while logged out are ignored. Returns whether the image is now stored; never raises
+    /// `ProfileChange.local`. Throws nothing today (a cache that cannot be written returns `false`).
     @discardableResult
     public func setThumbnail(_ data: Data, for video: URL) throws(ProfileError) -> Bool {
-        guard !data.isEmpty, data.count <= VaultContents.maxThumbnailBytes, let probe = lookupProbe(for: video) else { return false }
-        return try transact(fallback: false) { state in
-            let now = clock()
-            let (key, _, changed) = state.session!.contents.resolveOrCreate(probe, now: now)
-            let unchanged = state.session!.contents.stats(forKey: key)?.thumbnail == data
-            if unchanged, !changed { return (true, []) }
-            state.session!.contents.setThumbnail(data, forKey: key)
-            return (true, [.vault, .silent])
-        }
+        guard !data.isEmpty, data.count <= VaultContents.maxThumbnailBytes, let session = thumbnailSession(),
+            let probe = VideoProbe(video)
+        else { return false }
+        return thumbnailCache.store(
+            data, profile: session.profile, key: VaultContents.thumbnailKeys(for: probe)[0], vaultKey: session.key)
     }
 
-    /// The stored image for a file, if any. Does not follow moved files (a following `stats(for:)` does).
+    /// The stored image for a file, if any: from the picture cache, or from the vault when it was written there by an
+    /// older version. `nil` while logged out, without touching the file. Does not follow moved files by itself (a
+    /// fingerprinted file is found wherever it is).
     public func thumbnail(for video: URL, fingerprints: FingerprintMode = .compute) -> Data? {
-        guard let probe = VideoProbe(video, mode: fingerprints) else { return nil }
+        guard let session = thumbnailSession(), let probe = VideoProbe(video, mode: fingerprints) else { return nil }
+        if let cached = thumbnailCache.data(
+            profile: session.profile, keys: VaultContents.thumbnailKeys(for: probe), vaultKey: session.key)
+        {
+            return cached
+        }
         return read { $0.session?.contents.thumbnail(for: probe) }
+    }
+
+    private func thumbnailSession() -> (profile: String, key: SymmetricKey)? {
+        read { state in state.session.map { ($0.usernameKey, $0.vaultKey) } }
     }
 
     // MARK: - Helpers

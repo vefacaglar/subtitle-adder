@@ -30,7 +30,7 @@ extension ProfileStore {
                     loadedCiphertext: nil, remembered: false)
                 previouslyRemembered = state.rememberedUsername
                 applyRememberChoice(rememberMe, step: step, state: &state, session: &session)
-                state.session = session
+                state.startSession(session)
                 state.lastUsername = name
                 return ((), [.vault, .header])
             }
@@ -71,7 +71,7 @@ extension ProfileStore {
                     contents: contents, loadedCiphertext: current.encryptedVaultBase64, remembered: false)
                 previouslyRemembered = state.rememberedUsername
                 applyRememberChoice(rememberMe, step: step, state: &state, session: &session)
-                state.session = session
+                state.startSession(session)
                 state.lastUsername = current.username
                 return ((), [.header])
             }
@@ -97,7 +97,7 @@ extension ProfileStore {
             return
         }
         let forgotten = [state.session?.username, state.rememberedUsername].compactMap { $0 }
-        state.session = nil
+        state.endSession()
         state.rememberedUsername = nil
         lock.unlock()
         hub.yield(.local)
@@ -114,7 +114,7 @@ extension ProfileStore {
             defer { lock.unlock() }
             syncLocked()
             rememberedMeanwhile = state.rememberedUsername
-            state.session = nil
+            state.endSession()
             state.rememberedUsername = nil
             var working = state
             try saveLocked(&working, vaultChanged: false)
@@ -143,10 +143,11 @@ extension ProfileStore {
                 current.passwordHashBase64 == candidate?.passwordHashBase64
             else { throw .invalidCredentials }
             state.profiles[key] = nil
-            if state.session?.usernameKey == key { state.session = nil }
+            if state.session?.usernameKey == key { state.endSession() }
             if state.rememberedUsername?.lowercased() == key { state.rememberedUsername = nil }
             return ((), [.header])
         }
+        thumbnailCache.removeAll(profile: key)
         secretStore.remove(Self.rememberAccount(for: name))
     }
 
