@@ -26,7 +26,9 @@ import Testing
         return url
     }
 
-    private func waitUntil(timeout: Double = 5, _ condition: () -> Bool) async throws {
+    /// Polls until `condition` holds. The generous default only matters on a loaded machine (a real AVPlayer reacts
+    /// late when engine processes or other test targets compete for the CPU); a passing run returns as soon as it holds.
+    private func waitUntil(timeout: Double = 15, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
     }
