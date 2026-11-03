@@ -208,7 +208,7 @@ import Testing
         await settle(vm)
 
         #expect(texts(vm) == [nil, "T-Half translated line.", nil])
-        let exported = vm.exportSentences(translated: true).map(\.text)
+        let exported = vm.foreground.exportSentences(translated: true).map(\.text)
         #expect(exported == ["Merhaba.", "T-Half translated line.", "Dünya."])
         // Auto-save wrote the translated export over the imported file (the fake renderer echoes the lines as JSON).
         let saved = try String(contentsOf: vm.subtitleSaveURL()!, encoding: .utf8)
@@ -239,7 +239,7 @@ import Testing
         #expect(second.text == "Line 2" && second.needsReview)
         #expect(!SubtitleViewModel.isReusableTranslation(vm.sentences[0], entry: first, target: "en"))
         #expect(vm.linesNeedingTranslation(into: "en").count == 2)
-        #expect(vm.exportSentences(translated: true).map(\.needsReview) == [true, true])
+        #expect(vm.foreground.exportSentences(translated: true).map(\.needsReview) == [true, true])
 
         // Editing the text makes it the user's own: the marker goes. The same text keeps it.
         vm.setTranslationText("Good one.", for: vm.sentences[0].uid)
@@ -248,7 +248,7 @@ import Testing
         let edited = try #require(vm.translation(for: vm.sentences[0]))
         #expect(edited.text == "Better one." && !edited.needsReview)
         #expect(SubtitleViewModel.isReusableTranslation(vm.sentences[0], entry: edited, target: "en"))
-        #expect(vm.exportSentences(translated: true).map(\.needsReview) == [false, true])
+        #expect(vm.foreground.exportSentences(translated: true).map(\.needsReview) == [false, true])
     }
 
     @Test func undoRestoresTheMarker() throws {
@@ -310,7 +310,7 @@ import Testing
             await settle(vm)
             let second = try #require(vm.translation(for: vm.sentences[1]))
             #expect(second.language == "en" && second.text == "Line 2" && second.needsReview)
-            #expect(vm.exportSentences(translated: true).map(\.text) == ["New 1", "Line 2"])
+            #expect(vm.foreground.exportSentences(translated: true).map(\.text) == ["New 1", "Line 2"])
             vm.applyTranslation(
                 vm.sentences.map { Sentence(id: $0.id, start: 0, end: 1, text: "Hola \($0.id)") },
                 language: "es", source: vm.sentences
@@ -359,15 +359,15 @@ import Testing
         let vm = makeModel()
         #expect(vm.loadSubtitleFile(file))
         #expect(vm.sentences.map { vm.needsReview(for: $0) } == [false, true])
-        #expect(vm.exportSentences(translated: false).map(\.needsReview) == [false, true])
-        #expect(vm.exportSentences(translated: true).map(\.needsReview) == [false, true])
+        #expect(vm.foreground.exportSentences(translated: false).map(\.needsReview) == [false, true])
+        #expect(vm.foreground.exportSentences(translated: true).map(\.needsReview) == [false, true])
 
         vm.setText("Broken", for: vm.sentences[1].uid)
         #expect(vm.needsReview(for: vm.sentences[1]))
         vm.setText("Fixed", for: vm.sentences[1].uid)
         #expect(!vm.needsReview(for: vm.sentences[1]))
-        #expect(vm.exportSentences(translated: false).map(\.needsReview) == [false, false])
-        #expect(vm.exportSentences(translated: true).map(\.needsReview) == [false, false])
+        #expect(vm.foreground.exportSentences(translated: false).map(\.needsReview) == [false, false])
+        #expect(vm.foreground.exportSentences(translated: true).map(\.needsReview) == [false, false])
     }
 
     @Test func aDraftCommitClearsTheImportedFlagAndUndoRestoresIt() {

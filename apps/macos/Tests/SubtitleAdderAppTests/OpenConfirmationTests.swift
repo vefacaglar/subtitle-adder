@@ -94,7 +94,7 @@ import Testing
         vm.openExternalFiles([b])
         #expect(vm.pendingOpen == nil && vm.video == b && vm.workspace == .editor)
         var opened = false
-        vm.requestOpen(replacesWork: false) { opened = true }
+        vm.requestOpen(losing: []) { opened = true }
         #expect(vm.pendingOpen == nil && opened)
 
         // A's job went on the whole time and is still its own.
@@ -118,7 +118,7 @@ import Testing
         #expect(vm.pendingOpen != nil && vm.video == a && vm.sentences.isEmpty)
         vm.cancelPendingOpen()
         var opened = false
-        vm.requestOpen { opened = true }
+        vm.requestOpen(losing: [vm.foreground]) { opened = true }
         #expect(vm.pendingOpen != nil && !opened)
         vm.cancelPendingOpen()
         vm.openFiles([try touch("d.srt", in: folder, text: Self.srt)])

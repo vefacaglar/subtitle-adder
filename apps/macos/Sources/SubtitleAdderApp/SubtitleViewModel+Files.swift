@@ -1,17 +1,31 @@
 import EngineKit
 import Foundation
 
-/// Subtitle files: importing an existing one, dropping files, saving next to the video, auto-save and "Komple çevir".
+/// Subtitle files: importing an existing one, dropping files, saving a session's lines next to its video, auto-save and
+/// "Komple çevir".
 extension SubtitleViewModel {
     // MARK: - Importing
 
     /// Loads an existing subtitle file (.srt, .vtt, .ass, .ssa or the engine's .json) instead of transcribing, as the lines
     /// of `session` (the video on screen when not given). The video stays; translations, undo history and edits are
     /// cleared and display and export go back to the original. A job of that video stops.
-    /// Returns `false` with a failed status when the file can't be read or has no valid lines.
+    /// Returns `false` with a failed status when the file can't be read or has no valid lines, and `false` with an
+    /// `openRefusal` when the playlist run is working on the video.
     @discardableResult
     func loadSubtitleFile(_ url: URL, into session: VideoSession? = nil) -> Bool {
         let session = session ?? foreground
+        // The run that works on the video would go on writing into the lines.
+        guard session.batchItemID == nil else {
+            openRefusal = Self.batchBusyMessage
+            return false
+        }
+        return applySubtitle(url, to: session)
+    }
+
+    /// `loadSubtitleFile` without the playlist run's claim on the video: for the run itself and for a session that is
+    /// just being made.
+    @discardableResult
+    func applySubtitle(_ url: URL, to session: VideoSession) -> Bool {
         let parsed: [Sentence]
         do {
             parsed = try SubtitleParser.parseFile(at: url)
@@ -62,6 +76,7 @@ extension SubtitleViewModel {
         // video-less editor that goes away, might be work (see `requestOpen`).
         let first = videos.first
         let findingVideo = videos.isEmpty && (external || video == nil)
+        guard !refusesSubtitle(opening: first, subtitle: subtitle, findingVideo: findingVideo) else { return }
         requestOpen(losing: sessionsLost(opening: first, subtitle: subtitle, findingVideo: findingVideo)) { [self] in
             // The platform has no player or lines of its own: what is dropped on it is opened where it can be seen.
             if external || workspace == .platform { workspace = .editor }

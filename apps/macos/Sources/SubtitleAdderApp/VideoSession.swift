@@ -130,6 +130,8 @@ final class VideoSession {
     @ObservationIgnored var jobID = UUID()
     /// Re-runs the job that offline mode blocked; set only together with the matching failed status.
     @ObservationIgnored var offlineRetry: (@MainActor () -> Void)?
+    /// The playlist run saved this video's translation; with nothing unsaved on top, the file on disk is the session.
+    @ObservationIgnored var savedByRun = false
     /// The batch playlist item whose run owns this session right now (extraction, recognition, translation).
     @ObservationIgnored var batchItemID: UUID?
     /// Background translation of the lines transcribed so far: the running task, the lines already handed to it, and
@@ -184,8 +186,9 @@ final class VideoSession {
         return detectedLanguage
     }
 
-    /// Worth keeping when the user leaves the video: it has lines, a job or a queue entry still belongs to it, or it
-    /// carries something that can't be read off the disk again. An empty idle session is dropped.
+    /// Something is in the session: lines, or a job (running or waiting). `isKept` in the view model decides what stays
+    /// when the user leaves the video: a session with content that can't be read off the disk again, one the list tab
+    /// shows, or one the playlist run is working on. An empty idle session is dropped.
     var hasContent: Bool {
         !sentences.isEmpty || job != nil || isWorking
     }
@@ -193,9 +196,13 @@ final class VideoSession {
     /// Reopening the video would give the very same session: its lines are the sidecar's as they are on disk, and
     /// nothing was added to them.
     var isReconstructible: Bool {
-        guard job == nil, !isWorking, !hasUnsavedEdits, translations.isEmpty, loadedSubtitle != nil else { return false }
+        guard job == nil, !isWorking, !hasUnsavedEdits else { return false }
         if case .failed = status { return false }
-        return true
+        // The result of a playlist run, saved next to the video, is what opening the video loads again.
+        if savedByRun { return true }
+        // Lines from a subtitle file only come back when it is the file the video opens with by itself.
+        guard translations.isEmpty, let loadedSubtitle, let video else { return false }
+        return SubtitleParser.findSidecar(for: video) == loadedSubtitle
     }
 
     /// "N satır · dil: xx" (the language is left out when unknown), plus the translation language and the saved file.
@@ -228,11 +235,14 @@ final class VideoSession {
         hasUnsavedEdits = false
         detectedLanguage = nil
         linesSourceLanguage = nil
+        loadedSubtitle = nil
+        savedByRun = false
     }
 
     /// Lines from a subtitle file: translations, edits and the display choice go back to the original.
     func load(subtitle url: URL, lines: [Sentence]) {
         loadedSubtitle = url
+        savedByRun = false
         savedSubtitleName = nil
         hasUnsavedEdits = false
         translations = [:]

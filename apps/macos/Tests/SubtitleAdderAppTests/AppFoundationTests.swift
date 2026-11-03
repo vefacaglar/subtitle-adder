@@ -273,33 +273,26 @@ import Testing
 
     @Test func partialSnapshotsKeepLineIdentitiesAndIgnoreUnknownLanguage() {
         let (vm, _, _) = makeModel()
-        vm.applyPartial(language: "?", sentences: [line(1, 0, 1, "Merhaba")])
+        vm.foreground.applyPartial(language: "?", sentences: [line(1, 0, 1, "Merhaba")])
         #expect(vm.detectedLanguage == nil)
         let first = vm.sentences[0].uid
         vm.selection = first
 
         // The first line keeps its text; the new second line is still a draft of what is being said.
-        vm.applyPartial(language: "tr", sentences: [line(1, 0, 1, "Merhaba"), line(2, 1, 2, "dün")])
+        vm.foreground.applyPartial(language: "tr", sentences: [line(1, 0, 1, "Merhaba"), line(2, 1, 2, "dün")])
         #expect(vm.detectedLanguage == "tr")
         #expect(vm.sentences.map(\.text) == ["Merhaba", "dün"])
         #expect(vm.sentences[0].uid == first)
         #expect(vm.selection == first)
         let second = vm.sentences[1].uid
 
-        vm.applyPartial(language: "tr", sentences: [line(1, 0, 1, "Merhaba"), line(2, 1, 2, "dün"), line(3, 2, 3, "!")])
+        vm.foreground.applyPartial(language: "tr", sentences: [line(1, 0, 1, "Merhaba"), line(2, 1, 2, "dün"), line(3, 2, 3, "!")])
         #expect(vm.sentences.map(\.uid).prefix(2) == [first, second])
         #expect(vm.sentences.count == 3)
 
         // A line whose text was refined is a new line: the number alone doesn't carry the identity over.
-        vm.applyPartial(language: "tr", sentences: [line(1, 0, 1, "Merhaba"), line(2, 1, 2, "dünya"), line(3, 2, 3, "!")])
+        vm.foreground.applyPartial(language: "tr", sentences: [line(1, 0, 1, "Merhaba"), line(2, 1, 2, "dünya"), line(3, 2, 3, "!")])
         #expect(vm.sentences[1].uid != second)
         #expect(vm.sentences[0].uid == first)
-    }
-
-    @Test func partialLanguageMovesTheTranslationTargetOffTheSource() {
-        let (vm, _, _) = makeModel()
-        vm.translationTarget = "en"
-        vm.applyPartial(language: "en", sentences: [line(1, 0, 1, "Hello")])
-        #expect(vm.translationTarget != "en")
     }
 }

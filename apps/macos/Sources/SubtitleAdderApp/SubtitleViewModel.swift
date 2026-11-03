@@ -159,6 +159,9 @@ final class SubtitleViewModel {
     var workspace: Workspace = .editor
     /// The batch playlist, in memory only. See `SubtitleViewModel+Playlist.swift`.
     var playlist: [PlaylistItem] = []
+    /// Why the playlist run could not start (offline mode, no engine); shown in the list tab. The status of no video
+    /// carries it.
+    var playlistNotice: PlaylistNotice?
     /// A playlist run is under way. Each item works in its own session and the run uses the settings it started with,
     /// so the editor, the player and the toolbar stay the user's.
     var isPlaylistRunning = false
@@ -178,6 +181,8 @@ final class SubtitleViewModel {
     /// `localTranslationOverlapMemory`). Tests set it.
     @ObservationIgnored var physicalMemory = ProcessInfo.processInfo.physicalMemory
 
+    /// Why an open was refused (a subtitle onto a video the playlist run is working on); shown as an alert.
+    var openRefusal: LocalizedMessage?
     /// An open request that waits for the user's answer because it would lose a running job or edited lines.
     var pendingOpen: PendingOpen?
     /// Called with the file after every subtitle written next to a video (editor save, auto-save, playlist), so the file

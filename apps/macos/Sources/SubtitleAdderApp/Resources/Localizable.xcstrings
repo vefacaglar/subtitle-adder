@@ -2289,6 +2289,38 @@
         }
       }
     },
+    "Bu video toplu listede işleniyor. Liste bitince ya da durdurunca altyazı açabilirsin.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu video toplu listede işleniyor. Liste bitince ya da durdurunca altyazı açabilirsin."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This video is being processed by the batch list. You can open a subtitle once the list finishes or is stopped."
+          }
+        }
+      }
+    },
+    "Sırada: %lld.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sırada: %lld."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queued: #%lld"
+          }
+        }
+      }
+    },
     "Sıradakileri temizle": {
       "localizations": {
         "tr": {

@@ -91,6 +91,17 @@ struct ContentView: View {
             Color.clear.fileImporter(isPresented: $pickingSubtitle, allowedContentTypes: Self.subtitleTypes, onCompletion: subtitlePicked)
         }
         .confirmsOpening(in: vm)
+        // An open the playlist run's claim on a video keeps from happening says so; there is nothing to confirm.
+        .background {
+            Color.clear.alert(
+                L("İşlem tamamlanamadı"),
+                isPresented: Binding(get: { vm.openRefusal != nil }, set: { if !$0 { vm.openRefusal = nil } })
+            ) {
+                Button(L("Tamam")) { vm.openRefusal = nil }
+            } message: {
+                Text(vm.openRefusal?.text ?? "")
+            }
+        }
         .fileExporter(
             isPresented: exportPresented,
             document: exportDocument,

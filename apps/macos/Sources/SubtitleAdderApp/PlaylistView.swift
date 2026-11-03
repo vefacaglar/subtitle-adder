@@ -11,6 +11,9 @@ struct PlaylistView: View {
     var body: some View {
         VStack(spacing: 0) {
             actions.padding(.horizontal, 16).padding(.vertical, 10)
+            if let notice = vm.playlistNotice {
+                noticeBar(notice)
+            }
             Divider()
             if vm.hasListRows {
                 List(vm.listRows) { row in
@@ -56,6 +59,26 @@ struct PlaylistView: View {
                 .disabled(!vm.canStartPlaylist)
                 .help(L("Listedeki tüm videoları sırayla metne çevir, seçili hedef dile çevir ve kendi klasörlerine kaydet"))
         }
+    }
+
+    /// Why the run did not start, with the way out when going online helps.
+    private func noticeBar(_ notice: PlaylistNotice) -> some View {
+        HStack(spacing: 10) {
+            Label(notice.message.text, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .lineLimit(2)
+            if notice.retry != nil {
+                Button(SubtitleViewModel.offlineRetryTitle(for: notice.message)) { vm.goOnlineAndRetryPlaylist() }
+            }
+            Spacer()
+            Button(L("Kapat"), systemImage: "xmark.circle.fill") { vm.playlistNotice = nil }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help(L("Kapat"))
+        }
+        .font(.callout)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
     }
 
     private var emptyState: some View {

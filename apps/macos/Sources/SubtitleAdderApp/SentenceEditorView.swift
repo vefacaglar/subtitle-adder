@@ -14,7 +14,13 @@ struct SentenceEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if vm.sentences.isEmpty {
+            if vm.sentences.isEmpty, vm.isQueued {
+                // Waiting for another video's job: nothing is being generated yet.
+                ContentUnavailableView(
+                    vm.queuePosition.map { L("Sırada: %lld.", $0) } ?? L("Sırada"),
+                    systemImage: "clock"
+                )
+            } else if vm.sentences.isEmpty {
                 ContentUnavailableView(
                     vm.isWorking ? L("Altyazı üretiliyor…") : L("Henüz altyazı yok"),
                     systemImage: "captions.bubble",

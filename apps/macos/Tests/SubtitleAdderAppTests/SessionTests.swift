@@ -49,11 +49,15 @@ import Testing
         }
     }
 
-    private func makeLab() throws -> (SubtitleViewModel, Lab) {
+    /// `gatedTranslate` makes `translate` wait for `release-translate`; `models` is what `models` answers (to give offline
+    /// mode something to block on).
+    func makeLab(gatedTranslate: Bool = false, models: String = "") throws -> (SubtitleViewModel, Lab) {
         let folder = FileManager.default.temporaryDirectory.appending(path: "sessions-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let lab = Lab(folder: folder)
+        let gate = gatedTranslate ? "while [ ! -e '\(folder.path)/release-translate' ]; do sleep 0.02; done\n" : ""
         let engine = try FakeEngine.make(
+            models: models,
             transcribe: #"""
             stem=$(basename "$2" .mp4)
             echo "start $stem $*" >> '\#(lab.log.path)'
@@ -63,8 +67,7 @@ import Testing
             echo "end $stem" >> '\#(lab.log.path)'
             echo "{\"event\": \"result\", \"language\": \"tr\", \"duration\": 1, \"audio\": \"/nonexistent.wav\", \"outputs\": [], \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1, \"text\": \"Metin $stem\", \"words\": []}]}"
             """#,
-            translate: #"""
-            echo "translate $*" >> '\#(lab.log.path)'
+            translate: "echo \"translate $*\" >> '\(lab.log.path)'\n" + gate + #"""
             echo '{"event": "translation", "language": "tr", "sentences": [{"id": 1, "start": 0, "end": 1, "text": "Çeviri", "words": []}]}'
             """#
         )
@@ -80,7 +83,7 @@ import Testing
     }
 
     /// Polls a condition on the main actor.
-    private func eventually(_ condition: () -> Bool) async -> Bool {
+    func eventually(_ condition: () -> Bool) async -> Bool {
         for _ in 0..<400 {
             if condition() { return true }
             try? await Task.sleep(for: .milliseconds(25))
@@ -88,7 +91,7 @@ import Testing
         return condition()
     }
 
-    private let queued = SubtitleViewModel.Status.working(.key("Sırada"), fraction: nil)
+    let queued = SubtitleViewModel.Status.working(.key("Sırada"), fraction: nil)
 
     // MARK: - Switching videos keeps the job
 
@@ -536,7 +539,7 @@ import Testing
         )
         return JobQueue.Entry(
             session: session ?? VideoSession(video: URL(filePath: "/tmp/\(stem).mp4")),
-            kind: .generate(thenTranslate: false), settings: settings
+            kind: .generate(thenTranslate: false), settings: settings, previousStatus: .idle
         )
     }
 
@@ -566,7 +569,7 @@ import Testing
         queue.submit(a)
         queue.submit(b)
         queue.submit(c)
-        let again = JobQueue.Entry(session: b.session, kind: .translate(reuseExisting: false, only: nil), settings: b.settings)
+        let again = JobQueue.Entry(session: b.session, kind: .translate(reuseExisting: false, only: nil), settings: b.settings, previousStatus: .idle)
         #expect(queue.submit(again) == .queued)
         #expect(queue.waiting.map(\.id) == [again.id, c.id])
         #expect(queue.waiting.first?.kind == .translate(reuseExisting: false, only: nil))
@@ -579,10 +582,10 @@ import Testing
         queue.submit(a)
         queue.submit(b)
         queue.submit(c)
-        #expect(!queue.remove(a.session) && queue.isRunning(a.session))
-        #expect(queue.remove(b.session) && !queue.remove(b.session))
+        #expect(queue.remove(a.session) == nil && queue.isRunning(a.session))
+        #expect(queue.remove(b.session)?.session === b.session && queue.remove(b.session) == nil)
         let cleared = queue.clearWaiting()
-        #expect(cleared.count == 1 && cleared[0] === c.session)
+        #expect(cleared.count == 1 && cleared[0].session === c.session)
         #expect(queue.waiting.isEmpty && queue.isRunning(a.session))
     }
 

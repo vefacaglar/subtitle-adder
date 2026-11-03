@@ -31,6 +31,13 @@ struct PlaylistItem: Identifiable, Equatable, Sendable {
     var isAudioReady: Bool { state == .pending && fraction != nil }
 }
 
+/// A reason the playlist run did not start, with what resolves it when there is something.
+struct PlaylistNotice {
+    let message: LocalizedMessage
+    /// Starts the run again once offline mode is off; `nil` when going online would not help.
+    let retry: (@MainActor () -> Void)?
+}
+
 /// What one playlist run keeps track of while its three stages overlap.
 @MainActor
 final class PlaylistPipeline {
@@ -160,13 +167,19 @@ extension SubtitleViewModel {
     /// toolbar stays the user's meanwhile.
     func startPlaylist() {
         guard canStartPlaylist else { return }
+        playlistNotice = nil
         guard let engine = catalog.engine else {
-            status = .failed(.error(EngineError.notFound))
+            playlistNotice = PlaylistNotice(message: .error(EngineError.notFound), retry: nil)
             return
         }
         var needed = [model, translationModel]
         if diarize { needed.append(Self.diarizationModelID) }
-        if blockedOffline(needed, retry: { [weak self] in self?.startPlaylist() }) { return }
+        // A run that can't start says why in the list tab; the status of no video is touched (the video on screen may
+        // be running a job of its own).
+        if let block = offlineBlock(needed) {
+            playlistNotice = PlaylistNotice(message: block, retry: { [weak self] in self?.startPlaylist() })
+            return
+        }
         isPlaylistRunning = true
         let pipeline = PlaylistPipeline(settings: currentJobSettings())
         playlistPipeline = pipeline
@@ -189,6 +202,8 @@ extension SubtitleViewModel {
         case ready
         case failed(LocalizedMessage)
         case cancelled
+        /// The recognition was replaced by something else; the item goes back to waiting and the run goes on.
+        case interrupted
     }
 
     private func runPlaylist(engine: EngineClient, pipeline: PlaylistPipeline) async {
@@ -237,7 +252,7 @@ extension SubtitleViewModel {
                 }
             case .failed(let message):
                 updatePlaylistItem(item.id, .failed, message, nil)
-            case .cancelled:
+            case .cancelled, .interrupted:
                 updatePlaylistItem(item.id, .pending, .key("Sırada"), nil)
             }
             releaseLane()
@@ -278,15 +293,16 @@ extension SubtitleViewModel {
     private func transcribe(_ item: PlaylistItem, pipeline: PlaylistPipeline) async -> ItemOutcome {
         let session = session(for: item.videoURL)
         // A job somebody queued for this video by hand is superseded by the run.
-        jobQueue.remove(session)
-        session.batchItemID = item.id
+        dequeue(session)
         var settings = pipeline.settings
         settings.language = item.sourceLanguage
         settings.model = modelFitting(language: item.sourceLanguage, preferred: settings.model)
         // A sidecar written since the session was made counts too.
         if session.sentences.isEmpty, let sidecar = SubtitleParser.findSidecar(for: item.videoURL) {
-            loadSubtitleFile(sidecar, into: session)
+            applySubtitle(sidecar, to: session)
         }
+        // From here on the run owns the video: nothing else loads lines into it until the item is through.
+        session.batchItemID = item.id
         // Lines in place are used as they are, no transcription (as on Windows). Once translations are saved as
         // `<video>.<fmt>` a sidecar may be an earlier translation; the list can't tell, so that run translates it again.
         if session.sentences.isEmpty {
@@ -298,8 +314,12 @@ extension SubtitleViewModel {
             }
             // With an external LLM in async mode `startGenerate` translates the finished lines while it transcribes.
             startGenerate(session, thenTranslate: false, settings: settings, batchItem: item.id)
+            let jobID = session.jobID
             await finishJob(of: session)
             if Task.isCancelled { return .cancelled }
+            // Somebody replaced or stopped the job (or the lines) under the run: what is in the session is not this
+            // item's recognition, so the item is left for the next run instead of being translated and saved.
+            if session.jobID != jobID || session.loadedSubtitle != nil { return .interrupted }
             if case .failed(let message) = session.status { return .failed(message) }
             if session.sentences.isEmpty { return .failed(.key("Videoda konuşma bulunamadı.")) }
         } else if !item.sourceLanguage.isEmpty {
@@ -365,6 +385,12 @@ extension SubtitleViewModel {
         }
         // The run is through with the video once the item is no longer being worked on.
         if item.state != .working { session.batchItemID = nil }
+        // A saved result with nothing unsaved on top of it is on disk and comes back from there when the video is
+        // opened; nobody needs the session in memory for the rest of the run.
+        if item.state == .completed {
+            session.savedByRun = true
+            if session !== foreground, !session.hasUnsavedEdits { sessions[Self.sessionKey(item.videoURL)] = nil }
+        }
     }
 
     // MARK: - Working folders
@@ -553,6 +579,11 @@ extension SubtitleViewModel {
         return (engine, nil)
     }
 
+    /// Whether the session still has exactly the lines a stage-3 translation was started for.
+    private func holdsSameLines(_ session: VideoSession, as lines: [Sentence]) -> Bool {
+        session.sentences.map(\.uid) == lines.map(\.uid)
+    }
+
     private func translateAndSaveInBackground(
         _ item: PlaylistItem, session: VideoSession, lines: [Sentence], preTranslated: [UUID: TranslationEntry],
         engine: EngineClient, source: String?, target: String, model: String, format: SubtitleFormat, external: Bool,
@@ -625,8 +656,11 @@ extension SubtitleViewModel {
                         // A growing prefix per batch plus a final complete one; context lines are not applied.
                         let pairs = Self.pairs(batch, with: remaining).filter { !$0.result.text.isEmpty }
                         for pair in pairs { translated[pair.original.uid] = (pair.result.text, pair.result.needsReview) }
-                        // Into the item's own session, whichever video is on screen; the toolbar is not touched.
-                        session.storeTranslations(pairs, language: language, merge: true)
+                        // Into the item's own session, whichever video is on screen; the toolbar is not touched. Only
+                        // while it still holds the lines the translation is for.
+                        if holdsSameLines(session, as: lines) {
+                            session.storeTranslations(pairs, language: language, merge: true)
+                        }
                     case .error(let message):
                         engineError = message
                     case .result, .partial:
@@ -681,7 +715,7 @@ extension SubtitleViewModel {
             return
         }
         onSubtitleSaved?(url)
-        session.savedSubtitleName = name
+        if holdsSameLines(session, as: lines) { session.savedSubtitleName = name }
         updatePlaylistItem(item.id, .completed, Self.savedMessage(name), 1)
         // Make the translation model that was just downloaded show as "hazır" (ready) in Settings.
         if refreshCatalog { await catalog.load() }

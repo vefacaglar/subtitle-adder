@@ -187,21 +187,21 @@ import Testing
         let (vm, _, _) = makeModel()
         vm.sentences = [line(1, "Bir."), line(2, "İki."), line(3, "Üç.")]
         // While recognition runs: two lines are held back and ten are needed.
-        #expect(vm.nextAsyncBatch().isEmpty)
+        #expect(vm.foreground.nextAsyncBatch().isEmpty)
         vm.asyncTranscriptionComplete = true
-        #expect(vm.nextAsyncBatch().map(\.text) == ["Bir.", "İki.", "Üç."])
+        #expect(vm.foreground.nextAsyncBatch().map(\.text) == ["Bir.", "İki.", "Üç."])
         // One remaining line is enough, and lines already handed over do not come again.
         vm.asyncQueued = Set(vm.sentences.prefix(2).map(\.uid))
-        #expect(vm.nextAsyncBatch().map(\.text) == ["Üç."])
+        #expect(vm.foreground.nextAsyncBatch().map(\.text) == ["Üç."])
         // A single line in total also works (the two-line holdback is gone), but blank ones are skipped.
         vm.sentences = [line(1, "Merhaba."), line(2, "  ")]
         vm.asyncQueued = []
-        #expect(vm.nextAsyncBatch().map(\.text) == ["Merhaba."])
+        #expect(vm.foreground.nextAsyncBatch().map(\.text) == ["Merhaba."])
         // A drained or failed run sends nothing, complete or not.
         vm.asyncFailed = true
-        #expect(vm.nextAsyncBatch().isEmpty)
+        #expect(vm.foreground.nextAsyncBatch().isEmpty)
         // The next run starts without the flag.
-        vm.cancelAsyncTranslation()
+        vm.foreground.cancelAsyncTranslation()
         #expect(!vm.asyncTranscriptionComplete)
     }
 
@@ -233,7 +233,7 @@ import Testing
         vm.asyncQueued = Set(batch.map(\.uid))
         // The second line changed while the batch was at the server.
         vm.sentences[1].text = "İki, düzeltildi."
-        vm.applyBackgroundTranslation(
+        vm.foreground.applyBackgroundTranslation(
             [line(1, "One."), line(2, "Two.")], language: "en", batch: batch
         )
         #expect(vm.translation(for: vm.sentences[0])?.text == "One.")
@@ -246,8 +246,8 @@ import Testing
     @Test func backgroundTranslationKeepsEarlierTranslations() {
         let (vm, _, _) = makeModel()
         vm.sentences = [line(1, "Bir."), line(2, "İki.")]
-        vm.applyBackgroundTranslation([line(1, "One.")], language: "en", batch: [vm.sentences[0]])
-        vm.applyBackgroundTranslation([line(2, "Two.")], language: "en", batch: [vm.sentences[1]])
+        vm.foreground.applyBackgroundTranslation([line(1, "One.")], language: "en", batch: [vm.sentences[0]])
+        vm.foreground.applyBackgroundTranslation([line(2, "Two.")], language: "en", batch: [vm.sentences[1]])
         #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == ["One.", "Two."])
         #expect(vm.displayMode == .translation && vm.exportLanguage == .translated)
     }
@@ -291,7 +291,7 @@ import Testing
         vm.language = "tr"
         vm.translationTarget = "en"
         vm.sentences = (1...12).map { line($0, "Satır \($0).") }
-        vm.startAsyncTranslation(engine: engine)
+        vm.startAsyncTranslation(vm.foreground, engine: engine, settings: vm.currentJobSettings())
         let task = vm.asyncTask
         await task?.value
         // Ten lines, with the two held-back ones as context.
@@ -306,15 +306,15 @@ import Testing
         // Every later snapshot brings new finished lines, but none starts another engine process.
         vm.sentences.append(line(13, "Satır 13."))
         vm.sentences.append(line(14, "Satır 14."))
-        #expect(vm.nextAsyncBatch().isEmpty)
-        vm.startAsyncTranslation(engine: engine)
+        #expect(vm.foreground.nextAsyncBatch().isEmpty)
+        vm.startAsyncTranslation(vm.foreground, engine: engine, settings: vm.currentJobSettings())
         #expect(vm.asyncTask == nil)
         #expect(try requests(in: log).count == 1)
 
         // The next run starts clean.
-        vm.cancelAsyncTranslation()
+        vm.foreground.cancelAsyncTranslation()
         #expect(!vm.asyncFailed)
-        #expect(vm.nextAsyncBatch().map(\.text) == lineTexts(1...12))
+        #expect(vm.foreground.nextAsyncBatch().map(\.text) == lineTexts(1...12))
     }
 
     // MARK: - What the pump sends
@@ -324,21 +324,21 @@ import Testing
         #expect(SubtitleViewModel.minAsyncBatchSentences == 10)
         vm.sentences = (1...11).map { line($0, "Satır \($0).") }
         // Nine lines are ready: not worth a request yet.
-        #expect(vm.nextAsyncBatch().isEmpty)
+        #expect(vm.foreground.nextAsyncBatch().isEmpty)
         vm.sentences.append(line(12, "Satır 12."))
-        #expect(vm.nextAsyncBatch().map(\.text) == lineTexts(1...10))
+        #expect(vm.foreground.nextAsyncBatch().map(\.text) == lineTexts(1...10))
         // Lines already handed over don't count towards the ten.
         vm.asyncQueued = Set(vm.sentences.prefix(10).map(\.uid))
         vm.sentences.append(contentsOf: (13...20).map { line($0, "Satır \($0).") })
-        #expect(vm.nextAsyncBatch().isEmpty)
+        #expect(vm.foreground.nextAsyncBatch().isEmpty)
         vm.sentences.append(contentsOf: (21...22).map { line($0, "Satır \($0).") })
-        #expect(vm.nextAsyncBatch().map(\.text) == lineTexts(11...20))
+        #expect(vm.foreground.nextAsyncBatch().map(\.text) == lineTexts(11...20))
     }
 
     @Test func emptyLinesDontCountTowardsTheBatch() {
         let (vm, _, _) = makeModel()
         vm.sentences = (1...12).map { line($0, $0 == 3 ? "  " : "Satır \($0).") }
-        #expect(vm.nextAsyncBatch().isEmpty)
+        #expect(vm.foreground.nextAsyncBatch().isEmpty)
     }
 
     @Test func aCopyOfTheSourceIsNotReusedButShortOnesAre() {

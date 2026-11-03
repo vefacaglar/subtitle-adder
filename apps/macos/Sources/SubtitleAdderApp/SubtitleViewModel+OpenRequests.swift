@@ -27,11 +27,6 @@ struct PendingOpen {
 /// Every way of opening a file (the sidebar, a card of the platform, the picker, a drop, Finder's "Open With") goes
 /// through `requestOpen`, which asks first when a session would lose something, and otherwise just does it.
 extension SubtitleViewModel {
-    /// Something would be lost by replacing the lines on screen now.
-    var openingNeedsConfirmation: Bool {
-        Self.atStake(in: [foreground]) != nil
-    }
-
     /// Whether `url` is the video the editor has open (the same file, however the URL was built).
     func isCurrentVideo(_ url: URL) -> Bool {
         video.map { Self.sessionKey($0) == Self.sessionKey(url) } ?? false
@@ -42,6 +37,20 @@ extension SubtitleViewModel {
         let stopsJob = sessions.contains { $0.isWorking }
         let losesEdits = sessions.contains { $0.hasUnsavedEdits }
         return stopsJob || losesEdits ? (stopsJob, losesEdits) : nil
+    }
+
+    /// The session whose lines a subtitle file opened like this replaces, or `nil` when it lands in a new session. With
+    /// a `video` the subtitle goes onto that video; alone, it looks for its companion video when `findingVideo` (by
+    /// default when no video is open), else it replaces the lines on screen.
+    func subtitleReceiver(opening video: URL?, subtitle: URL?, findingVideo: Bool? = nil) -> VideoSession? {
+        guard let subtitle else { return nil }
+        func session(of url: URL) -> VideoSession? { isCurrentVideo(url) ? foreground : existingSession(for: url) }
+        if let video { return session(of: video) }
+        guard findingVideo ?? (self.video == nil) else { return foreground }
+        if let companion = SubtitleParser.findCompanionVideo(for: subtitle) { return session(of: companion) }
+        // Without a companion, lines on their own are replaced by the next lines on their own; a video on screen is
+        // just closed (its session stays) and the subtitle starts a new video-less one.
+        return self.video == nil ? foreground : nil
     }
 
     /// The sessions whose work an open would destroy:
@@ -55,30 +64,31 @@ extension SubtitleViewModel {
         func add(_ session: VideoSession?) {
             if let session, !lost.contains(where: { $0 === session }) { lost.append(session) }
         }
-        // The session whose lines the open replaces, if any.
-        var replaced: VideoSession?
-        if let video {
-            let isCurrent = isCurrentVideo(video)
-            // Lines that belong to no video have nowhere to stay once another video is shown.
-            if !isCurrent, foreground.video == nil { add(foreground) }
-            if subtitle != nil || restarting { replaced = isCurrent ? foreground : existingSession(for: video) }
-        } else if let subtitle {
-            if findingVideo ?? (self.video == nil) {
-                if let companion = SubtitleParser.findCompanionVideo(for: subtitle) {
-                    // The companion video takes the lines.
-                    if !isCurrentVideo(companion), foreground.video == nil { add(foreground) }
-                    replaced = isCurrentVideo(companion) ? foreground : existingSession(for: companion)
-                } else if self.video == nil {
-                    // Lines on their own are replaced by the next lines on their own. A video on screen is just closed
-                    // (its session stays), and the subtitle starts a new video-less one.
-                    replaced = foreground
-                }
-            } else {
-                replaced = foreground
-            }
+        // Lines that belong to no video have nowhere to stay once another video is shown.
+        if let video, !isCurrentVideo(video), foreground.video == nil { add(foreground) }
+        if video == nil, let subtitle, findingVideo ?? (self.video == nil),
+           let companion = SubtitleParser.findCompanionVideo(for: subtitle),
+           !isCurrentVideo(companion), foreground.video == nil {
+            add(foreground)
         }
-        add(replaced)
+        add(subtitleReceiver(opening: video, subtitle: subtitle, findingVideo: findingVideo))
+        if restarting, let video { add(isCurrentVideo(video) ? foreground : existingSession(for: video)) }
         return lost
+    }
+
+    /// Refuses a subtitle that would land in a video the playlist run is working on: its recognition or translation
+    /// would go on writing into the lines, so the file would be replaced by the run's result. Says why and returns `true`;
+    /// no confirmation is offered, since confirming would not make it possible.
+    func refusesSubtitle(opening video: URL?, subtitle: URL?, findingVideo: Bool? = nil) -> Bool {
+        guard let receiver = subtitleReceiver(opening: video, subtitle: subtitle, findingVideo: findingVideo),
+              receiver.batchItemID != nil
+        else { return false }
+        openRefusal = Self.batchBusyMessage
+        return true
+    }
+
+    static var batchBusyMessage: LocalizedMessage {
+        .key("Bu video toplu listede işleniyor. Liste bitince ya da durdurunca altyazı açabilirsin.")
     }
 
     /// Runs `open` now, or once the user has confirmed (`pendingOpen` shows the question; `confirmPendingOpen` and
@@ -93,11 +103,6 @@ extension SubtitleViewModel {
         pendingOpen = PendingOpen(stopsJob: stake.stopsJob, losesEdits: stake.losesEdits, perform: open)
     }
 
-    /// An open that replaces the lines on screen (`replacesWork`), or one that changes nothing (`false`).
-    func requestOpen(replacesWork: Bool = true, _ open: @escaping @MainActor () -> Void) {
-        requestOpen(losing: replacesWork ? [foreground] : [], open)
-    }
-
     /// Opens a video (the picker, the sidebar), then runs `followUp`, e.g. starting the run the picker was asked for.
     func requestOpenVideo(_ url: URL, followUp: (@MainActor () -> Void)? = nil) {
         requestOpen(losing: sessionsLost(opening: url, restarting: followUp != nil)) { [self] in
@@ -108,6 +113,7 @@ extension SubtitleViewModel {
 
     /// Opens a subtitle file as the editor's lines (the picker). It replaces the lines, so it asks like a video does.
     func requestOpenSubtitle(_ url: URL) {
+        guard !refusesSubtitle(opening: nil, subtitle: url) else { return }
         requestOpen(losing: sessionsLost(opening: nil, subtitle: url)) { [self] in openSubtitle(url) }
     }
 

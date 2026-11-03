@@ -27,7 +27,7 @@ extension SubtitleViewModel {
         if let existing = existingSession(for: url) { return existing }
         let session = makeSession(for: url)
         sessions[Self.sessionKey(url)] = session
-        if let sidecar = SubtitleParser.findSidecar(for: url) { loadSubtitleFile(sidecar, into: session) }
+        if let sidecar = SubtitleParser.findSidecar(for: url) { applySubtitle(sidecar, to: session) }
         return session
     }
 
