@@ -290,15 +290,25 @@ import Testing
         try await waitUntil { model.isPlaying }
         model.pause()
         try await waitUntil { !model.isPlaying }
-        #expect(events.list == ["started", "paused"])
-        // Playing and then replacing the video reports it leaving, and no second "paused" that would carry the new video's
-        // position.
+        try await Task.sleep(for: .milliseconds(150))
+        // Whatever the player does on the way (AVPlayer can flip its status more than once around a pause), the platform
+        // hears a start and a pause alternately, never the same one twice, and the first one is a start.
+        func alternates(_ list: [String]) -> Bool {
+            list.first == "started" && zip(list, list.dropFirst()).allSatisfy { $0 != $1 }
+        }
+        #expect(alternates(events.list) && events.list.last == "paused", "\(events.list)")
+
+        // Playing and then replacing the video reports it leaving, and no "paused" after that, which would carry the new
+        // video's position.
         model.play()
         try await waitUntil { model.isPlaying }
+        try await Task.sleep(for: .milliseconds(100))
+        let before = events.list.count
         model.load(nil)
         try await waitUntil { !model.isPlaying }
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(events.list == ["started", "paused", "started", "leaving"])
+        try await Task.sleep(for: .milliseconds(150))
+        let afterLoad = Array(events.list.dropFirst(before))
+        #expect(afterLoad == ["leaving"], "\(events.list)")
     }
 
     // MARK: - Volume
