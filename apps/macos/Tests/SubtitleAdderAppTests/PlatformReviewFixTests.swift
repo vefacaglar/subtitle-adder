@@ -592,7 +592,8 @@ private actor Latch {
         #expect(await waitFor { player.isPlaying })
 
         model.detachPlayer(player, owner: token)
-        #expect(!player.isPlaying)
+        // `isPlaying` trails the player by a main-actor hop.
+        #expect(await waitFor { !player.isPlaying })
         await model.settle()
         // On disk, not only in memory: another instance of the store reads the file.
         let reader = sandbox.makeStore()
