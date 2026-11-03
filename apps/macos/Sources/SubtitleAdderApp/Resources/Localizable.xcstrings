@@ -6736,6 +6736,118 @@
           }
         }
       }
+    },
+    "Model ara…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model ara…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search models…"
+          }
+        }
+      }
+    },
+    "Aramayla eşleşen model yok.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aramayla eşleşen model yok."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No models match your search."
+          }
+        }
+      }
+    },
+    "Model listesi boş. Yenile düğmesini kullanın.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model listesi boş. Yenile düğmesini kullanın."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No models listed. Use Refresh to load them."
+          }
+        }
+      }
+    },
+    "Modeller yenileniyor…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modeller yenileniyor…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refreshing models…"
+          }
+        }
+      }
+    },
+    "Modeller yenilenemedi: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modeller yenilenemedi: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not refresh models: %@"
+          }
+        }
+      }
+    },
+    "Çeviri sağlayıcısı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri sağlayıcısı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation provider"
+          }
+        }
+      }
+    },
+    "Bu sağlayıcı artık yok.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu sağlayıcı artık yok."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This provider no longer exists."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
