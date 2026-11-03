@@ -9,6 +9,8 @@ struct ContentView: View {
     let explorer: FileExplorerModel
     let platform: VideoPlatformModel
     @State private var player = PlayerModel()
+    /// Names this window to the platform, which follows one window's player at a time.
+    @State private var windowToken = PlayerWindowToken()
     /// A card's "Oynat" starts the video even when Settings say not to play on open.
     @State private var forcePlay = false
     @State private var pickingVideo = false
@@ -42,21 +44,9 @@ struct ContentView: View {
         // per-window action (not state on the shared view model), so it never reaches another open window.
         .focusedSceneValue(\.chooseVideo, chooseVideoAction)
         .background { WindowReader { chrome.attach($0) } }
-        .onAppear {
-            chrome.onEscape = {
-                guard vm.isTheaterMode else { return false }
-                vm.isTheaterMode = false
-                return true
-            }
-            let actions = PlayerShortcutActions(
-                player: player, vm: vm, isFullScreen: { chrome.isFullScreen }, toggleFullScreen: { chrome.toggleFullScreen() }
-            )
-            chrome.onShortcut = { shortcut, isRepeat in actions.perform(shortcut, isRepeat: isRepeat) }
-            chrome.isPanelHidden = { vm.hideSubtitlePanel }
-            // What the platform needs from the player: where it is, and when it plays, stops, jumps or lets go.
-            platform.playbackSampler = { [player] in player.position }
-            player.onPlaybackEvent = { [platform] event in platform.handle(event) }
-        }
+        .onAppear { attachWindow() }
+        // Closing the window stops its player and lets go of everything that points back at it.
+        .onDisappear { detachWindow() }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
         .task { await catalog.load() }
         .task { await explorer.start() }
@@ -124,6 +114,37 @@ struct ContentView: View {
             contentType: .plainText,
             defaultFilename: vm.exportFilename
         ) { vm.exportFinished($0) }
+    }
+
+    /// Hooks the window's keys and its player up. Undone by `detachWindow`.
+    private func attachWindow() {
+        chrome.onEscape = {
+            guard vm.isTheaterMode else { return false }
+            vm.isTheaterMode = false
+            return true
+        }
+        let actions = PlayerShortcutActions(
+            player: player, vm: vm, isFullScreen: { chrome.isFullScreen }, toggleFullScreen: { chrome.toggleFullScreen() }
+        )
+        chrome.onShortcut = { shortcut, isRepeat in actions.perform(shortcut, isRepeat: isRepeat) }
+        chrome.isPanelHidden = { vm.hideSubtitlePanel }
+        // The window closing or becoming key matters to the platform, whichever way SwiftUI tears the view down.
+        chrome.onClose = { detachWindow() }
+        chrome.onBecomeKey = { platform.claimPlayback(windowToken) }
+        // What the platform needs from the player: where it is, and when it plays, stops, jumps or lets go.
+        platform.attachPlayer(player, owner: windowToken)
+    }
+
+    /// The window is going away: its player is paused and its place reported (so it is saved), and the platform and the
+    /// window's key handling let go. Those closures capture this view, and so the player; left in place they would keep
+    /// a closed window's player alive, playing to nobody.
+    private func detachWindow() {
+        platform.detachPlayer(player, owner: windowToken)
+        chrome.onEscape = nil
+        chrome.onShortcut = nil
+        chrome.isPanelHidden = { false }
+        chrome.onClose = nil
+        chrome.onBecomeKey = nil
     }
 
     /// Everything right of the sidebar: the workspace switcher, the editor or the playlist, and the status bar.

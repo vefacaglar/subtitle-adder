@@ -105,7 +105,7 @@ struct VideoCardView: View, Equatable {
             .controlSize(.small)
             .disabled(!canPlay)
             if model.isLoggedIn {
-                Button { model.toggleLike(card.url) } label: {
+                Button { model.setLiked(!card.isLiked, for: card.url) } label: {
                     Label(
                         card.isLiked ? L("Favorilerde") : L("Favorilere ekle"),
                         systemImage: card.isLiked ? "heart.fill" : "heart")

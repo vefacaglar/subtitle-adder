@@ -171,7 +171,8 @@ struct PlatformView: View {
                 Button(L("+ Liste oluştur"), action: createList)
                     .controlSize(.small)
             }
-            if let error = model.listError {
+            // A failure of the rename form is shown there, not here as well.
+            if let error = model.createListError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -182,7 +183,7 @@ struct PlatformView: View {
     private func listPill(_ list: UserVideoList) -> some View {
         let selected = model.filter == .customList(list.id)
         return HStack(spacing: 2) {
-            Button("\(list.name) (\(list.videoPaths.count))") { model.select(.customList(list.id)) }
+            Button("\(list.name) (\(model.visibleCount(of: list)))") { model.select(.customList(list.id)) }
                 .buttonStyle(PillButtonStyle(isSelected: selected))
                 .accessibilityAddTraits(selected ? .isSelected : [])
             if selected {
@@ -313,7 +314,7 @@ private struct RenameListForm: View {
                 .frame(width: 240)
                 .onSubmit(rename)
                 .onChange(of: name) { model.clearListFailure() }
-            if let error = model.listError {
+            if let error = model.renameListError(for: list.id) {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)

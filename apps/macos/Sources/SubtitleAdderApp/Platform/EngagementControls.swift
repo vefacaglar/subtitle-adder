@@ -38,11 +38,12 @@ struct AddToListMenu: View {
     var body: some View {
         Menu {
             ForEach(model.lists) { list in
+                // The new state is what the user chose; the write says exactly that, not "the other one".
                 Toggle(
-                    "\(list.name) (\(list.videoPaths.count))",
+                    "\(list.name) (\(model.visibleCount(of: list)))",
                     isOn: Binding(
                         get: { model.isInList(list.id, url) },
-                        set: { _ in model.toggleList(list.id, for: url) }))
+                        set: { model.setInList($0, id: list.id, for: url) }))
             }
             if !model.lists.isEmpty { Divider() }
             Button(
@@ -86,7 +87,8 @@ struct EngagementBar: View {
                 .help(L("%lld görüntüleme", engagement.views))
             Divider().frame(height: 16).overlay(.white.opacity(0.35))
             Button {
-                model.toggleLike(url)
+                // What the bar shows is what flips.
+                model.setLiked(!engagement.isLiked, for: url)
             } label: {
                 if compact {
                     Image(systemName: engagement.isLiked ? "heart.fill" : "heart")
