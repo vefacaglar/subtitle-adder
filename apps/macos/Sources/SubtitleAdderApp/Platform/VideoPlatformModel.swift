@@ -2,13 +2,14 @@ import EngineKit
 import Foundation
 import LibraryKit
 import Observation
+import Synchronization
 
 /// The open video's views, favorite flag, stars and lists, for the bar on the player. Kept apart from the feed, so a
 /// change of one never redraws the other, and playback ticks touch neither.
 @MainActor
 @Observable
 final class PlayerEngagement {
-    /// The video in the player (nothing while a playlist run owns it).
+    /// The video in the player.
     private(set) var url: URL?
     /// The numbers below belong to `url`; false until the first refresh after the video changed.
     private(set) var isLoaded = false
@@ -98,6 +99,7 @@ final class VideoPlatformModel {
         didSet {
             guard filter != oldValue else { return }
             requestedSignIn = false
+            dropStaleCards()
             scheduleRefresh()
         }
     }
@@ -114,20 +116,41 @@ final class VideoPlatformModel {
     /// The first feed has arrived (before it, the hub shows a spinner, not an empty state).
     private(set) var hasLoadedFeed = false
     private(set) var isRefreshing = false
+    /// How many videos of each list (by list id) are visible; the videos on an unplugged disk or deleted from their
+    /// folder are not counted.
+    private(set) var listCounts: [String: Int] = [:]
     /// Why the last list creation or rename failed; cleared by the next attempt.
     private(set) var listFailure: ProfileError?
+    /// Where `listFailure` belongs, so it is shown in that place only.
+    private(set) var listFailureContext: ListFailureContext?
+
+    enum ListFailureContext: Equatable {
+        case create
+        case rename(String)
+    }
     /// "Giriş yap / Profil oluştur" was pressed while on "Keşfet": show the sign-in card there.
     private(set) var requestedSignIn = false
     /// The hub is on screen. Off screen, a refresh keeps the header and the player bar current and skips the cards.
     var isHubActive = false {
         didSet {
-            if isHubActive, !oldValue { scheduleRefresh() }
+            if isHubActive, !oldValue {
+                dropStaleCards()
+                scheduleRefresh()
+            }
         }
     }
 
     let engagement = PlayerEngagement()
 
     var listError: String? { listFailure?.message }
+    /// The failure of a list creation, for the place where the name is typed.
+    var createListError: String? { listFailureContext == .create ? listFailure?.message : nil }
+
+    /// The failure of renaming this list, for its rename form.
+    func renameListError(for id: String) -> String? { listFailureContext == .rename(id) ? listFailure?.message : nil }
+
+    /// The number the list pill and the list menu show.
+    func visibleCount(of list: UserVideoList) -> Int { listCounts[list.id] ?? list.videoPaths.count }
 
     /// The sign-in card replaces the cards: on a personal tab while logged out (unless searching), or on request.
     var showsAuthCard: Bool {
@@ -150,10 +173,15 @@ final class VideoPlatformModel {
     @ObservationIgnored let thumbnails: ThumbnailService
     @ObservationIgnored private let queues = StoreQueues()
 
-    /// The video in the player, as far as the platform knows (`nil` while a playlist run owns the player).
+    /// The video in the player, as far as the platform knows.
     @ObservationIgnored private(set) var playerVideo: URL?
     /// Where the player is now; set by the window, read by the progress timer and when the app quits.
     @ObservationIgnored var playbackSampler: (@MainActor () -> PlaybackPosition?)?
+    /// The window whose player the platform follows (the last one that appeared or became key).
+    @ObservationIgnored private weak var playbackOwner: PlayerWindowToken?
+    /// A video opened before `start()` has restored the remembered login; counted once it is known whether there is one.
+    @ObservationIgnored private var pendingOpen: URL?
+    @ObservationIgnored private var hasRestoredLogin = false
     @ObservationIgnored private var progressTask: Task<Void, Never>?
     @ObservationIgnored private var seekFlushTask: Task<Void, Never>?
 
@@ -165,6 +193,12 @@ final class VideoPlatformModel {
     @ObservationIgnored private var indexTask: Task<Void, Never>?
     @ObservationIgnored private var hasAppliedFirstSnapshot = false
     @ObservationIgnored private var appliedFeedKey: FeedKey?
+    @ObservationIgnored private var appliedSessionGeneration: Int?
+    /// Counts the requests for a snapshot; a build that sees it move on stops, its result is not wanted.
+    @ObservationIgnored private let refreshRequests = RefreshCounter()
+    /// Edits made on screen whose profile write is not over: they stay on top of snapshots meanwhile.
+    @ObservationIgnored private var pendingEdits: [String: PendingEdit] = [:]
+    @ObservationIgnored private var isCreatingList = false
     /// Folders listed for subtitle badges by the last feed build (tests).
     @ObservationIgnored private(set) var lastBadgeListings = 0
 
@@ -198,8 +232,11 @@ final class VideoPlatformModel {
             // The streams exist before the first snapshot, so nothing that happens meanwhile is lost.
             let storeChanges = store.changes()
             changesTask = Task { [weak self] in
-                for await _ in storeChanges {
+                for await change in storeChanges {
                     guard let self else { return }
+                    // What this model does itself ends with a refresh of its own; only another window, process or
+                    // a restored login needs one here.
+                    if change == .local { continue }
                     scheduleRefresh()
                 }
             }
@@ -215,7 +252,9 @@ final class VideoPlatformModel {
         // thread. The store does it here on a queue, and the snapshot that follows shows the result.
         let store = store
         await queues.actions.run { store.refresh() }
+        hasRestoredLogin = true
         await refresh()
+        countPendingOpen()
     }
 
     /// The index learned about other files: "Keşfet" and the search over it change, nothing else does.
@@ -229,6 +268,7 @@ final class VideoPlatformModel {
     /// Asks for a new snapshot. Several requests in a row are served by one more build.
     func scheduleRefresh() {
         refreshPending = true
+        refreshRequests.bump()
         if refreshTask == nil {
             isRefreshing = true
             refreshTask = Task { await runRefreshes() }
@@ -256,12 +296,23 @@ final class VideoPlatformModel {
         let loggedIn: Bool
     }
 
+    private var currentFeedKey: FeedKey { FeedKey(filter: filter, search: searchQuery, loggedIn: isLoggedIn) }
+
+    /// Cards built for another tab or query must not stay on screen under the new one while its build is under way
+    /// (it can be slow on a cold library): they go, and the hub shows its spinner until the new cards arrive.
+    private func dropStaleCards() {
+        if !cards.isEmpty, appliedFeedKey != currentFeedKey { cards = [] }
+    }
+
     private func runRefreshes() async {
         while refreshPending {
             refreshPending = false
             let wantsFeed = isHubActive
             let search = searchQuery
-            let key = FeedKey(filter: filter, search: search, loggedIn: isLoggedIn)
+            let key = currentFeedKey
+            // A request that comes in while this is being built makes the build stop and its result fall away.
+            let ticket = refreshRequests.current
+            let isCurrent: @Sendable () -> Bool = { [refreshRequests] in refreshRequests.current == ticket }
             let discovered = await discoveredPaths(wantsFeed: wantsFeed, search: search, loggedIn: key.loggedIn)
             var request = FeedRequest(
                 filter: filter, search: search, discoveredPaths: discovered, wantsFeed: wantsFeed, playerVideo: playerVideo)
@@ -269,15 +320,15 @@ final class VideoPlatformModel {
 
             // Following moved files means reading file slices the first time, which can take a while on a cold library.
             // A tab or query that has nothing on screen yet gets the quick build first (no file is opened), then the one
-            // that follows the moves.
-            if wantsFeed, !discovered.isEmpty, cards.isEmpty || appliedFeedKey != key {
+            // that follows the moves. Logged out nothing follows moves, so one quick build is all there is.
+            if wantsFeed, !discovered.isEmpty, key.loggedIn, cards.isEmpty || appliedFeedKey != key {
                 request.fingerprints = .pathOnly
-                let quick = await build(request, badges: badges)
+                let quick = await build(request, badges: badges, isCurrent: isCurrent)
                 if refreshPending { continue }
-                apply(quick, wantsFeed: wantsFeed, key: key)
+                guard apply(quick, wantsFeed: wantsFeed, key: key) else { continue }
                 request.fingerprints = .compute
             }
-            let snapshot = await build(request, badges: badges)
+            let snapshot = await build(request, badges: badges, isCurrent: isCurrent)
             // Something asked again while this was being built: this one is already out of date.
             if refreshPending { continue }
             apply(snapshot, wantsFeed: wantsFeed, key: key)
@@ -286,12 +337,14 @@ final class VideoPlatformModel {
         refreshTask = nil
     }
 
-    private func build(_ request: FeedRequest, badges: SubtitleBadges) async -> PlatformSnapshot {
+    private func build(_ request: FeedRequest, badges: SubtitleBadges, isCurrent: @escaping @Sendable () -> Bool) async
+        -> PlatformSnapshot
+    {
         let store = store, services = services, thumbnails = thumbnails
         return await queues.feed.run {
             PlatformFeedBuilder.snapshot(
                 store: store, request: request, services: services, badges: badges,
-                seedThumbnail: { path, data in thumbnails.seed(data, for: path) })
+                seedThumbnail: { path, data in thumbnails.seed(data, for: path) }, shouldContinue: isCurrent)
         }
     }
 
@@ -306,7 +359,23 @@ final class VideoPlatformModel {
         return files.map(\.fullPath).filter { seen.insert($0.lowercased()).inserted }
     }
 
-    private func apply(_ snapshot: PlatformSnapshot, wantsFeed: Bool, key: FeedKey) {
+    /// Puts a snapshot on screen. Returns `false` when it was dropped: it was read under a login that is over by now,
+    /// and another one is asked for.
+    @discardableResult
+    private func apply(_ built: PlatformSnapshot, wantsFeed: Bool, key: FeedKey) -> Bool {
+        guard built.sessionGeneration == store.sessionGeneration else {
+            refreshPending = true
+            return false
+        }
+        let snapshot = withPendingEdits(built)
+        if appliedSessionGeneration != snapshot.sessionGeneration {
+            // Another profile's pictures must not show for this one, and a closed profile's must not stay in memory.
+            if appliedSessionGeneration != nil {
+                thumbnails.reset()
+                CardImageCache.removeAll()
+            }
+            appliedSessionGeneration = snapshot.sessionGeneration
+        }
         if username != snapshot.username { username = snapshot.username }
         if registeredUsernames != snapshot.registeredUsernames { registeredUsernames = snapshot.registeredUsernames }
         if lastUsername != snapshot.lastUsername { lastUsername = snapshot.lastUsername }
@@ -316,10 +385,11 @@ final class VideoPlatformModel {
         }
         if counts != snapshot.counts { counts = snapshot.counts }
         if lists != snapshot.lists { lists = snapshot.lists }
+        if listCounts != snapshot.listCounts { listCounts = snapshot.listCounts }
         engagement.apply(snapshot.engagement)
         // Off screen no cards were built; what is there stays until the hub opens and a refresh replaces it.
         if wantsFeed {
-            appliedFeedKey = key
+            appliedFeedKey = FeedKey(filter: key.filter, search: key.search, loggedIn: snapshot.username != nil)
             let cards = snapshot.cards ?? []
             if self.cards != cards { self.cards = cards }
             if snapshot.cards != nil, !hasLoadedFeed { hasLoadedFeed = true }
@@ -329,6 +399,29 @@ final class VideoPlatformModel {
         if case .customList(let id) = filter, !snapshot.lists.contains(where: { $0.id == id }) {
             filter = .all
         }
+        // The request assumed a login state the store did not have (a login restored, or ended elsewhere): ask again.
+        if (snapshot.username != nil) != key.loggedIn { refreshPending = true }
+        return true
+    }
+
+    /// Edits still being written, laid over a snapshot that was read before they were.
+    private func withPendingEdits(_ snapshot: PlatformSnapshot) -> PlatformSnapshot {
+        guard !pendingEdits.isEmpty else { return snapshot }
+        var patched = snapshot
+        if var cards = patched.cards {
+            for position in cards.indices {
+                guard let edit = pendingEdits[cards[position].path.lowercased()] else { continue }
+                if let liked = edit.liked { cards[position].isLiked = liked }
+                if let rating = edit.rating { cards[position].rating = rating }
+            }
+            patched.cards = cards
+        }
+        if var open = patched.engagement, let edit = pendingEdits[Self.pathKey(open.url)] {
+            if let liked = edit.liked { open.isLiked = liked }
+            if let rating = edit.rating { open.rating = rating }
+            patched.engagement = open
+        }
+        return patched
     }
 
     // MARK: Search
@@ -337,12 +430,14 @@ final class VideoPlatformModel {
     func submitSearch() {
         requestedSignIn = false
         searchQuery = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        dropStaleCards()
         scheduleRefresh()
     }
 
     func clearSearch() {
         searchQuery = ""
         if !searchText.isEmpty { searchText = "" }
+        dropStaleCards()
         scheduleRefresh()
     }
 
@@ -443,13 +538,18 @@ final class VideoPlatformModel {
 
     // MARK: Lists
 
-    /// Creates a list and shows it. A blank or taken name fails with an error under the field, not silently.
+    /// Creates a list and shows it. A blank or taken name fails with an error under the field, not silently. While one
+    /// creation is under way another is refused (a double press must not make two lists).
     func createList(named name: String) async -> Bool {
+        guard !isCreatingList else { return false }
+        isCreatingList = true
+        defer { isCreatingList = false }
         listFailure = nil
+        listFailureContext = nil
         let result = await runStore { (store) throws(ProfileError) in try store.createList(named: name) }
         switch result {
         case .failure(let error):
-            listFailure = error
+            fail(error, in: .create)
             return false
         case .success(let list):
             await refresh()
@@ -458,24 +558,45 @@ final class VideoPlatformModel {
         }
     }
 
+    /// Renames a list. A name that is blank or taken fails with the reason, and so does a list that is not there any
+    /// more (deleted in another window): the lists are brought up to date then.
     func renameList(id: String, to name: String) async -> Bool {
         listFailure = nil
+        listFailureContext = nil
         let result = await runStore { (store) throws(ProfileError) in try store.renameList(id: id, to: name) }
-        if case .failure(let error) = result {
-            listFailure = error
+        switch result {
+        case .failure(let error):
+            fail(error, in: .rename(id))
             return false
+        case .success(let renamed):
+            await refresh()
+            if !renamed { fail(.listNotFound, in: .rename(id)) }
+            return renamed
         }
-        await refresh()
-        return true
     }
 
+    /// Deletes a list. The hub goes back to "Keşfet" only once the list is really gone; a failure leaves it on show.
     func deleteList(id: String) {
-        if case .customList(let current) = filter, current == id { filter = .all }
-        perform { (store) throws(ProfileError) in _ = try store.deleteList(id: id) }
+        enqueue { [self] in
+            let result = await runStore { (store) throws(ProfileError) in _ = try store.deleteList(id: id) }
+            switch result {
+            case .failure(let error):
+                actionFailure = error
+            case .success:
+                if case .customList(let current) = filter, current == id { filter = .all }
+            }
+            scheduleRefresh()
+        }
     }
 
     func clearListFailure() {
         listFailure = nil
+        listFailureContext = nil
+    }
+
+    private func fail(_ error: ProfileError, in context: ListFailureContext) {
+        listFailure = error
+        listFailureContext = context
     }
 
     func clearHistory() {
@@ -487,16 +608,22 @@ final class VideoPlatformModel {
     /// The same key `ProfileStore` compares paths by.
     static func pathKey(_ url: URL) -> String { VideoFingerprint.normalizedPath(url).lowercased() }
 
+    /// The video in the player, as the player bar shows it. The bar's numbers are refreshed even while the hub is off
+    /// screen, so they are the truth for this video; the cards are not (they are built only while the hub is open).
+    private func isOpenVideo(_ key: String) -> Bool {
+        engagement.isLoaded && engagement.url.map(Self.pathKey) == key
+    }
+
     func isLiked(_ url: URL) -> Bool {
         let key = Self.pathKey(url)
-        if let card = cards.first(where: { $0.path.lowercased() == key }) { return card.isLiked }
-        return engagement.url.map(Self.pathKey) == key && engagement.isLiked
+        if isOpenVideo(key) { return engagement.isLiked }
+        return cards.first(where: { $0.path.lowercased() == key })?.isLiked ?? false
     }
 
     func isInList(_ id: String, _ url: URL) -> Bool {
         let key = Self.pathKey(url)
-        if let card = cards.first(where: { $0.path.lowercased() == key }) { return card.lists.contains { $0.id == id } }
-        return engagement.url.map(Self.pathKey) == key && engagement.listIDs.contains(id)
+        if isOpenVideo(key) { return engagement.listIDs.contains(id) }
+        return cards.first(where: { $0.path.lowercased() == key })?.lists.contains { $0.id == id } ?? false
     }
 
     func toggleLike(_ url: URL) {
@@ -508,7 +635,8 @@ final class VideoPlatformModel {
         let key = Self.pathKey(url)
         patchCards(key) { $0.isLiked = liked }
         if engagement.url.map(Self.pathKey) == key { engagement.setLiked(liked) }
-        perform { (store) throws(ProfileError) in _ = try store.setLiked(liked, for: url) }
+        pendingEdits[key, default: PendingEdit()].liked = liked
+        performEdit(key) { (store) throws(ProfileError) in _ = try store.setLiked(liked, for: url) }
     }
 
     /// Sets the stars (0 clears them).
@@ -517,11 +645,45 @@ final class VideoPlatformModel {
         let key = Self.pathKey(url)
         patchCards(key) { $0.rating = stars }
         if engagement.url.map(Self.pathKey) == key { engagement.setRating(stars) }
-        perform { (store) throws(ProfileError) in _ = try store.setRating(stars, for: url) }
+        pendingEdits[key, default: PendingEdit()].rating = stars
+        performEdit(key) { (store) throws(ProfileError) in _ = try store.setRating(stars, for: url) }
+    }
+
+    /// What was changed on screen and not yet written; until the last write of a video is over, snapshots read before it
+    /// show this on top, so a quick second tap never flickers back to the first value.
+    private struct PendingEdit {
+        var liked: Bool?
+        var rating: Int?
+        var outstanding = 0
+    }
+
+    /// Runs the write of an on-screen edit as an action, and lets the edit go once its last write is over.
+    private func performEdit(_ key: String, _ body: @escaping @Sendable (ProfileStore) throws(ProfileError) -> Void) {
+        pendingEdits[key, default: PendingEdit()].outstanding += 1
+        enqueue { [self] in
+            if case .failure(let error) = await runStore(body) { actionFailure = error }
+            if var edit = pendingEdits[key] {
+                edit.outstanding -= 1
+                pendingEdits[key] = edit.outstanding > 0 ? edit : nil
+            }
+            scheduleRefresh()
+        }
+    }
+
+    /// Puts the video in a list or takes it out. The caller says what it wants, not "the other one", so a menu that
+    /// shows an out-of-date checkmark cannot undo what the user meant.
+    func setInList(_ isIn: Bool, id: String, for url: URL) {
+        perform { (store) throws(ProfileError) in
+            if isIn {
+                _ = try store.addVideo(url, toList: id)
+            } else {
+                _ = try store.removeVideo(url, fromList: id)
+            }
+        }
     }
 
     func toggleList(_ id: String, for url: URL) {
-        perform { (store) throws(ProfileError) in _ = try store.toggleVideo(url, inList: id) }
+        setInList(!isInList(id, url), id: id, for: url)
     }
 
     /// "+ Yeni liste oluştur ve ekle": a list with a name that is free ("Daha Sonra İzle" for the first one, then
@@ -594,22 +756,46 @@ final class VideoPlatformModel {
     // MARK: Watching
 
     /// The video in the player changed. `countsAsOpen` is a video the user opened (the picker, a drop, the sidebar, a
-    /// card): it counts as a view when a profile is logged in. A video a playlist run opens is not passed at all (`nil`),
-    /// and neither is the one the editor gets back when a run ends: only `countsAsOpen` records a watch.
+    /// card): it counts as a view when a profile is logged in. Only `countsAsOpen` records a watch. Jobs and playlist runs
+    /// work in sessions of their own and never change the video in the player.
     func playerVideoChanged(to url: URL?, countsAsOpen: Bool) {
         let same = url.map(Self.pathKey) == playerVideo.map(Self.pathKey)
         guard !same else { return }
         playerVideo = url
+        pendingOpen = nil
         engagement.reset(url: url)
         guard let url else { return }
-        guard countsAsOpen, isLoggedIn else {
+        guard countsAsOpen else {
             scheduleRefresh()
             return
         }
+        guard hasRestoredLogin else {
+            // Whether a login is restored is not known yet (`start()` is still asking): decide when it is.
+            pendingOpen = url
+            scheduleRefresh()
+            return
+        }
+        guard isLoggedIn else {
+            scheduleRefresh()
+            return
+        }
+        countOpen(url)
+    }
+
+    /// The login is restored (or there is none): a video opened before that counts if a profile is logged in now and
+    /// the video is still the one open.
+    private func countPendingOpen() {
+        guard let url = pendingOpen else { return }
+        pendingOpen = nil
+        guard isLoggedIn, playerVideo.map(Self.pathKey) == Self.pathKey(url) else { return }
+        countOpen(url)
+    }
+
+    /// Records a view of the video the user opened. A failure here is background bookkeeping like the progress: it is
+    /// not worth an alert on every open (a read-only profile file would raise one each time).
+    private func countOpen(_ url: URL) {
         enqueue { [self] in
-            if case .failure(let error) = await runStore({ (store) throws(ProfileError) in _ = try store.recordWatch(url) }) {
-                actionFailure = error
-            }
+            _ = await runStore { (store) throws(ProfileError) in _ = try store.recordWatch(url) }
             scheduleRefresh()
         }
     }
@@ -680,15 +866,92 @@ final class VideoPlatformModel {
     }
 
     /// The app is quitting: report where the video is and make sure it reaches the disk before the process ends. Runs on
-    /// the main actor and waits, which is fine at this point.
-    func prepareForQuit() {
+    /// the main actor and waits, which is fine at this point, but not for long: the write can wait for the profile
+    /// file's lock (another process holding it) or a slow disk, so it is given `timeout` and then the app quits anyway.
+    /// Returns whether the write finished in time.
+    @discardableResult
+    func prepareForQuit(timeout: Duration = .seconds(2)) -> Bool {
         stopProgressClock()
         seekFlushTask?.cancel()
+        var final: (url: URL, position: PlaybackPosition)?
         if let url = playerVideo, let position = playbackSampler?(), position.duration > 0, position.duration.isFinite,
             position.seconds.isFinite
         {
-            _ = try? store.updatePlaybackProgress(url, position: position.seconds, duration: position.duration)
+            final = (url, position)
         }
-        _ = try? store.flushPlaybackProgress()
+        let store = store
+        let finished = DispatchSemaphore(value: 0)
+        let work = final
+        DispatchQueue.global(qos: .userInitiated).async {
+            if let work {
+                _ = try? store.updatePlaybackProgress(work.url, position: work.position.seconds, duration: work.position.duration)
+            }
+            _ = try? store.flushPlaybackProgress()
+            finished.signal()
+        }
+        let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
+        return finished.wait(timeout: .now() + seconds) == .success
+    }
+
+    // MARK: Windows
+
+    /// A window's player starts reporting to the platform: where it is (for the progress clock and for quitting) and
+    /// when it plays, stops or jumps. The window that attached last, or became key last, is the one followed; the
+    /// platform holds the player only weakly through the token, so a closed window's player is not kept alive.
+    func attachPlayer(_ player: PlayerModel, owner: PlayerWindowToken) {
+        owner.player = player
+        claimPlayback(owner)
+        player.onPlaybackEvent = { [weak self, weak owner] event in
+            guard let self, let owner else { return }
+            handle(event, from: owner)
+        }
+    }
+
+    /// The window's player stops reporting and goes quiet: it is paused, where it was is reported and flushed (so the
+    /// resume point is on disk), and the platform lets go of it unless another window has taken over meanwhile.
+    func detachPlayer(_ player: PlayerModel, owner: PlayerWindowToken) {
+        player.pause()
+        handle(.leaving(player.position), from: owner)
+        player.onPlaybackEvent = nil
+        releasePlayback(owner)
+        owner.player = nil
+    }
+
+    /// Makes this window the one whose player the platform follows (it became the key window).
+    func claimPlayback(_ owner: PlayerWindowToken) {
+        playbackOwner = owner
+        playbackSampler = { [weak owner] in owner?.player?.position }
+    }
+
+    /// Lets go of the sampler, but only if it still belongs to this window.
+    func releasePlayback(_ owner: PlayerWindowToken) {
+        guard playbackOwner === owner else { return }
+        playbackOwner = nil
+        playbackSampler = nil
+    }
+
+    /// An event of a window's player. Only the window that is followed is heard; another window's player does not
+    /// move the progress of the video the platform follows.
+    func handle(_ event: PlaybackEvent, from owner: PlayerWindowToken) {
+        guard playbackOwner === owner else { return }
+        handle(event)
+    }
+}
+
+/// Identifies one window's player to the platform. Owned by the window; the platform keeps it weakly, and it keeps
+/// the player weakly, so nothing here outlives the window.
+@MainActor
+final class PlayerWindowToken {
+    weak var player: PlayerModel?
+}
+
+/// Counts requests for a new snapshot, readable from the queue that builds it.
+private final class RefreshCounter: Sendable {
+    private let value = Atomic<Int>(0)
+
+    var current: Int { value.load(ordering: .acquiring) }
+
+    func bump() {
+        value.add(1, ordering: .acquiringAndReleasing)
     }
 }

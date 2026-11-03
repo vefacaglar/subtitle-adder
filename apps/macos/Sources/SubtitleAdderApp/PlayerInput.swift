@@ -77,16 +77,38 @@ enum PlayerShortcut: Equatable, Sendable {
 
     /// The Latin letter a key stands for: what the layout types, or on a non-Latin layout (Cyrillic, Greek, …) the
     /// letter at that physical key's QWERTY position, so M, F and E keep working there.
+    ///
+    /// The key position is only consulted when the key types a letter of another script (or nothing is known about what
+    /// it types). A key that types punctuation, a digit or a Latin letter with a mark belongs to its layout: "," on
+    /// AZERTY sits where QWERTY has M, and "ğ" on the Turkish F layout sits where it has F, and neither is a shortcut.
     private static func letter(character: String?, keyCode: UInt16) -> Character? {
-        if let character = character?.lowercased(), character.count == 1, let first = character.first,
-           first.isASCII, first.isLetter {
-            return first
+        if let typed = character?.lowercased(), !typed.isEmpty {
+            guard typed.count == 1, let first = typed.first else { return nil }
+            if first.isASCII { return first.isLetter ? first : nil }
+            // A letter of another script (Cyrillic, Greek, Hebrew, Arabic, …) falls back to the key position; everything
+            // else the key can type (Latin letters with marks, punctuation, digits, symbols) is not ours.
+            guard first.isLetter, !isLatinLetter(first) else { return nil }
         }
         switch keyCode {
         case ansiM: return "m"
         case ansiF: return "f"
         case ansiE: return "e"
         default: return nil
+        }
+    }
+
+    /// Whether `character` is a letter of the Latin script: Basic Latin, the Latin-1 Supplement and Latin Extended-A/B
+    /// (ç, ğ, ı, ş, é, ñ, ø, …), IPA letters, Latin Extended Additional (Vietnamese) and the fullwidth forms.
+    private static func isLatinLetter(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            // The combining marks belong to the letter they sit on ("İ" in lower case is an "i" and a dot above).
+            case 0x41...0x24F, 0x250...0x2AF, 0x300...0x36F, 0x1E00...0x1EFF, 0x2C60...0x2C7F, 0xA720...0xA7FF,
+                 0xFB00...0xFB06, 0xFF21...0xFF3A, 0xFF41...0xFF5A:
+                true
+            default:
+                false
+            }
         }
     }
 }

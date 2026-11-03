@@ -17,7 +17,7 @@ extension SubtitleViewModel {
     /// Status bar addition while the server translates in the background, e.g. "Çevriliyor… 40%". Nothing once the
     /// status itself shows the background translation.
     var asyncStatusDetail: String? {
-        guard isAsyncTranslating, !asyncShownInStatus else { return nil }
+        guard isAsyncTranslating, !foreground.asyncShownInStatus else { return nil }
         return asyncStatusText
     }
 
@@ -26,55 +26,22 @@ extension SubtitleViewModel {
         Self.label(for: .translating, fraction: asyncTranslationFraction, purpose: .translation).text
     }
 
-    /// Drops the background translation: stops the server request and forgets which lines were handed over.
-    func cancelAsyncTranslation() {
-        asyncTask?.cancel()
-        asyncTask = nil
-        asyncRunID = UUID()
-        asyncQueued = []
-        asyncDraining = false
-        asyncFailed = false
-        asyncShownInStatus = false
-        isAsyncTranslating = false
-    }
-
-    /// Called with every transcription snapshot: when enough lines are ready and no batch is on its way, sends them.
-    /// The last two lines of a snapshot are still being transcribed, so they wait for the next one.
-    func startAsyncTranslation(engine: EngineClient) {
+    /// Called with every transcription snapshot of `session`: when enough lines are ready and no batch is on its way,
+    /// sends them. The last two lines of a snapshot are still being transcribed, so they wait for the next one.
+    func startAsyncTranslation(_ session: VideoSession, engine: EngineClient, settings: JobSettings) {
         // The lines keep coming, so the share of translated ones moves even when no batch is sent.
-        updateAsyncFraction()
+        session.updateAsyncFraction()
         // Another translation holds the gate: nothing starts now, the next snapshot looks again.
-        guard asyncTask == nil, !asyncDraining, !asyncFailed, !translationGate.isBusy, !nextAsyncBatch().isEmpty else { return }
+        guard session.asyncTask == nil, !session.asyncDraining, !session.asyncFailed, !translationGate.isBusy,
+              !session.nextAsyncBatch().isEmpty
+        else { return }
         let run = UUID()
-        asyncRunID = run
-        asyncTask = Task { await pumpAsyncTranslation(engine: engine, run: run) }
-    }
-
-    /// Transcription is over: no new batch starts, the one at the server finishes. Whatever is left is the final
-    /// translation pass's job.
-    func finishAsyncTranslation() async {
-        asyncDraining = true
-        if let task = asyncTask {
-            asyncShownInStatus = true
-            mirrorAsyncInStatus()
-            await task.value
-        }
-        asyncShownInStatus = false
-        isAsyncTranslating = false
+        session.asyncRunID = run
+        session.asyncTask = Task { await pumpAsyncTranslation(session, engine: engine, settings: settings, run: run) }
     }
 
     /// Fewest new lines worth a request: smaller batches lose the context a model translates well with.
-    nonisolated static var minAsyncBatchSentences: Int { 10 }
-
-    /// Lines ready for the server: everything but the last two (the live end of the transcript still changes), not
-    /// handed over before, with text. Empty until at least `minAsyncBatchSentences` of them have piled up.
-    func nextAsyncBatch() -> [Sentence] {
-        guard !asyncDraining, !asyncFailed, sentences.count > 2 else { return [] }
-        let candidates = sentences.dropLast(2).filter {
-            !asyncQueued.contains($0.uid) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        return candidates.count >= Self.minAsyncBatchSentences ? Array(candidates) : []
-    }
+    nonisolated static var minAsyncBatchSentences: Int { VideoSession.minAsyncBatchSentences }
 
     /// One batch at a time until nothing is left to send. A failure stops it for the rest of the run (`asyncFailed`):
     /// the final pass translates the lines that are missing and reports the error if the server is really gone.
@@ -82,103 +49,81 @@ extension SubtitleViewModel {
     /// Each batch holds the app-wide translation gate. The pump never queues for it: if another translation (the
     /// playlist's stage 3, the editor's job) has the gate, it stops instead of starting a batch, and the lines it
     /// skipped are picked up by a later snapshot or by the closing pass.
-    private func pumpAsyncTranslation(engine: EngineClient, run: UUID) async {
-        while !Task.isCancelled, asyncRunID == run {
+    private func pumpAsyncTranslation(
+        _ session: VideoSession, engine: EngineClient, settings: JobSettings, run: UUID
+    ) async {
+        while !Task.isCancelled, session.asyncRunID == run {
             guard translationGate.tryAcquire() else { break }
-            let batch = nextAsyncBatch()
-            let target = translationTarget
-            let source = translationSource
-            // Same language in and out can't be translated; the toolbar target is reconciled when the language is known.
+            let batch = session.nextAsyncBatch()
+            let target = settings.translationTarget
+            let source = session.translationSource(language: settings.language)
+            // Same language in and out can't be translated; the target is reconciled when the language is known.
             guard !batch.isEmpty, source != target else {
                 translationGate.release()
                 break
             }
-            asyncQueued.formUnion(batch.map(\.uid))
-            isAsyncTranslating = true
-            updateAsyncFraction()
-            let succeeded = await translateAsyncBatch(batch, engine: engine, target: target, source: source, run: run)
+            session.asyncQueued.formUnion(batch.map(\.uid))
+            session.isAsyncTranslating = true
+            session.updateAsyncFraction()
+            let succeeded = await translateAsyncBatch(
+                batch, in: session, engine: engine, target: target, source: source,
+                model: settings.translationModel, run: run
+            )
             translationGate.release()
             guard succeeded else {
-                if !Task.isCancelled, asyncRunID == run {
-                    asyncFailed = true
-                    asyncShownInStatus = false
-                    isAsyncTranslating = false
+                if !Task.isCancelled, session.asyncRunID == run {
+                    session.asyncFailed = true
+                    session.asyncShownInStatus = false
+                    session.isAsyncTranslating = false
                 }
                 break
             }
         }
         // Nothing suspends between the last check and here, so a snapshot can't slip in unnoticed.
-        guard asyncRunID == run else { return }
-        asyncTask = nil
+        guard session.asyncRunID == run else { return }
+        session.asyncTask = nil
     }
 
     /// Returns `false` when the batch failed or the run is over.
     private func translateAsyncBatch(
-        _ batch: [Sentence], engine: EngineClient, target: String, source: String?, run: UUID
+        _ batch: [Sentence], in session: VideoSession, engine: EngineClient, target: String, source: String?,
+        model: String, run: UUID
     ) async -> Bool {
         // The neighbours of the batch's lines go along as context; only the batch's own lines are applied.
-        let request = Self.withTranslationContext(sentences, requested: batch)
-        let alreadyTranslated = translations.count
+        let request = Self.withTranslationContext(session.sentences, requested: batch)
+        let alreadyTranslated = session.translations.count
         do {
-            for try await event in engine.translate(request, to: target, from: source, model: translationModel) {
-                guard !Task.isCancelled, asyncRunID == run else { return false }
+            for try await event in engine.translate(request, to: target, from: source, model: model) {
+                guard !Task.isCancelled, session.asyncRunID == run else { return false }
                 switch event {
                 case .translation(let language, let translated):
-                    applyBackgroundTranslation(translated, language: language, batch: batch)
-                    updateAsyncFraction()
+                    session.applyBackgroundTranslation(translated, language: language, batch: batch)
+                    if updatesToolbar(for: session) { translationTarget = language }
+                    session.updateAsyncFraction()
                 case .stage(let stage, let part):
                     // The model's own progress through this batch, on top of what was translated before it.
-                    guard stage == .translating, let part, isAsyncTranslating else { break }
-                    setAsyncFraction(Self.translationProgress(
+                    guard stage == .translating, let part, session.isAsyncTranslating else { break }
+                    session.setAsyncFraction(Self.translationProgress(
                         alreadyDone: alreadyTranslated, requested: batch.count, part: part,
-                        total: max(sentences.count, alreadyTranslated + batch.count)
+                        total: max(session.sentences.count, alreadyTranslated + batch.count)
                     ))
-                case .error:
+                case .error(let message):
+                    engine.logDiagnostic("translation", "background batch of \(batch.count) lines failed: \(message)")
                     return false
                 case .result, .partial:
                     break
                 }
             }
         } catch {
+            // The engine's error text (never the lines themselves) so a failure that only shows as "some lines are
+            // missing" can be traced afterwards.
+            if !Task.isCancelled, session.asyncRunID == run {
+                engine.logDiagnostic(
+                    "translation", "background batch of \(batch.count) lines failed: \(error.localizedDescription)"
+                )
+            }
             return false
         }
-        return !Task.isCancelled && asyncRunID == run
-    }
-
-    /// Adds the translated lines of a batch, but only to lines that still read as they did when the batch was sent;
-    /// a line whose text changed since is released so a later batch (or the final pass) translates it again.
-    func applyBackgroundTranslation(_ translated: [Sentence], language: String, batch: [Sentence]) {
-        var current: [UUID: Sentence] = [:]
-        for sentence in sentences { current[sentence.uid] = sentence }
-        var accepted: [(result: Sentence, original: Sentence)] = []
-        for pair in Self.pairs(translated, with: batch) {
-            if let now = current[pair.original.uid], now.text == pair.original.text {
-                accepted.append(pair)
-            } else {
-                asyncQueued.remove(pair.original.uid)
-            }
-        }
-        guard !accepted.isEmpty else { return }
-        storeTranslations(accepted, language: language, merge: true)
-    }
-
-    /// Background progress from the translations at hand: translated lines over all lines, below 1.
-    func updateAsyncFraction() {
-        guard isAsyncTranslating else { return }
-        setAsyncFraction(Self.translationProgress(done: translations.count, total: sentences.count))
-    }
-
-    private func setAsyncFraction(_ fraction: Double?) {
-        asyncTranslationFraction = fraction
-        mirrorAsyncInStatus()
-    }
-
-    /// After transcription the status is the background translation itself.
-    private func mirrorAsyncInStatus() {
-        guard asyncShownInStatus, case .working = status else { return }
-        status = .working(
-            Self.label(for: .translating, fraction: asyncTranslationFraction, purpose: .translation),
-            fraction: asyncTranslationFraction
-        )
+        return !Task.isCancelled && session.asyncRunID == run
     }
 }

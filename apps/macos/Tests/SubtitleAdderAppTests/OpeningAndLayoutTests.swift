@@ -75,7 +75,7 @@ import Testing
         #expect(vm.video == nil)
     }
 
-    @Test func finderVideosGoToTheListWhileARunOwnsTheEditor() throws {
+    @Test func aPlaylistRunDoesNotOwnTheEditorSoAFinderVideoOpensInIt() throws {
         let folder = try makeFolder()
         let (vm, _) = makeModel()
         let current = try touch("current.mp4", in: folder)
@@ -84,9 +84,10 @@ import Testing
         defer { vm.isPlaylistRunning = false }
         let extra = try touch("extra.mp4", in: folder)
         vm.openExternalFiles([extra])
-        #expect(vm.video == current)
-        #expect(vm.playlist.map(\.fileName) == ["extra.mp4"])
-        #expect(vm.workspace == .playlist)
+        #expect(vm.video == extra && vm.playlist.isEmpty && vm.workspace == .editor)
+        // Two at once still build a list.
+        vm.openExternalFiles([current, extra])
+        #expect(vm.playlist.count == 2 && vm.workspace == .playlist)
     }
 
     @Test func missingFilesAndFoldersAreSkipped() throws {

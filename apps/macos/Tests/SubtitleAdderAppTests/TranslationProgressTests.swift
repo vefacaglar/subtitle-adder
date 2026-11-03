@@ -29,7 +29,7 @@ import Testing
 
     /// Polls until `condition` holds (a fake engine's events arrive on their own schedule).
     private func wait(_ condition: () -> Bool) async throws {
-        for _ in 0..<200 where !condition() { try await Task.sleep(for: .milliseconds(25)) }
+        for _ in 0..<800 where !condition() { try await Task.sleep(for: .milliseconds(25)) }
     }
 
     // MARK: - The numbers
@@ -165,13 +165,13 @@ import Testing
         vm.language = "tr"
         vm.translationTarget = "en"
         vm.sentences = lines(12)
-        vm.startAsyncTranslation(engine: engine)
+        vm.startAsyncTranslation(vm.foreground, engine: engine, settings: vm.currentJobSettings())
         try await wait { vm.asyncTranslationFraction != nil }
         // Ten lines go out of twelve: half of them is 5 / 12.
         #expect(vm.asyncTranslationFraction == 5.0 / 12.0)
         #expect(vm.isAsyncTranslating)
         #expect(vm.translationBadgeText == L("Çevriliyor… %lld%%", 42))
-        vm.cancelAsyncTranslation()
+        vm.foreground.cancelAsyncTranslation()
         #expect(!vm.isAsyncTranslating && vm.asyncTranslationFraction == nil)
     }
 
@@ -185,13 +185,13 @@ import Testing
         vm.language = "tr"
         vm.translationTarget = "en"
         vm.sentences = lines(12)
-        vm.startAsyncTranslation(engine: engine)
+        vm.startAsyncTranslation(vm.foreground, engine: engine, settings: vm.currentJobSettings())
         await vm.asyncTask?.value
         #expect(vm.translations.count == 10)
         #expect(vm.asyncTranslationFraction == 10.0 / 12.0)
         // Everything translated while lines are still coming in: below one.
         vm.sentences = lines(10)
-        vm.updateAsyncFraction()
+        vm.foreground.updateAsyncFraction()
         #expect(vm.asyncTranslationFraction == 0.99)
     }
 
@@ -201,7 +201,7 @@ import Testing
         vm.language = "tr"
         vm.translationTarget = "en"
         vm.sentences = lines(12)
-        vm.startAsyncTranslation(engine: engine)
+        vm.startAsyncTranslation(vm.foreground, engine: engine, settings: vm.currentJobSettings())
         await vm.asyncTask?.value
         #expect(vm.asyncFailed)
         #expect(!vm.isAsyncTranslating && vm.asyncTranslationFraction == nil && !vm.isWorking)

@@ -65,12 +65,12 @@ import Testing
         // Leaving full screen brings the layout back.
         #expect(!vm.hideSubtitlePanel)
 
-        // The player is out of sight on the playlist tab and during a run.
+        // The player is out of sight on the playlist tab; a playlist run doesn't take it away.
         vm.workspace = .playlist
         #expect(!vm.isPlayerShown && vm.showsSubtitlePanel(isFullScreen: true))
         vm.workspace = .editor
         vm.isPlaylistRunning = true
-        #expect(!vm.isPlayerShown)
+        #expect(vm.isPlayerShown)
         vm.isPlaylistRunning = false
     }
 }

@@ -1,5 +1,6 @@
 import EngineKit
 import Foundation
+import LibraryKit
 import Testing
 @testable import SubtitleAdderApp
 
@@ -20,6 +21,8 @@ import Testing
             catalog: ModelCatalog(engine: engine), defaults: defaults, launchState: EngineLaunchState()
         )
         vm.offlineMode = false
+        // The translation of one item overlaps the recognition of the next (the low-memory tests do it the other way).
+        vm.physicalMemory = SubtitleViewModel.localTranslationOverlapMemory
         return (vm, defaults)
     }
 
@@ -31,6 +34,7 @@ import Testing
             launchState: state
         )
         vm.offlineMode = false
+        vm.physicalMemory = SubtitleViewModel.localTranslationOverlapMemory
         return (vm, state)
     }
 
@@ -122,7 +126,8 @@ import Testing
         #expect(vm.playlist.map(\.sourceLanguage) == ["pt", "ja"])
 
         vm.startPlaylist()
-        #expect(vm.isPlaylistRunning && vm.isWorking)
+        // The run is under way, but it is not the video on screen that is working.
+        #expect(vm.isPlaylistRunning && vm.hasActiveWork && !vm.isWorking)
         await vm.playlistTask?.value
 
         #expect(!vm.isPlaylistRunning && !vm.isWorking)
@@ -148,7 +153,7 @@ import Testing
         #expect(savedB.contains("Merhaba"))
         #expect(vm.playlist[0].statusMessage.text == "Kaydedildi: \(savedName("ClipA"))")
 
-        // The per-item languages were the run's, not the user's.
+        // The per-item languages were the run's, not the user's: the toolbar was never touched.
         #expect(vm.language.isEmpty && vm.translationTarget == "tr")
         #expect((defaults.string(forKey: "selectedLanguage") ?? "").isEmpty)
         #expect(defaults.string(forKey: "translationTarget") == "tr")
@@ -217,7 +222,7 @@ import Testing
         #expect(vm.playlist[0].statusMessage.text.hasPrefix("Dosya kaydedilemedi:"))
     }
 
-    @Test func cancelPutsTheCurrentItemBackToQueuedAndRestoresTheToolbar() async throws {
+    @Test func cancelPutsTheCurrentItemBackToQueuedAndLeavesTheToolbarAlone() async throws {
         let folder = try makeFolder()
         let started = folder.appending(path: "started")
         let engine = try FakeEngine.make(transcribe: "touch \"\(started.path)\"\nexec sleep 20")
@@ -228,7 +233,8 @@ import Testing
         let task = vm.playlistTask
         let working = await eventually { vm.playlist[0].state == .working && FileManager.default.fileExists(atPath: started.path) }
         #expect(working)
-        #expect(vm.language == "ja")
+        // The item's language is the run's own; the toolbar still says what the user chose.
+        #expect(vm.language.isEmpty)
 
         vm.cancel()
         await task?.value
@@ -265,13 +271,15 @@ import Testing
         vm.startPlaylist()
 
         #expect(!vm.isPlaylistRunning && vm.playlistTask == nil)
-        #expect(vm.canGoOnlineAndRetry)
+        // The reason is the list's own; no video's status carries it.
+        #expect(!vm.canGoOnlineAndRetry && vm.status == .idle)
         #expect(vm.playlist[0].state == .pending)
-        guard case .failed(let message) = vm.status else { Issue.record("expected a failure"); return }
-        #expect(message.text == "En doğru indirilmemiş. Çevrimdışı mod açıkken model indirilemez.")
+        let notice = try #require(vm.playlistNotice)
+        #expect(notice.retry != nil)
+        #expect(notice.message.text == "En doğru indirilmemiş. Çevrimdışı mod açıkken model indirilemez.")
 
-        vm.goOnlineAndRetry()
-        #expect(!vm.offlineMode && vm.isPlaylistRunning)
+        vm.goOnlineAndRetryPlaylist()
+        #expect(!vm.offlineMode && vm.isPlaylistRunning && vm.playlistNotice == nil)
         await vm.playlistTask?.value
         #expect(vm.playlist[0].state == .completed)
     }
@@ -321,7 +329,8 @@ import Testing
         #expect(vm.playlist.map(\.id) == [working])
     }
 
-    @Test func playlistValuesAreNotPersistedWhileRunning() {
+    @Test func toolbarChangesDuringARunAreTheUsersAndAreKept() {
+        // The run works on the settings it started with, so the toolbar is free: what is picked meanwhile is persisted.
         let (vm, defaults) = makeModel()
         vm.language = "tr"
         vm.translationTarget = "es"
@@ -330,9 +339,9 @@ import Testing
         vm.translationTarget = "de"
         vm.model = "base"
         vm.isPlaylistRunning = false
-        #expect(defaults.string(forKey: "selectedLanguage") == "tr")
-        #expect(defaults.string(forKey: "translationTarget") == "es")
-        #expect(defaults.string(forKey: "selectedModel") != "base")
+        #expect(defaults.string(forKey: "selectedLanguage") == "ja")
+        #expect(defaults.string(forKey: "translationTarget") == "de")
+        #expect(defaults.string(forKey: "selectedModel") == "base")
     }
 
     // MARK: - Dropping videos
@@ -353,12 +362,13 @@ import Testing
         vm.openFiles([b])
         #expect(vm.playlist.map(\.fileName) == ["b.mp4"])
 
-        // While a run owns the editor, a video dropped on the editor tab goes to the list too.
+        // A run does not own the editor: a video dropped on the editor tab opens there.
         vm.workspace = .editor
         vm.isPlaylistRunning = true
         defer { vm.isPlaylistRunning = false }
-        vm.openFiles([URL(filePath: "/tmp/c.mp4")])
-        #expect(vm.video == a && vm.workspace == .playlist && vm.playlist.count == 2)
+        let c = URL(filePath: "/tmp/c.mp4")
+        vm.openFiles([c])
+        #expect(vm.video == c && vm.workspace == .editor && vm.playlist.count == 1)
     }
 
     // MARK: - Async mode (external LLM)
@@ -396,7 +406,9 @@ import Testing
             let text = try String(contentsOf: folder.appending(path: savedName(stem)), encoding: .utf8)
             #expect(text.contains("Hello"))
         }
-        #expect(vm.status == .finished)
+        // The results are saved, so the sessions of videos nobody is looking at are gone from memory.
+        #expect(vm.existingSession(for: a) == nil && vm.existingSession(for: b) == nil)
+        #expect(vm.video == nil && vm.status == .idle)
     }
 
     @Test func asyncModeKeepsTheReviewMarkerInTheSavedJSON() async throws {
@@ -431,7 +443,10 @@ import Testing
         vm.externalLlmUrl = "10.0.0.2:1234"
         vm.externalLlmAsync = true
         vm.translationTarget = "en"
-        vm.addToPlaylist([folder.appending(path: "a.mp4"), folder.appending(path: "b.mp4")], sourceLanguage: "tr")
+        let a = folder.appending(path: "a.mp4")
+        vm.addToPlaylist([a, folder.appending(path: "b.mp4")], sourceLanguage: "tr")
+        // The first item is on screen while the run works on it.
+        vm.openVideo(a)
         #expect(!vm.isTranslationInProgress && vm.translationBadgeText == nil)
         vm.startPlaylist()
         let task = vm.playlistTask
@@ -439,6 +454,10 @@ import Testing
         #expect(await eventually { vm.isPlaylistBackgroundTranslating && !vm.isAsyncTranslating && !vm.isTranslationJobRunning })
         #expect(vm.isTranslationInProgress)
         #expect(vm.translationBadgeText != nil)
+        // Another video, not part of the run, has nothing to badge.
+        vm.openVideo(folder.appending(path: "elsewhere.mp4"))
+        #expect(vm.isPlaylistBackgroundTranslating && !vm.isTranslationInProgress && vm.translationBadgeText == nil)
+        vm.openVideo(a)
         await task?.value
         #expect(!vm.isPlaylistBackgroundTranslating)
         #expect(!vm.isTranslationInProgress)
@@ -526,22 +545,28 @@ import Testing
         #expect(!vm.isWorking)
     }
 
-    @Test func theEditorKeepsTheLastItemsLanguageAfterTheRun() async throws {
+    @Test func anItemsSessionKeepsItsOwnLanguageAfterTheRun() async throws {
         let folder = try makeFolder()
         let engine = try FakeEngine.make(transcribe: finished("Hello"), translate: translated("Hola"))
         let (vm, _) = makeModel(engine: engine)
         vm.language = "tr"
         vm.translationTarget = "es"
-        vm.addToPlaylist([folder.appending(path: "a.mp4")], sourceLanguage: "en")
+        let item = folder.appending(path: "a.mp4")
+        vm.addToPlaylist([item], sourceLanguage: "en")
+        vm.openVideo(item)
         await run(vm)
 
-        // The toolbar is the user's again, but the lines left in the editor are English.
+        // The toolbar was never touched, but the item's lines are English whatever the toolbar says. (It stayed on
+        // screen, so its session is still here.)
         #expect(vm.language == "tr" && vm.translationTarget == "es")
         #expect(!vm.sentences.isEmpty)
         #expect(vm.translationSource == "en")
-        // Other lines, or a language picked by hand, are the toolbar's business again.
+        // A language picked by hand is the user's word on what the lines are in.
+        vm.language = "ja"
+        #expect(vm.translationSource == "ja")
+        // Other lines are the toolbar's business.
         vm.openVideo(folder.appending(path: "other.mp4"))
-        #expect(vm.translationSource == "tr")
+        #expect(vm.translationSource == "ja")
     }
 
     // MARK: - Pinned settings
@@ -613,6 +638,8 @@ import Testing
         vm.translationTarget = "en"
         let video = folder.appending(path: "clip.mp4")
         vm.addToPlaylist([video], sourceLanguage: "tr")
+        // On screen the whole time, so its session is what the run filled.
+        vm.openVideo(video)
         await run(vm)
 
         // Ten lines went out while transcribing (the held-back two ride along as context); at hand-off only the other
@@ -627,7 +654,7 @@ import Testing
         #expect(lineTexts(11...13).allSatisfy { saved.contains("T1-" + $0) })
         #expect(!saved.contains("T1-Satır 9.") && !saved.contains("T1-Satır 10."))
 
-        // The editor still shows this video, now with its translation and the saved name.
+        // The video's own session holds its translation and the saved name.
         #expect(vm.video == video)
         let expected = lineTexts(1...10).map { "T0-" + $0 } + lineTexts(11...13).map { "T1-" + $0 }
         #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == expected)
@@ -789,7 +816,7 @@ extension PlaylistTests {
             has(control, "translate-start v1") && has(control, "transcribe-start v2") && has(control, "extract-start v3")
         })
         #expect(!has(control, "translate-end v1"))
-        #expect(vm.playlist.map(\.state) == [.working, .working, .working, .pending])
+        #expect(await eventually { vm.playlist.map(\.state) == [.working, .working, .working, .pending] })
         #expect(vm.playlist[3].statusMessage.text == "Sırada" && !vm.playlist[3].isAudioReady)
 
         // Video 1's translation finishes while video 2 is still being recognized, and is saved next to the video.
@@ -837,7 +864,9 @@ extension PlaylistTests {
             #expect(outDirectory(control, "transcribe", video: video) == extracted)
             #expect(extracted == SubtitleViewModel.playlistOutDirectory(for: video).path)
         }
-        #expect(!vm.isPlaylistRunning && !vm.isWorking && vm.status == .finished)
+        #expect(!vm.isPlaylistRunning && !vm.hasActiveWork)
+        // Saved and not on screen: no session is kept for any of them.
+        for video in videos { #expect(vm.existingSession(for: video) == nil) }
     }
 
     @Test func aLocalModelTranslatesVideoOneWhileVideoTwoIsRecognized() async throws {
@@ -847,11 +876,13 @@ extension PlaylistTests {
         vm.externalLlmEnabled = false
         vm.translationTarget = "tr"
         vm.addToPlaylist([root.appending(path: "v1.mp4"), root.appending(path: "v2.mp4")], sourceLanguage: "en")
+        vm.openVideo(root.appending(path: "v1.mp4"))
         vm.startPlaylist()
         let task = vm.playlistTask
 
         #expect(await eventually { has(control, "translate-start v1") && has(control, "transcribe-end v2") })
         #expect(!has(control, "translate-end v1"))
+        // Video 1 is on screen, so its editor shows the translation badge.
         #expect(vm.isPlaylistBackgroundTranslating && vm.isTranslationInProgress)
 
         control.release("translate-v1", "translate-v2")
@@ -886,14 +917,15 @@ extension PlaylistTests {
         // Video 3 is handed off last; the list is only done once its translation is.
         control.release("translate-v2")
         #expect(await eventually { has(control, "translate-start v3") })
-        #expect(await eventually { if case .working = vm.status { true } else { false } })
+        let last = try #require(vm.existingSession(for: root.appending(path: "v3.mp4")))
+        #expect(await eventually { if case .working = last.status { true } else { false } })
 
         control.release("translate-v3")
         await task?.value
 
         #expect(vm.playlist.allSatisfy { $0.state == .completed })
         #expect(vm.playlistSummary == "3 / 3 tamamlandı")
-        #expect(vm.status == .finished)
+        #expect(last.status == .finished)
         #expect(peakOverlap(control, "translate") == 1)
         let started = logLines(control.log).filter { $0.hasPrefix("translate-start") }.map { String($0.split(separator: " ")[1]) }
         #expect(started == ["v1", "v2", "v3"])
@@ -1021,6 +1053,203 @@ extension PlaylistTests {
         #expect(vm.canStartPlaylist)
         // Video 4 was never touched.
         #expect(!has(control, "extract-start v4") && !has(control, "transcribe-start v3"))
+    }
+
+    // MARK: - Memory: a local translation model next to the recognition model
+
+    @Test func theOverlapThresholdIsA24GiBMacAndExternalProvidersAlwaysOverlap() throws {
+        let (vm, _) = makeModel()
+        #expect(SubtitleViewModel.localTranslationOverlapMemory == 24 * 1024 * 1024 * 1024)
+        vm.physicalMemory = SubtitleViewModel.localTranslationOverlapMemory - 1
+        #expect(!vm.translationMayOverlapRecognition(external: false))
+        #expect(vm.translationMayOverlapRecognition(external: true))
+        vm.physicalMemory = SubtitleViewModel.localTranslationOverlapMemory
+        #expect(vm.translationMayOverlapRecognition(external: false))
+        vm.physicalMemory = 8 * 1024 * 1024 * 1024
+        #expect(!vm.translationMayOverlapRecognition(external: false) && vm.translationMayOverlapRecognition(external: true))
+    }
+
+    @Test func aLocalModelOnASmallMacTranslatesVideoOneBeforeVideoTwoIsRecognized() async throws {
+        let control = try makeControl()
+        let root = control.folder.deletingLastPathComponent()
+        let (vm, _) = makeModel(engine: try gatedEngine(control, gated: ["translate"]))
+        vm.physicalMemory = 16 * 1024 * 1024 * 1024
+        vm.translationTarget = "tr"
+        vm.addToPlaylist([root.appending(path: "v1.mp4"), root.appending(path: "v2.mp4")], sourceLanguage: "en")
+        vm.startPlaylist()
+        let task = vm.playlistTask
+
+        #expect(await eventually { has(control, "translate-start v1") })
+        try await Task.sleep(for: .milliseconds(300))
+        // Video 2's recognition waits for video 1's translation, though its audio is ready.
+        #expect(!has(control, "transcribe-start v2") && !has(control, "translate-end v1"))
+        #expect(vm.playlist[0].state == .working && vm.isPlaylistBackgroundTranslating)
+
+        control.release("translate-v1", "translate-v2")
+        await task?.value
+        #expect(vm.playlist.allSatisfy { $0.state == .completed })
+        let translationEnd = try #require(position(control, "translate-end v1"))
+        #expect(try #require(position(control, "transcribe-start v2")) > translationEnd)
+        #expect(peakOverlap(control, "translate") == 1 && peakOverlap(control, "transcribe") == 1)
+        #expect(!vm.isPlaylistBackgroundTranslating)
+        #expect(vm.existingSession(for: root.appending(path: "v2.mp4")) == nil)
+    }
+
+    @Test func aStoppedRunDoesNotHangOnTheTranslationItWaitsFor() async throws {
+        let control = try makeControl()
+        let root = control.folder.deletingLastPathComponent()
+        let (vm, _) = makeModel(engine: try gatedEngine(control, gated: ["translate"]))
+        vm.physicalMemory = 8 * 1024 * 1024 * 1024
+        vm.translationTarget = "tr"
+        vm.addToPlaylist([root.appending(path: "v1.mp4"), root.appending(path: "v2.mp4")], sourceLanguage: "en")
+        vm.startPlaylist()
+        let task = vm.playlistTask
+        #expect(await eventually { has(control, "translate-start v1") })
+        vm.cancel()
+        await task?.value
+        #expect(!vm.isPlaylistRunning && !has(control, "transcribe-start v2"))
+        #expect(vm.playlist.allSatisfy { $0.state == .pending })
+    }
+
+    @Test func anExternalProviderOverlapsEvenOnASmallMac() async throws {
+        let control = try makeControl()
+        let root = control.folder.deletingLastPathComponent()
+        let (vm, _) = makeModel(engine: try gatedEngine(control, gated: ["translate"]))
+        vm.physicalMemory = 8 * 1024 * 1024 * 1024
+        vm.externalLlmEnabled = true
+        vm.externalLlmUrl = "10.0.0.2:1234"
+        vm.translationTarget = "tr"
+        vm.addToPlaylist([root.appending(path: "v1.mp4"), root.appending(path: "v2.mp4")], sourceLanguage: "en")
+        vm.startPlaylist()
+        let task = vm.playlistTask
+
+        #expect(await eventually { has(control, "translate-start v1") && has(control, "transcribe-end v2") })
+        #expect(!has(control, "translate-end v1"))
+        control.release("translate-v1", "translate-v2")
+        await task?.value
+        #expect(vm.playlist.allSatisfy { $0.state == .completed })
+    }
+
+    // MARK: - Settings are looked at again when stage 3 really starts
+
+    /// A view model with one cloud provider (key "sk-old") whose keys live in `secrets`, and a gate nobody else holds.
+    private func makeCloudModel(
+        engine: EngineClient, secrets: InMemorySecretStore
+    ) -> (SubtitleViewModel, TranslationProviderProfile) {
+        let store = TranslationProviderStore(
+            fileURL: FileManager.default.temporaryDirectory.appending(path: "providers-\(UUID().uuidString)/providers.json"),
+            secrets: secrets
+        )
+        let vm = SubtitleViewModel(
+            catalog: ModelCatalog(engine: engine), defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!,
+            launchState: EngineLaunchState(), providerStore: store
+        )
+        vm.offlineMode = false
+        vm.physicalMemory = SubtitleViewModel.localTranslationOverlapMemory
+        let provider = vm.addProvider(TranslationProviderProfile(preset: .preset(id: "openai")), key: "sk-old").profile
+        return (vm, provider)
+    }
+
+    @Test func offlineModeSwitchedOnAfterTheHandOffStopsTheCloudTranslation() async throws {
+        let control = try makeControl()
+        let root = control.folder.deletingLastPathComponent()
+        let (vm, _) = makeCloudModel(engine: try gatedEngine(control, gated: []), secrets: InMemorySecretStore())
+        vm.translationTarget = "tr"
+        vm.addToPlaylist([root.appending(path: "v1.mp4")], sourceLanguage: "en")
+        // Something else (the editor's job) holds the gate, so the hand-off waits for it, as it can for minutes.
+        #expect(vm.translationGate.tryAcquire())
+        vm.startPlaylist()
+        let task = vm.playlistTask
+        #expect(await eventually { vm.playlistBackgroundPending == 1 })
+
+        vm.offlineMode = true
+        vm.translationGate.release()
+        await task?.value
+
+        #expect(vm.playlist[0].state == .failed)
+        #expect(vm.playlist[0].statusMessage.text.contains("OpenAI") && vm.playlist[0].statusMessage.text.contains("Çevrimdışı"))
+        #expect(!has(control, "translate-start"), "the text never went to the provider")
+    }
+
+    @Test func offlineModeSwitchedOnAfterTheHandOffIsPassedToALocalTranslation() async throws {
+        let log = try makeFolder().appending(path: "offline.log")
+        let engine = try FakeEngine.make(
+            transcribe: finished("Merhaba"),
+            translate: """
+            echo "offline $SUBTITLE_ENGINE_OFFLINE" >> '\(log.path)'
+            \(translated("Hello"))
+            """
+        )
+        let (vm, _) = makeModelWithLaunchState(engine: engine)
+        vm.translationTarget = "en"
+        let video = log.deletingLastPathComponent().appending(path: "a.mp4")
+        vm.addToPlaylist([video], sourceLanguage: "tr")
+        #expect(vm.translationGate.tryAcquire())
+        vm.startPlaylist()
+        let task = vm.playlistTask
+        #expect(await eventually { vm.playlistBackgroundPending == 1 })
+        vm.offlineMode = true
+        vm.translationGate.release()
+        await task?.value
+        // The hand-off pinned "offline 0"; the translation that really started says "offline 1".
+        #expect(logLines(log) == ["offline 1"])
+    }
+
+    @Test func theKeyIsReadAgainWhenTheHandedOffTranslationStarts() async throws {
+        let log = try makeFolder().appending(path: "keys.log")
+        let engine = try FakeEngine.make(
+            transcribe: finished("Merhaba"),
+            translate: """
+            echo "key ${SUBTITLE_ENGINE_EXTERNAL_LLM_API_KEY:-none}" >> '\(log.path)'
+            \(translated("Hello"))
+            """
+        )
+        let secrets = InMemorySecretStore()
+        let (vm, provider) = makeCloudModel(engine: engine, secrets: secrets)
+        vm.translationTarget = "en"
+        vm.addToPlaylist([log.deletingLastPathComponent().appending(path: "a.mp4")], sourceLanguage: "tr")
+        #expect(vm.translationGate.tryAcquire())
+        vm.startPlaylist()
+        let task = vm.playlistTask
+        #expect(await eventually { vm.playlistBackgroundPending == 1 })
+        // The key was changed while the translation waited; the server is still the one chosen at hand-off.
+        secrets.set("sk-new", for: TranslationProviderStore.secretAccount(for: provider.id))
+        vm.translationGate.release()
+        await task?.value
+        #expect(logLines(log) == ["key sk-new"])
+        #expect(vm.playlist[0].state == .completed)
+    }
+
+    @Test func aKeyThatCannotBeReadWhenTheTranslationStartsFailsTheItemWithoutSendingAnything() async throws {
+        struct Locked: SecretStore {
+            func data(for account: String) -> Data? { nil }
+            func read(_ account: String) -> SecretRead { .unavailable }
+            func set(_ data: Data, for account: String) -> Bool { true }
+            func remove(_ account: String) {}
+        }
+        let log = try makeFolder().appending(path: "calls.log")
+        let engine = try FakeEngine.make(
+            transcribe: finished("Merhaba"),
+            translate: """
+            echo "translate" >> '\(log.path)'
+            \(translated("Hello"))
+            """
+        )
+        let store = TranslationProviderStore(
+            fileURL: log.deletingLastPathComponent().appending(path: "providers.json"), secrets: Locked()
+        )
+        let vm = SubtitleViewModel(
+            catalog: ModelCatalog(engine: engine), defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!,
+            launchState: EngineLaunchState(), providerStore: store
+        )
+        vm.offlineMode = false
+        vm.addProvider(TranslationProviderProfile(preset: .preset(id: "openai")), key: "")
+        vm.translationTarget = "en"
+        vm.addToPlaylist([log.deletingLastPathComponent().appending(path: "a.mp4")], sourceLanguage: "tr")
+        await run(vm)
+        #expect(vm.playlist[0].state == .failed)
+        #expect(vm.playlist[0].statusMessage.text.contains("Anahtar Zinciri"))
+        #expect(logLines(log).isEmpty)
     }
 
     @Test func cancelWhileOnlyTheFirstAudioIsBeingExtractedStopsIt() async throws {

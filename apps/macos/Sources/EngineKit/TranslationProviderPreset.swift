@@ -28,11 +28,21 @@ public struct TranslationProviderPreset: Sendable, Equatable, Identifiable {
     /// The model a new provider starts with, empty when the preset suggests none.
     public var defaultModel: String { suggestedModels.first ?? "" }
 
+    /// Id of the preset for a server on the local network.
+    public static let lanID = "lan"
+
+    /// Whether a new provider of this type translates in the background while transcription is still running. Only a
+    /// server on the local network does: it is the Mac's own helper and costs nothing, while a cloud service bills
+    /// per request, so the user switches it on knowingly.
+    public var translatesInBackgroundByDefault: Bool { id == Self.lanID }
+
     /// All presets in display order; `custom` is last.
     public static let all: [TranslationProviderPreset] = [
         TranslationProviderPreset(
-            id: "opencode-go", rawName: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1", requiresAPIKey: true,
-            suggestedModels: ["glm-5", "kimi-k2.5", "minimax-m2.5", "deepseek-v3", "qwen3-235b"], localizesName: false
+            id: "opencode-go", rawName: "OpenCode Go", baseURL: "https://opencode.ai/inference/go/openai/v1",
+            requiresAPIKey: true,
+            suggestedModels: ["glm-5.3-flash", "kimi-k3.1-pro", "minimax-m3.1-flash", "deepseek-v4.1-flash", "deepseek-v4-pro"],
+            localizesName: false
         ),
         TranslationProviderPreset(
             id: "openrouter", rawName: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", requiresAPIKey: true,

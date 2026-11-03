@@ -36,8 +36,9 @@ struct SubtitleAdderApp: App {
         _externalOpen = State(initialValue: opener)
         let explorer = FileExplorerModel()
         _explorer = State(initialValue: explorer)
-        // The real profiles file and keychain; the platform shares the explorer's media index.
-        let platform = VideoPlatformModel(store: ProfileStore(), index: explorer.index)
+        // The real profiles file and keychain; the platform shares the explorer's media index. The file is not read
+        // here (this is the main thread): the platform's `start()` reads it on a background queue.
+        let platform = VideoPlatformModel(store: ProfileStore(readsFileImmediately: false), index: explorer.index)
         _platform = State(initialValue: platform)
         // A subtitle written next to a video gets its badge in the sidebar.
         model.onSubtitleSaved = { url in Task { await explorer.subtitleSaved(at: url) } }
@@ -48,7 +49,7 @@ struct SubtitleAdderApp: App {
             MainActor.assumeIsolated {
                 // Where the video in the player was, so it resumes there.
                 platform.prepareForQuit()
-                if !model.isWorking { WorkingDirectory.cleanUp() }
+                if !model.hasActiveWork { WorkingDirectory.cleanUp() }
             }
         }
     }
@@ -56,12 +57,13 @@ struct SubtitleAdderApp: App {
     var body: some Scene {
         WindowGroup("Subtitle Adder") {
             ContentView(vm: vm, catalog: catalog, explorer: explorer, platform: platform)
-                .frame(minWidth: 760, minHeight: 600)
+                .frame(minWidth: ContentView.minimumWindowWidth, minHeight: 600)
                 // Opening with "Open With" from Finder / dropping on the Dock: don't open a new window, hand it to the open one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 // SwiftUI takes the first file of an open request here and passes the rest to `ExternalOpenDelegate`.
                 .onOpenURL { externalOpen.receive($0) }
                 .environment(\.locale, language.effective.locale)
+                .interfaceFont()
         }
         // Room for the sidebar next to the editor and the toolbar.
         .defaultSize(width: 1180, height: 720)
@@ -72,6 +74,7 @@ struct SubtitleAdderApp: App {
         Settings {
             SettingsView(vm: vm, catalog: catalog, language: language)
                 .environment(\.locale, language.effective.locale)
+                .interfaceFont()
         }
     }
 }
@@ -107,7 +110,7 @@ private struct LayoutCommands: Commands {
                 .disabled(focused.map { $0.video == nil || $0.isWorking || $0.workspace != .editor } ?? true)
             Button(L("Durdur"), systemImage: "stop.fill") { focused?.cancel() }
                 .keyboardShortcut(".", modifiers: .command)
-                .disabled(focused.map { !$0.isWorking } ?? true)
+                .disabled(focused.map { !$0.canStop } ?? true)
         }
         CommandGroup(after: .toolbar) {
             Toggle(L("Tiyatro modu"), isOn: $vm.isTheaterMode)

@@ -81,6 +81,12 @@ import Testing
         // The numbers the user may need are in the text.
         #expect(ProfileError.writeFailed(errno: 13).message.contains("13"))
         #expect(ProfileError.unsupportedFileVersion(9).message.contains("9"))
+        // The text says the file comes from another version of the app and cannot be opened here.
+        let refusal = UILanguage.en.string(
+            "Profil dosyası uygulamanın daha yeni veya başka bir sürümü tarafından yazılmış (sürüm %lld); burada açılamaz ve değiştirilmeyecek.",
+            in: .module, [9]
+        )
+        #expect(refusal.contains("newer or different version") && refusal.contains("cannot be opened here"))
     }
 
     @Test func credentialsWorkRunsOffTheMainThread() async throws {
@@ -419,10 +425,11 @@ import Testing
         position.withLock { $0.seconds = 60 }
         #expect(await waitFor { model.store.stats(for: video)?.lastPositionSeconds == 60 })
 
-        // Pausing reports at once and stops the clock.
+        // Pausing reports at once and stops the clock. It is on disk: a second store reads the file.
         model.handle(.paused(PlaybackPosition(seconds: 70, duration: 100)))
         await model.settle()
         #expect(model.store.stats(for: video)?.lastPositionSeconds == 70)
+        #expect(sandbox.makeStore().stats(for: video)?.lastPositionSeconds == 70)
         position.withLock { $0.seconds = 90 }
         try await Task.sleep(for: .milliseconds(150))
         #expect(model.store.stats(for: video)?.lastPositionSeconds == 70)
@@ -431,6 +438,7 @@ import Testing
         model.handle(.leaving(PlaybackPosition(seconds: 80, duration: 100)))
         await model.settle()
         #expect(model.store.stats(for: video)?.lastPositionSeconds == 80)
+        #expect(sandbox.makeStore().stats(for: video)?.lastPositionSeconds == 80)
         #expect(model.store.stats(for: video)?.viewCount == 1)
         #expect(model.store.stats(for: video)?.durationSeconds == 100)
 
@@ -653,7 +661,8 @@ import Testing
         #expect(!model.engagement.isLoaded)
     }
 
-    @Test func aFailedActionIsReportedAndTheScreenReturnsToTheTruth() async throws {
+    @Test(.enabled(if: getuid() != 0, "root ignores the read-only folder"))
+    func aFailedActionIsReportedAndTheScreenReturnsToTheTruth() async throws {
         let sandbox = try PlatformSandbox()
         let video = try sandbox.file("clip.mp4")
         let model = await sandbox.loggedInModel()
@@ -665,11 +674,9 @@ import Testing
         model.setLiked(true, for: video)
         #expect(model.engagement.isLiked)
         await model.settle()
-        guard model.actionFailure != nil else {
-            // Running as a user that ignores permissions (root): nothing to check.
-            return
-        }
+        #expect(model.actionFailure != nil)
         #expect(!model.engagement.isLiked)
+        #expect(model.cards.first { $0.url == video }?.isLiked != true)
     }
 
     // MARK: - Live updates
@@ -688,8 +695,8 @@ import Testing
         // A second store on the same file stands for another window or process.
         // (It shares the keychain: logging in there without "remember" would log this instance out, as designed.)
         let other = sandbox.makeStore(watches: false)
-        let login = await Task.detached { try? other.login(username: "Ali", password: "pw", rememberMe: true) }.value
-        #expect(login != nil)
+        let loggedIn = await Task.detached { (try? other.login(username: "Ali", password: "pw", rememberMe: true)) != nil }.value
+        #expect(loggedIn)
         _ = try other.setLiked(true, for: video)
         _ = try other.register(username: "Zed", password: "pw2", rememberMe: true)
 

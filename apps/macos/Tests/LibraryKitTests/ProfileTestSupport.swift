@@ -31,6 +31,13 @@ final class TestFolder: @unchecked Sendable {
         ProfileStore(fileURL: profilesFile, secretStore: secrets, watchesFile: watches, lockTimeout: lockTimeout, clock: clock)
     }
 
+    /// The files of the picture cache (`thumbnails` next to the profiles file), at any depth.
+    func cacheFiles() throws -> [URL] {
+        let root = url.appending(path: "thumbnails", directoryHint: .isDirectory)
+        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+        return walker.compactMap { $0 as? URL }.filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true }
+    }
+
     func rawProfiles() throws -> String {
         String(decoding: try Data(contentsOf: profilesFile), as: UTF8.self)
     }

@@ -7,6 +7,8 @@ struct PlatformServices: Sendable {
     /// Whether the volume at `/Volumes/<name>` is mounted. Only asked about paths below `/Volumes`.
     var isVolumeMounted: @Sendable (String) -> Bool
     var directoryExists: @Sendable (String) -> Bool
+    /// Whether the file itself is there (asked only once its folder is known to exist).
+    var fileExists: @Sendable (String) -> Bool
     /// The file names in a folder; empty if it cannot be listed.
     var listDirectory: @Sendable (String) -> [String]
     /// How many indexed files "Keşfet" and the search take from the index.
@@ -17,16 +19,19 @@ struct PlatformServices: Sendable {
     static let system = PlatformServices(
         isVolumeMounted: ExplorerServices.system.isVolumeMounted,
         directoryExists: ExplorerServices.system.directoryExists,
+        fileExists: { FileManager.default.fileExists(atPath: $0) },
         listDirectory: { path in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] })
 }
 
-/// Whether a video's storage is there. A video on a disk that is unplugged (or in a folder that is gone) is hidden from
-/// every feed until it is back, instead of showing as a card that cannot play. Cheap on purpose: it never opens the
-/// file, and asks about each volume and each folder once per instance (one feed build).
+/// Whether a video's storage is there. A video on a disk that is unplugged, in a folder that is gone or deleted from
+/// its folder is hidden from every feed until it is back, instead of showing as a card that cannot play. Cheap on
+/// purpose: it never opens the file, and asks about each volume, each folder and each file once per instance (one feed
+/// build).
 struct StorageAvailability {
     private let services: PlatformServices
     private var volumes: [String: Bool] = [:]
     private var folders: [String: Bool] = [:]
+    private var files: [String: Bool] = [:]
 
     init(services: PlatformServices) {
         self.services = services
@@ -34,6 +39,14 @@ struct StorageAvailability {
 
     mutating func isAvailable(_ path: String) -> Bool {
         guard !path.isEmpty, let folder = ExplorerPaths.parent(of: path) else { return !path.isEmpty }
+        guard isFolderAvailable(folder, of: path) else { return false }
+        if let known = files[path] { return known }
+        let exists = services.fileExists(path)
+        files[path] = exists
+        return exists
+    }
+
+    private mutating func isFolderAvailable(_ folder: String, of path: String) -> Bool {
         if let known = folders[folder] { return known }
         var available = true
         if let root = ExplorerPaths.volumeRoot(of: path) {
@@ -53,8 +66,9 @@ final class SubtitleBadges: @unchecked Sendable {
     private let listDirectory: @Sendable (String) -> [String]
     private let lock = NSLock()
     private var lookups: [String: SubtitleParser.SubtitleBadgeLookup] = [:]
+    private var listed = 0
     /// How many folders were listed (what the cache saved shows in tests).
-    private(set) var listings = 0
+    var listings: Int { lock.withLock { listed } }
 
     init(listDirectory: @escaping @Sendable (String) -> [String]) {
         self.listDirectory = listDirectory
@@ -65,7 +79,7 @@ final class SubtitleBadges: @unchecked Sendable {
         let key = folder.lowercased()
         let lookup: SubtitleParser.SubtitleBadgeLookup = lock.withLock {
             if let known = lookups[key] { return known }
-            listings += 1
+            listed += 1
             let made = SubtitleParser.SubtitleBadgeLookup(fileNames: listDirectory(folder))
             lookups[key] = made
             return made
@@ -122,6 +136,11 @@ struct PlatformSnapshot: Sendable {
     var rememberMe = true
     var counts = ProfileCounts()
     var lists: [UserVideoList] = []
+    /// How many videos of each list (by list id) are visible: their storage is available.
+    var listCounts: [String: Int] = [:]
+    /// The store's session generation when this was read; a different one at apply time means the snapshot belongs to
+    /// a login that is over.
+    var sessionGeneration = 0
     var engagement: EngagementSnapshot?
     /// `nil` when the feed was not asked for or the tab shows the sign-in card instead of videos.
     var cards: [VideoCard]?
@@ -133,14 +152,18 @@ enum PlatformFeedBuilder {
     /// Every store read of a refresh, in one pass. Runs on a store queue, never on the main actor.
     static func snapshot(
         store: ProfileStore, request: FeedRequest, services: PlatformServices, badges: SubtitleBadges? = nil,
-        seedThumbnail: (@Sendable (String, Data) -> Void)? = nil
+        seedThumbnail: (@Sendable (String, Data) -> Void)? = nil, shouldContinue: (@Sendable () -> Bool)? = nil
     ) -> PlatformSnapshot {
         var availability = StorageAvailability(services: services)
         var snapshot = PlatformSnapshot(username: store.currentUsername)
+        // After the first read, which is the one that restores a remembered login.
+        snapshot.sessionGeneration = store.sessionGeneration
         snapshot.registeredUsernames = store.registeredUsernames
         snapshot.lastUsername = store.lastUsername
         snapshot.rememberMe = store.rememberMe
         let loggedIn = snapshot.username != nil
+        // Logged out only the indexed files can be listed, by name: no file is opened to follow a move.
+        let fingerprints: FingerprintMode = loggedIn ? request.fingerprints : .pathOnly
 
         if loggedIn {
             // One pass over the profile's own records gives the pill counts of what is visible.
@@ -155,7 +178,12 @@ enum PlatformFeedBuilder {
                 url: video, views: stats?.viewCount ?? 0, isLiked: stats?.isLiked ?? false,
                 rating: min(max(stats?.rating ?? 0, 0), 5), listIDs: Set(store.lists(containing: video).map(\.id)))
         }
-        if loggedIn { snapshot.lists = store.lists() }
+        if loggedIn {
+            snapshot.lists = store.lists()
+            for list in snapshot.lists {
+                snapshot.listCounts[list.id] = list.videoPaths.filter { availability.isAvailable($0) }.count
+            }
+        }
 
         guard request.wantsFeed else { return snapshot }
 
@@ -175,10 +203,14 @@ enum PlatformFeedBuilder {
             ? request.discoveredPaths.filter { availability.isAvailable($0) }.map { URL(filePath: $0, directoryHint: .notDirectory) }
             : []
         let items = store.feed(
-            filter, search: searching ? request.search : nil, discovered: discovered, fingerprints: request.fingerprints
+            filter, search: searching ? request.search : nil, discovered: discovered, fingerprints: fingerprints,
+            shouldContinue: shouldContinue
         ).filter { availability.isAvailable($0.videoPath) }
-        // Moves that the feed followed are in memory; write them now rather than with some later write.
-        if request.fingerprints == .compute, store.hasUnsavedChanges { _ = try? store.persistPendingMigrations() }
+        // Stopped: nobody wants this result any more.
+        if let shouldContinue, !shouldContinue() { return snapshot }
+        // A move that the feed followed is in memory; write it now rather than with some later write. Playback progress
+        // that is pending is not a reason to rewrite the vault on every refresh (it has its own timer).
+        if fingerprints == .compute, store.hasUnsavedMigrations { _ = try? store.persistPendingMigrations() }
 
         var listsByPath: [String: [VideoCard.ListRef]] = [:]
         for list in snapshot.lists {

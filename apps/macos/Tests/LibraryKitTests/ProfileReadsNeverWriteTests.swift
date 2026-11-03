@@ -106,7 +106,7 @@ import Testing
     }
 
     @Test func aMoveNotYetWrittenIsFoundAgainAfterAnotherInstancesWrite() throws {
-        let (store, original, moved, _) = try movedSetup()
+        let (store, _, moved, _) = try movedSetup()
         let other = makeStore()
         _ = store.stats(for: moved)
         try other.setRating(2, for: folder.video("elsewhere.mp4"))

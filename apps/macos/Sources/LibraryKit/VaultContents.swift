@@ -262,6 +262,42 @@ struct VaultContents: Sendable {
         thumbnails.removeValue(forKey: Self.key(for: key))
     }
 
+    /// Whether the vault still carries pictures (only a vault written before the pictures moved to `ThumbnailCache`,
+    /// or by an app that keeps them in the vault, does).
+    var hasThumbnails: Bool { !thumbnails.isEmpty }
+
+    /// The keys a picture of this probe's file is cached under, best first: its content fingerprint, then its path.
+    static func thumbnailKeys(for probe: VideoProbe) -> [String] {
+        [probe.fingerprint.map(key(for:)), probe.pathKey].compactMap { $0 }
+    }
+
+    /// The keys a picture of a record may be cached under, best first.
+    static func thumbnailKeys(for video: VideoUserStats) -> [String] {
+        [video.contentFingerprint.flatMap { $0.isEmpty ? nil : key(for: $0) }, video.videoPath.lowercased()].compactMap { $0 }
+    }
+
+    /// Takes every picture out of the vault, to be moved into the `ThumbnailCache`, and drops the records that only
+    /// existed to hold one (a video that was never watched, liked, rated, listed or resumed). Returns the pictures with
+    /// the cache key each belongs under.
+    mutating func extractThumbnails() -> [(key: String, data: Data)] {
+        guard !thumbnails.isEmpty else { return [] }
+        let listed = Set(customLists.flatMap(\.videoPaths).map { $0.lowercased() })
+        var extracted: [(key: String, data: Data)] = []
+        for (key, data) in thumbnails {
+            guard let video = videos[key] else {
+                // Not tied to a record: its key is already a fingerprint or a path.
+                extracted.append((key, data))
+                continue
+            }
+            extracted.append((Self.thumbnailKeys(for: video)[0], data))
+            let engaged = video.viewCount > 0 || video.lastWatchedAt != nil || video.isLiked || video.rating > 0
+                || video.lastPositionSeconds > 0 || listed.contains(video.videoPath.lowercased())
+            if !engaged { removeVideo(forKey: key) }
+        }
+        thumbnails = [:]
+        return extracted
+    }
+
     // MARK: - Lists
 
     func listIndex(id: String) -> Int? {

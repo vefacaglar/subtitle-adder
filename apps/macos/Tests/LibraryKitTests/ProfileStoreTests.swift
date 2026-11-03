@@ -139,6 +139,15 @@ import Testing
 
         let raw = try folder.rawProfiles()
         #expect(raw.contains("encryptedVaultBase64"))
+        // The picture is in the cache folder as ciphertext, under names that say nothing.
+        let cached = try folder.cacheFiles()
+        #expect(cached.count == 1)
+        for file in cached {
+            let bytes = try Data(contentsOf: file)
+            #expect(bytes.range(of: thumbnail) == nil)
+            #expect(!file.path.lowercased().contains("topsecret"))
+            #expect(!file.path.lowercased().contains("vault_user"))
+        }
         #expect(!raw.lowercased().contains("topsecret_project_alpha_2026"))
         #expect(!raw.lowercased().contains(secretListName.lowercased()))
         #expect(!raw.contains(thumbnail.base64EncodedString()))
@@ -152,12 +161,12 @@ import Testing
         #expect(stats.viewCount == 1)
         #expect(stats.isLiked)
         #expect(stats.rating == 5)
-        #expect(stats.thumbnail == thumbnail)
         #expect(reloaded.thumbnail(for: secretVideo) == thumbnail)
-
+        // The feed does not carry pictures; they are read where they are drawn.
+        #expect(stats.thumbnail == nil)
         let history = reloaded.feed(.history)
         #expect(history.count == 1)
-        #expect(history.first?.thumbnail == thumbnail)
+        #expect(history.first?.thumbnail == nil)
     }
 
     @Test func twoInstancesLoggedIntoTheSameProfileMergeHistoryLikesRatingsAndLists() throws {
@@ -319,7 +328,7 @@ import Testing
         let liked = store.feed(.liked)
         #expect(liked.map(\.videoPath) == [normalized(v1)])
         #expect(liked.first?.viewCount == 0)
-        #expect(liked.first?.thumbnail == kept)
+        #expect(store.thumbnail(for: v1) == kept)
         #expect(store.feed(.topRated).map(\.videoPath) == [normalized(v2)])
         #expect(store.feed(.customList(bestEpisodes.id)).count == 2)
         #expect(store.stats(for: v3) == nil)
@@ -407,7 +416,8 @@ import Testing
         #expect(migrated.isLiked)
         #expect(migrated.rating == 5)
         #expect(migrated.lastPositionSeconds == 120)
-        #expect(migrated.thumbnail == Data("THUMB".utf8))
+        // The picture follows the file: it is stored under the content fingerprint.
+        #expect(store.thumbnail(for: moved) == Data("THUMB".utf8))
 
         #expect(store.isVideo(moved, inList: archive.id))
         #expect(!store.isVideo(original, inList: archive.id))

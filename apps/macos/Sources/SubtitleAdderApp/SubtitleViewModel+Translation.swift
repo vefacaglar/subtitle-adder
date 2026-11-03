@@ -3,30 +3,6 @@ import Foundation
 
 /// Translation flow: sends the lines to the engine and maps editable translation texts by `uid`.
 extension SubtitleViewModel {
-    /// Returns the line's translation if there is one.
-    func translation(for sentence: Sentence) -> TranslationEntry? {
-        translations[sentence.uid]
-    }
-
-    func isTranslationStale(for sentence: Sentence) -> Bool {
-        translations[sentence.uid]?.isStale(for: sentence) ?? false
-    }
-
-    /// Whether the line shows the review marker: its translation's flag, or (without a translation) the flag the line
-    /// itself carries from an imported JSON file.
-    func needsReview(for sentence: Sentence) -> Bool {
-        translations[sentence.uid]?.needsReview ?? sentence.needsReview
-    }
-
-    /// If the translation is chosen on export, the times are kept and the text is replaced by the translation.
-    func exportSentences(translated: Bool) -> [Sentence] {
-        guard translated else { return sentences }
-        return sentences.map { sentence in
-            let entry = translations[sentence.uid]
-            return Self.exportLine(sentence, text: entry?.text, needsReview: entry?.needsReview ?? false)
-        }
-    }
-
     /// The line as exported with a translation: a non-empty `text` replaces the original (the times are kept) and
     /// carries the translation's `needsReview`, replacing a flag the line itself had; without text the line keeps its
     /// own text and flag. Word timestamps never go with a translated text.
@@ -38,156 +14,6 @@ extension SubtitleViewModel {
         }
         copy.words = []
         return copy
-    }
-
-    /// Translates all lines to the selected target language. While running, Stop cancels the same job.
-    /// With `reuseExisting` (after background translation) only the lines that have no translation yet, whose
-    /// translation is outdated or in another language are sent.
-    /// With `only` (the selected lines, captured when the job starts) just those lines are sent again, translated or
-    /// not; their results merge into the other lines' translations, whatever language those are in.
-    func translate(reuseExisting: Bool = false, only selectedLines: Set<UUID>? = nil) {
-        guard !sentences.isEmpty else { return }
-        let selectedRequest = selectedLines.map { wanted in sentences.filter { wanted.contains($0.uid) } }
-        if let selectedRequest, selectedRequest.isEmpty { return }
-        guard let engine = catalog.engine else {
-            status = .failed(.error(EngineError.notFound))
-            return
-        }
-        commitDraft()
-        commitTranslationDraft()
-        let source = translationSource
-        let target = translationTarget
-        guard source != target else {
-            status = .failed(.key("Kaynak ve hedef dil aynı olamaz."))
-            return
-        }
-        // An external LLM takes any language pair, so NLLB's need for a source language doesn't apply.
-        if translationModel == "nllb-1.3b", source == nil, !isExternalLLMActive {
-            status = .failed(.key("NLLB için kaynak dil gerekli. Araç çubuğundan konuşma dilini seç."))
-            return
-        }
-        let model = translationModel
-        if blockedOffline([model], retry: { [weak self] in
-            self?.translate(reuseExisting: reuseExisting, only: selectedLines)
-        }) { return }
-        cancelAsyncTranslation()
-        let request = selectedRequest ?? (reuseExisting ? linesNeedingTranslation(into: target) : sentences)
-        // A partial request carries up to two neighbours per line so the model still sees the dialogue; only the
-        // requested lines' results are applied.
-        let contextualRequest = Self.withTranslationContext(sentences, requested: request)
-        // Lines whose translation stays count as done in the progress; counted from the translations themselves.
-        let alreadyDone = reuseExisting && selectedRequest == nil
-            ? sentences.count { sentence in
-                translations[sentence.uid].map { Self.isReusableTranslation(sentence, entry: $0, target: target) } ?? false
-            }
-            : 0
-        // The progress of a selected retry is the share of the selection, not of the whole subtitle.
-        let total = max(1, selectedRequest?.count ?? sentences.count)
-        // What the lines had before the job: a line the engine fails on keeps this, whatever earlier batches stored.
-        let baseline = translations
-        savedSubtitleName = nil
-        job?.cancel()
-        let id = UUID()
-        jobID = id
-        // An external server has no local model to protect from deletion.
-        catalog.activeModels = isExternalLLMActive ? [] : [model]
-        if request.isEmpty {
-            // Everything was translated in the background: only the save is left.
-            status = .working(.key("Çeviri hazırlanıyor…"), fraction: nil)
-            isTranslationJobRunning = true
-            job = Task {
-                guard jobID == id, !Task.isCancelled else { return }
-                status = .finished
-                await autoSaveTranslationIfEnabled()
-            }
-            return
-        }
-        if let initial = Self.translationProgress(done: alreadyDone, total: total) {
-            status = .working(Self.label(for: .translating, fraction: initial, purpose: .translation), fraction: initial)
-        } else {
-            status = .working(.key("Çeviri hazırlanıyor…"), fraction: nil)
-        }
-        isTranslationJobRunning = true
-        job = Task {
-            var undoRegistered = false
-            // However it ends, the model becomes deletable in Settings.
-            defer { if jobID == id { catalog.activeModels = [] } }
-            var failed = false
-            do {
-                // Only one translation runs at a time in the app: while another one holds the gate this job waits with
-                // the status it already has ("Çeviri hazırlanıyor…"); Stop leaves the queue. Held for the engine
-                // process only, not for the save below.
-                do {
-                    try await translationGate.acquire()
-                    defer { translationGate.release() }
-                    guard jobID == id, !Task.isCancelled else { return }
-                    for try await event in engine.translate(contextualRequest, to: target, from: source, model: model) {
-                        guard jobID == id, !Task.isCancelled else { return }
-                        switch event {
-                        case .stage(let stage, var fraction):
-                            if stage == .translating, let part = fraction {
-                                fraction = Self.translationProgress(
-                                    alreadyDone: alreadyDone, requested: request.count, part: part, total: total
-                                )
-                            }
-                            status = .working(
-                                Self.label(for: stage, fraction: fraction, purpose: .translation),
-                                fraction: fraction
-                            )
-                        case .translation(let language, let translated):
-                            // A selected retry is one undo step back to what the lines had before it, however many
-                            // batches it applies and even if it is stopped; registered with the first batch.
-                            if selectedRequest != nil, !undoRegistered {
-                                undoRegistered = true
-                                registerTranslationUndo(restoring: baseline, actionName: L("Seçilenleri Yeniden Çevir"))
-                            }
-                            // One event per batch (a growing prefix) plus a final one; each is applied as it arrives.
-                            applyTranslation(
-                                translated, language: language, source: request,
-                                merge: reuseExisting || selectedRequest != nil,
-                                preserveOtherLanguages: selectedRequest != nil, reviewFallback: baseline
-                            )
-                        case .result, .partial:
-                            break
-                        case .error(let message):
-                            failed = true
-                            status = .failed(.verbatim(message))
-                        }
-                    }
-                }
-                // On cancel the stream ends without an error; in that case the status doesn't change.
-                guard jobID == id, !Task.isCancelled else { return }
-                if !failed {
-                    status = .finished
-                    await autoSaveTranslationIfEnabled()
-                }
-                // Make the downloaded translation model show as "hazır" (ready) in Settings.
-                await catalog.load()
-            } catch is CancellationError {
-                if jobID == id { status = .idle }
-            } catch {
-                if jobID == id { status = .failed(.error(error)) }
-            }
-        }
-    }
-
-    /// Whether "Seçilenleri yeniden çevir" can start: at least one line is selected and nothing else is running.
-    var canTranslateSelected: Bool { !selectedUIDs.isEmpty && !isWorking }
-
-    /// Sends the selected lines (all of them, translated or not) to the engine again and merges the results into the
-    /// existing translations. Selection changes while the job runs don't change which lines it applies to.
-    func translateSelected() {
-        guard canTranslateSelected else { return }
-        translate(only: selectedUIDs)
-    }
-
-    /// The lines whose translation into `target` can't be kept: none yet, outdated, in another language, empty or a
-    /// copy of the original.
-    func linesNeedingTranslation(into target: String) -> [Sentence] {
-        sentences.filter { sentence in
-            guard let entry = translations[sentence.uid] else { return true }
-            return !Self.isReusableTranslation(sentence, entry: entry, target: target)
-        }
     }
 
     /// Whether an existing translation can stay instead of being sent again: the original wasn't edited since, it is in
@@ -215,14 +41,16 @@ extension SubtitleViewModel {
     /// Maps translated lines by their stable `uid` values; the engine preserves order and ids. With `merge` the
     /// translations of other lines (same language) are kept and these are added to them.
     /// With `preserveOtherLanguages` the kept translations stay even when they are in another language.
-    /// `reviewFallback` is what the lines had before the whole job (see `storeTranslations`).
+    /// `reviewFallback` is what the lines had before the whole job (see `VideoSession.storeTranslations`). `session` is
+    /// the video the translation is for (the one on screen when not given).
     func applyTranslation(
         _ translated: [Sentence], language: String, source: [Sentence], merge: Bool = false,
-        preserveOtherLanguages: Bool = false, reviewFallback: [UUID: TranslationEntry]? = nil
+        preserveOtherLanguages: Bool = false, reviewFallback: [UUID: TranslationEntry]? = nil,
+        to session: VideoSession? = nil
     ) {
         storeTranslations(
             Self.pairs(translated, with: source), language: language, merge: merge,
-            preserveOtherLanguages: preserveOtherLanguages, reviewFallback: reviewFallback
+            preserveOtherLanguages: preserveOtherLanguages, reviewFallback: reviewFallback, in: session
         )
     }
 
@@ -234,44 +62,20 @@ extension SubtitleViewModel {
         return translated.compactMap { result in byID[result.id].map { (result, $0) } }
     }
 
-    /// A result the engine flagged keeps the line's earlier translation (only the marker is set) when that is in the
-    /// same language or `preserveOtherLanguages` is on (a selected retry); otherwise it shows the source text the engine
-    /// returned, flagged, so a full translation into a new language never mixes in the old language. The earlier
-    /// translation is looked up in `reviewFallback` (the translations from before the job) when given: every batch event
-    /// rebuilds the dictionary, so `translations` itself only holds what earlier batches stored.
+    /// Stores translated lines in `session` (the one on screen when not given); see `VideoSession.storeTranslations`.
+    /// The toolbar's target follows the language of what arrived, but only when the video is on screen: a translation
+    /// that lands in a video in the background doesn't change what the user has chosen.
     func storeTranslations(
         _ pairs: [(result: Sentence, original: Sentence)], language: String, merge: Bool,
-        preserveOtherLanguages: Bool = false, reviewFallback: [UUID: TranslationEntry]? = nil
+        preserveOtherLanguages: Bool = false, reviewFallback: [UUID: TranslationEntry]? = nil,
+        in session: VideoSession? = nil
     ) {
-        let hadTranslations = hasTranslations
-        let previous = reviewFallback ?? translations
-        var entries: [UUID: TranslationEntry] = merge
-            && (preserveOtherLanguages || translationLanguage == language || translations.isEmpty)
-            ? translations
-            : [:]
-        for (result, original) in pairs {
-            if result.needsReview, var existing = previous[original.uid],
-               preserveOtherLanguages || existing.language == language {
-                // A failed retry keeps what the line had (even if stale); only the marker is set.
-                existing.needsReview = true
-                entries[original.uid] = existing
-                continue
-            }
-            entries[original.uid] = TranslationEntry(
-                text: result.text,
-                sourceText: original.text,
-                language: language,
-                needsReview: result.needsReview
-            )
-        }
-        translations = entries
-        translationLanguage = language
-        translationTarget = language
-        // The first translation to arrive switches the video overlay and the export to the translated text.
-        if !hadTranslations, hasTranslations {
-            if displayMode == .original { displayMode = .translation }
-            exportLanguage = .translated
-        }
+        let session = session ?? foreground
+        session.storeTranslations(
+            pairs, language: language, merge: merge, preserveOtherLanguages: preserveOtherLanguages,
+            reviewFallback: reviewFallback
+        )
+        if updatesToolbar(for: session) { translationTarget = language }
     }
 
     // MARK: - Editing the translation text
@@ -325,20 +129,24 @@ extension SubtitleViewModel {
 
     /// Puts an undo record on the stack that restores `baseline` without changing the translations now; undoing it
     /// records the redo, like any other translation change.
-    private func registerTranslationUndo(restoring baseline: [UUID: TranslationEntry], actionName: String) {
+    func registerTranslationUndo(on session: VideoSession, restoring baseline: [UUID: TranslationEntry], actionName: String) {
         guard let undoManager else { return }
-        undoManager.registerUndo(withTarget: self) { model in
-            MainActor.assumeIsolated { model.replaceTranslations(baseline, actionName: actionName) }
+        undoManager.registerUndo(withTarget: session) { [weak self] session in
+            MainActor.assumeIsolated { self?.replaceTranslations(baseline, in: session, actionName: actionName) }
         }
         undoManager.setActionName(actionName)
     }
 
-    private func replaceTranslations(_ updated: [UUID: TranslationEntry], actionName: String) {
-        let previous = translations
-        translations = updated
+    private func replaceTranslations(
+        _ updated: [UUID: TranslationEntry], in session: VideoSession? = nil, actionName: String
+    ) {
+        let session = session ?? foreground
+        let previous = session.translations
+        session.hasUnsavedEdits = true
+        session.translations = updated
         guard let undoManager else { return }
-        undoManager.registerUndo(withTarget: self) { model in
-            MainActor.assumeIsolated { model.replaceTranslations(previous, actionName: actionName) }
+        undoManager.registerUndo(withTarget: session) { [weak self] session in
+            MainActor.assumeIsolated { self?.replaceTranslations(previous, in: session, actionName: actionName) }
         }
         undoManager.setActionName(actionName)
     }

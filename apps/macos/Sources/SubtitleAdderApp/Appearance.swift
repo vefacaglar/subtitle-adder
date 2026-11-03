@@ -9,6 +9,11 @@ enum AppearanceKeys {
     static let overlayTextColor = "overlayTextColor"
     static let overlayBackground = "overlayBackgroundStyle"
     static let overlayOpacity = "overlayBackgroundOpacity"
+    /// Font family of the app's own interface ("" = system); independent of the subtitle overlay font above.
+    static let interfaceFont = "appFontFamily"
+
+    /// The keys the overlay "reset" button restores; the theme and the interface font are not among them.
+    static let overlayKeys = [overlayFont, overlaySize, overlayTextColor, overlayBackground, overlayOpacity]
 }
 
 /// App theme choice. "system" follows macOS.
@@ -44,6 +49,8 @@ enum OverlayBackground: String, CaseIterable, Identifiable, Sendable {
     case box
     /// No box; a soft shadow keeps the text readable.
     case shadow
+    /// No box; a thin black contour around the glyphs.
+    case outline
 
     var id: String { rawValue }
 
@@ -51,6 +58,7 @@ enum OverlayBackground: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .box: L("Kutu")
         case .shadow: L("Gölge")
+        case .outline: L("Kontur")
         }
     }
 }
@@ -93,6 +101,33 @@ struct OverlayStyle: Equatable, Sendable {
     }
 
     func fontSize(videoHeight: CGFloat) -> CGFloat { max(12, videoHeight * sizeFraction) }
+
+    /// Radius of the contour in the outline style, in points: grows with the text but stays between 1 and 2.5 so it
+    /// neither vanishes on small video nor turns heavy at full screen.
+    func outlineRadius(videoHeight: CGFloat) -> CGFloat {
+        min(max(fontSize(videoHeight: videoHeight) * 0.045, 1.0), 2.5)
+    }
+
+    /// The eight offsets of the contour copies: up, down, left and right by `radius`, the diagonals by `radius / √2`
+    /// so all eight lie on one circle.
+    static func outlineOffsets(radius: CGFloat) -> [CGSize] {
+        let d = radius / 2.0.squareRoot()
+        return [
+            CGSize(width: -radius, height: 0), CGSize(width: radius, height: 0),
+            CGSize(width: 0, height: -radius), CGSize(width: 0, height: radius),
+            CGSize(width: -d, height: -d), CGSize(width: d, height: -d),
+            CGSize(width: -d, height: d), CGSize(width: d, height: d),
+        ]
+    }
+
+    /// Restores the overlay settings in `defaults`. Leaves the theme and the interface font alone.
+    static func resetStored(in defaults: UserDefaults = .standard) {
+        defaults.set("", forKey: AppearanceKeys.overlayFont)
+        defaults.set(defaultSize, forKey: AppearanceKeys.overlaySize)
+        defaults.set(defaultTextHex, forKey: AppearanceKeys.overlayTextColor)
+        defaults.set(OverlayBackground.box.rawValue, forKey: AppearanceKeys.overlayBackground)
+        defaults.set(defaultOpacity, forKey: AppearanceKeys.overlayOpacity)
+    }
 
     /// Semibold font of the chosen family. Resolved through NSFontManager so family names (not only
     /// PostScript names) work and the nearest available weight is used.
@@ -179,7 +214,48 @@ struct SubtitleOverlayLabel: View {
                 .shadow(color: .black.opacity(0.8), radius: 1, x: 0, y: 0)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
+        case .outline:
+            // Eight black copies around the coloured text; offsets do not change the layout size.
+            let offsets = OverlayStyle.outlineOffsets(radius: style.outlineRadius(videoHeight: videoHeight))
+            label
+                .background {
+                    ZStack {
+                        ForEach(offsets.indices, id: \.self) { index in
+                            label
+                                .foregroundStyle(.black)
+                                .offset(offsets[index])
+                        }
+                    }
+                    .accessibilityHidden(true)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
         }
+    }
+}
+
+/// Applies the chosen interface font to a window's content. Read live, so changing it in Settings takes effect at
+/// once. The subtitle overlay sets its own font and is never affected.
+struct InterfaceFontModifier: ViewModifier {
+    @AppStorage(AppearanceKeys.interfaceFont) private var family = ""
+
+    func body(content: Content) -> some View {
+        content.environment(\.font, InterfaceFont.font(family: family))
+    }
+}
+
+extension View {
+    /// Uses the interface font from Settings for text that has no explicit font.
+    func interfaceFont() -> some View { modifier(InterfaceFontModifier()) }
+}
+
+enum InterfaceFont {
+    /// The font to apply for a stored family: `nil` (the system font) when it is empty or not installed, so a font
+    /// that was removed since it was chosen does not break the layout. Sized like the system body text.
+    static func font(family: String, installed: [String]? = nil) -> Font? {
+        let name = family.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, (installed ?? NSFontManager.shared.availableFontFamilies).contains(name) else { return nil }
+        return .custom(name, size: NSFont.systemFontSize, relativeTo: .body)
     }
 }
 

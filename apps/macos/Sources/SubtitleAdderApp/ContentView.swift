@@ -9,6 +9,8 @@ struct ContentView: View {
     let explorer: FileExplorerModel
     let platform: VideoPlatformModel
     @State private var player = PlayerModel()
+    /// Names this window to the platform, which follows one window's player at a time.
+    @State private var windowToken = PlayerWindowToken()
     /// A card's "Oynat" starts the video even when Settings say not to play on open.
     @State private var forcePlay = false
     @State private var pickingVideo = false
@@ -17,13 +19,11 @@ struct ContentView: View {
     @State private var runAfterPicking = false
     @State private var exportDocument: TextDocument?
     @State private var chrome = WindowChrome()
-    @Environment(\.openSettings) private var openSettings
-    @AppStorage(SettingsTab.storageKey) private var settingsTab = SettingsTab.general.rawValue
 
     var body: some View {
         NavigationSplitView(columnVisibility: sidebarVisibility) {
-            FileExplorerSidebar(model: explorer, vm: vm)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 420)
+            FileExplorerSidebar(model: explorer, vm: vm, openVideo: showVideo)
+                .navigationSplitViewColumnWidth(min: Self.sidebarMinWidth, ideal: 260, max: 420)
         } detail: {
             workspaceContent
                 .frame(minWidth: Self.detailMinWidth)
@@ -42,29 +42,17 @@ struct ContentView: View {
         // per-window action (not state on the shared view model), so it never reaches another open window.
         .focusedSceneValue(\.chooseVideo, chooseVideoAction)
         .background { WindowReader { chrome.attach($0) } }
-        .onAppear {
-            chrome.onEscape = {
-                guard vm.isTheaterMode else { return false }
-                vm.isTheaterMode = false
-                return true
-            }
-            let actions = PlayerShortcutActions(
-                player: player, vm: vm, isFullScreen: { chrome.isFullScreen }, toggleFullScreen: { chrome.toggleFullScreen() }
-            )
-            chrome.onShortcut = { shortcut, isRepeat in actions.perform(shortcut, isRepeat: isRepeat) }
-            chrome.isPanelHidden = { vm.hideSubtitlePanel }
-            // What the platform needs from the player: where it is, and when it plays, stops, jumps or lets go.
-            platform.playbackSampler = { [player] in player.position }
-            player.onPlaybackEvent = { [platform] event in platform.handle(event) }
-        }
+        .onAppear { attachWindow() }
+        // Closing the window stops its player and lets go of everything that points back at it.
+        .onDisappear { detachWindow() }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
         .task { await catalog.load() }
         .task { await explorer.start() }
         .task { await platform.start() }
         // The sidebar highlights the open video and keeps its folder's listing (and subtitle badge) current.
         .onChange(of: vm.video, initial: true) { _, url in Task { await explorer.sync(toVideo: url) } }
-        // The toolbar's model menu lists what the active provider offers; a menu can't fetch when it opens, so the list is
-        // filled ahead of time (launch, switching provider), after the window has had a moment to settle.
+        // The toolbar's model picker lists what the active provider offers; the list is filled ahead of time (launch,
+        // switching provider), after the window has had a moment to settle, so it is there when the popover opens.
         .task(id: vm.providerPrefetchKey) {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
@@ -74,23 +62,15 @@ struct ContentView: View {
             vm.reconcileModelSelection()
             vm.reconcileTranslationModelSelection()
         }
-        // A playlist run goes through many videos; the player stays empty until it is over. A video opened any other
-        // way (picker, drop, Open With, a double click) plays by itself when Settings say so; opening the video that
-        // is already open changes nothing, so it doesn't restart.
+        // A video opened any way (sidebar, picker, drop, Open With, a double click) plays by itself when Settings say so;
+        // opening the video that is already open changes nothing, so it doesn't restart. A playlist run or any other
+        // job works in sessions of its own and never loads the player.
         // The platform hears about it after the player has let go of the old video, so it can still report where that
-        // was. A video a playlist run opens is not one the user watched: it is never counted.
+        // was.
         .onChange(of: vm.video, initial: true) { _, url in
-            let running = vm.isPlaylistRunning
-            if !running {
-                player.load(url, autoPlay: vm.autoPlayVideo || forcePlay)
-                forcePlay = false
-            }
-            platform.playerVideoChanged(to: running ? nil : url, countsAsOpen: !running)
-        }
-        // The end of a run only puts the editor's video back, which is not opening one: it stays paused.
-        .onChange(of: vm.isPlaylistRunning) { _, running in
-            player.load(running ? nil : vm.video)
-            platform.playerVideoChanged(to: running ? nil : vm.video, countsAsOpen: false)
+            player.load(url, autoPlay: vm.autoPlayVideo || forcePlay)
+            forcePlay = false
+            platform.playerVideoChanged(to: url, countsAsOpen: true)
         }
         .alert(
             L("İşlem tamamlanamadı"),
@@ -105,17 +85,21 @@ struct ContentView: View {
             if workspace != .editor { player.pause() }
         }
         .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
-        .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent]) { result in
-            let run = runAfterPicking
-            runAfterPicking = false
-            guard case .success(let url) = result else { return }
-            vm.openVideo(url)
-            if run { vm.generateAndTranslate() }
-        }
+        .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent], onCompletion: videoPicked)
         // A second importer on the same view isn't presented reliably, so it hangs off a background.
         .background {
-            Color.clear.fileImporter(isPresented: $pickingSubtitle, allowedContentTypes: Self.subtitleTypes) { result in
-                if case .success(let url) = result { vm.openSubtitle(url) }
+            Color.clear.fileImporter(isPresented: $pickingSubtitle, allowedContentTypes: Self.subtitleTypes, onCompletion: subtitlePicked)
+        }
+        .confirmsOpening(in: vm)
+        // An open the playlist run's claim on a video keeps from happening says so; there is nothing to confirm.
+        .background {
+            Color.clear.alert(
+                L("İşlem tamamlanamadı"),
+                isPresented: Binding(get: { vm.openRefusal != nil }, set: { if !$0 { vm.openRefusal = nil } })
+            ) {
+                Button(L("Tamam")) { vm.openRefusal = nil }
+            } message: {
+                Text(vm.openRefusal?.text ?? "")
             }
         }
         .fileExporter(
@@ -124,6 +108,37 @@ struct ContentView: View {
             contentType: .plainText,
             defaultFilename: vm.exportFilename
         ) { vm.exportFinished($0) }
+    }
+
+    /// Hooks the window's keys and its player up. Undone by `detachWindow`.
+    private func attachWindow() {
+        chrome.onEscape = {
+            guard vm.isTheaterMode else { return false }
+            vm.isTheaterMode = false
+            return true
+        }
+        let actions = PlayerShortcutActions(
+            player: player, vm: vm, isFullScreen: { chrome.isFullScreen }, toggleFullScreen: { chrome.toggleFullScreen() }
+        )
+        chrome.onShortcut = { shortcut, isRepeat in actions.perform(shortcut, isRepeat: isRepeat) }
+        chrome.isPanelHidden = { vm.hideSubtitlePanel }
+        // The window closing or becoming key matters to the platform, whichever way SwiftUI tears the view down.
+        chrome.onClose = { detachWindow() }
+        chrome.onBecomeKey = { platform.claimPlayback(windowToken) }
+        // What the platform needs from the player: where it is, and when it plays, stops, jumps or lets go.
+        platform.attachPlayer(player, owner: windowToken)
+    }
+
+    /// The window is going away: its player is paused and its place reported (so it is saved), and the platform and the
+    /// window's key handling let go. Those closures capture this view, and so the player; left in place they would keep
+    /// a closed window's player alive, playing to nobody.
+    private func detachWindow() {
+        platform.detachPlayer(player, owner: windowToken)
+        chrome.onEscape = nil
+        chrome.onShortcut = nil
+        chrome.isPanelHidden = { false }
+        chrome.onClose = nil
+        chrome.onBecomeKey = nil
     }
 
     /// Everything right of the sidebar: the workspace switcher, the editor or the playlist, and the status bar.
@@ -136,7 +151,7 @@ struct ContentView: View {
             }
             switch vm.workspace {
             case .editor: editor
-            case .platform: PlatformView(model: platform, play: playFromPlatform, canPlay: !vm.isPlaylistRunning)
+            case .platform: PlatformView(model: platform, play: playFromPlatform)
             case .playlist: PlaylistView(vm: vm)
             }
             if !showsFullScreenPlayer {
@@ -160,13 +175,18 @@ struct ContentView: View {
     }
 
     /// The player and the editor side by side need about this much (see `playerMinWidth`, `editorMinWidth`).
-    private static let detailMinWidth: CGFloat = 600
+    static let detailMinWidth: CGFloat = 600
+    static let sidebarMinWidth: CGFloat = 220
+    /// The narrowest window that holds the sidebar and the detail at their minimums. Narrower, SwiftUI folds the sidebar
+    /// away by itself and reports it through the same binding as the user's own hiding, which would then be stored as
+    /// their choice; the window can't get that narrow.
+    static let minimumWindowWidth: CGFloat = sidebarMinWidth + detailMinWidth
 
     private var workspaceSwitcher: some View {
         Picker(L("Çalışma alanı"), selection: $vm.workspace) {
             Text(L("Player")).tag(Workspace.editor)
             Text(L("Platform")).tag(Workspace.platform)
-            Text(vm.hasPlaylistItems ? L("Çeviri listesi (%lld)", vm.playlist.count) : L("Çeviri listesi"))
+            Text(vm.hasListRows ? L("Çeviri listesi (%lld)", vm.listRows.count) : L("Çeviri listesi"))
                 .tag(Workspace.playlist)
         }
         .pickerStyle(.segmented)
@@ -179,8 +199,6 @@ struct ContentView: View {
             dropZone.padding(20)
         } else if vm.video == nil {
             // Only a subtitle file is open: edit and save it without a player.
-            SentenceEditorView(vm: vm, player: player)
-        } else if vm.isPlaylistRunning {
             SentenceEditorView(vm: vm, player: player)
         } else {
             if !vm.showsSubtitlePanel(isFullScreen: chrome.isFullScreen) {
@@ -233,16 +251,43 @@ struct ContentView: View {
         )
     }
 
+    /// The video picker answered. Asks first when opening would stop a running job or drop edited lines; "Komple çevir"
+    /// asked for the pick, so it starts the run once the video is open.
+    private func videoPicked(_ result: Result<URL, any Error>) {
+        let run = runAfterPicking
+        runAfterPicking = false
+        guard case .success(let url) = result else { return }
+        if run {
+            vm.requestOpenVideo(url) { vm.generateAndTranslate() }
+        } else {
+            vm.requestOpenVideo(url)
+        }
+    }
+
+    private func subtitlePicked(_ result: Result<URL, any Error>) {
+        if case .success(let url) = result { vm.requestOpenSubtitle(url) }
+    }
+
     /// A card's "Oynat": shows the editor with the video and starts it. Nothing here waits for the profile; the view
     /// is counted in the background once the video is open.
     private func playFromPlatform(_ url: URL) {
-        guard !vm.isPlaylistRunning else { return }
-        vm.workspace = .editor
-        if vm.video.map(VideoPlatformModel.pathKey) == VideoPlatformModel.pathKey(url) {
-            player.play()
-        } else {
-            forcePlay = true
-            vm.openVideo(url)
+        showVideo(url, startPlaying: true)
+    }
+
+    /// Shows the editor with `url` (a sidebar row, a card). `startPlaying` plays it even when Settings say not to on open;
+    /// otherwise the setting decides. Opening a video leaves the other videos' jobs and edits alone, so it only waits for
+    /// the user's yes when it would lose lines that belong to no video (`requestOpen`), and nothing changes until it
+    /// comes, not even the tab.
+    private func showVideo(_ url: URL, startPlaying: Bool) {
+        let alreadyOpen = vm.video.map(VideoPlatformModel.pathKey) == VideoPlatformModel.pathKey(url)
+        vm.requestOpen(losing: vm.sessionsLost(opening: url)) {
+            vm.workspace = .editor
+            if alreadyOpen {
+                if startPlaying { player.play() }
+            } else {
+                forcePlay = startPlaying
+                vm.openVideo(url)
+            }
         }
     }
 
@@ -273,7 +318,7 @@ struct ContentView: View {
         }
         if vm.workspace != .platform {
             ToolbarItem {
-                translationModelMenu
+                TranslationModelPickerButton(vm: vm)
             }
         }
         ToolbarItemGroup(placement: .primaryAction) {
@@ -282,7 +327,7 @@ struct ContentView: View {
                 Toggle(L("Otomatik kaydet"), systemImage: "square.and.arrow.down", isOn: $vm.autoSaveSubtitle)
                     .help(L("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"))
             }
-            if vm.isWorking {
+            if vm.canStop {
                 Button(L("Durdur"), systemImage: "stop.fill") { vm.cancel() }
                     .labelStyle(.titleAndIcon)
                     .help(L("Süren altyazı ya da çeviri işini durdur (⌘.)"))
@@ -316,10 +361,8 @@ struct ContentView: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .frame(width: 175)
-            .disabled(vm.isPlaylistRunning)
             .help(L("Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır."))
             ModelPicker(selection: $vm.model, models: vm.availableModels)
-                .disabled(vm.isPlaylistRunning)
             speakerMenu
             // Always there: "Komple çevir" and the playlist translate before any line exists, so the target and the
             // translation model must be visible and changeable up front. Only "Çevir…" needs lines.
@@ -363,118 +406,6 @@ struct ContentView: View {
     }
 
     private static let subtitleTypes: [UTType] = SubtitleParser.extensions.compactMap { UTType(filenameExtension: $0) } + [.plainText]
-
-    /// The model "Çevir…" uses. With a provider active its models are listed first and the other providers and the local
-    /// models sit in submenus; with the local models active the providers are submenus above them.
-    private var translationModelMenu: some View {
-        Menu {
-            if let active = vm.activeExternalProvider {
-                activeProviderItems(active)
-            } else {
-                ForEach(vm.providerStore.providers) { providerSubmenu($0) }
-                if !vm.providerStore.providers.isEmpty { Divider() }
-                localModelItems
-            }
-            Divider()
-            Button(L("API sağlayıcılarını yönet…"), systemImage: "gearshape") {
-                settingsTab = SettingsTab.translation.rawValue
-                openSettings()
-            }
-        } label: {
-            if let active = vm.activeExternalProvider {
-                Label(vm.translationModelTitle, systemImage: vm.sendsTextOverInternet(active) ? "cloud" : "network")
-                    .labelStyle(.titleAndIcon)
-            } else {
-                Text(vm.translationModelTitle)
-                    .frame(minWidth: 110, alignment: .leading)
-            }
-        }
-        .disabled(vm.isWorking)
-        .accessibilityLabel(L("Çeviri modeli"))
-        .help(translationModelHelp)
-    }
-
-    private var translationModelHelp: String {
-        guard let active = vm.activeExternalProvider else {
-            return L("Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir.")
-        }
-        if vm.sendsTextOverInternet(active) {
-            return L("Çeviri %@ sağlayıcısında yapılır: çevrilecek metin ona gönderilir, ses gönderilmez.", active.name)
-        }
-        return L("Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır.")
-    }
-
-    /// The local models: local LLMs first, then MADLAD and NLLB (the same choice Settings shows). The checkmark is
-    /// only on the default while no provider is active.
-    @ViewBuilder private var localModelItems: some View {
-        ForEach(catalog.llamaTranslationModels) { translationModelButton($0) }
-        if !catalog.llamaTranslationModels.isEmpty, !catalog.classicTranslationModels.isEmpty {
-            Divider()
-        }
-        ForEach(catalog.classicTranslationModels) { translationModelButton($0) }
-    }
-
-    /// The active provider's models at the top level (a checkmark on the current one) and the refresh action, then the
-    /// other providers and the local models as submenus.
-    @ViewBuilder private func activeProviderItems(_ active: TranslationProviderProfile) -> some View {
-        let models = active.availableModels
-        ForEach(models, id: \.self) { name in
-            Button {
-                vm.chooseProviderModel(name, for: active.id)
-            } label: {
-                if name.caseInsensitiveCompare(active.model) == .orderedSame {
-                    Label(name, systemImage: "checkmark")
-                } else {
-                    Text(name)
-                }
-            }
-        }
-        if !models.isEmpty { Divider() }
-        refreshModelsButton(for: active.id)
-        let others = vm.providerStore.providers.filter { $0.id != active.id }
-        if !others.isEmpty || !catalog.translationModels.isEmpty { Divider() }
-        ForEach(others) { providerSubmenu($0) }
-        if !catalog.translationModels.isEmpty {
-            Menu(L("Yerel modeller (Cihaz üzerinde)")) { localModelItems }
-        }
-    }
-
-    /// A provider that is not the active one: pick one of its models (which also activates it), or just activate it
-    /// when no model is known, and ask it for its models. Its current model is in the title.
-    private func providerSubmenu(_ provider: TranslationProviderProfile) -> some View {
-        let shownModel = provider.model.isEmpty ? L("Otomatik") : provider.model
-        let models = provider.availableModels
-        return Menu("\(provider.name) (\(shownModel))") {
-            if models.isEmpty {
-                Button(L("Etkinleştir")) { vm.activateProvider(provider.id) }
-            } else {
-                ForEach(models, id: \.self) { name in
-                    Button(name) { vm.chooseProviderModel(name, for: provider.id) }
-                }
-            }
-            Divider()
-            refreshModelsButton(for: provider.id)
-        }
-    }
-
-    private func refreshModelsButton(for id: UUID) -> some View {
-        Button(L("Uzaktaki modelleri listele"), systemImage: "arrow.clockwise") {
-            Task { await vm.testConnection(of: id) }
-        }
-        .disabled(vm.testingProviders.contains(id))
-    }
-
-    private func translationModelButton(_ model: EngineModel) -> some View {
-        Button {
-            vm.chooseLocalTranslationModel(model.id)
-        } label: {
-            if vm.providerStore.activeProviderID == nil, model.id == vm.translationModel {
-                Label(ModelLabel.translationMenuTitle(for: model), systemImage: "checkmark")
-            } else {
-                Text(ModelLabel.translationMenuTitle(for: model))
-            }
-        }
-    }
 
     /// Speaker separation options for the next "Altyazı üret" run.
     private var speakerMenu: some View {

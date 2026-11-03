@@ -17,6 +17,10 @@ final class WindowChrome {
     /// Whether the user has hidden the subtitle panel; without a list on screen the up and down arrows change the volume
     /// even when a list holds the focus.
     @ObservationIgnored var isPanelHidden: @MainActor () -> Bool = { false }
+    /// The window is closing.
+    @ObservationIgnored var onClose: (@MainActor () -> Void)?
+    /// The window became the key window.
+    @ObservationIgnored var onBecomeKey: (@MainActor () -> Void)?
     @ObservationIgnored private weak var window: NSWindow?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var keyMonitor: Any?
@@ -41,6 +45,12 @@ final class WindowChrome {
                 MainActor.assumeIsolated { self?.isFullScreen = value }
             })
         }
+        observers.append(center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onClose?() }
+        })
+        observers.append(center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onBecomeKey?() }
+        })
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // Only plain values cross into the main actor; the event itself stays here.
             let keyCode = event.keyCode

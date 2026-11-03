@@ -18,18 +18,27 @@ extension SubtitleViewModel {
     /// In offline mode, a catalog model that isn't downloaded sets a failed status and remembers `retry` (the entry point
     /// to run again once offline mode is off); returns `true` and the job must not start. Ids the catalog doesn't
     /// know, or any id before the catalog has been loaded, are left to the engine, which reports a missing model itself.
-    func blockedOffline(_ modelIDs: [String], retry: @escaping @MainActor () -> Void) -> Bool {
-        offlineRetry = nil
-        guard offlineMode else { return false }
+    func blockedOffline(
+        _ modelIDs: [String], session: VideoSession? = nil, retry: @escaping @MainActor () -> Void
+    ) -> Bool {
+        let session = session ?? foreground
+        session.offlineRetry = nil
+        guard let block = offlineBlock(modelIDs) else { return false }
+        session.status = .failed(block)
+        // After the status: any other status change clears it.
+        session.offlineRetry = retry
+        return true
+    }
+
+    /// Why offline mode keeps a job that needs `modelIDs` from starting, or `nil` when nothing is in the way. Touches no
+    /// status: the caller decides where the message goes (a video's status, or the playlist's notice).
+    func offlineBlock(_ modelIDs: [String]) -> LocalizedMessage? {
+        guard offlineMode else { return nil }
         // A job that translates (its list carries the translation model) would send the text to the internet.
         if modelIDs.contains(translationModel), let provider = activeCloudProviderName {
-            status = .failed(LocalizedMessage("\(Self.offlineCloudPrefix)\(provider)") {
-                L("Çevrimdışı mod açık: çeviri internetteki bir sağlayıcıya (%@) gönderilemez. Çevrimdışı modu kapat ya da yerel bir model veya sunucu seç.", provider)
-            })
-            offlineRetry = retry
-            return true
+            return Self.offlineCloudMessage(provider)
         }
-        guard catalog.hasLoaded else { return false }
+        guard catalog.hasLoaded else { return nil }
         let translationIDs = Set(catalog.translationModels.map(\.id))
         var missing: [String] = []
         for id in modelIDs where !missing.contains(id) {
@@ -38,21 +47,23 @@ extension SubtitleViewModel {
                 missing.append(id)
             }
         }
-        guard !missing.isEmpty else { return false }
+        guard !missing.isEmpty else { return nil }
         let names = missing
-        status = .failed(LocalizedMessage("offline:" + names.joined(separator: ",")) {
+        return LocalizedMessage("offline:" + names.joined(separator: ",")) {
             L("%@ indirilmemiş. Çevrimdışı mod açıkken model indirilemez.",
               names.map { ModelLabel.name(for: $0) }.joined(separator: ", "))
-        })
-        // After the status: any other status change clears it.
-        offlineRetry = retry
-        return true
+        }
     }
 
     /// Title of the status-bar action that resolves the offline block: download the missing model, or send the text
     /// to the cloud provider.
     var offlineRetryTitle: String {
-        if case .failed(let message) = status, message.id.hasPrefix(Self.offlineCloudPrefix) {
+        if case .failed(let message) = status { return Self.offlineRetryTitle(for: message) }
+        return Self.offlineRetryTitle(for: nil)
+    }
+
+    static func offlineRetryTitle(for message: LocalizedMessage?) -> String {
+        if let message, message.id.hasPrefix(offlineCloudPrefix) {
             return L("Çevrimdışı modu kapat ve çevir")
         }
         return L("Çevrimdışı modu kapat ve indir")
@@ -65,10 +76,27 @@ extension SubtitleViewModel {
 
     private static let offlineCloudPrefix = "offline-cloud:"
 
+    /// Offline mode keeps the text from going to the cloud provider named `provider`.
+    static func offlineCloudMessage(_ provider: String) -> LocalizedMessage {
+        LocalizedMessage("\(offlineCloudPrefix)\(provider)") {
+            L("Çevrimdışı mod açık: çeviri internetteki bir sağlayıcıya (%@) gönderilemez. Çevrimdışı modu kapat ya da yerel bir model veya sunucu seç.", provider)
+        }
+    }
+
+    /// Turns offline mode off (persisted) and starts the playlist run again that offline mode kept from starting.
+    func goOnlineAndRetryPlaylist() {
+        guard let retry = playlistNotice?.retry else { return }
+        playlistNotice = nil
+        offlineMode = false
+        retry()
+    }
+
     /// Turns offline mode off (persisted) and runs the blocked job again, which downloads the missing model.
     func goOnlineAndRetry() {
         guard canGoOnlineAndRetry, let retry = offlineRetry else { return }
-        offlineRetry = nil
+        // The failure was this attempt's; whatever the retry starts reports for itself (a playlist run doesn't touch the
+        // status of the video on screen at all).
+        status = .idle
         offlineMode = false
         retry()
     }

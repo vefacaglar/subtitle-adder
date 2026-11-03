@@ -21,6 +21,7 @@ import Testing
             launchState: EngineLaunchState()
         )
         vm.offlineMode = false
+        vm.physicalMemory = SubtitleViewModel.localTranslationOverlapMemory
         return vm
     }
 
@@ -491,7 +492,7 @@ import Testing
         control.release("transcribe-v3", "translate-v2", "translate-v3")
         await task?.value
         #expect(vm.playlist.allSatisfy { $0.state == .completed })
-        #expect(vm.status == .finished)
+        #expect(vm.playlist.allSatisfy { vm.existingSession(for: $0.videoURL) == nil })
         #expect(peakOverlap(control, "translate") == 1 && peakOverlap(control, "transcribe") == 1)
         #expect(!vm.translationGate.isBusy && vm.translationGate.waitingCount == 0)
         #expect(vm.playlistBackgroundPending == 0)

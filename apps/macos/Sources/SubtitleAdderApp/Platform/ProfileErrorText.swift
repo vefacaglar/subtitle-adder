@@ -17,11 +17,12 @@ extension ProfileError {
         case .lockUnavailable: L("Profil dosyası şu an başka bir işlem tarafından kullanılıyor. Biraz sonra tekrar deneyin.")
         case .writeFailed(let code): L("Profil dosyası yazılamadı (hata %lld).", Int(code))
         case .unsupportedFileVersion(let version):
-            L("Profil dosyası daha yeni bir sürümle oluşturulmuş (sürüm %lld); bu sürüm ona dokunmaz.", version)
+            L("Profil dosyası uygulamanın daha yeni veya başka bir sürümü tarafından yazılmış (sürüm %lld); burada açılamaz ve değiştirilmeyecek.", version)
         case .corruptFileNotPreserved:
             L("Profil dosyası bozuk ve yedeği alınamadığı için üzerine yazılmadı.")
         case .fileUnreadable: L("Profil dosyası okunamıyor; değişiklikler kaydedilmedi.")
         case .cryptoFailure: L("Şifreleme işlemi başarısız oldu.")
+        case .listNotFound: L("Bu liste artık yok.")
         }
     }
 }

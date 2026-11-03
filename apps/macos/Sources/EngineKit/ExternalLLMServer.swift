@@ -14,6 +14,19 @@ public enum ExternalLLMServer {
     /// Sent with every request of the test.
     static let userAgent = "SubtitleAdder/1.0"
 
+    /// OpenCode Go (v2) routes: the model list and the chat endpoint live under different paths.
+    static let openCodeGoModelsURL = "https://opencode.ai/inference/go/v1/models"
+    static let openCodeGoChatURL = "https://opencode.ai/inference/go/openai/v1/chat/completions"
+
+    /// Identifies this app run to the OpenCode gateway (`x-opencode-session`); the same value on every request.
+    public static let openCodeSessionID = UUID().uuidString.lowercased()
+
+    /// Paths (trailing slash trimmed) of the OpenCode Go gateway, current and legacy.
+    private static let openCodeGoPaths: Set<String> = [
+        "/zen/go/v1", "/zen/go/v1/chat/completions",
+        "/inference/go/v1", "/inference/go/openai/v1", "/inference/go/openai/v1/chat/completions",
+    ]
+
     /// Model name for the chat probe when neither the profile nor its preset names one.
     static let fallbackProbeModel = "gpt-4o-mini"
 
@@ -104,6 +117,7 @@ public enum ExternalLLMServer {
     /// Groq and Gemini) has a single candidate; anything else is a bare server (OpenAI, then Ollama's own list).
     static func modelEndpoints(for base: String) -> [String] {
         var clean = trimmingSlashes(base)
+        if isOpenCodeGo(clean) { return [openCodeGoModelsURL] }
         if clean.lowercased().hasSuffix("/chat/completions") {
             clean = trimmingSlashes(String(clean.dropLast("/chat/completions".count)))
         } else if clean.lowercased().hasSuffix("/models") {
@@ -117,9 +131,42 @@ public enum ExternalLLMServer {
     /// for an address ending in `/v1` or `/openai`, otherwise `{base}/v1/chat/completions` (the engine's own rule).
     static func chatEndpoint(for base: String) -> String {
         let clean = trimmingSlashes(base)
+        if isOpenCodeGo(clean) { return openCodeGoChatURL }
         if clean.lowercased().hasSuffix("/chat/completions") { return clean }
         if endsWithAPIRoot(clean) { return clean + "/chat/completions" }
         return clean + "/v1/chat/completions"
+    }
+
+    /// Whether `url` is an OpenCode Go address: https, host `opencode.ai` (no port or credentials), no query or
+    /// fragment, and one of the known paths. Same rule as the engine's `_is_opencode_go_url` and Windows
+    /// `IsOpenCodeGoUrl`; a `/v1` proxy elsewhere is not one.
+    public static func isOpenCodeGo(_ url: String) -> Bool {
+        guard let c = URLComponents(string: url), c.scheme?.lowercased() == "https",
+            c.host?.lowercased() == "opencode.ai", c.port == nil, c.user == nil, c.password == nil,
+            (c.query ?? "").isEmpty, (c.fragment ?? "").isEmpty
+        else { return false }
+        var path = c.path
+        while path.hasSuffix("/") { path.removeLast() }
+        return openCodeGoPaths.contains(path)
+    }
+
+    /// The readable part of an error response: `HTTP <code>`, plus the gateway's explanation when the (first 8 KB of
+    /// the) body is a JSON object with `error.message`, a string `error` or a top-level `message`. Whitespace is
+    /// collapsed, the API key (when given) is redacted and the result is at most 1000 characters. HTML or any other
+    /// non-JSON body gives just the status. Mirrors the engine's `_http_error_detail`.
+    public static func httpErrorDetail(status: Int, body: Data, apiKey: String = "") -> String {
+        var detail = "HTTP \(status)"
+        if let payload = (try? JSONSerialization.jsonObject(with: body.prefix(8192))) as? [String: Any] {
+            let error = payload["error"] ?? payload
+            let message = (error as? [String: Any])?["message"] ?? error
+            if let text = message as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                detail += ": " + text
+            }
+        }
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !key.isEmpty { detail = detail.replacingOccurrences(of: key, with: "[redacted]") }
+        detail = detail.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return String(detail.prefix(1000))
     }
 
     private static func endsWithAPIRoot(_ url: String) -> Bool {
@@ -139,6 +186,9 @@ public enum ExternalLLMServer {
         request.httpMethod = method
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if isOpenCodeGo(url.absoluteString) || url.absoluteString == openCodeGoModelsURL {
+            request.setValue(openCodeSessionID, forHTTPHeaderField: "x-opencode-session")
+        }
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         if let body {
@@ -209,7 +259,7 @@ public enum ExternalLLMServer {
                     break
                 }
                 guard (200..<300).contains(status) else {
-                    lastError = "HTTP \(status)"
+                    lastError = httpErrorDetail(status: status, body: body, apiKey: apiKey)
                     continue
                 }
                 reachable = true
@@ -228,13 +278,13 @@ public enum ExternalLLMServer {
                 : named
             do {
                 let body = probeBody(model: probeModel)
-                let (_, status) = try await fetch(request(url, method: "POST", apiKey: apiKey, body: body))
+                let (reply, status) = try await fetch(request(url, method: "POST", apiKey: apiKey, body: body))
                 if status == 401 || status == 403 {
                     unauthorized = status
                 } else if (200..<300).contains(status) {
                     reachable = true
                 } else {
-                    lastError = "HTTP \(status)"
+                    lastError = httpErrorDetail(status: status, body: reply, apiKey: apiKey)
                 }
             } catch {
                 if !Task.isCancelled { lastError = failureReason(error) }

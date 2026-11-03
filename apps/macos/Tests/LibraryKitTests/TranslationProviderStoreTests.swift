@@ -512,7 +512,7 @@ private func profile(_ presetID: String, model: String? = nil, url: String? = ni
         #expect(store.providers.count == 1)
         #expect(provider.presetID == "lan")
         #expect(lanNames.contains(provider.name))
-        #expect(provider.baseURL == "192.168.1.50:11434")
+        #expect(provider.baseURL == "http://192.168.1.50:11434")
         #expect(provider.model == "gemma4:e4b")
         #expect(provider.asyncTranslation)
         #expect(store.activeProviderID == provider.id)
@@ -529,11 +529,43 @@ private func profile(_ presetID: String, model: String? = nil, url: String? = ni
         let store = fixture.store()
         #expect(store.migrateLegacyIfNeeded(defaults: legacyDefaults(url: "mac.local:1234", enabled: false)))
         let provider = try #require(store.providers.first)
-        #expect(provider.baseURL == "mac.local:1234")
+        #expect(provider.baseURL == "http://mac.local:1234")
         #expect(provider.model.isEmpty)
         #expect(!provider.asyncTranslation)
         #expect(store.activeProviderID == nil)
         #expect(store.activeExternalLLM == nil)
+    }
+
+    /// The old version always spoke plain HTTP to a scheme-less address. A public-looking host typed without a scheme
+    /// would now become https and a "cloud" provider that offline mode blocks, so the migration spells the scheme out.
+    @Test func aSchemeLessLegacyAddressKeepsMeaningPlainHTTP() throws {
+        for (legacy, expected) in [
+            ("gpu.home.example:11434", "http://gpu.home.example:11434"),
+            ("box.tail123.ts.net:11434", "http://box.tail123.ts.net:11434"),
+            ("192.168.1.50:1234", "http://192.168.1.50:1234"),
+            ("HTTP://Mac.local:1234", "HTTP://Mac.local:1234"),
+            ("https://llm.example.com/v1", "https://llm.example.com/v1"),
+            ("http://nas.lan:8080", "http://nas.lan:8080"),
+        ] {
+            let store = Fixture().store()
+            #expect(store.migrateLegacyIfNeeded(defaults: legacyDefaults(url: legacy, enabled: true)))
+            let provider = try #require(store.providers.first)
+            #expect(provider.baseURL == expected, "\(legacy)")
+            // Still a server the user chose to be local: it is not treated as an internet service.
+            if !legacy.lowercased().hasPrefix("https") {
+                #expect(ExternalLLM(url: provider.baseURL).normalizedURL?.lowercased().hasPrefix("http://") == true, "\(legacy)")
+            }
+        }
+        // Without the prefix the same host would have been classed as the internet.
+        #expect(ExternalLLM(url: "gpu.home.example:11434").normalizedURL == "https://gpu.home.example:11434")
+    }
+
+    @Test func newProvidersTranslateInTheBackgroundOnlyOnTheLocalNetwork() {
+        for preset in TranslationProviderPreset.all {
+            let created = TranslationProviderProfile(preset: preset)
+            #expect(created.asyncTranslation == (preset.id == "lan"), "\(preset.id)")
+            #expect(preset.translatesInBackgroundByDefault == (preset.id == "lan"))
+        }
     }
 
     @Test func aBlankLegacyAddressMigratesNothingAndWritesNoFile() {
