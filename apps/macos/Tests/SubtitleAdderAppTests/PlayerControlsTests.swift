@@ -163,44 +163,63 @@ import Testing
 
     // MARK: - Auto-play
 
-    @Test func autoPlayStartsWhenTheItemIsReady() {
-        let url = URL(filePath: "/nonexistent/clip.mp4")
+    // `isPlaying` follows the player's `timeControlStatus` through KVO, one main-actor hop behind it. Where a test needs
+    // the answer of the player itself right after an action it reads `timeControlStatus`; where it needs `isPlaying` it waits.
+
+    @Test func autoPlayStartsWhenTheItemIsReady() async throws {
+        let url = try makeSilentWAV(seconds: 30)
+        defer { try? FileManager.default.removeItem(at: url) }
         let model = PlayerModel()
         model.load(url, autoPlay: true)
         #expect(!model.isPlaying)
+        // The item's own readiness starts it; asking again for the same load changes nothing.
         model.itemReady(generation: model.loadGeneration)
+        try await waitUntil { model.isPlaying }
         #expect(model.isPlaying)
         model.pause()
+        try await waitUntil { !model.isPlaying }
+        #expect(!model.isPlaying)
     }
 
-    @Test func noAutoPlayWhenNotAskedForOrForAStaleLoad() {
-        let url = URL(filePath: "/nonexistent/clip.mp4")
+    @Test func noAutoPlayWhenNotAskedForOrForAStaleLoad() async throws {
+        let url = try makeSilentWAV(seconds: 30)
+        defer { try? FileManager.default.removeItem(at: url) }
         let model = PlayerModel()
         model.load(url)
         model.itemReady(generation: model.loadGeneration)
-        #expect(!model.isPlaying)
+        #expect(model.player.timeControlStatus == .paused)
 
         model.load(url, autoPlay: true)
         let stale = model.loadGeneration
         model.load(url, autoPlay: true)
         // The first load's item became ready after the second replaced it: only the current load may start playback.
         model.itemReady(generation: stale)
-        #expect(!model.isPlaying)
+        #expect(model.player.timeControlStatus == .paused)
         model.itemReady(generation: model.loadGeneration)
+        #expect(model.player.timeControlStatus != .paused)
+        try await waitUntil { model.isPlaying }
         #expect(model.isPlaying)
         model.pause()
+        try await waitUntil { !model.isPlaying }
 
         model.load(nil, autoPlay: true)
         model.itemReady(generation: model.loadGeneration)
+        #expect(model.player.timeControlStatus == .paused)
         #expect(!model.isPlaying)
     }
 
-    @Test func pausingBeforeTheItemIsReadyCancelsAutoPlay() {
+    @Test func pausingBeforeTheItemIsReadyCancelsAutoPlay() async throws {
+        let url = try makeSilentWAV(seconds: 30)
+        defer { try? FileManager.default.removeItem(at: url) }
         let model = PlayerModel()
-        model.load(URL(filePath: "/nonexistent/clip.mp4"), autoPlay: true)
+        model.load(url, autoPlay: true)
         model.pause()
         model.itemReady(generation: model.loadGeneration)
-        #expect(!model.isPlaying)
+        #expect(model.player.timeControlStatus == .paused)
+        // Even once the item really is ready, nothing starts it.
+        try await waitUntil { model.player.currentItem?.status == .readyToPlay }
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(!model.isPlaying && model.player.timeControlStatus == .paused)
     }
 
     @Test func failureCancelsAutoPlay() {
@@ -208,6 +227,7 @@ import Testing
         model.load(URL(filePath: "/nonexistent/clip.mp4"), autoPlay: true)
         model.reportFailure(nil)
         model.itemReady(generation: model.loadGeneration)
+        #expect(model.player.timeControlStatus == .paused)
         #expect(!model.isPlaying)
     }
 
@@ -219,12 +239,76 @@ import Testing
         try await waitUntil { model.isPlaying }
         #expect(model.isPlaying)
         model.pause()
+        // `isPlaying` is the KVO view of the player: it drops when the player has really stopped.
+        try await waitUntil { !model.isPlaying }
+        #expect(!model.isPlaying && model.player.timeControlStatus == .paused)
 
         model.load(url)
         try await waitUntil { model.player.currentItem?.status == .readyToPlay }
         try await Task.sleep(for: .milliseconds(150))
         #expect(model.player.currentItem?.status == .readyToPlay)
         #expect(!model.isPlaying && model.player.rate == 0)
+    }
+
+    @Test func isPlayingNeverOutlivesAPausedPlayer() async throws {
+        let url = try makeSilentWAV(seconds: 30)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let model = PlayerModel()
+        model.load(url)
+        try await waitUntil { model.player.currentItem?.status == .readyToPlay }
+        for round in 0..<5 {
+            model.play()
+            try await waitUntil { model.isPlaying }
+            #expect(model.isPlaying, "round \(round)")
+            // Periodic ticks arriving around the pause must not leave `isPlaying` on.
+            model.observe(playerTime: model.player.currentTime().seconds)
+            model.pause()
+            model.observe(playerTime: model.player.currentTime().seconds)
+            try await waitUntil { !model.isPlaying }
+            try await Task.sleep(for: .milliseconds(60))
+            #expect(!model.isPlaying && model.player.timeControlStatus == .paused, "round \(round)")
+        }
+    }
+
+    @Test func theVideoPlatformHearsStartAndPauseOncePerChange() async throws {
+        let url = try makeSilentWAV(seconds: 30)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let model = PlayerModel()
+        final class Events { var list: [String] = [] }
+        let events = Events()
+        model.onPlaybackEvent = { event in
+            switch event {
+            case .started: events.list.append("started")
+            case .paused: events.list.append("paused")
+            case .leaving: events.list.append("leaving")
+            case .seeked: events.list.append("seeked")
+            }
+        }
+        model.load(url)
+        try await waitUntil { model.player.currentItem?.status == .readyToPlay }
+        model.play()
+        try await waitUntil { model.isPlaying }
+        model.pause()
+        try await waitUntil { !model.isPlaying }
+        try await Task.sleep(for: .milliseconds(150))
+        // Whatever the player does on the way (AVPlayer can flip its status more than once around a pause), the platform
+        // hears a start and a pause alternately, never the same one twice, and the first one is a start.
+        func alternates(_ list: [String]) -> Bool {
+            list.first == "started" && zip(list, list.dropFirst()).allSatisfy { $0 != $1 }
+        }
+        #expect(alternates(events.list) && events.list.last == "paused", "\(events.list)")
+
+        // Playing and then replacing the video reports it leaving, and no "paused" after that, which would carry the new
+        // video's position.
+        model.play()
+        try await waitUntil { model.isPlaying }
+        try await Task.sleep(for: .milliseconds(100))
+        let before = events.list.count
+        model.load(nil)
+        try await waitUntil { !model.isPlaying }
+        try await Task.sleep(for: .milliseconds(150))
+        let afterLoad = Array(events.list.dropFirst(before))
+        #expect(afterLoad == ["leaving"], "\(events.list)")
     }
 
     // MARK: - Volume
@@ -296,6 +380,46 @@ import Testing
         #expect(resolve(53) == nil)
     }
 
+    /// The key position stands in only for letters of another script. Punctuation, digits and Latin letters with marks
+    /// belong to the layout that typed them.
+    @Test func aKeyThatTypesPunctuationOrAMarkedLatinLetterIsNotAShortcutWhateverItsPosition() {
+        // AZERTY: "," and ";" sit on the QWERTY M position; the keys at F and E type other things than f and e as well.
+        #expect(resolve(46, ",") == nil)
+        #expect(resolve(46, ";") == nil)
+        #expect(resolve(46, "?") == nil)
+        // Turkish Q and F layouts: ğ, ı, ş, ç, ö, ü and İ sit on the positions of F, E, M and their neighbours.
+        for (code, typed) in [(3, "ğ"), (3, "Ğ"), (14, "ı"), (46, "ş"), (46, "ç"), (14, "ö"), (3, "ü"), (14, "İ")] as [(UInt16, String)] {
+            #expect(resolve(code, typed) == nil, "\(typed) at \(code)")
+        }
+        // Other Latin letters with marks, digits and symbols.
+        for (code, typed) in [(14, "é"), (3, "ñ"), (46, "ø"), (14, "ß"), (3, "1"), (46, "€"), (14, "ẹ")] as [(UInt16, String)] {
+            #expect(resolve(code, typed) == nil, "\(typed) at \(code)")
+        }
+        // Shift and Caps Lock don't change that.
+        #expect(resolve(46, ",", .shift) == nil)
+        // A key that reports no character at all is still read by position.
+        #expect(resolve(46, nil) == .toggleMute)
+        #expect(resolve(46, "") == .toggleMute)
+    }
+
+    @Test func lettersOfOtherScriptsStillFallBackToTheirKeyPosition() {
+        // Cyrillic, Greek, Hebrew and Arabic layouts type their own letters on the M, F and E positions.
+        #expect(resolve(46, "ь") == .toggleMute)
+        #expect(resolve(46, "Ь", .shift) == .toggleMute)
+        #expect(resolve(3, "а") == .toggleFullScreen)
+        #expect(resolve(14, "у") == .toggleSubtitlePanel)
+        #expect(resolve(46, "μ") == .toggleMute)
+        #expect(resolve(3, "φ") == .toggleFullScreen)
+        #expect(resolve(14, "ε") == .toggleSubtitlePanel)
+        #expect(resolve(14, "ק") == .toggleSubtitlePanel)
+        #expect(resolve(3, "ب") == .toggleFullScreen)
+        // A key position that is none of ours stays nothing, in any script.
+        #expect(resolve(0, "ф") == nil)
+        // A Latin letter wins over the position, whichever key it is on.
+        #expect(resolve(17, "f") == .toggleFullScreen)
+        #expect(resolve(3, "u") == nil)
+    }
+
     @Test func shortcutsIgnoreChordsAndTyping() {
         for modifier: NSEvent.ModifierFlags in [.command, .control, .option, [.command, .shift], [.option, .shift]] {
             #expect(resolve(49, " ", modifier) == nil)
@@ -363,7 +487,7 @@ import Testing
         var toggles = 0
     }
 
-    @Test func shortcutsActOnlyWhileAPlayerIsOnScreen() throws {
+    @Test func shortcutsActOnlyWhileAPlayerIsOnScreen() async throws {
         let url = try makeSilentWAV()
         defer { try? FileManager.default.removeItem(at: url) }
         let vm = makeModel()
@@ -384,8 +508,10 @@ import Testing
         #expect(actions.perform(.adjustVolume(-0.25)))
         #expect(player.volume == 0)
         #expect(actions.perform(.togglePlayback))
+        try await waitUntil { player.isPlaying }
         #expect(player.isPlaying)
         #expect(actions.perform(.togglePlayback))
+        try await waitUntil { !player.isPlaying }
         #expect(!player.isPlaying)
         #expect(actions.perform(.toggleFullScreen))
         #expect(window.toggles == 1)

@@ -34,9 +34,13 @@ public struct TranslationProviderProfile: Sendable, Equatable, Identifiable, Cod
         self.discoveredModels = discoveredModels
     }
 
-    /// A new profile filled from a preset: its name, address and first suggested model.
+    /// A new profile filled from a preset: its name, address and first suggested model. Background translation is on
+    /// for a server on the local network only (`TranslationProviderPreset.translatesInBackgroundByDefault`).
     public init(preset: TranslationProviderPreset) {
-        self.init(name: preset.name, presetID: preset.id, baseURL: preset.baseURL, model: preset.defaultModel)
+        self.init(
+            name: preset.name, presetID: preset.id, baseURL: preset.baseURL, model: preset.defaultModel,
+            asyncTranslation: preset.translatesInBackgroundByDefault
+        )
     }
 
     public var preset: TranslationProviderPreset { .preset(id: presetID) }
@@ -78,6 +82,29 @@ public struct TranslationProviderProfile: Sendable, Equatable, Identifiable, Cod
     }
 }
 
+/// What reading a provider's key found.
+public enum ProviderKeyRead: Sendable, Equatable {
+    /// The key as stored (not trimmed).
+    case found(String)
+    /// Nothing is stored for the provider.
+    case absent
+    /// The secret store could not be read; the key may well exist.
+    case unavailable
+}
+
+/// Reads provider keys from the secret store. Not tied to the main actor: call it from a background task.
+public struct ProviderKeyReader: Sendable {
+    let secrets: any SecretStore
+
+    public func read(_ id: UUID) -> ProviderKeyRead {
+        switch secrets.read(TranslationProviderStore.secretAccount(for: id)) {
+        case .found(let data): .found(String(decoding: data, as: UTF8.self))
+        case .absent: .absent
+        case .unavailable: .unavailable
+        }
+    }
+}
+
 /// The provider an engine launch should translate with, ready for `EngineLaunchSettings`.
 public struct ActiveExternalLLM: Sendable, Equatable {
     public var llm: ExternalLLM
@@ -109,7 +136,7 @@ public final class TranslationProviderStore {
     public private(set) var activeProviderID: UUID?
 
     @ObservationIgnored private let fileURL: URL
-    @ObservationIgnored private let secrets: any SecretStore
+    @ObservationIgnored private nonisolated let secrets: any SecretStore
     /// Why the file on disk may not simply be overwritten yet (see `LoadProblem`); `nil` when it may.
     @ObservationIgnored private var loadProblem: LoadProblem?
 
@@ -128,20 +155,29 @@ public final class TranslationProviderStore {
 
     // MARK: - Editing
 
-    /// Saves a new provider with its key (blank for none) and, unless told otherwise, makes it the active one.
-    /// Returns the profile as stored (trimmed, a blank name replaced by the preset's). A keychain write that fails
-    /// leaves the provider without a key, which `maskedKey(for:)` shows as `nil`.
+    /// Saves a new provider without touching the secret store and, unless told otherwise, makes it the active one.
+    /// Returns the profile as stored (trimmed, a blank name replaced by the preset's). The key is set separately, with
+    /// `setKey(_:for:)`, so the caller decides when the keychain is touched.
     @discardableResult
-    public func add(_ profile: TranslationProviderProfile, key: String, setActive: Bool = true) -> TranslationProviderProfile {
+    public func add(_ profile: TranslationProviderProfile, setActive: Bool = true) -> TranslationProviderProfile {
         let stored = normalized(profile)
         if let index = providers.firstIndex(where: { $0.id == stored.id }) {
             providers[index] = stored
         } else {
             providers.append(stored)
         }
-        storeKey(key, for: stored.id)
         if setActive { activeProviderID = stored.id }
         save()
+        return stored
+    }
+
+    /// Saves a new provider with its key (blank for none) and, unless told otherwise, makes it the active one.
+    /// Returns the profile as stored. A keychain write that fails leaves the provider without a key, which
+    /// `maskedKey(for:)` shows as `nil`. Writes the keychain on the calling thread.
+    @discardableResult
+    public func add(_ profile: TranslationProviderProfile, key: String, setActive: Bool = true) -> TranslationProviderProfile {
+        let stored = add(profile, setActive: setActive)
+        storeKey(key, for: stored.id)
         return stored
     }
 
@@ -202,7 +238,13 @@ public final class TranslationProviderStore {
         "translation-provider.\(id.uuidString)"
     }
 
-    /// The provider's API key, empty when none is stored.
+    /// Reads keys without the main actor. The keychain can answer with a password prompt (an ad-hoc signed rebuild is
+    /// another "app" to its access list), so the app never reads a key on the main thread: it asks this reader from a
+    /// background task and keeps the answer.
+    public nonisolated var keyReader: ProviderKeyReader { ProviderKeyReader(secrets: secrets) }
+
+    /// The provider's API key, empty when none is stored. Reads the keychain on the calling thread and cannot tell a
+    /// missing key from an unreadable one; the app does not use it (see `keyReader`).
     public func apiKey(for id: UUID) -> String {
         secrets.string(for: Self.secretAccount(for: id)) ?? ""
     }
@@ -214,7 +256,8 @@ public final class TranslationProviderStore {
         return storeKey(key, for: id)
     }
 
-    /// The key as shown in lists, `nil` when there is none (the app says "Anahtar yok").
+    /// The key as shown in lists, `nil` when there is none (the app says "Anahtar yok"). Reads the keychain on the
+    /// calling thread.
     public func maskedKey(for id: UUID) -> String? {
         Self.mask(apiKey(for: id))
     }
@@ -236,8 +279,8 @@ public final class TranslationProviderStore {
         providers.first { $0.id == id }?.availableModels ?? []
     }
 
-    /// The active provider as the engine needs it, with its key from the secret store; `nil` for local models or when
-    /// the provider's address is blank or unusable.
+    /// The active provider as the engine needs it, with its key from the secret store (read on the calling thread);
+    /// `nil` for local models or when the provider's address is blank or unusable.
     public var activeExternalLLM: ActiveExternalLLM? {
         guard let provider = activeProvider else { return nil }
         let llm = ExternalLLM(
@@ -263,10 +306,15 @@ public final class TranslationProviderStore {
         guard providers.isEmpty, !FileManager.default.fileExists(atPath: fileURL.path) else { return false }
         let url = (defaults.string(forKey: "externalLlmUrl") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return false }
+        // The old version always spoke plain HTTP to a scheme-less address. Today an address without a scheme is judged
+        // by its host (a public-looking one becomes https and counts as a cloud service, which offline mode blocks), so
+        // the address is kept the way the server has been used until now.
+        let lowercased = url.lowercased()
+        let address = lowercased.hasPrefix("http://") || lowercased.hasPrefix("https://") ? url : "http://" + url
         let profile = TranslationProviderProfile(
             name: TranslationProviderPreset.preset(id: "lan").name,
             presetID: "lan",
-            baseURL: url,
+            baseURL: address,
             model: (defaults.string(forKey: "externalLlmModel") ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
             asyncTranslation: defaults.bool(forKey: "externalLlmAsync")
         )

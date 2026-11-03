@@ -5,12 +5,29 @@ import Security
 /// key of a local profile. Values are opaque bytes stored under an account name.
 public protocol SecretStore: Sendable {
     func data(for account: String) -> Data?
+    /// Like `data(for:)`, but tells "nothing stored" from "could not be read" (access denied, keychain locked, a prompt
+    /// that was refused). A caller that is about to overwrite or delete something must not take the second for the
+    /// first. The default has no way to tell and reports a missing value as `.absent`.
+    func read(_ account: String) -> SecretRead
     /// Stores `data`, replacing any previous value. Returns `false` when the store refused it.
     @discardableResult func set(_ data: Data, for account: String) -> Bool
     func remove(_ account: String)
 }
 
+/// What reading a secret found.
+public enum SecretRead: Sendable, Equatable {
+    case found(Data)
+    /// The store answered: there is no such secret.
+    case absent
+    /// The store could not be read, so nothing is known about the secret.
+    case unavailable
+}
+
 extension SecretStore {
+    public func read(_ account: String) -> SecretRead {
+        data(for: account).map(SecretRead.found) ?? .absent
+    }
+
     public func string(for account: String) -> String? {
         data(for: account).map { String(decoding: $0, as: UTF8.self) }
     }
@@ -22,17 +39,18 @@ extension SecretStore {
 
 /// The Security framework calls `KeychainSecretStore` makes, so a test can make them fail.
 protocol KeychainBackend: Sendable {
-    func copyData(_ query: [String: Any]) -> Data?
+    /// The status and, on success, the data of the matching item.
+    func copy(_ query: [String: Any]) -> (status: OSStatus, data: Data?)
     func update(_ query: [String: Any], with attributes: [String: Any]) -> OSStatus
     func add(_ item: [String: Any]) -> OSStatus
     func delete(_ query: [String: Any]) -> OSStatus
 }
 
 struct SecurityKeychain: KeychainBackend {
-    func copyData(_ query: [String: Any]) -> Data? {
+    func copy(_ query: [String: Any]) -> (status: OSStatus, data: Data?) {
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-        return result as? Data
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        return (status, status == errSecSuccess ? result as? Data : nil)
     }
 
     func update(_ query: [String: Any], with attributes: [String: Any]) -> OSStatus {
@@ -85,10 +103,19 @@ public struct KeychainSecretStore: SecretStore {
     }
 
     public func data(for account: String) -> Data? {
+        if case .found(let data) = read(account) { return data }
+        return nil
+    }
+
+    /// Only `errSecItemNotFound` means there is nothing stored; any other failure (access denied, user cancelled the
+    /// prompt, locked keychain, ...) is `.unavailable`: the item may well exist.
+    public func read(_ account: String) -> SecretRead {
         var query = query(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
-        return backend.copyData(query)
+        let result = backend.copy(query)
+        if result.status == errSecSuccess { return result.data.map(SecretRead.found) ?? .unavailable }
+        return result.status == errSecItemNotFound ? .absent : .unavailable
     }
 
     /// Updates the item or adds it. When the update fails for a reason other than "no such item" (an item left by

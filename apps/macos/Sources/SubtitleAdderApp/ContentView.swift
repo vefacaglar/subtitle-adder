@@ -22,8 +22,8 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: sidebarVisibility) {
-            FileExplorerSidebar(model: explorer, vm: vm)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 420)
+            FileExplorerSidebar(model: explorer, vm: vm, openVideo: showVideo)
+                .navigationSplitViewColumnWidth(min: Self.sidebarMinWidth, ideal: 260, max: 420)
         } detail: {
             workspaceContent
                 .frame(minWidth: Self.detailMinWidth)
@@ -105,19 +105,12 @@ struct ContentView: View {
             if workspace != .editor { player.pause() }
         }
         .onChange(of: vm.sentences, initial: true) { _, list in player.setSentences(list) }
-        .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent]) { result in
-            let run = runAfterPicking
-            runAfterPicking = false
-            guard case .success(let url) = result else { return }
-            vm.openVideo(url)
-            if run { vm.generateAndTranslate() }
-        }
+        .fileImporter(isPresented: $pickingVideo, allowedContentTypes: [.movie, .audiovisualContent], onCompletion: videoPicked)
         // A second importer on the same view isn't presented reliably, so it hangs off a background.
         .background {
-            Color.clear.fileImporter(isPresented: $pickingSubtitle, allowedContentTypes: Self.subtitleTypes) { result in
-                if case .success(let url) = result { vm.openSubtitle(url) }
-            }
+            Color.clear.fileImporter(isPresented: $pickingSubtitle, allowedContentTypes: Self.subtitleTypes, onCompletion: subtitlePicked)
         }
+        .confirmsOpening(in: vm)
         .fileExporter(
             isPresented: exportPresented,
             document: exportDocument,
@@ -160,7 +153,12 @@ struct ContentView: View {
     }
 
     /// The player and the editor side by side need about this much (see `playerMinWidth`, `editorMinWidth`).
-    private static let detailMinWidth: CGFloat = 600
+    static let detailMinWidth: CGFloat = 600
+    static let sidebarMinWidth: CGFloat = 220
+    /// The narrowest window that holds the sidebar and the detail at their minimums. Narrower, SwiftUI folds the sidebar
+    /// away by itself and reports it through the same binding as the user's own hiding, which would then be stored as
+    /// their choice; the window can't get that narrow.
+    static let minimumWindowWidth: CGFloat = sidebarMinWidth + detailMinWidth
 
     private var workspaceSwitcher: some View {
         Picker(L("Çalışma alanı"), selection: $vm.workspace) {
@@ -233,16 +231,43 @@ struct ContentView: View {
         )
     }
 
+    /// The video picker answered. Asks first when opening would stop a running job or drop edited lines; "Komple çevir"
+    /// asked for the pick, so it starts the run once the video is open.
+    private func videoPicked(_ result: Result<URL, any Error>) {
+        let run = runAfterPicking
+        runAfterPicking = false
+        guard case .success(let url) = result else { return }
+        if run {
+            vm.requestOpenVideo(url) { vm.generateAndTranslate() }
+        } else {
+            vm.requestOpenVideo(url)
+        }
+    }
+
+    private func subtitlePicked(_ result: Result<URL, any Error>) {
+        if case .success(let url) = result { vm.requestOpenSubtitle(url) }
+    }
+
     /// A card's "Oynat": shows the editor with the video and starts it. Nothing here waits for the profile; the view
     /// is counted in the background once the video is open.
     private func playFromPlatform(_ url: URL) {
+        showVideo(url, startPlaying: true)
+    }
+
+    /// Shows the editor with `url` (a sidebar row, a card). `startPlaying` plays it even when Settings say not to on open;
+    /// otherwise the setting decides. A video that would replace running work or unsaved edits waits for the user's yes
+    /// (`requestOpen`), and nothing changes until it comes, not even the tab.
+    private func showVideo(_ url: URL, startPlaying: Bool) {
         guard !vm.isPlaylistRunning else { return }
-        vm.workspace = .editor
-        if vm.video.map(VideoPlatformModel.pathKey) == VideoPlatformModel.pathKey(url) {
-            player.play()
-        } else {
-            forcePlay = true
-            vm.openVideo(url)
+        let alreadyOpen = vm.video.map(VideoPlatformModel.pathKey) == VideoPlatformModel.pathKey(url)
+        vm.requestOpen(replacesWork: !alreadyOpen) {
+            vm.workspace = .editor
+            if alreadyOpen {
+                if startPlaying { player.play() }
+            } else {
+                forcePlay = startPlaying
+                vm.openVideo(url)
+            }
         }
     }
 
@@ -444,7 +469,9 @@ struct ContentView: View {
     private func providerSubmenu(_ provider: TranslationProviderProfile) -> some View {
         let shownModel = provider.model.isEmpty ? L("Otomatik") : provider.model
         let models = provider.availableModels
-        return Menu("\(provider.name) (\(shownModel))") {
+        // A String, not a literal: a provider's name is not a localization key.
+        let title = "\(provider.name) (\(shownModel))"
+        return Menu(title) {
             if models.isEmpty {
                 Button(L("Etkinleştir")) { vm.activateProvider(provider.id) }
             } else {
@@ -468,7 +495,8 @@ struct ContentView: View {
         Button {
             vm.chooseLocalTranslationModel(model.id)
         } label: {
-            if vm.providerStore.activeProviderID == nil, model.id == vm.translationModel {
+            // "Local" means the engine really translates locally: a provider chosen but without a usable address doesn't count.
+            if vm.activeExternalProvider == nil, model.id == vm.translationModel {
                 Label(ModelLabel.translationMenuTitle(for: model), systemImage: "checkmark")
             } else {
                 Text(ModelLabel.translationMenuTitle(for: model))

@@ -21,6 +21,7 @@ import Testing
             launchState: EngineLaunchState()
         )
         vm.offlineMode = false
+        vm.physicalMemory = SubtitleViewModel.localTranslationOverlapMemory
         return vm
     }
 

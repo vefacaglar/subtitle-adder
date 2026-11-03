@@ -21,18 +21,20 @@ import Testing
         private let lock = NSLock()
         private var updates: [OSStatus]
         private let addStatus: OSStatus
+        private let copyResult: (status: OSStatus, data: Data?)
         private var calls: [String] = []
 
-        init(updates: [OSStatus], add: OSStatus = errSecSuccess) {
+        init(updates: [OSStatus], add: OSStatus = errSecSuccess, copy: (status: OSStatus, data: Data?) = (errSecItemNotFound, nil)) {
             self.updates = updates
             addStatus = add
+            copyResult = copy
         }
 
         var log: [String] { lock.withLock { calls } }
 
-        func copyData(_ query: [String: Any]) -> Data? {
+        func copy(_ query: [String: Any]) -> (status: OSStatus, data: Data?) {
             lock.withLock { calls.append("copy") }
-            return nil
+            return copyResult
         }
 
         func update(_ query: [String: Any], with attributes: [String: Any]) -> OSStatus {
@@ -91,6 +93,32 @@ import Testing
         #expect(store.data(for: "a") == nil)
         store.remove("a")
         #expect(backend.log == ["copy", "delete"])
+    }
+
+    @Test func readingTellsAnAbsentItemFromOneThatCouldNotBeRead() {
+        let found = ScriptedKeychain(updates: [], copy: (errSecSuccess, Data("sk-1".utf8)))
+        #expect(keychain(found).read("a") == .found(Data("sk-1".utf8)))
+        #expect(keychain(found).string(for: "a") == "sk-1")
+
+        let absent = ScriptedKeychain(updates: [], copy: (errSecItemNotFound, nil))
+        #expect(keychain(absent).read("a") == .absent)
+        #expect(keychain(absent).data(for: "a") == nil)
+
+        // A refused prompt, a locked keychain or a failed lookup says nothing about whether the item exists.
+        for status in [errSecAuthFailed, errSecUserCanceled, errSecInteractionNotAllowed, errSecNotAvailable, errSecParam] {
+            let denied = ScriptedKeychain(updates: [], copy: (status, nil))
+            #expect(keychain(denied).read("a") == .unavailable, "\(status)")
+            #expect(keychain(denied).data(for: "a") == nil, "\(status)")
+        }
+        // Success without data is not "absent" either.
+        #expect(keychain(ScriptedKeychain(updates: [], copy: (errSecSuccess, nil))).read("a") == .unavailable)
+    }
+
+    @Test func inMemoryStoreReadsFoundOrAbsent() {
+        let store = InMemorySecretStore()
+        #expect(store.read("a") == .absent)
+        store.set("k", for: "a")
+        #expect(store.read("a") == .found(Data("k".utf8)))
     }
 
     @Test func dataFileLivesUnderTheGivenFolder() throws {

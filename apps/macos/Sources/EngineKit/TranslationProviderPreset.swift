@@ -28,6 +28,14 @@ public struct TranslationProviderPreset: Sendable, Equatable, Identifiable {
     /// The model a new provider starts with, empty when the preset suggests none.
     public var defaultModel: String { suggestedModels.first ?? "" }
 
+    /// Id of the preset for a server on the local network.
+    public static let lanID = "lan"
+
+    /// Whether a new provider of this type translates in the background while transcription is still running. Only a
+    /// server on the local network does: it is the Mac's own helper and costs nothing, while a cloud service bills
+    /// per request, so the user switches it on knowingly.
+    public var translatesInBackgroundByDefault: Bool { id == Self.lanID }
+
     /// All presets in display order; `custom` is last.
     public static let all: [TranslationProviderPreset] = [
         TranslationProviderPreset(
