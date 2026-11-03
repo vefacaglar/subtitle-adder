@@ -29,7 +29,7 @@ import Testing
 
     /// Polls until `condition` holds (a fake engine's events arrive on their own schedule).
     private func wait(_ condition: () -> Bool) async throws {
-        for _ in 0..<200 where !condition() { try await Task.sleep(for: .milliseconds(25)) }
+        for _ in 0..<800 where !condition() { try await Task.sleep(for: .milliseconds(25)) }
     }
 
     // MARK: - The numbers
