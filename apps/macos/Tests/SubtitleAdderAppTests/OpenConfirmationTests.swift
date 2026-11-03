@@ -106,7 +106,7 @@ import Testing
 
     @Test func aRunningJobAsksBeforeASubtitleReplacesTheLinesItWritesTo() async throws {
         let folder = try makeFolder()
-        let a = try touch("a.mp4", in: folder), b = try touch("b.mp4", in: folder)
+        let a = try touch("a.mp4", in: folder)
         let vm = try makeModel()
         vm.openVideo(a)
         vm.generate()
@@ -135,7 +135,6 @@ import Testing
         #expect(pending.message == "Süren iş durdurulacak. Devam edilsin mi?")
         vm.confirmPendingOpen()
         #expect(vm.pendingOpen == nil && vm.video == a && !vm.isWorking && vm.sentences.count == 2)
-        _ = b
     }
 
     @Test func aNewerRequestReplacesOneStillWaiting() throws {

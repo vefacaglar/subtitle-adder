@@ -812,7 +812,7 @@ extension PlaylistTests {
             has(control, "translate-start v1") && has(control, "transcribe-start v2") && has(control, "extract-start v3")
         })
         #expect(!has(control, "translate-end v1"))
-        #expect(vm.playlist.map(\.state) == [.working, .working, .working, .pending])
+        #expect(await eventually { vm.playlist.map(\.state) == [.working, .working, .working, .pending] })
         #expect(vm.playlist[3].statusMessage.text == "Sırada" && !vm.playlist[3].isAudioReady)
 
         // Video 1's translation finishes while video 2 is still being recognized, and is saved next to the video.
