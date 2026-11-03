@@ -13,10 +13,12 @@ import Testing
     @Test func presetsCarryAddressKeyRequirementAndSuggestedModels() throws {
         let opencode = TranslationProviderPreset.preset(id: "opencode-go")
         #expect(opencode.name == "OpenCode Go")
-        #expect(opencode.baseURL == "https://opencode.ai/zen/go/v1")
+        #expect(opencode.baseURL == "https://opencode.ai/inference/go/openai/v1")
         #expect(opencode.requiresAPIKey)
-        #expect(opencode.suggestedModels == ["glm-5", "kimi-k2.5", "minimax-m2.5", "deepseek-v3", "qwen3-235b"])
-        #expect(opencode.defaultModel == "glm-5")
+        #expect(opencode.suggestedModels == [
+            "glm-5.3-flash", "kimi-k3.1-pro", "minimax-m3.1-flash", "deepseek-v4.1-flash", "deepseek-v4-pro",
+        ])
+        #expect(opencode.defaultModel == "glm-5.3-flash")
 
         let table: [(id: String, name: String, url: String, models: [String])] = [
             ("openrouter", "OpenRouter", "https://openrouter.ai/api/v1",

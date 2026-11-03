@@ -81,6 +81,22 @@
         }
       }
     },
+    "%@ için API anahtarı Anahtar Zinciri'nden okunamadı. Erişime izin verip yeniden dene.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ için API anahtarı Anahtar Zinciri'nden okunamadı. Erişime izin verip yeniden dene."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API key for %@ could not be read from the Keychain. Allow access and try again."
+          }
+        }
+      }
+    },
     "%@ silindi; dosyalarını başka bir model de kullandığı için yer açılmadı.": {
       "localizations": {
         "tr": {
@@ -193,6 +209,22 @@
         }
       }
     },
+    "Alan boş bırakılırsa kayıtlı anahtar korunur.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alan boş bırakılırsa kayıtlı anahtar korunur."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If left empty, the stored key is kept."
+          }
+        }
+      }
+    },
     "Altyazı modeli": {
       "localizations": {
         "tr": {
@@ -273,6 +305,70 @@
         }
       }
     },
+    "Anahtar okunamadı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar okunamadı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key could not be read"
+          }
+        }
+      }
+    },
+    "Anahtar okunamadı; boş bırakırsan korunur": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar okunamadı; boş bırakırsan korunur"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Key could not be read; it is kept if you leave this empty"
+          }
+        }
+      }
+    },
+    "Anahtar okunuyor…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar okunuyor…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading key…"
+          }
+        }
+      }
+    },
+    "Anahtar Zinciri'ndeki anahtar okunamadı. Alan boş bırakılırsa silinmez.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Anahtar Zinciri'ndeki anahtar okunamadı. Alan boş bırakılırsa silinmez."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The key in the Keychain could not be read. It is not deleted if this is left empty."
+          }
+        }
+      }
+    },
     "Arayüz dili": {
       "localizations": {
         "tr": {
@@ -349,6 +445,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Light"
+          }
+        }
+      }
+    },
+    "Başka bir dosya açılsın mı?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Başka bir dosya açılsın mı?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open another file?"
           }
         }
       }
@@ -753,6 +865,70 @@
         }
       }
     },
+    "Kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsaved changes will be lost. Continue?"
+          }
+        }
+      }
+    },
+    "Kayıtlı anahtar kaydedilince silinecek.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı anahtar kaydedilince silinecek."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The stored key will be deleted when you save."
+          }
+        }
+      }
+    },
+    "Kayıtlı anahtar korunur: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı anahtar korunur: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stored key is kept: %@"
+          }
+        }
+      }
+    },
+    "Kayıtlı anahtarı sil": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı anahtarı sil"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete stored key"
+          }
+        }
+      }
+    },
     "Medya oynatıcı": {
       "localizations": {
         "tr": {
@@ -765,6 +941,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "Media player"
+          }
+        }
+      }
+    },
+    "Süren iş durdurulacak ve kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Süren iş durdurulacak ve kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The running job will be stopped and unsaved changes will be lost. Continue?"
+          }
+        }
+      }
+    },
+    "Süren iş durdurulacak. Devam edilsin mi?": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Süren iş durdurulacak. Devam edilsin mi?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The running job will be stopped. Continue?"
           }
         }
       }
@@ -3313,18 +3521,18 @@
         }
       }
     },
-    "Profil dosyası daha yeni bir sürümle oluşturulmuş (sürüm %lld); bu sürüm ona dokunmaz.": {
+    "Profil dosyası uygulamanın daha yeni veya başka bir sürümü tarafından yazılmış (sürüm %lld); burada açılamaz ve değiştirilmeyecek.": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Profil dosyası daha yeni bir sürümle oluşturulmuş (sürüm %lld); bu sürüm ona dokunmaz."
+            "value": "Profil dosyası uygulamanın daha yeni veya başka bir sürümü tarafından yazılmış (sürüm %lld); burada açılamaz ve değiştirilmeyecek."
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The profile file was created by a newer version (version %lld); this version leaves it alone."
+            "value": "The profile file was written by a newer or different version of the app (file version %lld); it cannot be opened here and will not be modified."
           }
         }
       }
@@ -6493,6 +6701,166 @@
           "stringUnit": {
             "state": "translated",
             "value": "Select lines with ⌘ or ⇧, then retranslate the selection"
+          }
+        }
+      }
+    },
+    "Kontur": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kontur"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outline"
+          }
+        }
+      }
+    },
+    "Arayüz yazı tipi": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arayüz yazı tipi"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interface font"
+          }
+        }
+      }
+    },
+    "Altyazı yazı tipinden bağımsızdır.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı yazı tipinden bağımsızdır."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Independent of the subtitle font."
+          }
+        }
+      }
+    },
+    "Model ara…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model ara…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search models…"
+          }
+        }
+      }
+    },
+    "Aramayla eşleşen model yok.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aramayla eşleşen model yok."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No models match your search."
+          }
+        }
+      }
+    },
+    "Model listesi boş. Yenile düğmesini kullanın.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Model listesi boş. Yenile düğmesini kullanın."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No models listed. Use Refresh to load them."
+          }
+        }
+      }
+    },
+    "Modeller yenileniyor…": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modeller yenileniyor…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refreshing models…"
+          }
+        }
+      }
+    },
+    "Modeller yenilenemedi: %@": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Modeller yenilenemedi: %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not refresh models: %@"
+          }
+        }
+      }
+    },
+    "Çeviri sağlayıcısı": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Çeviri sağlayıcısı"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation provider"
+          }
+        }
+      }
+    },
+    "Bu sağlayıcı artık yok.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu sağlayıcı artık yok."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This provider no longer exists."
           }
         }
       }

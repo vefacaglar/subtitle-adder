@@ -109,6 +109,7 @@ private struct GeneralSettingsTab: View {
 
 private struct AppearanceSettingsTab: View {
     @AppStorage(AppearanceKeys.theme) private var theme = ThemeChoice.system.rawValue
+    @AppStorage(AppearanceKeys.interfaceFont) private var interfaceFamily = ""
     @AppStorage(AppearanceKeys.overlayFont) private var family = ""
     @AppStorage(AppearanceKeys.overlaySize) private var size = OverlayStyle.defaultSize
     @AppStorage(AppearanceKeys.overlayTextColor) private var textHex = OverlayStyle.defaultTextHex
@@ -130,6 +131,12 @@ private struct AppearanceSettingsTab: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                Picker(L("Arayüz yazı tipi"), selection: $interfaceFamily) {
+                    Text(L("Sistem")).tag("")
+                    Divider()
+                    ForEach(Self.families, id: \.self) { Text($0).tag($0) }
+                }
+                .help(L("Altyazı yazı tipinden bağımsızdır."))
             } header: {
                 Text(L("Uygulama"))
             }
@@ -171,11 +178,7 @@ private struct AppearanceSettingsTab: View {
                 }
                 .disabled(style.background != .box)
                 Button(L("Varsayılana döndür")) {
-                    family = ""
-                    size = OverlayStyle.defaultSize
-                    textHex = OverlayStyle.defaultTextHex
-                    background = OverlayBackground.box.rawValue
-                    opacity = OverlayStyle.defaultOpacity
+                    OverlayStyle.resetStored()
                 }
             } header: {
                 Text(L("Video üstündeki altyazı"))

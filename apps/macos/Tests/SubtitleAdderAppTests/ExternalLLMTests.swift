@@ -150,6 +150,61 @@ import Testing
         #expect(saved.count == 1)
     }
 
+    @Test func theTailIsTranslatedWhileSpeakersAreAnalysedBeforeTheResult() async throws {
+        let folder = try makeFolder()
+        let log = try makeFolder()
+        // Fourteen lines arrive; ten are stable, the last two are held back. When the engine moves on to
+        // diarization, recognition is over and the held-back tail goes out without waiting for the result.
+        let transcribe = """
+        echo '{"event": "partial", "language": "tr", "sentences": [\(sentenceList(14))]}'
+        i=0; while [ ! -e '\(log.path)/req-0' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+        echo '{"event": "stage", "stage": "diarizing", "fraction": 0.1}'
+        i=0; while [ ! -e '\(log.path)/req-1' ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+        [ -e '\(log.path)/req-1' ] || { echo '{"event": "error", "message": "tail not sent before the result"}'; exit 1; }
+        echo '{"event": "result", "language": "tr", "duration": 15, "audio": "/nonexistent.wav", "outputs": [], "sentences": [\(sentenceList(14))]}'
+        """
+        let (vm, _, _) = makeModel(engine: try recordingEngine(log: log, transcribe: transcribe))
+        vm.externalLlmEnabled = true
+        vm.externalLlmUrl = "10.0.0.2:11434"
+        vm.externalLlmAsync = true
+        vm.language = "tr"
+        vm.translationTarget = "en"
+        vm.diarize = false
+        vm.openVideo(folder.appending(path: "Film.mp4"))
+        vm.generateAndTranslate()
+        await settle(vm)
+
+        let sent = try requests(in: log)
+        // First the stable lines (with the held-back ones as context), then the tail of two lines.
+        #expect(sent.count == 2)
+        #expect(sent.first == lineTexts(1...14))
+        #expect(sent.last?.suffix(2) == ["Satır 13.", "Satır 14."])
+        #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == lineTexts(1...14).map { "T-" + $0 })
+        #expect(vm.status == .finished)
+    }
+
+    @Test func onceRecognitionIsCompleteEveryLineCountsAndOneIsEnough() {
+        let (vm, _, _) = makeModel()
+        vm.sentences = [line(1, "Bir."), line(2, "İki."), line(3, "Üç.")]
+        // While recognition runs: two lines are held back and ten are needed.
+        #expect(vm.nextAsyncBatch().isEmpty)
+        vm.asyncTranscriptionComplete = true
+        #expect(vm.nextAsyncBatch().map(\.text) == ["Bir.", "İki.", "Üç."])
+        // One remaining line is enough, and lines already handed over do not come again.
+        vm.asyncQueued = Set(vm.sentences.prefix(2).map(\.uid))
+        #expect(vm.nextAsyncBatch().map(\.text) == ["Üç."])
+        // A single line in total also works (the two-line holdback is gone), but blank ones are skipped.
+        vm.sentences = [line(1, "Merhaba."), line(2, "  ")]
+        vm.asyncQueued = []
+        #expect(vm.nextAsyncBatch().map(\.text) == ["Merhaba."])
+        // A drained or failed run sends nothing, complete or not.
+        vm.asyncFailed = true
+        #expect(vm.nextAsyncBatch().isEmpty)
+        // The next run starts without the flag.
+        vm.cancelAsyncTranslation()
+        #expect(!vm.asyncTranscriptionComplete)
+    }
+
     @Test func withoutAsyncModeNothingIsTranslatedBeforeTheResult() async throws {
         let folder = try makeFolder()
         let log = try makeFolder()
@@ -242,6 +297,11 @@ import Testing
         // Ten lines, with the two held-back ones as context.
         #expect(try requests(in: log) == [lineTexts(1...12)])
         #expect(vm.asyncFailed && vm.asyncTask == nil)
+        // The failure is traced in the diagnostic log (the error, never the lines).
+        DiagnosticLog.shared.flush()
+        let logged = (try? String(contentsOf: DiagnosticLog.shared.fileURL, encoding: .utf8)) ?? ""
+        #expect(logged.contains("[translation] background batch of 10 lines failed: down"))
+        #expect(!logged.contains("Satır"))
 
         // Every later snapshot brings new finished lines, but none starts another engine process.
         vm.sentences.append(line(13, "Satır 13."))

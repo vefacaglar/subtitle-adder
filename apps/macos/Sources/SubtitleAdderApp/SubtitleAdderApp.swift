@@ -57,12 +57,13 @@ struct SubtitleAdderApp: App {
     var body: some Scene {
         WindowGroup("Subtitle Adder") {
             ContentView(vm: vm, catalog: catalog, explorer: explorer, platform: platform)
-                .frame(minWidth: 760, minHeight: 600)
+                .frame(minWidth: ContentView.minimumWindowWidth, minHeight: 600)
                 // Opening with "Open With" from Finder / dropping on the Dock: don't open a new window, hand it to the open one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 // SwiftUI takes the first file of an open request here and passes the rest to `ExternalOpenDelegate`.
                 .onOpenURL { externalOpen.receive($0) }
                 .environment(\.locale, language.effective.locale)
+                .interfaceFont()
         }
         // Room for the sidebar next to the editor and the toolbar.
         .defaultSize(width: 1180, height: 720)
@@ -73,6 +74,7 @@ struct SubtitleAdderApp: App {
         Settings {
             SettingsView(vm: vm, catalog: catalog, language: language)
                 .environment(\.locale, language.effective.locale)
+                .interfaceFont()
         }
     }
 }

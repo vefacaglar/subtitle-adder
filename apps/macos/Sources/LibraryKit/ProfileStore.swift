@@ -2,10 +2,11 @@ import CryptoKit
 import Foundation
 
 /// Local profiles with passwords and an encrypted vault per profile (watch history, favorites, ratings, custom lists),
-/// stored in `profiles.json` in the format the Windows app uses. The card pictures are not in the vault: each is a small
-/// encrypted file in a capped per-profile folder next to it (`ThumbnailCache`), so storing one never rewrites the vault.
-/// A vault written by an older version still carries its pictures; they are served from there and move to the cache
-/// the next time the vault is saved.
+/// stored in `profiles.json` (file format version 2 only; a file written by a newer or different version of the app,
+/// such as the Windows app's version 3 with its SQLite `profiles.db`, is refused and never modified). The card pictures
+/// are not in the vault: each is a small encrypted file in a capped per-profile folder next to it (`ThumbnailCache`), so
+/// storing one never rewrites the vault. A vault written by an older version still carries its pictures; they are served
+/// from there and move to the cache the next time the vault is saved.
 ///
 /// **Concurrency.** A `final class` that is `Sendable` by construction: all state lives in one value guarded by an
 /// `NSLock`, and every public method is synchronous. A class rather than an actor because the view model needs cheap

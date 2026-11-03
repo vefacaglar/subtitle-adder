@@ -33,6 +33,7 @@ extension SubtitleViewModel {
         asyncRunID = UUID()
         asyncQueued = []
         asyncDraining = false
+        asyncTranscriptionComplete = false
         asyncFailed = false
         asyncShownInStatus = false
         isAsyncTranslating = false
@@ -67,13 +68,16 @@ extension SubtitleViewModel {
     nonisolated static var minAsyncBatchSentences: Int { 10 }
 
     /// Lines ready for the server: everything but the last two (the live end of the transcript still changes), not
-    /// handed over before, with text. Empty until at least `minAsyncBatchSentences` of them have piled up.
+    /// handed over before, with text. Empty until at least `minAsyncBatchSentences` of them have piled up. Once
+    /// recognition is complete (`asyncTranscriptionComplete`) every line counts and a single one is enough.
     func nextAsyncBatch() -> [Sentence] {
-        guard !asyncDraining, !asyncFailed, sentences.count > 2 else { return [] }
-        let candidates = sentences.dropLast(2).filter {
+        let complete = asyncTranscriptionComplete
+        guard !asyncDraining, !asyncFailed, complete ? !sentences.isEmpty : sentences.count > 2 else { return [] }
+        let stable = complete ? sentences[...] : sentences.dropLast(2)
+        let candidates = stable.filter {
             !asyncQueued.contains($0.uid) && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        return candidates.count >= Self.minAsyncBatchSentences ? Array(candidates) : []
+        return candidates.count >= (complete ? 1 : Self.minAsyncBatchSentences) ? Array(candidates) : []
     }
 
     /// One batch at a time until nothing is left to send. A failure stops it for the rest of the run (`asyncFailed`):
@@ -133,13 +137,21 @@ extension SubtitleViewModel {
                         alreadyDone: alreadyTranslated, requested: batch.count, part: part,
                         total: max(sentences.count, alreadyTranslated + batch.count)
                     ))
-                case .error:
+                case .error(let message):
+                    engine.logDiagnostic("translation", "background batch of \(batch.count) lines failed: \(message)")
                     return false
                 case .result, .partial:
                     break
                 }
             }
         } catch {
+            // The engine's error text (never the lines themselves) so a failure that only shows as "some lines are
+            // missing" can be traced afterwards.
+            if !Task.isCancelled, asyncRunID == run {
+                engine.logDiagnostic(
+                    "translation", "background batch of \(batch.count) lines failed: \(error.localizedDescription)"
+                )
+            }
             return false
         }
         return !Task.isCancelled && asyncRunID == run

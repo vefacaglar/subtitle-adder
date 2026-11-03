@@ -19,9 +19,22 @@ struct ProviderDraft: Equatable {
             }
         }
     }
-    var apiKey: String
+    /// What the key field holds: what the user typed. An existing provider's field starts empty (the stored key is not
+    /// copied into it), so `keyToSave` is `nil` until something is typed.
+    var apiKey: String {
+        didSet { if apiKey != oldValue { keyEdited = true } }
+    }
+    /// The key field was typed in or cleared. Until then saving leaves the stored key alone.
+    private(set) var keyEdited = false
+    /// What the keychain said about the provider's key when the sheet opened (or was last refreshed); `.absent` for a
+    /// new provider. Only the app's key cache fills it in; the draft never reads the keychain.
+    private(set) var storedKey: ProviderKey
     var model: String
-    var asyncTranslation: Bool
+    var asyncTranslation: Bool {
+        didSet { if asyncTranslation != oldValue { asyncTranslationChosen = true } }
+    }
+    /// The user flipped the switch, so picking another provider type no longer resets it to that type's default.
+    private var asyncTranslationChosen = false
     /// Models the last successful test of this address listed.
     var discoveredModels: [String]
 
@@ -33,19 +46,22 @@ struct ProviderDraft: Equatable {
         name = preset.name
         baseURL = preset.baseURL
         apiKey = ""
+        storedKey = .absent
         model = preset.defaultModel
-        asyncTranslation = true
+        asyncTranslation = preset.translatesInBackgroundByDefault
         discoveredModels = []
     }
 
-    /// An existing provider with its stored key.
-    init(editing profile: TranslationProviderProfile, key: String) {
+    /// An existing provider. `key` is what the key cache knows about its stored key: the field stays empty, and the
+    /// stored key is replaced or removed only if the user types or clears something.
+    init(editing profile: TranslationProviderProfile, key: ProviderKey) {
         id = profile.id
         isNew = false
         presetID = profile.presetID
         name = profile.name
         baseURL = profile.baseURL
-        apiKey = key
+        apiKey = ""
+        storedKey = key
         model = profile.model
         asyncTranslation = profile.asyncTranslation
         discoveredModels = profile.discoveredModels
@@ -53,14 +69,58 @@ struct ProviderDraft: Equatable {
 
     var preset: TranslationProviderPreset { .preset(id: presetID) }
 
+    /// Updates what is known about the stored key (the cache finished reading it after the sheet opened).
+    mutating func setStoredKey(_ key: ProviderKey) {
+        storedKey = key
+    }
+
+    /// The provider has a stored key (or may have one: it could not be read) that the field has not replaced yet, so
+    /// the sheet offers to remove it.
+    var canRemoveStoredKey: Bool {
+        guard !isNew, !keyEdited else { return false }
+        switch storedKey {
+        case .present, .unreadable: return true
+        case .loading, .absent: return false
+        }
+    }
+
+    /// Saving will remove the stored key: the user asked to (or cleared what they had typed).
+    var removesStoredKey: Bool {
+        !isNew && keyEdited && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && storedKey != .absent
+    }
+
+    /// The user's explicit "delete the stored key"; the only way, next to typing a new one, to change it.
+    mutating func removeStoredKey() {
+        apiKey = ""
+        keyEdited = true
+    }
+
+    /// What to pass to the store when saving: `nil` keeps the stored key (the field was never touched), a string
+    /// replaces it, and a blank one removes it. A new provider always saves what the field holds.
+    var keyToSave: String? {
+        isNew || keyEdited ? apiKey : nil
+    }
+
+    /// The key a connection test sends: the typed one, else the stored one (empty when none could be read).
+    var effectiveKey: String {
+        if isNew || keyEdited { return apiKey }
+        if case .present(let key) = storedKey { return key }
+        return ""
+    }
+
     /// Picking another provider type refills the name, address and model with its defaults (and forgets the models of
-    /// the old address); the key and the async choice stay.
+    /// the old address); the key stays. A background-translation switch the user did not touch follows the new type's
+    /// default (on for the local network only).
     mutating func apply(preset: TranslationProviderPreset) {
         presetID = preset.id
         name = preset.name
         baseURL = preset.baseURL
         model = preset.defaultModel
         discoveredModels = []
+        if isNew, !asyncTranslationChosen {
+            asyncTranslation = preset.translatesInBackgroundByDefault
+            asyncTranslationChosen = false
+        }
     }
 
     /// The profile as the store keeps it, key left out.

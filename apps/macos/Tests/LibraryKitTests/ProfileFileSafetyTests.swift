@@ -36,6 +36,25 @@ import Testing
         #expect(!store.isLoggedIn)
     }
 
+    @Test func aWindowsVersion3FileIsRefusedAndLeftByteIdenticalNextToItsDatabase() throws {
+        // Windows version 3 keeps only a stub in profiles.json; the data lives in profiles.db.
+        let stub = Data(#"{"version": 3, "database": "profiles.db"}"#.utf8)
+        let database = Data([0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00])
+        let databaseURL = folder.url.appending(path: "profiles.db")
+        try stub.write(to: folder.profilesFile)
+        try database.write(to: databaseURL)
+
+        let store = folder.makeStore()
+        #expect(store.registeredUsernames.isEmpty)
+        #expect(throws: ProfileError.unsupportedFileVersion(3)) { try store.register(username: "bob", password: "pw") }
+        store.refresh()
+        #expect(throws: ProfileError.unsupportedFileVersion(3)) { try store.register(username: "bob", password: "pw") }
+
+        #expect(try Data(contentsOf: folder.profilesFile) == stub)
+        #expect(try Data(contentsOf: databaseURL) == database)
+        #expect(asideFiles().isEmpty)
+    }
+
     @Test func theErrorNamesTheNewerVersion() throws {
         try Data(#"{"version": 7, "profiles": 12}"#.utf8).write(to: folder.profilesFile)
         let store = folder.makeStore()

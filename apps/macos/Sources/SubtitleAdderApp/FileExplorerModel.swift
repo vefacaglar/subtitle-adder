@@ -175,6 +175,8 @@ final class FileExplorerModel {
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let services: ExplorerServices
+    /// The folder stored by the last session, as stored; `start()` checks that it is still there.
+    @ObservationIgnored private let savedFolderPath: String?
     /// No folder was ever chosen (nothing saved, nothing navigated to), so the folder shown is only a default and the
     /// first video that is opened takes the explorer to its folder.
     @ObservationIgnored private var followsVideo: Bool
@@ -200,12 +202,14 @@ final class FileExplorerModel {
         self.defaults = defaults
         self.services = services
         isSidebarVisible = defaults.object(forKey: Self.showSidebarKey) as? Bool ?? true
-        let saved = Self.savedFolder(defaults: defaults, services: services)
-        let folder = saved ?? Self.defaultFolder(services: services)
+        // Nothing here touches the file system: the saved folder may be on a network mount that no longer answers, and
+        // the app's launch must not wait for it. The folder shown until `start()` has looked at it is the saved one as it
+        // was stored, or the home folder.
+        let saved = defaults.string(forKey: Self.lastFolderKey).flatMap { $0.isEmpty ? nil : $0 }
+        savedFolderPath = saved
         followsVideo = saved == nil
-        currentFolder = folder
-        availability = Self.mountAvailability(of: folder, services: services)
-        isScanning = availability == .available
+        currentFolder = saved ?? services.homeFolder()
+        isScanning = true
     }
 
     // MARK: Derived state
@@ -265,8 +269,18 @@ final class FileExplorerModel {
         observeIndexChanges()
         if services.watchesVolumes { observeVolumes() }
         Task { await refreshQuickLocations() }
+        // The saved folder is looked at here, off the main actor: a stale network mount can make that wait for a long time.
+        // The user may have been faster than the launch; a folder they chose stays.
+        if !hasScanned {
+            let saved = savedFolderPath
+            let services = services
+            let launch = await Task.detached { Self.launchFolder(saved: saved, services: services) }.value
+            if !hasScanned {
+                currentFolder = launch.folder
+                followsVideo = launch.followsVideo
+            }
+        }
         totalIndexedFiles = await index.totalIndexedFiles
-        // The user may have been faster than the launch.
         guard !hasScanned else { return }
         await runScan(currentFolder, showCached: true, crawl: false)
     }
@@ -471,9 +485,14 @@ final class FileExplorerModel {
         }
     }
 
-    /// Returns when the search in progress (if any) has been applied or dropped.
+    /// Returns when the search in progress (if any) has been applied or dropped. A new query, a scan or a change of the
+    /// index replaces the task while it is waited for, so it keeps waiting until the task it just finished is still the
+    /// current one.
     func waitForSearch() async {
-        await filterTask?.value
+        while let task = filterTask {
+            await task.value
+            if filterTask == task { return }
+        }
     }
 
     private func assign(folders newFolders: [ExplorerFolder], files newFiles: [IndexedMediaFile]) {
@@ -523,22 +542,29 @@ final class FileExplorerModel {
         Self.mountAvailability(of: folder, services: services) == .available
     }
 
-    private static func mountAvailability(of folder: String, services: ExplorerServices) -> FolderAvailability {
+    private nonisolated static func mountAvailability(of folder: String, services: ExplorerServices) -> FolderAvailability {
         guard let root = ExplorerPaths.volumeRoot(of: folder), !services.isVolumeMounted(root) else { return .available }
         return .volumeNotMounted
     }
 
-    /// The last folder if it still exists (or sits on a disk that is only unplugged).
-    private static func savedFolder(defaults: UserDefaults, services: ExplorerServices) -> String? {
-        guard let saved = defaults.string(forKey: lastFolderKey), !saved.isEmpty else { return nil }
-        let folder = MediaPath.normalized(saved)
-        guard !folder.isEmpty else { return nil }
-        let unplugged = mountAvailability(of: folder, services: services) == .volumeNotMounted
-        return unplugged || services.directoryExists(folder) ? folder : nil
+    /// Where the explorer starts: the last folder if it still exists (or sits on a disk that is only unplugged), else the
+    /// default one, in which case the first video that is opened takes it to its own folder. Reads the file system, so it
+    /// runs off the main actor.
+    private nonisolated static func launchFolder(
+        saved: String?, services: ExplorerServices
+    ) -> (folder: String, followsVideo: Bool) {
+        if let saved {
+            let folder = MediaPath.normalized(saved)
+            if !folder.isEmpty {
+                let unplugged = mountAvailability(of: folder, services: services) == .volumeNotMounted
+                if unplugged || services.directoryExists(folder) { return (folder, false) }
+            }
+        }
+        return (defaultFolder(services: services), true)
     }
 
     /// Movies, else the home folder.
-    private static func defaultFolder(services: ExplorerServices) -> String {
+    private nonisolated static func defaultFolder(services: ExplorerServices) -> String {
         if let movies = services.moviesFolder(), services.directoryExists(movies) { return movies }
         return services.homeFolder()
     }
