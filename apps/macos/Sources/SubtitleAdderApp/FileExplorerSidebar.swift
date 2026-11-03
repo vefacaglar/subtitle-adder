@@ -174,7 +174,6 @@ struct FileExplorerSidebar: View {
 
     /// A click opens the video, and Settings decide whether it plays; "Oynat" plays it whatever they say.
     private func open(_ file: IndexedMediaFile, startPlaying: Bool) {
-        guard !vm.isPlaylistRunning else { return }
         openVideo(file.url, startPlaying)
     }
 

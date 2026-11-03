@@ -427,7 +427,42 @@ import Testing
 
     // MARK: - A cancelled render is not a failure
 
-    @Test func openingAnotherVideoDuringTheAutoSaveRenderLeavesTheNewVideoIdle() async throws {
+    @Test func openingAnotherVideoDuringTheAutoSaveRenderLetsTheSaveFinishForTheFirstVideo() async throws {
+        let folder = try makeFolder()
+        let started = folder.appending(path: "rendering")
+        let release = folder.appending(path: "release")
+        let vm = makeModel(engine: try FakeEngine.make(
+            translate: Self.translateScript,
+            render: "touch '\(started.path)'\nwhile [ ! -e '\(release.path)' ]; do sleep 0.05; done\ncat"
+        ))
+        vm.language = "tr"
+        vm.translationTarget = "en"
+        let film = folder.appending(path: "Film.mp4")
+        vm.openVideo(film)
+        vm.sentences = [Sentence(id: 1, start: 0, end: 1, text: "Merhaba."), Sentence(id: 2, start: 1, end: 2, text: "Dünya.")]
+        vm.translate()
+        let session = vm.foreground
+        let job = vm.job
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: started.path) {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(FileManager.default.fileExists(atPath: started.path))
+        // The translation is done (Durdur is hidden); only the auto-save render is still going.
+        #expect(vm.status == .finished)
+
+        // Switching videos does not stop the save: it belongs to Film, whatever is on screen.
+        vm.openVideo(folder.appending(path: "Other.mp4"))
+        #expect(vm.status == .idle && vm.video?.lastPathComponent == "Other.mp4")
+        FileManager.default.createFile(atPath: release.path, contents: Data())
+        await job?.value
+        #expect(vm.status == .idle && vm.savedSubtitleName == nil && !vm.isWorking)
+        let saved = try String(contentsOf: folder.appending(path: "Film.srt"), encoding: .utf8)
+        #expect(saved.contains("Hello"))
+        #expect(session.savedSubtitleName == "Film.srt" && session.status == .finished && !session.hasUnsavedEdits)
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Other.srt").path))
+    }
+
+    @Test func stoppingTheJobDuringTheAutoSaveRenderIsNotAFailure() async throws {
         let folder = try makeFolder()
         let started = folder.appending(path: "rendering")
         let vm = makeModel(engine: try FakeEngine.make(
@@ -443,10 +478,8 @@ import Testing
             try await Task.sleep(for: .milliseconds(25))
         }
         #expect(FileManager.default.fileExists(atPath: started.path))
-        // The translation is done (Durdur is hidden); only the auto-save render is still going.
-        #expect(vm.status == .finished)
 
-        vm.openVideo(folder.appending(path: "Other.mp4"))
+        vm.cancel()
         await job?.value
         #expect(vm.status == .idle)
         #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "Film.srt").path))

@@ -74,23 +74,15 @@ struct ContentView: View {
             vm.reconcileModelSelection()
             vm.reconcileTranslationModelSelection()
         }
-        // A playlist run goes through many videos; the player stays empty until it is over. A video opened any other
-        // way (picker, drop, Open With, a double click) plays by itself when Settings say so; opening the video that
-        // is already open changes nothing, so it doesn't restart.
+        // A video opened any way (sidebar, picker, drop, Open With, a double click) plays by itself when Settings say so;
+        // opening the video that is already open changes nothing, so it doesn't restart. A playlist run or any other
+        // job works in sessions of its own and never loads the player.
         // The platform hears about it after the player has let go of the old video, so it can still report where that
-        // was. A video a playlist run opens is not one the user watched: it is never counted.
+        // was.
         .onChange(of: vm.video, initial: true) { _, url in
-            let running = vm.isPlaylistRunning
-            if !running {
-                player.load(url, autoPlay: vm.autoPlayVideo || forcePlay)
-                forcePlay = false
-            }
-            platform.playerVideoChanged(to: running ? nil : url, countsAsOpen: !running)
-        }
-        // The end of a run only puts the editor's video back, which is not opening one: it stays paused.
-        .onChange(of: vm.isPlaylistRunning) { _, running in
-            player.load(running ? nil : vm.video)
-            platform.playerVideoChanged(to: running ? nil : vm.video, countsAsOpen: false)
+            player.load(url, autoPlay: vm.autoPlayVideo || forcePlay)
+            forcePlay = false
+            platform.playerVideoChanged(to: url, countsAsOpen: true)
         }
         .alert(
             L("İşlem tamamlanamadı"),
@@ -129,7 +121,7 @@ struct ContentView: View {
             }
             switch vm.workspace {
             case .editor: editor
-            case .platform: PlatformView(model: platform, play: playFromPlatform, canPlay: !vm.isPlaylistRunning)
+            case .platform: PlatformView(model: platform, play: playFromPlatform, canPlay: true)
             case .playlist: PlaylistView(vm: vm)
             }
             if !showsFullScreenPlayer {
@@ -164,7 +156,7 @@ struct ContentView: View {
         Picker(L("Çalışma alanı"), selection: $vm.workspace) {
             Text(L("Player")).tag(Workspace.editor)
             Text(L("Platform")).tag(Workspace.platform)
-            Text(vm.hasPlaylistItems ? L("Çeviri listesi (%lld)", vm.playlist.count) : L("Çeviri listesi"))
+            Text(vm.hasListRows ? L("Çeviri listesi (%lld)", vm.listRows.count) : L("Çeviri listesi"))
                 .tag(Workspace.playlist)
         }
         .pickerStyle(.segmented)
@@ -177,8 +169,6 @@ struct ContentView: View {
             dropZone.padding(20)
         } else if vm.video == nil {
             // Only a subtitle file is open: edit and save it without a player.
-            SentenceEditorView(vm: vm, player: player)
-        } else if vm.isPlaylistRunning {
             SentenceEditorView(vm: vm, player: player)
         } else {
             if !vm.showsSubtitlePanel(isFullScreen: chrome.isFullScreen) {
@@ -255,12 +245,12 @@ struct ContentView: View {
     }
 
     /// Shows the editor with `url` (a sidebar row, a card). `startPlaying` plays it even when Settings say not to on open;
-    /// otherwise the setting decides. A video that would replace running work or unsaved edits waits for the user's yes
-    /// (`requestOpen`), and nothing changes until it comes, not even the tab.
+    /// otherwise the setting decides. Opening a video leaves the other videos' jobs and edits alone, so it only waits for
+    /// the user's yes when it would lose lines that belong to no video (`requestOpen`), and nothing changes until it
+    /// comes, not even the tab.
     private func showVideo(_ url: URL, startPlaying: Bool) {
-        guard !vm.isPlaylistRunning else { return }
         let alreadyOpen = vm.video.map(VideoPlatformModel.pathKey) == VideoPlatformModel.pathKey(url)
-        vm.requestOpen(replacesWork: !alreadyOpen) {
+        vm.requestOpen(losing: vm.sessionsLost(opening: url)) {
             vm.workspace = .editor
             if alreadyOpen {
                 if startPlaying { player.play() }
@@ -307,7 +297,7 @@ struct ContentView: View {
                 Toggle(L("Otomatik kaydet"), systemImage: "square.and.arrow.down", isOn: $vm.autoSaveSubtitle)
                     .help(L("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet"))
             }
-            if vm.isWorking {
+            if vm.canStop {
                 Button(L("Durdur"), systemImage: "stop.fill") { vm.cancel() }
                     .labelStyle(.titleAndIcon)
                     .help(L("Süren altyazı ya da çeviri işini durdur (⌘.)"))
@@ -341,10 +331,8 @@ struct ContentView: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .frame(width: 175)
-            .disabled(vm.isPlaylistRunning)
             .help(L("Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır."))
             ModelPicker(selection: $vm.model, models: vm.availableModels)
-                .disabled(vm.isPlaylistRunning)
             speakerMenu
             // Always there: "Komple çevir" and the playlist translate before any line exists, so the target and the
             // translation model must be visible and changeable up front. Only "Çevir…" needs lines.

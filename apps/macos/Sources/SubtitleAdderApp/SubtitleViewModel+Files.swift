@@ -5,48 +5,32 @@ import Foundation
 extension SubtitleViewModel {
     // MARK: - Importing
 
-    /// Loads an existing subtitle file (.srt, .vtt, .ass, .ssa or the engine's .json) instead of transcribing. The current
-    /// video stays; translations, undo history and edits are cleared and display and export go back to the original.
+    /// Loads an existing subtitle file (.srt, .vtt, .ass, .ssa or the engine's .json) instead of transcribing, as the lines
+    /// of `session` (the video on screen when not given). The video stays; translations, undo history and edits are
+    /// cleared and display and export go back to the original. A job of that video stops.
     /// Returns `false` with a failed status when the file can't be read or has no valid lines.
     @discardableResult
-    func loadSubtitleFile(_ url: URL) -> Bool {
+    func loadSubtitleFile(_ url: URL, into session: VideoSession? = nil) -> Bool {
+        let session = session ?? foreground
         let parsed: [Sentence]
         do {
             parsed = try SubtitleParser.parseFile(at: url)
         } catch {
-            status = .failed(.error(error))
+            session.status = .failed(.error(error))
             return false
         }
         guard !parsed.isEmpty else {
-            status = .failed(.key("Altyazı dosyasında geçerli satır bulunamadı."))
+            session.status = .failed(.key("Altyazı dosyasında geçerli satır bulunamadı."))
             return false
         }
-        job?.cancel()
-        job = nil
-        jobID = UUID()
-        cancelAsyncTranslation()
-        catalog.activeModels = []
-        loadedSubtitle = url
-        savedSubtitleName = nil
-        hasUnsavedEdits = false
-        translations = [:]
-        translationDraft = nil
-        translationLanguage = nil
-        selection = nil
-        draft = nil
-        // A subtitle file doesn't say which language it is in; a previous video's detection would be wrong.
-        detectedLanguage = nil
-        linesSourceLanguage = nil
-        undoManager?.removeAllActions()
-        displayMode = .original
-        exportLanguage = .original
-        sentences = parsed
-        status = .finished
+        stopJob(of: session)
+        if session === foreground { undoManager?.removeAllActions() }
+        session.load(subtitle: url, lines: parsed)
         return true
     }
 
     /// Files dropped on the window: subtitle files by extension, everything else is a video. Several videos, or any
-    /// video while the playlist is showing or running, go to the playlist. One video opens in the editor, and a
+    /// video while the playlist tab is showing, go to the playlist. One video opens in the editor, and a
     /// subtitle dropped with it is loaded after it (replacing a sidecar). A subtitle dropped alone while no video is
     /// open brings its companion video (same name in the same folder) along.
     func openFiles(_ urls: [URL]) {
@@ -70,22 +54,20 @@ extension SubtitleViewModel {
     private func routeFiles(_ urls: [URL], external: Bool) {
         let subtitle = urls.first(where: SubtitleParser.isSubtitleFile)
         let videos = urls.filter { !SubtitleParser.isSubtitleFile($0) }
-        if videos.count > 1 || (!videos.isEmpty && (isPlaylistRunning || (workspace == .playlist && !external))) {
+        if videos.count > 1 || (!videos.isEmpty && workspace == .playlist && !external) {
             openMultipleVideos(videos)
             return
         }
-        // The run owns the editor's video and lines until it ends.
-        guard !isPlaylistRunning else { return }
-        // The same video again changes nothing; anything else replaces what the editor holds, which may be a running job
-        // or unsaved edits, so it asks first (see `requestOpen`).
+        // Opening a video only brings its session to the front, so it never asks; what a subtitle replaces, or a
+        // video-less editor that goes away, might be work (see `requestOpen`).
         let first = videos.first
-        let replaces = subtitle != nil || first.map { !isCurrentVideo($0) } ?? false
-        requestOpen(replacesWork: replaces) { [self] in
+        let findingVideo = videos.isEmpty && (external || video == nil)
+        requestOpen(losing: sessionsLost(opening: first, subtitle: subtitle, findingVideo: findingVideo)) { [self] in
             // The platform has no player or lines of its own: what is dropped on it is opened where it can be seen.
             if external || workspace == .platform { workspace = .editor }
             if let first { openVideo(first) }
             if let subtitle {
-                openSubtitle(subtitle, findingVideo: videos.isEmpty && (external || video == nil))
+                openSubtitle(subtitle, findingVideo: findingVideo)
             }
         }
     }
@@ -97,7 +79,7 @@ extension SubtitleViewModel {
     /// open: the video someone is working on stays. Returns whether the subtitle loaded.
     @discardableResult
     func openSubtitle(_ url: URL, findingVideo: Bool? = nil) -> Bool {
-        if findingVideo ?? (video == nil), !isPlaylistRunning {
+        if findingVideo ?? (video == nil) {
             if let companion = SubtitleParser.findCompanionVideo(for: url) {
                 openVideo(companion)
             } else if video != nil {
@@ -109,15 +91,22 @@ extension SubtitleViewModel {
 
     // MARK: - Saving
 
-    /// Whether a video can be picked (toolbar button and ⌘O): in the editor, and not while a playlist run owns the video.
-    var canPickVideo: Bool { workspace == .editor && !isPlaylistRunning }
+    /// Whether a video can be picked (toolbar button and ⌘O): in the editor. A running job or playlist run doesn't matter,
+    /// since opening a video leaves the others' work alone.
+    var canPickVideo: Bool { workspace == .editor }
 
     /// Whether the lines can be exported: there are some and no job is rewriting them.
     var canExport: Bool { !sentences.isEmpty && !isWorking }
 
     /// Whether "Altyazıyı kaydet" is enabled: exportable lines and a place to write them (the video's or the loaded
     /// subtitle's folder).
-    var canSaveSubtitle: Bool { canExport && (video != nil || loadedSubtitle != nil) }
+    var canSaveSubtitle: Bool { canSave(foreground) }
+
+    /// Whether the session's lines can be written: there are some, no job is rewriting them and there is a place for
+    /// the file (the video's or the loaded subtitle's folder).
+    func canSave(_ session: VideoSession) -> Bool {
+        !session.sentences.isEmpty && !session.isWorking && (session.video != nil || session.loadedSubtitle != nil)
+    }
 
     /// Whether the export carries the translation: chosen, and there is one.
     var exportsTranslation: Bool { exportLanguage == .translated && hasTranslations }
@@ -125,8 +114,12 @@ extension SubtitleViewModel {
     /// `<name>.<fmt>` next to the video (or the loaded subtitle when there is no video), for the original and for a
     /// translation alike, exactly like the Windows app. Saving overwrites; there is no language suffix.
     func subtitleFileName() -> String? {
-        guard let base = video ?? loadedSubtitle else { return nil }
-        return Self.subtitleFileName(stem: base.deletingPathExtension().lastPathComponent, format: exportFormat)
+        subtitleFileName(for: foreground, format: exportFormat)
+    }
+
+    func subtitleFileName(for session: VideoSession, format: SubtitleFormat) -> String? {
+        guard let base = session.video ?? session.loadedSubtitle else { return nil }
+        return Self.subtitleFileName(stem: base.deletingPathExtension().lastPathComponent, format: format)
     }
 
     nonisolated static func subtitleFileName(stem: String, format: SubtitleFormat) -> String {
@@ -142,7 +135,13 @@ extension SubtitleViewModel {
 
     /// Where "Altyazıyı kaydet" writes: next to the video (or the loaded subtitle).
     func subtitleSaveURL() -> URL? {
-        guard let base = video ?? loadedSubtitle, let name = subtitleFileName() else { return nil }
+        subtitleSaveURL(for: foreground, format: exportFormat)
+    }
+
+    func subtitleSaveURL(for session: VideoSession, format: SubtitleFormat) -> URL? {
+        guard let base = session.video ?? session.loadedSubtitle,
+              let name = subtitleFileName(for: session, format: format)
+        else { return nil }
         return base.deletingLastPathComponent().appendingPathComponent(name, isDirectory: false)
     }
 
@@ -156,31 +155,38 @@ extension SubtitleViewModel {
         )
     }
 
-    /// Renders with the engine and writes the file next to the video as UTF-8 without a BOM, replacing a file of the
-    /// same name. `translated` overrides the export language choice. On failure the status says why and nothing is returned.
+    /// Renders the lines of the video on screen with the engine and writes the file next to the video as UTF-8 without a
+    /// BOM, replacing a file of the same name. `translated` overrides the export language choice. On failure the status
+    /// says why and nothing is returned.
     @discardableResult
     func saveSubtitle(translated: Bool? = nil) async -> URL? {
         commitDraft()
         commitTranslationDraft()
-        let useTranslation = (translated ?? (exportLanguage == .translated)) && hasTranslations
-        guard let url = subtitleSaveURL() else { return nil }
-        // The render is awaited; the user may open another video meanwhile. What follows the await belongs to the
-        // video this save started for, not to whatever is open by then.
-        let savedVideo = video
-        let savedLoadedSubtitle = loadedSubtitle
-        guard let text = await render(as: exportFormat, translated: useTranslation) else { return nil }
+        return await saveSubtitle(of: foreground, translated: translated, format: exportFormat)
+    }
+
+    /// The same for any session: the lines rendered, the file written and the name and status that follow are all that
+    /// session's, whichever video is on screen while the render and the write are awaited.
+    @discardableResult
+    func saveSubtitle(of session: VideoSession, translated: Bool? = nil, format: SubtitleFormat) async -> URL? {
+        let useTranslation = (translated ?? (session.exportLanguage == .translated)) && session.hasTranslations
+        guard let url = subtitleSaveURL(for: session, format: format) else { return nil }
+        // The render is awaited; a subtitle file may be loaded onto the video meanwhile. What follows belongs to the
+        // lines this save started for.
+        let savedLoadedSubtitle = session.loadedSubtitle
+        guard let text = await render(session, as: format, translated: useTranslation) else { return nil }
         do {
             try await Self.write(Data(text.utf8), to: url)
         } catch {
-            reportSaveFailure(error)
+            session.status = Self.saveFailure(error)
             return nil
         }
-        // The file is on disk either way, so the sidebar badge always follows; the editor's own state only changes
-        // when the same video is still open.
+        // The file is on disk either way, so the sidebar badge always follows; the session's own state only changes
+        // when it still holds the lines the save was for.
         onSubtitleSaved?(url)
-        guard video == savedVideo, loadedSubtitle == savedLoadedSubtitle else { return url }
-        savedSubtitleName = url.lastPathComponent
-        if !isWorking, status != .finished { status = .finished }
+        guard session.loadedSubtitle == savedLoadedSubtitle else { return url }
+        session.savedSubtitleName = url.lastPathComponent
+        if !session.isWorking, session.status != .finished { session.status = .finished }
         return url
     }
 
@@ -192,8 +198,12 @@ extension SubtitleViewModel {
 
     /// Shows "Dosya kaydedilemedi: …" in the status bar; used by every place that writes a subtitle file.
     func reportSaveFailure(_ error: any Error) {
+        status = Self.saveFailure(error)
+    }
+
+    nonisolated static func saveFailure(_ error: any Error) -> Status {
         let reason = error.localizedDescription
-        status = .failed(LocalizedMessage("save-failed:\(reason)") { L("Dosya kaydedilemedi: %@", reason) })
+        return .failed(LocalizedMessage("save-failed:\(reason)") { L("Dosya kaydedilemedi: %@", reason) })
     }
 
     /// Result of the export panel: a write error is reported, a cancelled panel is not an error.
@@ -219,13 +229,20 @@ extension SubtitleViewModel {
 
     /// Writes the translation next to the video when auto-save is on and there is a translation and a folder to write to.
     /// Called when a translation job finishes; transcription alone and the export panel never save by themselves.
-    func autoSaveTranslationIfEnabled(fileManager: FileManager = .default) async {
-        guard autoSaveSubtitle, hasTranslations, canSaveSubtitle,
-              let folder = subtitleSaveURL()?.deletingLastPathComponent()
+    /// `session` is the video the job was for and `settings` the job's own; the video on screen and the toolbar's choices
+    /// when not given.
+    func autoSaveTranslationIfEnabled(
+        of session: VideoSession? = nil, settings: JobSettings? = nil, fileManager: FileManager = .default
+    ) async {
+        let session = session ?? foreground
+        let autoSave = settings?.autoSave ?? autoSaveSubtitle
+        let format = settings?.exportFormat ?? exportFormat
+        guard autoSave, session.hasTranslations, canSave(session),
+              let folder = subtitleSaveURL(for: session, format: format)?.deletingLastPathComponent()
         else { return }
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else { return }
-        await saveSubtitle(translated: true)
+        await saveSubtitle(of: session, translated: true, format: format)
     }
 
     // MARK: - Komple çevir
@@ -260,18 +277,5 @@ extension SubtitleViewModel {
         case .idle, .finished: return failure
         case .working, .failed: return nil
         }
-    }
-
-    /// "N satır · dil: xx" (the language is left out when unknown), plus the translation language and the saved file.
-    var finishedSummary: String {
-        var summary = detectedLanguage.map { L("%lld satır · dil: %@", sentences.count, $0) }
-            ?? L("%lld satır", sentences.count)
-        if let language = translationLanguage {
-            summary += L(" · çeviri: %@", language)
-        }
-        if let saved = savedSubtitleName {
-            summary += L(" · kaydedildi: %@", saved)
-        }
-        return summary
     }
 }

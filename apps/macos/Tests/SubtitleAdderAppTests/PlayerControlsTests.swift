@@ -520,9 +520,6 @@ import Testing
         vm.workspace = .playlist
         #expect(!actions.perform(.togglePlayback))
         vm.workspace = .editor
-        vm.isPlaylistRunning = true
-        #expect(!actions.perform(.togglePlayback))
-        vm.isPlaylistRunning = false
     }
 
     @Test func toggleKeysIgnoreAutoRepeatAndFullScreenKeepsThePanelSetting() throws {

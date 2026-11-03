@@ -126,7 +126,8 @@ import Testing
         #expect(vm.playlist.map(\.sourceLanguage) == ["pt", "ja"])
 
         vm.startPlaylist()
-        #expect(vm.isPlaylistRunning && vm.isWorking)
+        // The run is under way, but it is not the video on screen that is working.
+        #expect(vm.isPlaylistRunning && vm.hasActiveWork && !vm.isWorking)
         await vm.playlistTask?.value
 
         #expect(!vm.isPlaylistRunning && !vm.isWorking)
@@ -152,7 +153,7 @@ import Testing
         #expect(savedB.contains("Merhaba"))
         #expect(vm.playlist[0].statusMessage.text == "Kaydedildi: \(savedName("ClipA"))")
 
-        // The per-item languages were the run's, not the user's.
+        // The per-item languages were the run's, not the user's: the toolbar was never touched.
         #expect(vm.language.isEmpty && vm.translationTarget == "tr")
         #expect((defaults.string(forKey: "selectedLanguage") ?? "").isEmpty)
         #expect(defaults.string(forKey: "translationTarget") == "tr")
@@ -221,7 +222,7 @@ import Testing
         #expect(vm.playlist[0].statusMessage.text.hasPrefix("Dosya kaydedilemedi:"))
     }
 
-    @Test func cancelPutsTheCurrentItemBackToQueuedAndRestoresTheToolbar() async throws {
+    @Test func cancelPutsTheCurrentItemBackToQueuedAndLeavesTheToolbarAlone() async throws {
         let folder = try makeFolder()
         let started = folder.appending(path: "started")
         let engine = try FakeEngine.make(transcribe: "touch \"\(started.path)\"\nexec sleep 20")
@@ -232,7 +233,8 @@ import Testing
         let task = vm.playlistTask
         let working = await eventually { vm.playlist[0].state == .working && FileManager.default.fileExists(atPath: started.path) }
         #expect(working)
-        #expect(vm.language == "ja")
+        // The item's language is the run's own; the toolbar still says what the user chose.
+        #expect(vm.language.isEmpty)
 
         vm.cancel()
         await task?.value
@@ -325,7 +327,8 @@ import Testing
         #expect(vm.playlist.map(\.id) == [working])
     }
 
-    @Test func playlistValuesAreNotPersistedWhileRunning() {
+    @Test func toolbarChangesDuringARunAreTheUsersAndAreKept() {
+        // The run works on the settings it started with, so the toolbar is free: what is picked meanwhile is persisted.
         let (vm, defaults) = makeModel()
         vm.language = "tr"
         vm.translationTarget = "es"
@@ -334,9 +337,9 @@ import Testing
         vm.translationTarget = "de"
         vm.model = "base"
         vm.isPlaylistRunning = false
-        #expect(defaults.string(forKey: "selectedLanguage") == "tr")
-        #expect(defaults.string(forKey: "translationTarget") == "es")
-        #expect(defaults.string(forKey: "selectedModel") != "base")
+        #expect(defaults.string(forKey: "selectedLanguage") == "ja")
+        #expect(defaults.string(forKey: "translationTarget") == "de")
+        #expect(defaults.string(forKey: "selectedModel") == "base")
     }
 
     // MARK: - Dropping videos
@@ -357,12 +360,13 @@ import Testing
         vm.openFiles([b])
         #expect(vm.playlist.map(\.fileName) == ["b.mp4"])
 
-        // While a run owns the editor, a video dropped on the editor tab goes to the list too.
+        // A run does not own the editor: a video dropped on the editor tab opens there.
         vm.workspace = .editor
         vm.isPlaylistRunning = true
         defer { vm.isPlaylistRunning = false }
-        vm.openFiles([URL(filePath: "/tmp/c.mp4")])
-        #expect(vm.video == a && vm.workspace == .playlist && vm.playlist.count == 2)
+        let c = URL(filePath: "/tmp/c.mp4")
+        vm.openFiles([c])
+        #expect(vm.video == c && vm.workspace == .editor && vm.playlist.count == 1)
     }
 
     // MARK: - Async mode (external LLM)
@@ -400,7 +404,9 @@ import Testing
             let text = try String(contentsOf: folder.appending(path: savedName(stem)), encoding: .utf8)
             #expect(text.contains("Hello"))
         }
-        #expect(vm.status == .finished)
+        // Each video's own session ended finished; the one on screen (none) was never involved.
+        #expect(vm.existingSession(for: a)?.status == .finished && vm.existingSession(for: b)?.status == .finished)
+        #expect(vm.video == nil && vm.status == .idle)
     }
 
     @Test func asyncModeKeepsTheReviewMarkerInTheSavedJSON() async throws {
@@ -435,7 +441,10 @@ import Testing
         vm.externalLlmUrl = "10.0.0.2:1234"
         vm.externalLlmAsync = true
         vm.translationTarget = "en"
-        vm.addToPlaylist([folder.appending(path: "a.mp4"), folder.appending(path: "b.mp4")], sourceLanguage: "tr")
+        let a = folder.appending(path: "a.mp4")
+        vm.addToPlaylist([a, folder.appending(path: "b.mp4")], sourceLanguage: "tr")
+        // The first item is on screen while the run works on it.
+        vm.openVideo(a)
         #expect(!vm.isTranslationInProgress && vm.translationBadgeText == nil)
         vm.startPlaylist()
         let task = vm.playlistTask
@@ -443,6 +452,10 @@ import Testing
         #expect(await eventually { vm.isPlaylistBackgroundTranslating && !vm.isAsyncTranslating && !vm.isTranslationJobRunning })
         #expect(vm.isTranslationInProgress)
         #expect(vm.translationBadgeText != nil)
+        // Another video, not part of the run, has nothing to badge.
+        vm.openVideo(folder.appending(path: "elsewhere.mp4"))
+        #expect(vm.isPlaylistBackgroundTranslating && !vm.isTranslationInProgress && vm.translationBadgeText == nil)
+        vm.openVideo(a)
         await task?.value
         #expect(!vm.isPlaylistBackgroundTranslating)
         #expect(!vm.isTranslationInProgress)
@@ -530,22 +543,27 @@ import Testing
         #expect(!vm.isWorking)
     }
 
-    @Test func theEditorKeepsTheLastItemsLanguageAfterTheRun() async throws {
+    @Test func anItemsSessionKeepsItsOwnLanguageAfterTheRun() async throws {
         let folder = try makeFolder()
         let engine = try FakeEngine.make(transcribe: finished("Hello"), translate: translated("Hola"))
         let (vm, _) = makeModel(engine: engine)
         vm.language = "tr"
         vm.translationTarget = "es"
-        vm.addToPlaylist([folder.appending(path: "a.mp4")], sourceLanguage: "en")
+        let item = folder.appending(path: "a.mp4")
+        vm.addToPlaylist([item], sourceLanguage: "en")
         await run(vm)
 
-        // The toolbar is the user's again, but the lines left in the editor are English.
+        // The toolbar was never touched, but the item's lines are English whatever the toolbar says.
         #expect(vm.language == "tr" && vm.translationTarget == "es")
+        vm.openVideo(item)
         #expect(!vm.sentences.isEmpty)
         #expect(vm.translationSource == "en")
-        // Other lines, or a language picked by hand, are the toolbar's business again.
+        // Other lines, or a language picked by hand, are the toolbar's business.
         vm.openVideo(folder.appending(path: "other.mp4"))
         #expect(vm.translationSource == "tr")
+        vm.openVideo(item)
+        vm.language = "ja"
+        #expect(vm.translationSource == "ja")
     }
 
     // MARK: - Pinned settings
@@ -631,8 +649,9 @@ import Testing
         #expect(lineTexts(11...13).allSatisfy { saved.contains("T1-" + $0) })
         #expect(!saved.contains("T1-Satır 9.") && !saved.contains("T1-Satır 10."))
 
-        // The editor still shows this video, now with its translation and the saved name.
-        #expect(vm.video == video)
+        // The video's own session holds its translation and the saved name; the editor was never taken over.
+        #expect(vm.video == nil)
+        vm.openVideo(video)
         let expected = lineTexts(1...10).map { "T0-" + $0 } + lineTexts(11...13).map { "T1-" + $0 }
         #expect(vm.sentences.compactMap { vm.translation(for: $0)?.text } == expected)
         #expect(vm.effectiveDisplayMode == .translation)
@@ -841,7 +860,8 @@ extension PlaylistTests {
             #expect(outDirectory(control, "transcribe", video: video) == extracted)
             #expect(extracted == SubtitleViewModel.playlistOutDirectory(for: video).path)
         }
-        #expect(!vm.isPlaylistRunning && !vm.isWorking && vm.status == .finished)
+        #expect(!vm.isPlaylistRunning && !vm.hasActiveWork)
+        for video in videos { #expect(vm.existingSession(for: video)?.status == .finished) }
     }
 
     @Test func aLocalModelTranslatesVideoOneWhileVideoTwoIsRecognized() async throws {
@@ -851,11 +871,13 @@ extension PlaylistTests {
         vm.externalLlmEnabled = false
         vm.translationTarget = "tr"
         vm.addToPlaylist([root.appending(path: "v1.mp4"), root.appending(path: "v2.mp4")], sourceLanguage: "en")
+        vm.openVideo(root.appending(path: "v1.mp4"))
         vm.startPlaylist()
         let task = vm.playlistTask
 
         #expect(await eventually { has(control, "translate-start v1") && has(control, "transcribe-end v2") })
         #expect(!has(control, "translate-end v1"))
+        // Video 1 is on screen, so its editor shows the translation badge.
         #expect(vm.isPlaylistBackgroundTranslating && vm.isTranslationInProgress)
 
         control.release("translate-v1", "translate-v2")
@@ -890,14 +912,15 @@ extension PlaylistTests {
         // Video 3 is handed off last; the list is only done once its translation is.
         control.release("translate-v2")
         #expect(await eventually { has(control, "translate-start v3") })
-        #expect(await eventually { if case .working = vm.status { true } else { false } })
+        let last = try #require(vm.existingSession(for: root.appending(path: "v3.mp4")))
+        #expect(await eventually { if case .working = last.status { true } else { false } })
 
         control.release("translate-v3")
         await task?.value
 
         #expect(vm.playlist.allSatisfy { $0.state == .completed })
         #expect(vm.playlistSummary == "3 / 3 tamamlandı")
-        #expect(vm.status == .finished)
+        #expect(last.status == .finished)
         #expect(peakOverlap(control, "translate") == 1)
         let started = logLines(control.log).filter { $0.hasPrefix("translate-start") }.map { String($0.split(separator: " ")[1]) }
         #expect(started == ["v1", "v2", "v3"])
@@ -1063,7 +1086,8 @@ extension PlaylistTests {
         let translationEnd = try #require(position(control, "translate-end v1"))
         #expect(try #require(position(control, "transcribe-start v2")) > translationEnd)
         #expect(peakOverlap(control, "translate") == 1 && peakOverlap(control, "transcribe") == 1)
-        #expect(!vm.isPlaylistBackgroundTranslating && vm.status == .finished)
+        #expect(!vm.isPlaylistBackgroundTranslating)
+        #expect(vm.existingSession(for: root.appending(path: "v2.mp4"))?.status == .finished)
     }
 
     @Test func aStoppedRunDoesNotHangOnTheTranslationItWaitsFor() async throws {

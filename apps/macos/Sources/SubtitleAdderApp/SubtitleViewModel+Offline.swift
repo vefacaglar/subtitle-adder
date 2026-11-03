@@ -18,13 +18,16 @@ extension SubtitleViewModel {
     /// In offline mode, a catalog model that isn't downloaded sets a failed status and remembers `retry` (the entry point
     /// to run again once offline mode is off); returns `true` and the job must not start. Ids the catalog doesn't
     /// know, or any id before the catalog has been loaded, are left to the engine, which reports a missing model itself.
-    func blockedOffline(_ modelIDs: [String], retry: @escaping @MainActor () -> Void) -> Bool {
-        offlineRetry = nil
+    func blockedOffline(
+        _ modelIDs: [String], session: VideoSession? = nil, retry: @escaping @MainActor () -> Void
+    ) -> Bool {
+        let session = session ?? foreground
+        session.offlineRetry = nil
         guard offlineMode else { return false }
         // A job that translates (its list carries the translation model) would send the text to the internet.
         if modelIDs.contains(translationModel), let provider = activeCloudProviderName {
-            status = .failed(Self.offlineCloudMessage(provider))
-            offlineRetry = retry
+            session.status = .failed(Self.offlineCloudMessage(provider))
+            session.offlineRetry = retry
             return true
         }
         guard catalog.hasLoaded else { return false }
@@ -38,12 +41,12 @@ extension SubtitleViewModel {
         }
         guard !missing.isEmpty else { return false }
         let names = missing
-        status = .failed(LocalizedMessage("offline:" + names.joined(separator: ",")) {
+        session.status = .failed(LocalizedMessage("offline:" + names.joined(separator: ",")) {
             L("%@ indirilmemiş. Çevrimdışı mod açıkken model indirilemez.",
               names.map { ModelLabel.name(for: $0) }.joined(separator: ", "))
         })
         // After the status: any other status change clears it.
-        offlineRetry = retry
+        session.offlineRetry = retry
         return true
     }
 
@@ -73,7 +76,9 @@ extension SubtitleViewModel {
     /// Turns offline mode off (persisted) and runs the blocked job again, which downloads the missing model.
     func goOnlineAndRetry() {
         guard canGoOnlineAndRetry, let retry = offlineRetry else { return }
-        offlineRetry = nil
+        // The failure was this attempt's; whatever the retry starts reports for itself (a playlist run doesn't touch the
+        // status of the video on screen at all).
+        status = .idle
         offlineMode = false
         retry()
     }

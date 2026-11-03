@@ -48,7 +48,7 @@ struct SubtitleAdderApp: App {
             MainActor.assumeIsolated {
                 // Where the video in the player was, so it resumes there.
                 platform.prepareForQuit()
-                if !model.isWorking { WorkingDirectory.cleanUp() }
+                if !model.hasActiveWork { WorkingDirectory.cleanUp() }
             }
         }
     }
@@ -109,7 +109,7 @@ private struct LayoutCommands: Commands {
                 .disabled(focused.map { $0.video == nil || $0.isWorking || $0.workspace != .editor } ?? true)
             Button(L("Durdur"), systemImage: "stop.fill") { focused?.cancel() }
                 .keyboardShortcut(".", modifiers: .command)
-                .disabled(focused.map { !$0.isWorking } ?? true)
+                .disabled(focused.map { !$0.canStop } ?? true)
         }
         CommandGroup(after: .toolbar) {
             Toggle(L("Tiyatro modu"), isOn: $vm.isTheaterMode)

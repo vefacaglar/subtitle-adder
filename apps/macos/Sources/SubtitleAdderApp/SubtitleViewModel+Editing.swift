@@ -185,34 +185,38 @@ extension SubtitleViewModel {
         return true
     }
 
-    /// Changes `sentences` and records the old value on the undo stack (during undo,
-    /// this call also creates the redo record). Translations of deleted/merged lines are cleared;
+    /// Changes the lines of `session` (the one on screen when not given) and records the old value on the undo stack
+    /// (during undo, this call also creates the redo record). Translations of deleted/merged lines are cleared;
     /// if `translations` is given (undo/redo), that dictionary is restored as is.
     private func replaceSentences(
         _ updated: [Sentence],
+        in session: VideoSession? = nil,
         actionName: String,
         translations restoredTranslations: [UUID: TranslationEntry]? = nil,
         clearingTranslations clearedUIDs: Set<UUID> = []
     ) {
-        let previous = sentences
-        let previousTranslations = translations
-        hasUnsavedEdits = true
+        let session = session ?? foreground
+        let previous = session.sentences
+        let previousTranslations = session.translations
+        session.hasUnsavedEdits = true
         // A change from outside (undo/redo) can invalidate the focused draft.
-        if let draft, updated.first(where: { $0.uid == draft.uid })?.text != draft.text {
-            self.draft = nil
+        if let draft = session.draft, updated.first(where: { $0.uid == draft.uid })?.text != draft.text {
+            session.draft = nil
         }
-        sentences = updated
+        session.sentences = updated
         let validUIDs = Set(updated.map(\.uid))
-        translations = restoredTranslations
-            ?? translations.filter { validUIDs.contains($0.key) && !clearedUIDs.contains($0.key) }
-        if let translationDraft, !validUIDs.contains(translationDraft.uid)
+        session.translations = restoredTranslations
+            ?? session.translations.filter { validUIDs.contains($0.key) && !clearedUIDs.contains($0.key) }
+        if let translationDraft = session.translationDraft, !validUIDs.contains(translationDraft.uid)
             || clearedUIDs.contains(translationDraft.uid) {
-            self.translationDraft = nil
+            session.translationDraft = nil
         }
         guard let undoManager else { return }
-        undoManager.registerUndo(withTarget: self) { model in
+        undoManager.registerUndo(withTarget: session) { [weak self] session in
             MainActor.assumeIsolated {
-                model.replaceSentences(previous, actionName: actionName, translations: previousTranslations)
+                self?.replaceSentences(
+                    previous, in: session, actionName: actionName, translations: previousTranslations
+                )
             }
         }
         undoManager.setActionName(actionName)

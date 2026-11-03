@@ -3,8 +3,10 @@ import Foundation
 import Testing
 @testable import SubtitleAdderApp
 
-/// Opening another file while a job runs or edited lines are unsaved asks first, whichever way the file arrives; and a
-/// subtitle that comes without a video does not borrow the video that happens to be open.
+/// Switching to another video never asks (the video left keeps its job and its edits in its own session); an open asks,
+/// whichever way the file arrives, only where it would really destroy something: a subtitle loaded over lines with a
+/// running job or unsaved edits, or lines that belong to no video. And a subtitle that comes without a video does not
+/// borrow the video that happens to be open.
 @MainActor
 @Suite struct OpenConfirmationTests {
     private func makeFolder() throws -> URL {
@@ -76,7 +78,7 @@ import Testing
 
     // MARK: - A running job
 
-    @Test func aRunningJobAsksBeforeAnyWayOfOpeningAFile() async throws {
+    @Test func switchingVideosNeverAsksAndNeverStopsTheJobOfTheOneLeft() async throws {
         let folder = try makeFolder()
         let a = try touch("a.mp4", in: folder), b = try touch("b.mp4", in: folder)
         let vm = try makeModel()
@@ -84,46 +86,68 @@ import Testing
         vm.generate()
         #expect(vm.isWorking)
 
-        // The picker and the sidebar/card closure, a drop and Finder's "Open With".
+        // The picker and the sidebar/card closure, a drop and Finder's "Open With" all just show the other video.
         vm.requestOpenVideo(b)
-        #expect(vm.pendingOpen != nil && vm.video == a && vm.isWorking)
+        #expect(vm.pendingOpen == nil && vm.video == b && !vm.isWorking)
+        vm.openFiles([a])
+        #expect(vm.pendingOpen == nil && vm.video == a && vm.isWorking && vm.job != nil)
+        vm.openExternalFiles([b])
+        #expect(vm.pendingOpen == nil && vm.video == b && vm.workspace == .editor)
+        var opened = false
+        vm.requestOpen(replacesWork: false) { opened = true }
+        #expect(vm.pendingOpen == nil && opened)
+
+        // A's job went on the whole time and is still its own.
+        let session = try #require(vm.existingSession(for: a))
+        #expect(session.isWorking && session.job != nil)
+        vm.openVideo(a)
+        vm.cancel()
+    }
+
+    @Test func aRunningJobAsksBeforeASubtitleReplacesTheLinesItWritesTo() async throws {
+        let folder = try makeFolder()
+        let a = try touch("a.mp4", in: folder), b = try touch("b.mp4", in: folder)
+        let vm = try makeModel()
+        vm.openVideo(a)
+        vm.generate()
+        #expect(vm.isWorking)
+
+        // The picker, a drop and a request that replaces what is on screen. (Finder's "Open With" of a subtitle looks
+        // for the companion video instead, which has no session yet here.)
+        vm.requestOpenSubtitle(try touch("c.srt", in: folder, text: Self.srt))
+        #expect(vm.pendingOpen != nil && vm.video == a && vm.sentences.isEmpty)
         vm.cancelPendingOpen()
         var opened = false
         vm.requestOpen { opened = true }
         #expect(vm.pendingOpen != nil && !opened)
         vm.cancelPendingOpen()
-        vm.openFiles([b])
-        #expect(vm.pendingOpen != nil && vm.video == a)
-        vm.cancelPendingOpen()
-        vm.openExternalFiles([b])
-        #expect(vm.pendingOpen != nil && vm.video == a && vm.workspace == .editor)
-        vm.cancelPendingOpen()
-        vm.requestOpenSubtitle(try touch("c.srt", in: folder, text: Self.srt))
+        vm.openFiles([try touch("d.srt", in: folder, text: Self.srt)])
         #expect(vm.pendingOpen != nil && vm.video == a && vm.sentences.isEmpty)
 
         // "Vazgeç": the job goes on, untouched.
         vm.cancelPendingOpen()
         #expect(vm.pendingOpen == nil && vm.video == a && vm.isWorking && vm.job != nil)
 
-        // "Devam": the job stops and the file opens.
-        vm.openExternalFiles([b])
+        // "Devam": the job stops and the subtitle's lines take its place.
+        vm.requestOpenSubtitle(try touch("e.srt", in: folder, text: Self.srt))
         let pending = try #require(vm.pendingOpen)
         #expect(pending.stopsJob && !pending.losesEdits)
         #expect(pending.message == "Süren iş durdurulacak. Devam edilsin mi?")
         vm.confirmPendingOpen()
-        #expect(vm.pendingOpen == nil && vm.video == b && !vm.isWorking && vm.status == .idle)
+        #expect(vm.pendingOpen == nil && vm.video == a && !vm.isWorking && vm.sentences.count == 2)
+        _ = b
     }
 
     @Test func aNewerRequestReplacesOneStillWaiting() throws {
         let folder = try makeFolder()
-        let a = try touch("a.mp4", in: folder), b = try touch("b.mp4", in: folder), c = try touch("c.mp4", in: folder)
+        let a = try touch("a.mp4", in: folder)
         let vm = try makeModel()
         vm.openVideo(a)
         vm.generate()
-        vm.requestOpenVideo(b)
-        vm.requestOpenVideo(c)
+        vm.requestOpenSubtitle(try touch("b.srt", in: folder, text: Self.srt))
+        vm.requestOpenSubtitle(try touch("c.srt", in: folder, text: Self.srt))
         vm.confirmPendingOpen()
-        #expect(vm.video == c)
+        #expect(vm.loadedSubtitle?.lastPathComponent == "c.srt")
     }
 
     @Test func severalVideosGoToThePlaylistWithoutAskingBecauseTheyReplaceNothing() throws {
@@ -139,7 +163,7 @@ import Testing
 
     // MARK: - Unsaved edits
 
-    @Test func editedLinesAskUntilTheyAreSaved() async throws {
+    @Test func editedLinesSurviveSwitchingVideosAndAskOnlyWhenASubtitleWouldReplaceThem() async throws {
         let folder = try makeFolder()
         let a = try touch("a.mp4", in: folder), b = try touch("b.mp4", in: folder)
         let vm = try makeModel()
@@ -149,7 +173,14 @@ import Testing
         vm.setText("Selam.", for: vm.sentences[0].uid)
         #expect(vm.hasUnsavedEdits)
 
+        // Showing b asks nothing: a keeps its edited lines and its flag.
         vm.requestOpenVideo(b)
+        #expect(vm.pendingOpen == nil && vm.video == b && vm.sentences.isEmpty && !vm.hasUnsavedEdits)
+        vm.requestOpenVideo(a)
+        #expect(vm.video == a && vm.sentences.map(\.text) == ["Selam.", "Dünya."] && vm.hasUnsavedEdits)
+
+        // A subtitle loaded over them is what would lose the work.
+        vm.requestOpenSubtitle(try touch("s.srt", in: folder, text: Self.srt))
         let pending = try #require(vm.pendingOpen)
         #expect(!pending.stopsJob && pending.losesEdits)
         #expect(pending.message == "Kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?")
@@ -159,14 +190,13 @@ import Testing
         // Saving writes them to disk, so nothing is left to lose.
         #expect(await vm.saveSubtitle() != nil)
         #expect(!vm.hasUnsavedEdits)
-        vm.requestOpenVideo(b)
-        #expect(vm.video == b && vm.pendingOpen == nil)
-        #expect(!vm.hasUnsavedEdits && vm.sentences.isEmpty)
+        vm.requestOpenSubtitle(try touch("s.srt", in: folder, text: Self.srt))
+        #expect(vm.pendingOpen == nil && vm.sentences.count == 2 && !vm.hasUnsavedEdits)
     }
 
     @Test func aJobAndEditsTogetherSayBoth() throws {
         let folder = try makeFolder()
-        let a = try touch("a.mp4", in: folder), b = try touch("b.mp4", in: folder)
+        let a = try touch("a.mp4", in: folder)
         let vm = try makeModel()
         vm.openVideo(a)
         vm.sentences = [line(1, "Merhaba.")]
@@ -175,7 +205,7 @@ import Testing
         vm.language = "tr"
         vm.translate()
         #expect(vm.isWorking)
-        vm.requestOpenVideo(b)
+        vm.requestOpenSubtitle(try touch("s.srt", in: folder, text: Self.srt))
         let pending = try #require(vm.pendingOpen)
         #expect(pending.stopsJob && pending.losesEdits)
         #expect(pending.message == "Süren iş durdurulacak ve kaydedilmemiş değişiklikler kaybolacak. Devam edilsin mi?")
@@ -191,13 +221,19 @@ import Testing
         vm.sentences = [line(1, "Merhaba.")]
         vm.applyTranslation([line(1, "Hello.")], language: "en", source: vm.sentences)
         #expect(vm.hasUnsavedEdits)
-        vm.requestOpenVideo(b)
+        vm.requestOpenSubtitle(try touch("s.srt", in: folder, text: Self.srt))
         #expect(vm.pendingOpen?.losesEdits == true && vm.video == a)
+        vm.cancelPendingOpen()
+        // Switching to another video keeps the translation and its flag.
+        vm.requestOpenVideo(b)
+        #expect(vm.pendingOpen == nil && vm.video == b)
+        vm.openVideo(a)
+        #expect(vm.hasTranslations && vm.hasUnsavedEdits)
     }
 
     @Test func undoingAnEditStillCountsAsAnEditedDocument() throws {
         let folder = try makeFolder()
-        let a = try touch("a.mp4", in: folder), b = try touch("b.mp4", in: folder)
+        let a = try touch("a.mp4", in: folder)
         let vm = try makeModel()
         let undo = UndoManager()
         vm.undoManager = undo
@@ -206,8 +242,42 @@ import Testing
         vm.setText("Selam.", for: vm.sentences[0].uid)
         undo.undo()
         #expect(vm.sentences.map(\.text) == ["Merhaba."] && vm.hasUnsavedEdits)
-        vm.requestOpenVideo(b)
+        vm.requestOpenSubtitle(try touch("s.srt", in: folder, text: Self.srt))
         #expect(vm.pendingOpen != nil)
+    }
+
+    @Test func theUndoHistoryStartsOverWhenAnotherVideoComesToTheFront() throws {
+        let folder = try makeFolder()
+        let a = try touch("a.mp4", in: folder), b = try touch("b.mp4", in: folder)
+        let vm = try makeModel()
+        let undo = UndoManager()
+        vm.undoManager = undo
+        vm.openVideo(a)
+        vm.sentences = [line(1, "Merhaba.")]
+        vm.setText("Selam.", for: vm.sentences[0].uid)
+        #expect(undo.canUndo)
+        vm.openVideo(b)
+        #expect(!undo.canUndo)
+        // The edit itself is a's and is still there.
+        vm.openVideo(a)
+        #expect(vm.sentences.map(\.text) == ["Selam."] && !undo.canUndo)
+    }
+
+    @Test func linesOfASubtitleOnTheirOwnAreAskedAboutBeforeAVideoTakesTheirPlace() throws {
+        let folder = try makeFolder()
+        let a = try touch("a.mp4", in: folder)
+        let vm = try makeModel()
+        // A subtitle with no companion video: its lines belong to no video, so they have nowhere to stay.
+        vm.openSubtitle(try touch("loose.srt", in: folder, text: Self.srt))
+        #expect(vm.video == nil && vm.sentences.count == 2)
+        vm.setText("Elle.", for: vm.sentences[0].uid)
+        vm.requestOpenVideo(a)
+        #expect(vm.pendingOpen?.losesEdits == true && vm.video == nil)
+        vm.cancelPendingOpen()
+        vm.openExternalFiles([a])
+        #expect(vm.pendingOpen?.losesEdits == true && vm.video == nil)
+        vm.confirmPendingOpen()
+        #expect(vm.video == a && vm.pendingOpen == nil)
     }
 
     @Test func importedLinesStartCleanAndOpeningResetsTheFlag() throws {
