@@ -104,6 +104,12 @@ public struct EngineClient: Sendable {
         language ?? current
     }
 
+    /// Writes a line to the diagnostic log, scrubbing the API key this client launches the engine with. Only for
+    /// diagnostics: never pass subtitle text or prompts.
+    public func logDiagnostic(_ category: String, _ message: String) {
+        DiagnosticLog.shared.write(category, message, redacting: [resolvedLaunchSettings().externalLLM?.apiKey ?? ""])
+    }
+
     public struct TranscribeOptions: Sendable {
         public var language: String?
         public var model: String
@@ -321,7 +327,13 @@ public struct EngineClient: Sendable {
                 try? writer.close()
             }
         }
-        return RunningEngine(process: process, stdout: stdout.fileHandleForReading, log: log, language: lang, exit: exit)
+        // A translation run leaves `[translation] ` trace lines on stderr; they are copied to the diagnostic log
+        // (without the API key this run was launched with) before the file is deleted.
+        let key = resolvedLaunchSettings().externalLLM?.apiKey ?? ""
+        return RunningEngine(
+            process: process, stdout: stdout.fileHandleForReading, log: log, language: lang, exit: exit,
+            copiesTranslationLog: args.first == "translate", secrets: [key]
+        )
     }
 }
 
@@ -352,6 +364,10 @@ private struct RunningEngine: @unchecked Sendable {
     let log: URL
     let language: UILanguage
     let exit: ExitSignal
+    /// Whether the `[translation] ` lines of the stderr log go to the diagnostic log when the run is cleaned up.
+    var copiesTranslationLog = false
+    /// Values scrubbed from those lines (the API key the process was launched with).
+    var secrets: [String] = []
 
     func exitStatus() async -> Int32 {
         await withTaskCancellationHandler {
@@ -411,9 +427,13 @@ private struct RunningEngine: @unchecked Sendable {
         if process.isRunning { process.terminate() }
     }
 
-    /// Terminates the process and deletes the temporary log file.
+    /// Terminates the process and deletes the temporary log file (after copying its `[translation] ` lines to the
+    /// diagnostic log, for translation runs).
     func cleanup() {
         terminate()
+        if copiesTranslationLog {
+            DiagnosticLog.shared.writeEngineLines(DiagnosticLog.translationLines(inLogAt: log), redacting: secrets)
+        }
         try? FileManager.default.removeItem(at: log)
     }
 

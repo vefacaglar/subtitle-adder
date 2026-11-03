@@ -297,6 +297,11 @@ import Testing
         // Ten lines, with the two held-back ones as context.
         #expect(try requests(in: log) == [lineTexts(1...12)])
         #expect(vm.asyncFailed && vm.asyncTask == nil)
+        // The failure is traced in the diagnostic log (the error, never the lines).
+        DiagnosticLog.shared.flush()
+        let logged = (try? String(contentsOf: DiagnosticLog.shared.fileURL, encoding: .utf8)) ?? ""
+        #expect(logged.contains("[translation] background batch of 10 lines failed: down"))
+        #expect(!logged.contains("Satır"))
 
         // Every later snapshot brings new finished lines, but none starts another engine process.
         vm.sentences.append(line(13, "Satır 13."))

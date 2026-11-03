@@ -137,13 +137,21 @@ extension SubtitleViewModel {
                         alreadyDone: alreadyTranslated, requested: batch.count, part: part,
                         total: max(sentences.count, alreadyTranslated + batch.count)
                     ))
-                case .error:
+                case .error(let message):
+                    engine.logDiagnostic("translation", "background batch of \(batch.count) lines failed: \(message)")
                     return false
                 case .result, .partial:
                     break
                 }
             }
         } catch {
+            // The engine's error text (never the lines themselves) so a failure that only shows as "some lines are
+            // missing" can be traced afterwards.
+            if !Task.isCancelled, asyncRunID == run {
+                engine.logDiagnostic(
+                    "translation", "background batch of \(batch.count) lines failed: \(error.localizedDescription)"
+                )
+            }
             return false
         }
         return !Task.isCancelled && asyncRunID == run
