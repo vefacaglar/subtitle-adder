@@ -68,6 +68,9 @@ public final class ProfileStore: @unchecked Sendable {
     var state = ProfileState()
     let hub = ProfileChangeHub()
     private var watcher: ProfileFileWatcher?
+    /// A remembered login is being restored (the keychain is asked outside `lock`). Guarded by `lock`.
+    private var restoreInFlight = false
+    private let restoreDone = NSCondition()
 
     /// Reads `profiles.json` (if it exists). Does not ask the keychain: a remembered login is restored by the first
     /// call that needs to know (or by `refresh()`).
@@ -118,9 +121,26 @@ public final class ProfileStore: @unchecked Sendable {
 
     /// Looks at the file now (cheap if it did not change) and restores a remembered login if there is one. The watcher
     /// calls this; call it too when the app becomes active again, and once from a background task at launch (the
-    /// keychain read of a remembered login happens here).
+    /// keychain read of a remembered login happens here). When it returns, a remembered login is restored, also one
+    /// that another thread started restoring first (a plain read does not wait for that, it sees "logged out" until
+    /// the restore is done).
     public func refresh() {
         syncAndRestore()
+        awaitRestore()
+    }
+
+    private func awaitRestore() {
+        let deadline = Date().addingTimeInterval(60)
+        restoreDone.lock()
+        defer { restoreDone.unlock() }
+        while lock.withLock({ restoreInFlight }), restoreDone.wait(until: deadline) {}
+    }
+
+    private func finishRestore() {
+        lock.withLock { restoreInFlight = false }
+        restoreDone.lock()
+        restoreDone.broadcast()
+        restoreDone.unlock()
     }
 
     // MARK: - State
@@ -336,12 +356,14 @@ public final class ProfileStore: @unchecked Sendable {
         else { return nil }
         state.restoreAttemptedGeneration = state.syncGeneration
         guard Self.hasVault(record) else { return nil }
+        restoreInFlight = true
         return RestoreCandidate(name: name, record: record)
     }
 
     /// Logs in with the remembered login: reads the key from the keychain and opens the vault with it, both outside
     /// the lock, then takes the session if nothing relevant changed meanwhile.
     private func restoreRememberedSession(_ candidate: RestoreCandidate) {
+        defer { finishRestore() }
         guard let keyData = secretStore.data(for: Self.rememberAccount(for: candidate.name)),
             keyData.count == ProfileCrypto.keyLength
         else { return }
@@ -487,11 +509,13 @@ public final class ProfileStore: @unchecked Sendable {
 
     /// Fingerprints, outside every lock, the recorded paths of the records these probes would take over from another
     /// location, so that resolving them under the lock needs no file access.
-    func prepared(_ probes: [VideoProbe]) -> [VideoProbe] {
+    func prepared(_ probes: [VideoProbe], shouldContinue: (@Sendable () -> Bool)? = nil) -> [VideoProbe] {
         guard probes.contains(where: { $0.fingerprint != nil }) else { return probes }
         syncAndRestore()
         guard let snapshot = lock.withLock({ state.session?.contents }) else { return probes }
         return probes.map { probe in
+            // Stopped midway: the rest is returned as it is, the caller is about to drop the result.
+            if let shouldContinue, !shouldContinue() { return probe }
             guard let recorded = snapshot.takeoverPath(for: probe) else { return probe }
             let fingerprint = probe.mode == .compute
                 ? VideoFingerprint.fingerprint(ofNormalizedPath: recorded)

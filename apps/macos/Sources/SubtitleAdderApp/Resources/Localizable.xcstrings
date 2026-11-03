@@ -2641,18 +2641,34 @@
         }
       }
     },
-    "Altyazılı": {
+    "Altyazılı (%@)": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Altyazılı"
+            "value": "Altyazılı (%@)"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Subtitled"
+            "value": "Subtitled (%@)"
+          }
+        }
+      }
+    },
+    "Bu liste artık yok.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu liste artık yok."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This list no longer exists."
           }
         }
       }
