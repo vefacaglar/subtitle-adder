@@ -68,8 +68,9 @@ import Testing
         #expect(id.count == 32 && id.allSatisfy { "0123456789abcdef".contains($0) })
         #expect(lists.first?["videoPaths"] as? [String] == [normalized(video)])
 
+        // Pictures live in the thumbnail cache, not in the vault.
         let thumbnails = try #require(vault["thumbnails"] as? [String: String])
-        #expect(thumbnails.values.first == Data("IMG".utf8).base64EncodedString())
+        #expect(thumbnails.isEmpty)
     }
 
     @Test func aProfilesFileWrittenByTheWindowsAppOpens() throws {
@@ -117,7 +118,9 @@ import Testing
         #expect(stats.isLiked)
         #expect(stats.rating == 4)
         #expect(stats.contentFingerprint == "fp:5:abcdef")
+        // A picture an older vault carries is still found.
         #expect(stats.thumbnail == Data("IMG".utf8))
+        #expect(store.thumbnail(for: URL(fileURLWithPath: "/Movies/film.mkv")) == Data("IMG".utf8))
         #expect(stats.lastWatchedAt == ProfileDateCoding.date(from: "2026-05-01T10:20:30.1234567+00:00"))
         let list = try #require(store.lists().first)
         #expect(list.id == "0123456789abcdef0123456789abcdef")

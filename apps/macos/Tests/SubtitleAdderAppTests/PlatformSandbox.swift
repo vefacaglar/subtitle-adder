@@ -63,6 +63,11 @@ final class PlatformSandbox {
                 var isDirectory: ObjCBool = false
                 return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
             },
+            fileExists: { path in
+                // Like the folders below /Volumes, the files there are taken to exist while their volume is mounted.
+                if path.hasPrefix("/Volumes/") { return true }
+                return FileManager.default.fileExists(atPath: path)
+            },
             listDirectory: { path in
                 listings.counts.withLock { $0[path, default: 0] += 1 }
                 return (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []

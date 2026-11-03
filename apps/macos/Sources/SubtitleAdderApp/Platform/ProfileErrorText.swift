@@ -22,6 +22,7 @@ extension ProfileError {
             L("Profil dosyası bozuk ve yedeği alınamadığı için üzerine yazılmadı.")
         case .fileUnreadable: L("Profil dosyası okunamıyor; değişiklikler kaydedilmedi.")
         case .cryptoFailure: L("Şifreleme işlemi başarısız oldu.")
+        case .listNotFound: L("Bu liste artık yok.")
         }
     }
 }

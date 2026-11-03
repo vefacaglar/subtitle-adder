@@ -22,13 +22,22 @@ extension ProfileStore {
     /// - `.topRated`: rating, then view count, then update time.
     /// - `.all`: watched, liked or rated first, then last watched, then view count.
     /// - `.customList`: the list's own order.
+    ///
+    /// `shouldContinue` is asked between files while fingerprints are computed; when it answers `false` the work stops
+    /// at once and an empty list comes back (the caller no longer wants the result, a slow `.compute` pass on a cold
+    /// library is not worth finishing).
     public func feed(
         _ filter: VideoFeedFilter = .all, search: String? = nil, discovered: [URL] = [],
-        fingerprints: FingerprintMode = .compute
+        fingerprints: FingerprintMode = .compute, shouldContinue: (@Sendable () -> Bool)? = nil
     ) -> [VideoUserStats] {
         var seen = Set<String>()
-        let found = discovered.compactMap { VideoProbe($0, mode: fingerprints) }.filter { seen.insert($0.pathKey).inserted }
-        let probes = prepared(found)
+        var found: [VideoProbe] = []
+        for url in discovered {
+            if let shouldContinue, !shouldContinue() { return [] }
+            if let probe = VideoProbe(url, mode: fingerprints), seen.insert(probe.pathKey).inserted { found.append(probe) }
+        }
+        let probes = prepared(found, shouldContinue: shouldContinue)
+        if let shouldContinue, !shouldContinue() { return [] }
         let now = clock()
         if let contents = readMigrating(probes) {
             return FeedBuilder.narrowed(FeedBuilder.items(in: contents, filter: filter, probes: probes, now: now), by: search)

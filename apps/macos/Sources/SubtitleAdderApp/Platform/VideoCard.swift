@@ -71,7 +71,7 @@ struct VideoCard: Identifiable, Equatable, Sendable {
 
     var subtitleChipText: String {
         guard let subtitleExtension else { return L("Altyazı yok") }
-        return L("Altyazılı") + " (" + subtitleExtension.uppercased() + ")"
+        return L("Altyazılı (%@)", subtitleExtension.uppercased())
     }
 
     var durationText: String { PathText.durationText(durationSeconds) }

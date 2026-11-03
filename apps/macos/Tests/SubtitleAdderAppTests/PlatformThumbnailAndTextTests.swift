@@ -92,15 +92,89 @@ import Testing
         #expect(calls.count("generate") == 0)
     }
 
-    @Test func aFailedGenerationIsNotCachedAndTriesAgainLater() async {
+    @Test func aFailedGenerationIsRememberedUntilTheFileChanges() async throws {
         let calls = Calls()
         let service = ThumbnailService(generate: { _ in
             calls.note("generate")
             return nil
         })
-        #expect(await service.data(for: url("broken.mkv")) == nil)
-        #expect(await service.data(for: url("broken.mkv")) == nil)
+        let folder = FileManager.default.temporaryDirectory.appending(path: "thumb-neg-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let broken = folder.appending(path: "broken.mkv")
+        try Data("not a video".utf8).write(to: broken)
+
+        // Scrolling past the same card again and again costs one attempt, not one per pass.
+        #expect(await service.data(for: broken) == nil)
+        #expect(await service.data(for: broken) == nil)
+        #expect(await service.data(for: broken) == nil)
+        #expect(calls.count("generate") == 1)
+
+        // The file was replaced: it gets another chance.
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: broken.path)
+        #expect(await service.data(for: broken) == nil)
         #expect(calls.count("generate") == 2)
+    }
+
+    @Test func aResetGivesFailedFilesAFreshStartToo() async throws {
+        let calls = Calls()
+        let service = ThumbnailService(generate: { _ in
+            calls.note("generate")
+            return nil
+        })
+        // A file that is not there has no date to compare, and is remembered as failed just the same.
+        #expect(await service.data(for: url("missing.mkv")) == nil)
+        #expect(await service.data(for: url("missing.mkv")) == nil)
+        #expect(calls.count("generate") == 1)
+    }
+
+    @Test func workStartedBeforeAResetDoesNotFillTheNewCache() async throws {
+        let picture = picture
+        let service = ThumbnailService(generate: { _ in
+            try? await Task.sleep(for: .milliseconds(150))
+            return picture
+        })
+        let target = url("slow.mp4")
+        let work = Task { await service.data(for: target) }
+        try await Task.sleep(for: .milliseconds(50))
+        service.reset()
+        // The caller still gets its picture, but another profile's cache does not.
+        #expect(await work.value == picture)
+        #expect(service.cached(for: target.path) == nil)
+    }
+
+    @Test func aFullCacheDropsTheLeastRecentlyUsedQuarterNotEverything() {
+        let service = ThumbnailService()
+        let capacity = ThumbnailService.capacity
+        for index in 0..<capacity { service.seed(Data([1]), for: "/v/\(index)") }
+        #expect(service.cachedCount == capacity)
+        // Using the oldest one makes it the newest.
+        #expect(service.cached(for: "/v/0") != nil)
+        service.seed(Data([2]), for: "/v/new")
+        #expect(service.cachedCount == capacity - capacity / 4 + 1)
+        #expect(service.cached(for: "/v/0") != nil)
+        #expect(service.cached(for: "/v/1") == nil)
+        #expect(service.cached(for: "/v/new") != nil)
+        #expect(service.cached(for: "/v/\(capacity - 1)") != nil)
+    }
+
+    @MainActor @Test func decodedPicturesAreBoundedByMemoryAsWellAsCount() {
+        #expect(CardImageCache.costLimit == 48 * 1024 * 1024)
+        let small = NSImage(size: NSSize(width: 10, height: 10))
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 384, pixelsHigh: 216, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let big = NSImage(size: NSSize(width: 192, height: 108))
+        big.addRepresentation(rep)
+        #expect(CardImageCache.cost(of: big) == 384 * 216 * 4)
+        #expect(CardImageCache.cost(of: small) > 0)
+        // A 4K frame costs what it decodes to, far more than one card picture.
+        let huge = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 3840, pixelsHigh: 2160, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let image = NSImage(size: NSSize(width: 192, height: 108))
+        image.addRepresentation(huge)
+        #expect(CardImageCache.cost(of: image) > CardImageCache.costLimit / 2)
     }
 
     @Test func aCardThatScrollsAwayBeforeItsTurnCostsNothing() async throws {
@@ -144,19 +218,65 @@ import Testing
         #expect(await model.thumbnails.data(for: video) == picture)
         #expect(model.store.thumbnail(for: video) == nil)
 
+        // Logging in empties the memory cache by itself: the picture above belonged to nobody.
         #expect(await model.register(username: "Ali", password: "pw"))
-        model.thumbnails.reset()
+        #expect(model.thumbnails.cached(for: video.path) == nil)
         #expect(await model.thumbnails.data(for: video) == picture)
         #expect(calls.count("generate") == 2)
-        // In the vault now (the store keeps it encrypted), so a fresh cache reads it back instead of generating.
+        // In the profile's picture cache now (encrypted), so a fresh memory cache reads it back instead of generating.
         #expect(model.store.thumbnail(for: video) == picture)
         model.thumbnails.reset()
         #expect(await model.thumbnails.data(for: video) == picture)
         #expect(calls.count("generate") == 2)
         #expect(!calls.anyOnMainThread)
+        // Storing it made no record: the video was only looked at.
+        #expect(model.store.stats(for: video) == nil)
     }
 
-    @Test func storedPicturesTravelWithTheFeedWithoutWorkOnCardDraw() async throws {
+    @Test func loggingOutAndDeletingAProfileClearThePicturesInMemory() async throws {
+        let sandbox = try PlatformSandbox()
+        let video = try sandbox.file("clip.mp4")
+        let picture = picture
+        let model = sandbox.model(thumbnailGenerator: { _ in picture })
+        await model.start()
+        #expect(await model.register(username: "Ali", password: "pw"))
+        #expect(await model.thumbnails.data(for: video) == picture)
+        CardImageCache.store(NSImage(size: NSSize(width: 4, height: 4)), for: video.path)
+        #expect(model.thumbnails.cached(for: video.path) != nil)
+
+        model.logout()
+        await model.settle()
+        #expect(!model.isLoggedIn)
+        #expect(model.thumbnails.cached(for: video.path) == nil)
+        #expect(CardImageCache.image(for: video.path) == nil)
+
+        #expect(await model.login(username: "Ali", password: "pw"))
+        #expect(await model.thumbnails.data(for: video) == picture)
+        CardImageCache.store(NSImage(size: NSSize(width: 4, height: 4)), for: video.path)
+        #expect(await model.deleteProfile(username: "Ali", password: "pw"))
+        #expect(model.thumbnails.cached(for: video.path) == nil)
+        #expect(CardImageCache.image(for: video.path) == nil)
+    }
+
+    @Test func generatingManyPicturesNeverTouchesTheProfileFileOrMakesRecords() async throws {
+        let sandbox = try PlatformSandbox()
+        let picture = Data(repeating: 0xAB, count: 30_000)
+        let model = sandbox.model(thumbnailGenerator: { _ in picture })
+        await model.start()
+        #expect(await model.register(username: "Ali", password: "pw"))
+        let before = try Data(contentsOf: sandbox.profilesFile)
+        var videos: [URL] = []
+        for index in 0..<40 { videos.append(try sandbox.file("v\(index).mp4")) }
+        for video in videos { #expect(await model.thumbnails.data(for: video) == picture) }
+        // The write is queued behind the generation; wait until the last picture is stored.
+        let last = try #require(videos.last)
+        #expect(await waitFor { model.store.thumbnail(for: last) == picture })
+        #expect(try Data(contentsOf: sandbox.profilesFile) == before)
+        #expect(model.store.feed(.all).isEmpty)
+        #expect(model.store.totals() == .zero)
+    }
+
+    @Test func aStoredPictureIsReadWhereTheCardIsDrawnWithoutGenerating() async throws {
         let sandbox = try PlatformSandbox()
         let video = try sandbox.file("clip.mp4")
         let calls = Calls()
@@ -172,9 +292,21 @@ import Testing
         await model.settle()
         model.filter = .history
         await model.settle()
-        // The feed seeded the cache from the records, so drawing the card finds the picture at once.
-        #expect(model.thumbnails.cached(for: video.path) == Data([4, 5, 6]))
+        // The feed does not carry pictures (a vault with hundreds would make every refresh heavy): the card asks.
+        #expect(await model.thumbnails.data(for: video) == Data([4, 5, 6]))
         #expect(calls.count("generate") == 0)
+        #expect(!calls.anyOnMainThread)
+    }
+
+    @Test func loggedOutNeitherReadsNorFingerprintsFilesForPictures() async throws {
+        let sandbox = try PlatformSandbox()
+        let video = try sandbox.file("clip.mp4", content: "unique content \(UUID().uuidString)")
+        let picture = picture
+        let model = sandbox.model(thumbnailGenerator: { _ in picture })
+        await model.start()
+        #expect(await model.thumbnails.data(for: video) == picture)
+        // The generator made a picture; the profile code did not open the file to look for one.
+        #expect(VideoFingerprint.cachedFingerprint(ofNormalizedPath: VideoFingerprint.normalizedPath(video)) == nil)
     }
 
     // MARK: Real pictures
@@ -252,8 +384,12 @@ import Testing
         let package = URL(filePath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let sources = package.appending(path: "Sources/SubtitleAdderApp/Platform")
-        let files = try FileManager.default.contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
+        var files = try FileManager.default.contentsOfDirectory(at: sources, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "swift" }
+        // The window and the player host the platform too: their keys must be in the catalog the same way.
+        for name in ["ContentView.swift", "PlayerView.swift"] {
+            files.append(package.appending(path: "Sources/SubtitleAdderApp/\(name)"))
+        }
         #expect(!files.isEmpty)
         let catalogURL = package.appending(path: "Sources/SubtitleAdderApp/Resources/Localizable.xcstrings")
         let root = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: catalogURL)) as? [String: Any])

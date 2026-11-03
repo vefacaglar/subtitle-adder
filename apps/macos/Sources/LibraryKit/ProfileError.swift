@@ -30,4 +30,6 @@ public enum ProfileError: Error, Equatable, Sendable {
     case fileUnreadable
     /// Key derivation or encryption failed (should not happen).
     case cryptoFailure
+    /// A list the caller meant is not there (deleted meanwhile, for one, in another window).
+    case listNotFound
 }
