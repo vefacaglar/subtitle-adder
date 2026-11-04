@@ -42,6 +42,21 @@ import Testing
         #expect(player.failure == .notPlayable)
     }
 
+    @Test func wmvUsesThePreviewBeforeLoadingANativeItem() async throws {
+        let source = URL(filePath: "/fixture.WMV")
+        let player = PlayerModel(preparePreview: { url in
+            #expect(url == source)
+            throw Boom()
+        })
+        player.load(source)
+        #expect(player.isPreparingPreview)
+        #expect(player.player.currentItem == nil)
+        for _ in 0..<100 where player.isPreparingPreview {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(player.failure == .system("disk dolu"))
+    }
+
     @Test func genericPlaybackReasonFollowsTheUILanguage() {
         let original = LanguageState.shared.language
         defer { LanguageState.shared.language = original }

@@ -57,7 +57,7 @@ def _extract_audio(args: argparse.Namespace) -> int:
 def _preview(args: argparse.Namespace) -> int:
     from .preview import make_preview
 
-    make_preview(args.video, args.output)
+    make_preview(sys.stdin.buffer if args.video == Path("-") else args.video, args.output)
     return 0
 
 
@@ -263,8 +263,9 @@ def build_parser() -> argparse.ArgumentParser:
     ea.set_defaults(handler=_extract_audio)
 
     preview = sub.add_parser("preview", parents=[lang_parent], help="create a local MP4 playback copy")
-    preview.add_argument("video", type=Path)
+    preview.add_argument("video", type=Path, help="source file, or - for an open file on stdin")
     preview.add_argument("--output", type=Path, required=True)
+    preview.add_argument("--json", action="store_true", help="report errors as JSON")
     preview.set_defaults(handler=_preview)
 
     t = sub.add_parser("transcribe", parents=[lang_parent], help="generate subtitles from a video")

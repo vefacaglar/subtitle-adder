@@ -1,16 +1,19 @@
 """Make a local MP4 preview for players that can't open the source container."""
 
+from contextlib import nullcontext
 from fractions import Fraction
 from pathlib import Path
+from typing import BinaryIO
 
 import av
 
 from .i18n import t
 
 
-def make_preview(source: Path, output: Path) -> None:
+def make_preview(source: Path | BinaryIO, output: Path) -> None:
     # Open only the selected file. Don't let a demuxer resolve external references.
-    with source.open("rb") as media, av.open(media, options={"protocol_whitelist": "pipe"}) as reader:
+    stream = source.open("rb") if isinstance(source, Path) else nullcontext(source)
+    with stream as media, av.open(media, options={"protocol_whitelist": "pipe"}) as reader:
         video = next((s for s in reader.streams.video if not s.disposition & s.disposition.attached_pic), None)
         audio = next(iter(reader.streams.audio), None)
         if video is None and audio is None:
@@ -30,6 +33,9 @@ def _convert(reader, writer, video, audio):
     copied = {}
     encoders = {}
     resampler = None
+    decoded = set()
+    decode_errors = {}
+    is_windows_media = reader.format.name == "asf"
     if video is not None:
         codec = video.codec_context
         # Some demuxers (notably Matroska) omit the first decode timestamps of reordered video.
@@ -64,7 +70,18 @@ def _convert(reader, writer, video, audio):
             writer.mux(packet)
             continue
         track = encoders[index]
-        for frame in packet.decode():
+        try:
+            frames = packet.decode()
+        except av.error.InvalidDataError as exc:
+            if not is_windows_media:
+                raise
+            # A damaged ASF packet can be followed by valid frames. Keep their original timestamps
+            # and fail if a track was entirely undecodable.
+            decode_errors.setdefault(index, exc)
+            continue
+        if frames:
+            decoded.add(index)
+        for frame in frames:
             if isinstance(frame, av.VideoFrame):
                 converted = frame.reformat(width=track.width, height=track.height, format=track.pix_fmt)
                 # The flush packet can leave a decoded frame without a time base.
@@ -74,6 +91,9 @@ def _convert(reader, writer, video, audio):
                 for converted in resampler.resample(frame):
                     writer.mux(track.encode(converted))
 
+    for index, error in decode_errors.items():
+        if index not in decoded:
+            raise error
     if resampler is not None:
         for frame in resampler.resample(None):
             writer.mux(encoders[audio.index].encode(frame))

@@ -166,11 +166,26 @@ public struct EngineClient: Sendable {
     /// Builds a temporary playback copy locally. Cancellation stops the encoder before returning to the caller.
     public func makePreview(of source: URL, at output: URL) async throws {
         try Task.checkCancellation()
-        let run = try start(["preview", source.path, "--output", output.path], stdin: nil)
+        // Open the selected file in the app, which holds its access grant. The engine reads the inherited,
+        // seekable descriptor and doesn't need separate permission to open files on the volume.
+        let hasAccess = source.startAccessingSecurityScopedResource()
+        defer { if hasAccess { source.stopAccessingSecurityScopedResource() } }
+        let inputFile = try FileHandle(forReadingFrom: source)
+        defer { try? inputFile.close() }
+        let run = try start(["preview", "-", "--output", output.path, "--json"], stdin: nil, inputFile: inputFile)
         defer { run.cleanup() }
-        let status = await run.exitStatus()
-        try Task.checkCancellation()
-        guard status == 0 else { throw run.failure(status) }
+        try await withTaskCancellationHandler {
+            var message: String?
+            for await line in run.lines() where !line.isEmpty {
+                if case .error(let error) = try? EngineEvent.decode(line) { message = error }
+            }
+            let status = await run.exitStatus()
+            try Task.checkCancellation()
+            if let message { throw EngineError.failed(message) }
+            guard status == 0 else { throw run.failure(status) }
+        } onCancel: {
+            run.terminate()
+        }
     }
 
     /// Translates the sentences to the target language with a local translation model (or the external LLM when the
@@ -306,7 +321,9 @@ public struct EngineClient: Sendable {
     }
 
     /// `forTranslation` is true only for `translate`: it alone gets the external LLM's address, model and API key.
-    private func start(_ args: [String], stdin input: Data?, forTranslation: Bool = false) throws -> RunningEngine {
+    private func start(
+        _ args: [String], stdin input: Data?, forTranslation: Bool = false, inputFile: FileHandle? = nil
+    ) throws -> RunningEngine {
         let process = Process()
         process.executableURL = command.executable
         process.arguments = command.arguments + args
@@ -321,7 +338,11 @@ public struct EngineClient: Sendable {
         FileManager.default.createFile(atPath: log.path, contents: nil)
         process.standardError = try FileHandle(forWritingTo: log)
         let stdinPipe = Pipe()
-        process.standardInput = input == nil ? FileHandle.nullDevice : stdinPipe
+        if let inputFile {
+            process.standardInput = inputFile
+        } else {
+            process.standardInput = input == nil ? FileHandle.nullDevice : stdinPipe
+        }
         // Waiting through the termination handler instead of `waitUntilExit`, which could miss the exit of a process
         // that finished while many engines were launching at once.
         let exit = ExitSignal()

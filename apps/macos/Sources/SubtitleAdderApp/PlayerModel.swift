@@ -147,6 +147,12 @@ final class PlayerModel {
         player.replaceCurrentItem(with: nil)
         preview = nil
         guard let url else { return }
+        // AVFoundation cannot open Windows Media video. Start the local preview directly so a WMV
+        // does not depend on which error AVFoundation returns for that particular file.
+        if url.isFileURL, url.pathExtension.lowercased() == "wmv", let preparePreview {
+            startPreview(of: url, using: preparePreview, generation: generation)
+            return
+        }
         install(url, generation: generation)
     }
 
@@ -183,30 +189,35 @@ final class PlayerModel {
     private func itemFailed(_ error: (any Error)?, generation: Int) {
         guard generation == loadGeneration, !failureReported, !isPreparingPreview else { return }
         if let source = pendingPreviewSource, let preparePreview, Self.canTryPreview(after: error) {
-            pendingPreviewSource = nil
             pendingPreviewPosition = currentTime
             autoPlayWhenReady = autoPlayWhenReady || isPlaying
-            isPreparingPreview = true
             loadTask?.cancel()
             stopObservingItem()
             player.replaceCurrentItem(with: nil)
             loadGeneration += 1  // Ignore callbacks already queued by the original item.
-            let attempt = loadGeneration
-            loadTask = Task { [weak self] in
-                do {
-                    let copy = try await preparePreview(source)
-                    guard let self, !Task.isCancelled, attempt == loadGeneration else { return }
-                    isPreparingPreview = false
-                    preview = copy
-                    install(copy.url, generation: attempt)
-                } catch {
-                    guard let self, !Task.isCancelled, attempt == loadGeneration else { return }
-                    isPreparingPreview = false
-                    reportFailure(error, generation: attempt)
-                }
-            }
+            startPreview(of: source, using: preparePreview, generation: loadGeneration)
         } else {
             reportFailure(error, generation: generation)
+        }
+    }
+
+    private func startPreview(
+        of source: URL, using prepare: @escaping @Sendable (URL) async throws -> PlaybackPreview, generation: Int
+    ) {
+        pendingPreviewSource = nil
+        isPreparingPreview = true
+        loadTask = Task { [weak self] in
+            do {
+                let copy = try await prepare(source)
+                guard let self, !Task.isCancelled, generation == loadGeneration else { return }
+                isPreparingPreview = false
+                preview = copy
+                install(copy.url, generation: generation)
+            } catch {
+                guard let self, !Task.isCancelled, generation == loadGeneration else { return }
+                isPreparingPreview = false
+                reportFailure(error, generation: generation)
+            }
         }
     }
 
