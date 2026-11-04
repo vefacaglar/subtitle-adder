@@ -163,6 +163,16 @@ public struct EngineClient: Sendable {
         ["extract-audio", video.path, "--out-dir", outDir.path, "--json"]
     }
 
+    /// Builds a temporary playback copy locally. Cancellation stops the encoder before returning to the caller.
+    public func makePreview(of source: URL, at output: URL) async throws {
+        try Task.checkCancellation()
+        let run = try start(["preview", source.path, "--output", output.path], stdin: nil)
+        defer { run.cleanup() }
+        let status = await run.exitStatus()
+        try Task.checkCancellation()
+        guard status == 0 else { throw run.failure(status) }
+    }
+
     /// Translates the sentences to the target language with a local translation model (or the external LLM when the
     /// launch settings configure one); emits stage events and `.translation` once per batch (a growing prefix of the
     /// sentences, the last one complete). If the source language is `nil`, the model detects it itself (NLLB does not accept that).

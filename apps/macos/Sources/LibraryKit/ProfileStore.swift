@@ -12,7 +12,7 @@ import Foundation
 /// `NSLock`, and every public method is synchronous. A class rather than an actor because the view model needs cheap
 /// synchronous reads (`isLoggedIn`, `totals()`). The in-process lock is only ever held for in-memory work, one `stat`
 /// and (when another instance changed the file) a re-read, or one vault write. It is never held while waiting for the
-/// cross-process file lock, while the keychain is asked, during PBKDF2 or while a file is fingerprinted, and a change is
+/// cross-process file lock, while the secret store is asked, during PBKDF2 or while a file is fingerprinted, and a change is
 /// delivered after it is released. The file lock is always taken first, so two stores in one process (or in two
 /// processes) cannot deadlock.
 ///
@@ -20,10 +20,8 @@ import Foundation
 /// - Memory and at most one `stat` of `profiles.json` (it is read and decrypted again only when another instance
 ///   changed it; the folder watcher usually does that first): `isLoggedIn`, `currentUsername`, `registeredUsernames`,
 ///   `rememberMe`, `lastUsername`, `rememberedUsername`, `totals()`, `lists()`, `hasUnsavedChanges`, `changes()`. Safe on
-///   the main actor, and never blocked by another instance's write or by the file lock. One exception: the first call
-///   after a remembered login appears (at launch, or made by another instance) asks the keychain for the key, which
-///   can show an access prompt on an ad-hoc signed build. Call `refresh()` from a background task at launch to take
-///   that hit off the main actor.
+///   the main actor, and never blocked by another instance's write or by the file lock. A remembered login, when
+///   available, is restored using the injected secret store.
 /// - Reading files to fingerprint them (up to 192 KB each the first time, one `stat` afterwards, see
 ///   `VideoFingerprint`): `stats(for:)`, `thumbnail(for:)`, `lists(containing:)`, `isVideo(_:inList:)`,
 ///   `feed(_:search:discovered:)` and every method that takes a video URL (`recordWatch`, `updatePlaybackProgress`,
@@ -33,7 +31,7 @@ import Foundation
 /// - Writing (a file lock that may be waited for up to `lockTimeout`, encryption, `fsync`): everything that throws.
 ///   `updatePlaybackProgress` writes at most every `progressSaveInterval` seconds; the rest write on every call.
 /// - Key derivation (PBKDF2, tens of milliseconds): `register`, `login`, `deleteProfile`.
-/// - The keychain: `register`, `login`, `logout`, `deleteProfile` and the first call after a remembered login appears.
+/// - The secret store: `register`, `login`, `logout`, `deleteProfile` and the first call after a remembered login appears.
 ///
 /// **Reads never write.** Following a moved file while reading (`stats(for:)`, `feed`, `lists(containing:)`) updates the
 /// profile in memory, so the result already reflects the move, and the new path is saved with the next write of the
@@ -48,7 +46,7 @@ import Foundation
 /// Writes are atomic. A damaged file is set aside, never overwritten; one written by a newer format or one that cannot
 /// be read right now is left alone and writes fail (`.unsupportedFileVersion`, `.fileUnreadable`) until it can be read.
 ///
-/// **Remember me.** The vault key of a remembered login lives in the `SecretStore` (the keychain), never in
+/// **Remember me.** The vault key of a remembered login lives in the `SecretStore`, never in
 /// `profiles.json`, which keeps only `rememberMe` and `rememberedUsername`. That pair is shared by all instances: one
 /// that finds a remembered login while it has no user logs in with it (only if the profile has a vault the key
 /// opens), and one that logged in through it is logged out when another instance logs out.
@@ -64,21 +62,21 @@ public final class ProfileStore: @unchecked Sendable {
     /// Playback progress is written at most this often (seconds); `flushPlaybackProgress()` writes it at once.
     public static let progressSaveInterval: TimeInterval = 15
 
-    /// Guards `state`. Never held while waiting on anything, and never during a keychain call.
+    /// Guards `state`. Never held while waiting on anything, and never during a secret store call.
     let lock = NSLock()
     var state = ProfileState()
     let hub = ProfileChangeHub()
     private var watcher: ProfileFileWatcher?
-    /// A remembered login is being restored (the keychain is asked outside `lock`). Guarded by `lock`.
+    /// A remembered login is being restored (the secret store is asked outside `lock`). Guarded by `lock`.
     private var restoreInFlight = false
     private let restoreDone = NSCondition()
 
-    /// Reads `profiles.json` (if it exists). Does not ask the keychain: a remembered login is restored by the first
+    /// Reads `profiles.json` (if it exists). Does not ask the secret store: a remembered login is restored by the first
     /// call that needs to know (or by `refresh()`).
     ///
     /// - Parameters:
     ///   - fileURL: `profiles.json`; defaults to the one in the app data folder.
-    ///   - secretStore: where remembered-login keys go; defaults to the keychain.
+    ///   - secretStore: where remembered-login keys go; defaults to process memory.
     ///   - watchesFile: watch the folder for changes made by other instances.
     ///   - lockTimeout: how long to wait for the cross-process lock before failing with `.lockUnavailable`.
     ///   - clock: the time source for timestamps (injectable for tests).
@@ -87,7 +85,7 @@ public final class ProfileStore: @unchecked Sendable {
     ///   - readsFileImmediately: read `profiles.json` here. Pass `false` to keep construction cheap (the app builds
     ///     the store on the main thread at launch): the first call that needs the file, `refresh()` for one, reads it.
     public init(
-        fileURL: URL? = nil, secretStore: any SecretStore = KeychainSecretStore(), watchesFile: Bool = true,
+        fileURL: URL? = nil, secretStore: any SecretStore = InMemorySecretStore(), watchesFile: Bool = true,
         lockTimeout: TimeInterval = 5, clock: @escaping @Sendable () -> Date = { Date() },
         thumbnailsFolder: URL? = nil, thumbnailLimits: ThumbnailCacheLimits = ThumbnailCacheLimits(),
         readsFileImmediately: Bool = true
@@ -122,7 +120,7 @@ public final class ProfileStore: @unchecked Sendable {
 
     /// Looks at the file now (cheap if it did not change) and restores a remembered login if there is one. The watcher
     /// calls this; call it too when the app becomes active again, and once from a background task at launch (the
-    /// keychain read of a remembered login happens here). When it returns, a remembered login is restored, also one
+    /// secret store read of a remembered login happens here). When it returns, a remembered login is restored, also one
     /// that another thread started restoring first (a plain read does not wait for that, it sees "logged out" until
     /// the restore is done).
     public func refresh() {
@@ -209,7 +207,7 @@ public final class ProfileStore: @unchecked Sendable {
     }
 
     /// Reloads `profiles.json` if its content changed since the last look, then, if a remembered login is waiting, asks
-    /// the keychain for its key (outside the lock) and logs in with it.
+    /// the secret store for its key (outside the lock) and logs in with it.
     func syncAndRestore() {
         let candidate: RestoreCandidate? = lock.withLock {
             syncLocked()
@@ -348,9 +346,9 @@ public final class ProfileStore: @unchecked Sendable {
     }
 
     /// The remembered login to try now: this store has no user, the file names one, and this state of the file has not
-    /// been tried yet (so a missing key costs one keychain query per change of the file, not one per call). Marks it
+    /// been tried yet (so a missing key costs one secret store query per change of the file, not one per call). Marks it
     /// tried. A profile without a vault is never a candidate: nothing could confirm the stored key is the right one, so
-    /// any 32 bytes in the keychain would "unlock" it. Must be called with `lock` held.
+    /// any 32 bytes in the secret store would "unlock" it. Must be called with `lock` held.
     private func restoreCandidateLocked() -> RestoreCandidate? {
         guard state.session == nil, state.restoreAttemptedGeneration != state.syncGeneration,
             let name = state.effectiveRemembered, let record = state.profiles[name.lowercased()]
@@ -361,7 +359,7 @@ public final class ProfileStore: @unchecked Sendable {
         return RestoreCandidate(name: name, record: record)
     }
 
-    /// Logs in with the remembered login: reads the key from the keychain and opens the vault with it, both outside
+    /// Logs in with the remembered login: reads the key from the secret store and opens the vault with it, both outside
     /// the lock, then takes the session if nothing relevant changed meanwhile.
     private func restoreRememberedSession(_ candidate: RestoreCandidate) {
         defer { finishRestore() }
@@ -448,7 +446,7 @@ public final class ProfileStore: @unchecked Sendable {
     /// are never held up by it), then the in-process lock, reload if the file moved on, apply `body` to a copy of the
     /// state and write it. The copy is committed only if the write succeeded, so a failure leaves memory as it was.
     /// With `requiresSession`, a logged-out store returns `fallback` without writing or locking. `body` and the write
-    /// run under the in-process lock, so `body` must be memory-only: no keychain, no file reads.
+    /// run under the in-process lock, so `body` must be memory-only: no secret store, no file reads.
     func transact<T>(
         requiresSession: Bool = true, fallback: @autoclosure () -> T,
         _ body: (inout ProfileState) throws(ProfileError) -> (T, ProfileEffect)

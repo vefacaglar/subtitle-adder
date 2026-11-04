@@ -1,12 +1,11 @@
 import Foundation
-import Security
 
 /// Small secrets the app must not write into its JSON files: translation provider API keys and the remembered-login
 /// key of a local profile. Values are opaque bytes stored under an account name.
 public protocol SecretStore: Sendable {
     func data(for account: String) -> Data?
-    /// Like `data(for:)`, but tells "nothing stored" from "could not be read" (access denied, keychain locked, a prompt
-    /// that was refused). A caller that is about to overwrite or delete something must not take the second for the
+    /// Like `data(for:)`, but tells "nothing stored" from "could not be read".
+    /// A caller that is about to overwrite or delete something must not take the second for the
     /// first. The default has no way to tell and reports a missing value as `.absent`.
     func read(_ account: String) -> SecretRead
     /// Stores `data`, replacing any previous value. Returns `false` when the store refused it.
@@ -37,107 +36,7 @@ extension SecretStore {
     }
 }
 
-/// The Security framework calls `KeychainSecretStore` makes, so a test can make them fail.
-protocol KeychainBackend: Sendable {
-    /// The status and, on success, the data of the matching item.
-    func copy(_ query: [String: Any]) -> (status: OSStatus, data: Data?)
-    func update(_ query: [String: Any], with attributes: [String: Any]) -> OSStatus
-    func add(_ item: [String: Any]) -> OSStatus
-    func delete(_ query: [String: Any]) -> OSStatus
-}
-
-struct SecurityKeychain: KeychainBackend {
-    func copy(_ query: [String: Any]) -> (status: OSStatus, data: Data?) {
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        return (status, status == errSecSuccess ? result as? Data : nil)
-    }
-
-    func update(_ query: [String: Any], with attributes: [String: Any]) -> OSStatus {
-        SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-    }
-
-    func add(_ item: [String: Any]) -> OSStatus {
-        SecItemAdd(item as CFDictionary, nil)
-    }
-
-    func delete(_ query: [String: Any]) -> OSStatus {
-        SecItemDelete(query as CFDictionary)
-    }
-}
-
-/// Generic-password items (service `defaultService`, one account per secret) in the user's login keychain.
-///
-/// What is and is not enforced. The app is not sandboxed and has no keychain-access-groups entitlement, so these are
-/// items of the legacy file-based keychain. Its protection is the keychain's own: the items are encrypted with the
-/// login keychain, which is locked with the user's login (and, with the default settings, when the Mac sleeps), and
-/// the access control list of an item names the app that created it, so another app asking for it gets a prompt.
-/// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` is passed along but has **no effect** on that keychain: it only
-/// counts for the data protection keychain (`kSecUseDataProtectionKeychain`), which needs an entitlement the app
-/// does not have. File-based keychain items are not synced through iCloud Keychain either way. An ad-hoc signed
-/// rebuild is a different "app" to the ACL, so after a rebuild the system may ask once before handing a key over;
-/// callers therefore never call this while holding a lock.
-public struct KeychainSecretStore: SecretStore {
-    /// The bundle identifier of the packaged app (`scripts/package-macos.sh`); a plain `swift run` has none, so the
-    /// service name is fixed rather than read from the bundle.
-    public static let defaultService = "app.subtitleadder.mac"
-
-    public let service: String
-    let backend: any KeychainBackend
-
-    public init(service: String = KeychainSecretStore.defaultService) {
-        self.init(service: service, backend: SecurityKeychain())
-    }
-
-    init(service: String, backend: any KeychainBackend) {
-        self.service = service
-        self.backend = backend
-    }
-
-    private func query(_ account: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-    }
-
-    public func data(for account: String) -> Data? {
-        if case .found(let data) = read(account) { return data }
-        return nil
-    }
-
-    /// Only `errSecItemNotFound` means there is nothing stored; any other failure (access denied, user cancelled the
-    /// prompt, locked keychain, ...) is `.unavailable`: the item may well exist.
-    public func read(_ account: String) -> SecretRead {
-        var query = query(account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        let result = backend.copy(query)
-        if result.status == errSecSuccess { return result.data.map(SecretRead.found) ?? .unavailable }
-        return result.status == errSecItemNotFound ? .absent : .unavailable
-    }
-
-    /// Updates the item or adds it. When the update fails for a reason other than "no such item" (an item left by
-    /// another build with a different access list, for example) the old item is deleted and a new one added, once.
-    @discardableResult public func set(_ data: Data, for account: String) -> Bool {
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        ]
-        let status = backend.update(query(account), with: attributes)
-        if status == errSecSuccess { return true }
-        if status != errSecItemNotFound { _ = backend.delete(query(account)) }
-        let item = query(account).merging(attributes) { $1 }
-        return backend.add(item) == errSecSuccess
-    }
-
-    public func remove(_ account: String) {
-        _ = backend.delete(query(account))
-    }
-}
-
-/// A process-local store for tests (and as a fallback where the keychain can't be used).
+/// Keeps credentials only until the process exits.
 public final class InMemorySecretStore: SecretStore, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Data] = [:]

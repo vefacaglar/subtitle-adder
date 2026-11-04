@@ -65,6 +65,10 @@ MESSAGES: dict[str, dict[str, str]] = {
         "tr": "{name} yalnız {language} destekler.",
         "en": "{name} supports only {language}.",
     },
+    "preview_no_streams": {
+        "tr": "Dosyada oynatılabilecek görüntü veya ses bulunamadı.",
+        "en": "The file contains no playable video or audio.",
+    },
     "unsupported_language": {
         "tr": "{name} {language} dilini desteklemiyor. Desteklenen diller: {supported}.",
         "en": "{name} does not support the language {language}. Supported languages: {supported}.",

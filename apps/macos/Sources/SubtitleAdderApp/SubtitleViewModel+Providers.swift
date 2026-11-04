@@ -8,7 +8,7 @@ struct ExternalConnectionNotice: Equatable, Sendable {
     var isError: Bool
 }
 
-/// A provider as it was just saved, and whether its API key made it into the keychain.
+/// A provider as it was just saved, and whether its API key made it into the secret store.
 struct ProviderSaveResult {
     var profile: TranslationProviderProfile
     /// `false` when a non-blank key could not be stored: the provider is saved, but without that key.
@@ -75,7 +75,7 @@ extension SubtitleViewModel {
     @discardableResult
     func addProvider(_ profile: TranslationProviderProfile, key: String, activate: Bool = true) -> ProviderSaveResult {
         let stored = providerStore.add(profile, setActive: activate)
-        // A new provider with a blank key has nothing in the keychain to remove.
+        // A new provider with a blank key has nothing in the secret store to remove.
         let isBlank = key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let keyStored = isBlank ? true : writeKey(key, for: stored.id)
         if isBlank { recordKeyWritten("", stored: true, for: stored.id) }
@@ -130,8 +130,8 @@ extension SubtitleViewModel {
         publishLaunchSettings()
     }
 
-    /// Stores `key` for the provider (blank removes it) and updates the cache to match. `false` when the keychain
-    /// refused a non-blank key. Writes the keychain on the calling thread: it runs on the user's Save, never at launch.
+    /// Stores `key` for the provider (blank removes it) and updates the cache to match. `false` when the secret store
+    /// refused a non-blank key. Writes the secret store on the calling thread: it runs on the user's Save, never at launch.
     private func writeKey(_ key: String, for id: UUID) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let stored = providerStore.setKey(trimmed, for: id)
@@ -155,7 +155,7 @@ extension SubtitleViewModel {
         let testID = UUID()
         providerTestIDs[id] = testID
         testingProviders.insert(id)
-        // The key comes from the cache; one the keychain hasn't answered for yet is read on a background thread first.
+        // The key comes from the cache; one the secret store hasn't answered for yet is read on a background thread first.
         let key = await providerKeyForUse(id)
         guard providerTestIDs[id] == testID else { return }
         if key == .unreadable {
@@ -189,7 +189,7 @@ extension SubtitleViewModel {
     /// Tests the settings in the sheet before they are saved.
     func testConnection(of draft: ProviderDraft) async -> ProviderDraftTest {
         if offlineBlocksServer(draft.baseURL) { return ProviderDraftTest(notice: Self.offlineNotice, models: []) }
-        // An untouched key field means the stored key (from the cache, never the keychain).
+        // An untouched key field means the stored key (from the cache, never the secret store).
         let result = await ExternalLLMServer.testConnection(
             rawURL: draft.baseURL, apiKey: draft.effectiveKey, model: draft.model, presetID: draft.presetID, fetch: externalFetch
         )

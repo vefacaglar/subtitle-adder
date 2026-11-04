@@ -8,7 +8,7 @@ struct ContentView: View {
     let catalog: ModelCatalog
     let explorer: FileExplorerModel
     let platform: VideoPlatformModel
-    @State private var player = PlayerModel()
+    @State private var player = PlayerModel(preparePreview: PlaybackPreview.prepare)
     /// Names this window to the platform, which follows one window's player at a time.
     @State private var windowToken = PlayerWindowToken()
     /// A card's "Oynat" starts the video even when Settings say not to play on open.
@@ -45,6 +45,9 @@ struct ContentView: View {
         .onAppear { attachWindow() }
         // Closing the window stops its player and lets go of everything that points back at it.
         .onDisappear { detachWindow() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            player.cancelPreview()
+        }
         .navigationTitle(vm.video?.lastPathComponent ?? "Subtitle Adder")
         .task { await catalog.load() }
         .task { await explorer.start() }

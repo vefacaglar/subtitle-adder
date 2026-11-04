@@ -26,8 +26,8 @@ struct ProviderDraft: Equatable {
     }
     /// The key field was typed in or cleared. Until then saving leaves the stored key alone.
     private(set) var keyEdited = false
-    /// What the keychain said about the provider's key when the sheet opened (or was last refreshed); `.absent` for a
-    /// new provider. Only the app's key cache fills it in; the draft never reads the keychain.
+    /// What the secret store said about the provider's key when the sheet opened (or was last refreshed); `.absent` for a
+    /// new provider. Only the app's key cache fills it in; the draft never reads the secret store.
     private(set) var storedKey: ProviderKey
     var model: String
     var asyncTranslation: Bool {

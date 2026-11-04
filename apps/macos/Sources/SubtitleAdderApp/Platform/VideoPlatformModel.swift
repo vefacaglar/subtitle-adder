@@ -62,7 +62,7 @@ enum PlaybackEvent: Equatable, Sendable {
 /// the video at once and never waits for the profile.
 ///
 /// Three kinds of change reach the snapshot: the user's own actions (which end with a refresh), changes in
-/// `ProfileStore.changes()` (another window or instance, a login restored from the keychain) and changes in the media
+/// `ProfileStore.changes()` (another window or instance, a login restored from the secret store) and changes in the media
 /// index. Playback progress and thumbnails change nothing the lists show, and raise no refresh.
 @MainActor
 @Observable
@@ -73,8 +73,9 @@ final class VideoPlatformModel {
     private(set) var registeredUsernames: [String] = []
     /// The user who last logged in, to pre-fill the login box.
     private(set) var lastUsername: String?
-    /// "Girişi hatırla"; applied by the next login or registration.
-    var rememberMe = true
+    @ObservationIgnored private let allowsRememberedLogin: Bool
+    /// Whether the next login or registration should be remembered when the store supports it.
+    var rememberMe: Bool
     private(set) var counts = ProfileCounts()
     private(set) var isAuthenticating = false
     /// Why the last login, registration or profile deletion failed; cleared by the next attempt.
@@ -204,9 +205,12 @@ final class VideoPlatformModel {
 
     init(
         store: ProfileStore, index: MediaLibraryIndex, services: PlatformServices = .system,
+        allowsRememberedLogin: Bool = true,
         thumbnailGenerator: @escaping ThumbnailService.Generator = ThumbnailGenerator.jpegData(for:)
     ) {
         self.store = store
+        self.allowsRememberedLogin = allowsRememberedLogin
+        rememberMe = allowsRememberedLogin
         self.index = index
         self.services = services
         let queues = queues
@@ -248,8 +252,7 @@ final class VideoPlatformModel {
                 }
             }
         }
-        // A remembered login is restored from the keychain, which can ask the user for permission: never on the main
-        // thread. The store does it here on a queue, and the snapshot that follows shows the result.
+        // Read the profile file on the store queue before building the first snapshot.
         let store = store
         await queues.actions.run { store.refresh() }
         hasRestoredLogin = true
@@ -381,7 +384,7 @@ final class VideoPlatformModel {
         if lastUsername != snapshot.lastUsername { lastUsername = snapshot.lastUsername }
         if !hasAppliedFirstSnapshot {
             hasAppliedFirstSnapshot = true
-            rememberMe = snapshot.rememberMe
+            rememberMe = allowsRememberedLogin && snapshot.rememberMe
         }
         if counts != snapshot.counts { counts = snapshot.counts }
         if lists != snapshot.lists { lists = snapshot.lists }
@@ -507,7 +510,7 @@ final class VideoPlatformModel {
         guard !isAuthenticating else { return false }
         isAuthenticating = true
         authFailure = nil
-        let remember = rememberMe
+        let remember = allowsRememberedLogin && rememberMe
         let result = await runStore { (store) throws(ProfileError) in try body(store, remember) }
         isAuthenticating = false
         if case .failure(let error) = result {

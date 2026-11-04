@@ -4,13 +4,13 @@ import LibraryKit
 
 /// What the app knows about one provider's API key.
 enum ProviderKey: Equatable, Sendable {
-    /// The keychain has not answered yet.
+    /// The secret store has not answered yet.
     case loading
-    /// The keychain answered: no key is stored.
+    /// The secret store answered: no key is stored.
     case absent
     /// The key, trimmed.
     case present(String)
-    /// The keychain could not be read (access denied, a prompt that was refused, a locked keychain). The key may well
+    /// The secret store could not be read. The key may well
     /// exist, so this is never treated as "no key".
     case unreadable
 
@@ -44,11 +44,9 @@ enum ProviderKey: Equatable, Sendable {
     }
 }
 
-/// API keys of the translation providers, kept in memory so that nothing on the main thread waits for the keychain.
+/// API keys of the translation providers, kept in memory so that nothing on the main thread waits for the secret store.
 ///
-/// The keychain can answer with a password prompt (an ad-hoc signed rebuild is another "app" to the item's access list),
-/// and a main thread stuck behind it freezes the app, even before its first window. So the keys are read by a
-/// background task, the views and the launch settings are made from this cache, and a translation that is about to
+/// The views and the launch settings are made from this cache, and a translation that is about to
 /// start reads the key again (`prepareExternalLaunch`). Writing a key (the Save button of the provider sheet) is
 /// user-initiated and still happens on the calling thread.
 extension SubtitleViewModel {
@@ -69,7 +67,7 @@ extension SubtitleViewModel {
         }
     }
 
-    /// Reads the keys of `ids` from the keychain on a background thread and stores what was found. A provider that was
+    /// Reads the keys of `ids` from the secret store on a background thread and stores what was found. A provider that was
     /// saved or removed meanwhile keeps what that said. Publishes the launch settings when done.
     func loadProviderKeys(_ ids: [UUID]) async {
         let ids = ids.filter { id in providerStore.providers.contains { $0.id == id } }
@@ -83,7 +81,7 @@ extension SubtitleViewModel {
                   providerStore.providers.contains(where: { $0.id == id })
             else { continue }
             let now = ProviderKey(reads[index])
-            // A key we already hold is better than none: a read that fails now (locked keychain, refused prompt) doesn't
+            // A key we already hold is better than none: a read that fails now doesn't
             // throw it away.
             if now == .unreadable, case .present = providerKeys[id] { continue }
             providerKeys[id] = now
@@ -102,7 +100,7 @@ extension SubtitleViewModel {
         await providerKeyLoad?.value
     }
 
-    /// The key to use for `id` right now: the cached one when the keychain has answered, else a fresh read on a
+    /// The key to use for `id` right now: the cached one when the secret store has answered, else a fresh read on a
     /// background thread (an earlier refusal may have been fixed since).
     func providerKeyForUse(_ id: UUID) async -> ProviderKey {
         if providerKey(for: id).isSettled { return providerKey(for: id) }
@@ -112,7 +110,7 @@ extension SubtitleViewModel {
 
     // MARK: - Writing
 
-    /// Records what a write to the keychain left behind. `stored` is `false` when the write was refused: the old key may
+    /// Records what a write to the secret store left behind. `stored` is `false` when the write was refused: the old key may
     /// still be there, so the cache reads it again instead of guessing.
     func recordKeyWritten(_ key: String, stored: Bool, for id: UUID) {
         providerKeyEpochs[id, default: 0] += 1
@@ -134,7 +132,7 @@ extension SubtitleViewModel {
 
     // MARK: - Launch settings
 
-    /// The active provider for the engine, with the key from the cache. Never touches the keychain; a key that has not
+    /// The active provider for the engine, with the key from the cache. Never touches the secret store; a key that has not
     /// been read yet (or could not be) goes along empty, and the translation that is about to start reads it again.
     func cachedExternalLLM() -> ExternalLLM? {
         guard let provider = providerStore.activeProvider else { return nil }
@@ -147,7 +145,7 @@ extension SubtitleViewModel {
     }
 
     /// Makes sure the launch settings of a translation that is about to start carry the active provider's real key: it
-    /// is read from the keychain again, on a background thread, and the launch settings are published. Returns what to
+    /// is read from the secret store again, on a background thread, and the launch settings are published. Returns what to
     /// show instead of starting when the provider's key exists but can't be read (sending the text without it would only
     /// fail at the server with a misleading "unauthorized"). `nil` when there is nothing in the way, including when no
     /// provider is active.
@@ -160,7 +158,7 @@ extension SubtitleViewModel {
 
     static func keyUnreadableMessage(_ providerName: String) -> LocalizedMessage {
         LocalizedMessage("key-unreadable:\(providerName)") {
-            L("%@ için API anahtarı Anahtar Zinciri'nden okunamadı. Erişime izin verip yeniden dene.", providerName)
+            L("%@ için API anahtarı okunamadı. Anahtarı yeniden girip tekrar dene.", providerName)
         }
     }
 }

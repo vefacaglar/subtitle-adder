@@ -27,7 +27,7 @@ struct SubtitleAdderApp: App {
         // Nothing runs yet, so the engine's scratch folder from earlier sessions can go.
         WorkingDirectory.cleanUp()
         let catalog = ModelCatalog()
-        // The real providers file and keychain; the view model migrates the older single LAN server settings once.
+        // The real providers file and session-only keys; the view model migrates the older single LAN server settings once.
         let model = SubtitleViewModel(catalog: catalog, providerStore: TranslationProviderStore())
         _catalog = State(initialValue: catalog)
         _vm = State(initialValue: model)
@@ -36,9 +36,10 @@ struct SubtitleAdderApp: App {
         _externalOpen = State(initialValue: opener)
         let explorer = FileExplorerModel()
         _explorer = State(initialValue: explorer)
-        // The real profiles file and keychain; the platform shares the explorer's media index. The file is not read
+        // The real profiles file; the platform shares the explorer's media index. The file is not read
         // here (this is the main thread): the platform's `start()` reads it on a background queue.
-        let platform = VideoPlatformModel(store: ProfileStore(readsFileImmediately: false), index: explorer.index)
+        let platform = VideoPlatformModel(
+            store: ProfileStore(readsFileImmediately: false), index: explorer.index, allowsRememberedLogin: false)
         _platform = State(initialValue: platform)
         // A subtitle written next to a video gets its badge in the sidebar.
         model.onSubtitleSaved = { url in Task { await explorer.subtitleSaved(at: url) } }

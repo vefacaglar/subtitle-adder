@@ -81,18 +81,18 @@
         }
       }
     },
-    "%@ için API anahtarı Anahtar Zinciri'nden okunamadı. Erişime izin verip yeniden dene.": {
+    "%@ için API anahtarı okunamadı. Anahtarı yeniden girip tekrar dene.": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ için API anahtarı Anahtar Zinciri'nden okunamadı. Erişime izin verip yeniden dene."
+            "value": "%@ için API anahtarı okunamadı. Anahtarı yeniden girip tekrar dene."
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The API key for %@ could not be read from the Keychain. Allow access and try again."
+            "value": "Couldn’t read the API key for %@. Enter it again and retry."
           }
         }
       }
@@ -353,18 +353,18 @@
         }
       }
     },
-    "Anahtar Zinciri'ndeki anahtar okunamadı. Alan boş bırakılırsa silinmez.": {
+    "API anahtarı okunamadı. Alan boş bırakılırsa anahtar silinmez.": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Anahtar Zinciri'ndeki anahtar okunamadı. Alan boş bırakılırsa silinmez."
+            "value": "API anahtarı okunamadı. Alan boş bırakılırsa anahtar silinmez."
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The key in the Keychain could not be read. It is not deleted if this is left empty."
+            "value": "Couldn’t read the API key. Leaving this field empty keeps the key."
           }
         }
       }
@@ -5969,18 +5969,18 @@
         }
       }
     },
-    "API anahtarı Anahtar Zinciri'ne yazılamadı; anahtar kaydedilmedi. Yeniden girip tekrar dene.": {
+    "API anahtarı kaydedilemedi. Yeniden girip tekrar dene.": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "API anahtarı Anahtar Zinciri'ne yazılamadı; anahtar kaydedilmedi. Yeniden girip tekrar dene."
+            "value": "API anahtarı kaydedilemedi. Yeniden girip tekrar dene."
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The API key could not be written to the Keychain, so it was not saved. Enter it again and retry."
+            "value": "Couldn’t save the API key. Enter it again and retry."
           }
         }
       }
@@ -6033,18 +6033,18 @@
         }
       }
     },
-    "Anahtar yalnızca bu Mac'in Anahtar Zinciri'nde saklanır.": {
+    "API anahtarı uygulama kapanana kadar bellekte tutulur.": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Anahtar yalnızca bu Mac'in Anahtar Zinciri'nde saklanır."
+            "value": "API anahtarı uygulama kapanana kadar bellekte tutulur."
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The key is stored only in this Mac's Keychain."
+            "value": "The API key stays in memory until the app quits."
           }
         }
       }
@@ -6193,18 +6193,18 @@
         }
       }
     },
-    "Kayıtlı API anahtarı da Anahtar Zinciri'nden silinir.": {
+    "Bu oturumdaki API anahtarı da silinir.": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Kayıtlı API anahtarı da Anahtar Zinciri'nden silinir."
+            "value": "Bu oturumdaki API anahtarı da silinir."
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The saved API key is also removed from the Keychain."
+            "value": "This also removes the API key for this session."
           }
         }
       }

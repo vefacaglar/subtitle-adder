@@ -3,7 +3,7 @@ import Foundation
 
 extension ProfileStore {
     /// Creates a profile and logs in as it. The username is trimmed and must be new (ignoring case); the password
-    /// is used as typed. Runs one PBKDF2 (tens of milliseconds) and talks to the keychain: call it off the main actor.
+    /// is used as typed. Runs one PBKDF2 (tens of milliseconds) and talks to the secret store: call it off the main actor.
     public func register(username: String, password: String, rememberMe: Bool = true) throws(ProfileError) {
         let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw .emptyUsername }
@@ -14,7 +14,7 @@ extension ProfileStore {
         let derived = try ProfileCrypto.derive(password: password, salt: salt, iterations: ProfileCrypto.defaultIterations)
         let createdAt = clock()
 
-        // Whoever is logged in now keeps the progress they have not saved yet; the keychain is asked before any lock is taken.
+        // Whoever is logged in now keeps the progress they have not saved yet; the secret store is asked before any lock is taken.
         _ = try? persistDirty(minInterval: 0)
         let step = storeRememberKey(rememberMe, username: name, key: derived.vaultKey)
         var previouslyRemembered: String?
@@ -45,7 +45,7 @@ extension ProfileStore {
     /// `.invalidCredentials` for an unknown user and a wrong password alike (both cost one PBKDF2), and
     /// `.vaultUnreadable` if the password is right but the vault will not decrypt (the stored vault is not touched);
     /// `.fileUnreadable` if `profiles.json` cannot be read at all right now. Runs one PBKDF2 and talks to the
-    /// keychain: call it off the main actor.
+    /// secret store: call it off the main actor.
     public func login(username: String, password: String, rememberMe: Bool = true) throws(ProfileError) {
         let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !password.isEmpty else { throw .missingCredentials }
@@ -85,7 +85,7 @@ extension ProfileStore {
     /// Locks the profile in memory and forgets the remembered login (the stored key and `rememberedUsername`), for
     /// every instance. `rememberMe` and `lastUsername` stay. The local logout always happens; the error, if any, is
     /// only that it could not be written to disk (`.lockUnavailable`, `.writeFailed`). Unsaved progress is written
-    /// first, on a best-effort basis. Talks to the keychain: call it off the main actor.
+    /// first, on a best-effort basis. Talks to the secret store: call it off the main actor.
     public func logout() throws(ProfileError) {
         _ = try? persistDirty(minInterval: 0)
 
@@ -128,7 +128,7 @@ extension ProfileStore {
     }
 
     /// Deletes a profile and everything in its vault after checking its password; ends the session if it is the
-    /// active one. Runs one PBKDF2 and talks to the keychain: call it off the main actor.
+    /// active one. Runs one PBKDF2 and talks to the secret store: call it off the main actor.
     public func deleteProfile(username: String, password: String) throws(ProfileError) {
         let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !password.isEmpty else { throw .missingCredentials }
@@ -170,15 +170,15 @@ extension ProfileStore {
         throw .invalidCredentials
     }
 
-    // MARK: - Remember-me and the keychain
+    // MARK: - Remember-me and the secret store
 
-    /// What the keychain held for a session's account before this login touched it, and whether the key is stored now.
-    /// The keychain is read and written before the transaction (so no lock is held while a keychain prompt is up), and
+    /// What the secret store held for a session's account before this login touched it, and whether the key is stored now.
+    /// The secret store is read and written before the transaction (outside the file lock), and
     /// `rollBack` / `finish` settle it afterwards.
     struct RememberStep {
         let account: String
         let before: Data?
-        /// Remember-me is on and the key is in the keychain.
+        /// Remember-me is on and the key is in the secret store.
         let stored: Bool
     }
 
@@ -204,7 +204,7 @@ extension ProfileStore {
         }
     }
 
-    /// Puts the keychain back as it was when the transaction failed.
+    /// Puts the secret store back as it was when the transaction failed.
     func rollBack(_ step: RememberStep) {
         if let before = step.before { secretStore.set(before, for: step.account) } else { secretStore.remove(step.account) }
     }

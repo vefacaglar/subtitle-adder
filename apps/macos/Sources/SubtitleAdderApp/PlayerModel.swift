@@ -10,6 +10,11 @@ final class PlayerModel {
     @ObservationIgnored let player = AVPlayer()
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private let preparePreview: (@Sendable (URL) async throws -> PlaybackPreview)?
+    @ObservationIgnored private var preview: PlaybackPreview?
+    @ObservationIgnored private var pendingPreviewSource: URL?
+    @ObservationIgnored private var pendingPreviewPosition: Double?
+    private(set) var isPreparingPreview = false
     /// Identifies the current `load`; callbacks of an earlier item compare it and drop out.
     @ObservationIgnored private(set) var loadGeneration = 0
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
@@ -92,10 +97,13 @@ final class PlayerModel {
 
     // `isolated` so the main-actor observer token can be removed when a closed window drops its player.
     isolated deinit {
+        loadTask?.cancel()
         stopObservingItem()
+        player.replaceCurrentItem(with: nil)
     }
 
-    init() {
+    init(preparePreview: (@Sendable (URL) async throws -> PlaybackPreview)? = nil) {
+        self.preparePreview = preparePreview
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
             queue: .main
@@ -124,6 +132,9 @@ final class PlayerModel {
         loadGeneration += 1
         let generation = loadGeneration
         stopObservingItem()
+        isPreparingPreview = false
+        pendingPreviewPosition = nil
+        pendingPreviewSource = url.flatMap { $0.isFileURL && MediaFileTypes.isMedia($0) ? $0 : nil }
         failure = nil
         failureReported = false
         autoPlayWhenReady = autoPlay && url != nil
@@ -133,10 +144,13 @@ final class PlayerModel {
         // Don't use the old video's aspect ratio until the new video size arrives.
         videoSize = CGSize(width: 16, height: 9)
         updateActive()
-        guard let url else {
-            player.replaceCurrentItem(with: nil)
-            return
-        }
+        player.replaceCurrentItem(with: nil)
+        preview = nil
+        guard let url else { return }
+        install(url, generation: generation)
+    }
+
+    private func install(_ url: URL, generation: Int) {
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
         observe(item, generation: generation)
@@ -146,22 +160,68 @@ final class PlayerModel {
             do {
                 let playable = try await asset.load(.isPlayable)
                 if !playable {
-                    reportFailure(nil, generation: generation)
+                    itemFailed(nil, generation: generation)
                     return
                 }
             } catch {
-                if !Task.isCancelled { reportFailure(error, generation: generation) }
+                if !Task.isCancelled { itemFailed(error, generation: generation) }
                 return
             }
             guard let track = try? await asset.loadTracks(withMediaType: .video).first,
                   let (natural, transform) = try? await track.load(.naturalSize, .preferredTransform),
-                  !Task.isCancelled
+                  !Task.isCancelled, generation == loadGeneration
             else { return }
             let size = natural.applying(transform)
             if abs(size.width) > 1, abs(size.height) > 1 {
                 videoSize = CGSize(width: abs(size.width), height: abs(size.height))
             }
         }
+    }
+
+    /// The native player rejected the format. Try once using an MP4 in scratch storage, keeping the selected video
+    /// as the source for subtitles, history and export.
+    private func itemFailed(_ error: (any Error)?, generation: Int) {
+        guard generation == loadGeneration, !failureReported, !isPreparingPreview else { return }
+        if let source = pendingPreviewSource, let preparePreview, Self.canTryPreview(after: error) {
+            pendingPreviewSource = nil
+            pendingPreviewPosition = currentTime
+            autoPlayWhenReady = autoPlayWhenReady || isPlaying
+            isPreparingPreview = true
+            loadTask?.cancel()
+            stopObservingItem()
+            player.replaceCurrentItem(with: nil)
+            loadGeneration += 1  // Ignore callbacks already queued by the original item.
+            let attempt = loadGeneration
+            loadTask = Task { [weak self] in
+                do {
+                    let copy = try await preparePreview(source)
+                    guard let self, !Task.isCancelled, attempt == loadGeneration else { return }
+                    isPreparingPreview = false
+                    preview = copy
+                    install(copy.url, generation: attempt)
+                } catch {
+                    guard let self, !Task.isCancelled, attempt == loadGeneration else { return }
+                    isPreparingPreview = false
+                    reportFailure(error, generation: attempt)
+                }
+            }
+        } else {
+            reportFailure(error, generation: generation)
+        }
+    }
+
+    private static func canTryPreview(after error: (any Error)?) -> Bool {
+        guard let error else { return true }
+        let reason = error as NSError
+        guard reason.domain == AVFoundationErrorDomain else { return false }
+        return [
+            AVError.fileFormatNotRecognized.rawValue, AVError.fileFailedToParse.rawValue,
+            AVError.decoderNotFound.rawValue, AVError.operationNotSupportedForAsset.rawValue,
+        ].contains(reason.code)
+    }
+
+    func cancelPreview() {
+        if isPreparingPreview { loadTask?.cancel() }
     }
 
     /// Records that playback of the item loaded as `generation` failed; a stale generation is ignored. A missing error
@@ -193,7 +253,7 @@ final class PlayerModel {
             switch item.status {
             case .failed:
                 let error = item.error
-                Task { @MainActor in self?.reportFailure(error, generation: generation) }
+                Task { @MainActor in self?.itemFailed(error, generation: generation) }
             case .readyToPlay:
                 Task { @MainActor in self?.itemReady(generation: generation) }
             default:
@@ -204,7 +264,7 @@ final class PlayerModel {
             forName: AVPlayerItem.failedToPlayToEndTimeNotification, object: item, queue: .main
         ) { [weak self] note in
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? any Error
-            MainActor.assumeIsolated { self?.reportFailure(error, generation: generation) }
+            MainActor.assumeIsolated { self?.itemFailed(error, generation: generation) }
         }
     }
 
@@ -222,12 +282,20 @@ final class PlayerModel {
     /// The item of load `generation` can play: starts it when that load asked for auto-play. A stale generation (the
     /// video was replaced meanwhile), a failed load and a load that already started are ignored.
     func itemReady(generation: Int) {
-        guard generation == loadGeneration, autoPlayWhenReady, failure == nil else { return }
-        play()
+        guard generation == loadGeneration, failure == nil else { return }
+        if let position = pendingPreviewPosition {
+            pendingPreviewPosition = nil
+            if position > 0 { seek(to: position) }
+        }
+        if autoPlayWhenReady { play() }
     }
 
     /// Moves to `seconds` (kept inside the video). The new position shows at once and holds while the player catches up.
     func seek(to seconds: Double) {
+        if isPreparingPreview {
+            pendingPreviewPosition = max(0, seconds)
+            return
+        }
         let target = timeline.seek(to: seconds)
         currentTime = target
         updateActive()
@@ -243,6 +311,10 @@ final class PlayerModel {
     }
 
     func play() {
+        if isPreparingPreview {
+            autoPlayWhenReady = true
+            return
+        }
         guard player.currentItem != nil else { return }
         autoPlayWhenReady = false
         player.play()
@@ -255,6 +327,10 @@ final class PlayerModel {
     }
 
     func togglePlayback() {
+        if isPreparingPreview {
+            autoPlayWhenReady.toggle()
+            return
+        }
         guard player.currentItem != nil else { return }
         if player.timeControlStatus == .paused {
             if let duration = player.currentItem?.duration.seconds, duration.isFinite, currentTime >= duration - 0.05 {

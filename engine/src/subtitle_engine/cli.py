@@ -54,6 +54,13 @@ def _extract_audio(args: argparse.Namespace) -> int:
     return 0
 
 
+def _preview(args: argparse.Namespace) -> int:
+    from .preview import make_preview
+
+    make_preview(args.video, args.output)
+    return 0
+
+
 def _transcribe(args: argparse.Namespace) -> int:
     if args.speakers is not None and not args.diarize:
         raise ValueError(t("speakers_needs_diarize"))
@@ -254,6 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
     ea.add_argument("-o", "--out-dir", type=Path, default=Path("output"))
     ea.add_argument("--json", action="store_true", help="write a JSON event stream to stdout")
     ea.set_defaults(handler=_extract_audio)
+
+    preview = sub.add_parser("preview", parents=[lang_parent], help="create a local MP4 playback copy")
+    preview.add_argument("video", type=Path)
+    preview.add_argument("--output", type=Path, required=True)
+    preview.set_defaults(handler=_preview)
 
     t = sub.add_parser("transcribe", parents=[lang_parent], help="generate subtitles from a video")
     t.add_argument("video", type=Path)

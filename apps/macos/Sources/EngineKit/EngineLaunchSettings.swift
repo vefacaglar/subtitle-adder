@@ -7,7 +7,7 @@ public struct ExternalLLM: Sendable, Equatable {
     public var url: String
     /// Model name on the server; empty lets the engine pick the first one the server lists.
     public var model: String
-    /// Bearer token for providers that need one; blank for a server without authentication. It lives in the keychain
+    /// Bearer token for providers that need one; blank for a server without authentication. It lives in memory
     /// (`SecretStore`), never in the app's preferences or data files.
     public var apiKey: String
 

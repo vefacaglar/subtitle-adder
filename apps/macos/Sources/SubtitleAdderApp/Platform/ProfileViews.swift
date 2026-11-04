@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Username, password, "Girişi hatırla" and the two buttons; the profile popover and the hub's sign-in card share it.
+/// Username, password and the sign-in actions; the profile popover and the hub's sign-in card share it.
 /// The work (PBKDF2) happens off the main actor in the model, so the form only shows a spinner meanwhile.
 struct ProfileAuthForm: View {
     let model: VideoPlatformModel
@@ -16,7 +16,6 @@ struct ProfileAuthForm: View {
     private enum Field { case username, password }
 
     var body: some View {
-        @Bindable var model = model
         VStack(alignment: .leading, spacing: 10) {
             if !model.registeredUsernames.isEmpty {
                 HStack(spacing: 6) {
@@ -32,17 +31,13 @@ struct ProfileAuthForm: View {
             }
             TextField(L("Kullanıcı adı"), text: $username)
                 .textFieldStyle(.roundedBorder)
-                .textContentType(.username)
                 .focused($focus, equals: .username)
                 .onSubmit { focus = .password }
                 .disabled(model.isAuthenticating)
             SecureField(L("Şifre"), text: $password)
                 .textFieldStyle(.roundedBorder)
-                .textContentType(.password)
                 .focused($focus, equals: .password)
                 .onSubmit(login)
-                .disabled(model.isAuthenticating)
-            Toggle(L("Girişi hatırla"), isOn: $model.rememberMe)
                 .disabled(model.isAuthenticating)
             if let error = model.authError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")

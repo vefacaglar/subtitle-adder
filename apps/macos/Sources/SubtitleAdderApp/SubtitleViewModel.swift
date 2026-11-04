@@ -222,8 +222,7 @@ final class SubtitleViewModel {
         self.catalog = catalog
         self.defaults = defaults
         self.launchState = launchState
-        // The app passes the real store (file + keychain); anything else gets one that lives and dies with this model, so
-        // tests never touch the user's providers or keychain.
+        // The app passes the on-disk provider settings; tests get an isolated store by default.
         self.providerStore = providerStore ?? Self.makeEphemeralProviderStore()
         self.externalFetch = externalFetch ?? ExternalLLMServer.urlSessionFetch()
         let savedLanguage = defaults.string(forKey: Self.languageDefaultsKey) ?? ""
@@ -251,14 +250,14 @@ final class SubtitleViewModel {
         self.providerStore.migrateLegacyIfNeeded(defaults: defaults)
         reconcileModelSelection()
         reconcileTranslationTarget()
-        // The keychain is not touched here: the keys are read by a background task, which publishes the launch settings
+        // The secret store is not touched here: the keys are read by a background task, which publishes the launch settings
         // again once it has them. Until then the active provider goes along without its key.
         publishLaunchSettings()
         startLoadingProviderKeys()
     }
 
     /// Hands the offline and external LLM settings to the engine launcher; read at every engine launch. Never touches
-    /// the keychain: the active provider's key comes from the cache (`providerKeys`).
+    /// the secret store: the active provider's key comes from the cache (`providerKeys`).
     func publishLaunchSettings() {
         launchState.settings = EngineLaunchSettings(offline: offlineMode, externalLLM: cachedExternalLLM())
     }

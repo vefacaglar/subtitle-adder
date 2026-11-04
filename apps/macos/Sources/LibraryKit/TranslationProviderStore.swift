@@ -119,7 +119,7 @@ public struct ActiveExternalLLM: Sendable, Equatable {
 
 /// The translation providers the user saved and which one is active (none means the local models), persisted in
 /// `translation-providers.json` in the app data folder. API keys never touch that file: they are kept in the
-/// `SecretStore` (the keychain) under `translation-provider.<uuid>` and removed with their provider.
+/// `SecretStore` under `translation-provider.<uuid>` and removed with their provider.
 @MainActor
 @Observable
 public final class TranslationProviderStore {
@@ -143,7 +143,7 @@ public final class TranslationProviderStore {
     /// Loads the file if it exists. A missing one starts empty; one that cannot be read, cannot be parsed or has
     /// entries that cannot be parsed starts with what could be read, and the file on disk is not replaced until a copy
     /// of it is safe (see `save()`). `secrets` and `fileURL` are injectable for tests.
-    public init(fileURL: URL = TranslationProviderStore.defaultFileURL, secrets: any SecretStore = KeychainSecretStore()) {
+    public init(fileURL: URL = TranslationProviderStore.defaultFileURL, secrets: any SecretStore = InMemorySecretStore()) {
         self.fileURL = fileURL
         self.secrets = secrets
         load()
@@ -157,7 +157,7 @@ public final class TranslationProviderStore {
 
     /// Saves a new provider without touching the secret store and, unless told otherwise, makes it the active one.
     /// Returns the profile as stored (trimmed, a blank name replaced by the preset's). The key is set separately, with
-    /// `setKey(_:for:)`, so the caller decides when the keychain is touched.
+    /// `setKey(_:for:)`, so the caller decides when the secret store is touched.
     @discardableResult
     public func add(_ profile: TranslationProviderProfile, setActive: Bool = true) -> TranslationProviderProfile {
         let stored = normalized(profile)
@@ -172,8 +172,8 @@ public final class TranslationProviderStore {
     }
 
     /// Saves a new provider with its key (blank for none) and, unless told otherwise, makes it the active one.
-    /// Returns the profile as stored. A keychain write that fails leaves the provider without a key, which
-    /// `maskedKey(for:)` shows as `nil`. Writes the keychain on the calling thread.
+    /// Returns the profile as stored. A secret store write that fails leaves the provider without a key, which
+    /// `maskedKey(for:)` shows as `nil`. Writes the secret store on the calling thread.
     @discardableResult
     public func add(_ profile: TranslationProviderProfile, key: String, setActive: Bool = true) -> TranslationProviderProfile {
         let stored = add(profile, setActive: setActive)
@@ -233,30 +233,28 @@ public final class TranslationProviderStore {
 
     // MARK: - Keys
 
-    /// Keychain account of a provider's API key.
+    /// Secret store account of a provider's API key.
     public nonisolated static func secretAccount(for id: UUID) -> String {
         "translation-provider.\(id.uuidString)"
     }
 
-    /// Reads keys without the main actor. The keychain can answer with a password prompt (an ad-hoc signed rebuild is
-    /// another "app" to its access list), so the app never reads a key on the main thread: it asks this reader from a
-    /// background task and keeps the answer.
+    /// A reader that can be used from a background task.
     public nonisolated var keyReader: ProviderKeyReader { ProviderKeyReader(secrets: secrets) }
 
-    /// The provider's API key, empty when none is stored. Reads the keychain on the calling thread and cannot tell a
+    /// The provider's API key, empty when none is stored. Reads the secret store on the calling thread and cannot tell a
     /// missing key from an unreadable one; the app does not use it (see `keyReader`).
     public func apiKey(for id: UUID) -> String {
         secrets.string(for: Self.secretAccount(for: id)) ?? ""
     }
 
-    /// Replaces (blank removes) the key of an existing provider. `false` when the keychain refused it.
+    /// Replaces (blank removes) the key of an existing provider. `false` when the secret store refused it.
     @discardableResult
     public func setKey(_ key: String, for id: UUID) -> Bool {
         guard providers.contains(where: { $0.id == id }) else { return false }
         return storeKey(key, for: id)
     }
 
-    /// The key as shown in lists, `nil` when there is none (the app says "Anahtar yok"). Reads the keychain on the
+    /// The key as shown in lists, `nil` when there is none (the app says "Anahtar yok"). Reads the secret store on the
     /// calling thread.
     public func maskedKey(for id: UUID) -> String? {
         Self.mask(apiKey(for: id))

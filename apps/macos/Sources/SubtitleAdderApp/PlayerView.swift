@@ -38,6 +38,12 @@ struct PlayerView: View {
                 SubtitleOverlay(text: activeText, style: overlay.style, videoHeight: rect.height)
                     .frame(width: rect.width, height: rect.height)
                     .allowsHitTesting(false)
+                if model.isPreparingPreview {
+                    ProgressView { Text(L("Video önizlemesi hazırlanıyor…")) }
+                        .tint(.white)
+                        .foregroundStyle(.white)
+                        .allowsHitTesting(false)
+                }
                 VStack {
                     overlayPanels
                         .opacity(isPanelVisible ? 1 : 0)

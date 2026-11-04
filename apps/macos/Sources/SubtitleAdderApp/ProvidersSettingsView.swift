@@ -61,7 +61,7 @@ struct TranslationSettingsTab: View {
             }
             Button(L("Vazgeç"), role: .cancel) { pendingDeletion = nil }
         } message: { _ in
-            Text(L("Kayıtlı API anahtarı da Anahtar Zinciri'nden silinir."))
+            Text(L("Bu oturumdaki API anahtarı da silinir."))
         }
     }
 
@@ -151,7 +151,7 @@ private struct ProviderRow: View {
                                 }
                             }
                             // Verbatim: an address is not a localization key. The key line comes from the cache, so
-                            // drawing the row never waits for the keychain.
+                            // drawing the row never waits for the secret store.
                             Text(verbatim: "\(provider.baseURL) · \(vm.providerKeyCaption(for: provider.id))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -297,7 +297,7 @@ private struct ProviderEditorSheet: View {
                             }
                         }
                     }
-                    caption(L("Anahtar yalnızca bu Mac'in Anahtar Zinciri'nde saklanır."))
+                    caption(L("API anahtarı uygulama kapanana kadar bellekte tutulur."))
                     HStack(spacing: 4) {
                         TextField(
                             L("Model"), text: $draft.model,
@@ -326,7 +326,7 @@ private struct ProviderEditorSheet: View {
                     VStack(alignment: .leading, spacing: 4) {
                         if keyNotStored {
                             Label(
-                                L("API anahtarı Anahtar Zinciri'ne yazılamadı; anahtar kaydedilmedi. Yeniden girip tekrar dene."),
+                                L("API anahtarı kaydedilemedi. Yeniden girip tekrar dene."),
                                 systemImage: "exclamationmark.triangle.fill"
                             )
                             .foregroundStyle(.red)
@@ -351,7 +351,7 @@ private struct ProviderEditorSheet: View {
             .padding(12)
         }
         .frame(width: 520, height: 500)
-        // The sheet opens from the cache; a key the keychain hasn't answered for (or refused) is asked again in the
+        // The sheet opens from the cache; a key the secret store hasn't answered for (or refused) is asked again in the
         // background, never on the main thread.
         .task {
             guard !draft.isNew, !draft.storedKey.isSettled else { return }
@@ -387,7 +387,7 @@ private struct ProviderEditorSheet: View {
         switch draft.storedKey {
         case .present: return draft.keyEdited ? nil : L("Alan boş bırakılırsa kayıtlı anahtar korunur.")
         case .unreadable:
-            return draft.keyEdited ? nil : L("Anahtar Zinciri'ndeki anahtar okunamadı. Alan boş bırakılırsa silinmez.")
+            return draft.keyEdited ? nil : L("API anahtarı okunamadı. Alan boş bırakılırsa anahtar silinmez.")
         case .loading, .absent: return nil
         }
     }
