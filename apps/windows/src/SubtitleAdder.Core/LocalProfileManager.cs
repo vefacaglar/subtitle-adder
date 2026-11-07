@@ -133,13 +133,21 @@ public sealed class LocalProfileManager : IDisposable
     private readonly IDisposable _brokerSubscription;
     private ProfileEntry? _activeProfile;
     private string? _activeUsername;
-    private bool _rememberMe = true;
+    private bool _rememberMe;
     private string? _lastUsername;
     private string? _rememberedUsername;
     private string? _rememberedProtectedKeyBase64;
     private string? _lastSyncedJson;
     private long _lastSyncedGeneration = -1;
     private volatile bool _dirtyFromExternalBroker;
+
+    // Set by Logout and cleared by Login/Register: once the user logged out in this process, no
+    // remembered session found on disk may silently log them back in (even if the header write failed).
+    private bool _userLoggedOutThisSession;
+
+    // Protected key that Logout tried to remove from disk but could not persist; while it is still on
+    // disk it is ignored on every sync and the cleared header is written again.
+    private string? _unpersistedLogoutKeyBase64;
 
     public LocalProfileManager(string? filePath = null, StateSyncBroker? broker = null)
     {
@@ -517,11 +525,11 @@ public sealed class LocalProfileManager : IDisposable
     }
 
     /// <summary>Registers a new local profile with PBKDF2-SHA256 password hashing and AES-256-GCM vault encryption.</summary>
-    public bool Register(string username, string password, bool rememberMe = true) =>
+    public bool Register(string username, string password, bool rememberMe = false) =>
         Register(username, password, out _, rememberMe);
 
     /// <summary>Registers a new local profile with PBKDF2-SHA256 password hashing and AES-256-GCM vault encryption.</summary>
-    public bool Register(string username, string password, out string? error, bool rememberMe = true)
+    public bool Register(string username, string password, out string? error, bool rememberMe = false)
     {
         var cleanUser = (username ?? "").Trim();
         if (cleanUser.Length == 0)
@@ -565,6 +573,8 @@ public sealed class LocalProfileManager : IDisposable
             _activeUsername = entry.Username;
             _lastUsername = entry.Username;
             _rememberMe = rememberMe;
+            _userLoggedOutThisSession = false;
+            _unpersistedLogoutKeyBase64 = null;
             if (rememberMe)
             {
                 _rememberedUsername = entry.Username;
@@ -601,11 +611,11 @@ public sealed class LocalProfileManager : IDisposable
     }
 
     /// <summary>Authenticates an existing local profile using constant-time PBKDF2 hash comparison and unlocks its AES-256-GCM vault.</summary>
-    public bool Login(string username, string password, bool rememberMe = true) =>
+    public bool Login(string username, string password, bool rememberMe = false) =>
         Login(username, password, out _, rememberMe);
 
     /// <summary>Authenticates an existing local profile using constant-time PBKDF2 hash comparison and unlocks its AES-256-GCM vault.</summary>
-    public bool Login(string username, string password, out string? error, bool rememberMe = true)
+    public bool Login(string username, string password, out string? error, bool rememberMe = false)
     {
         var cleanUser = (username ?? "").Trim();
         if (cleanUser.Length == 0 || string.IsNullOrEmpty(password))
@@ -632,6 +642,8 @@ public sealed class LocalProfileManager : IDisposable
             _activeUsername = entry.Username;
             _lastUsername = entry.Username;
             _rememberMe = rememberMe;
+            _userLoggedOutThisSession = false;
+            _unpersistedLogoutKeyBase64 = null;
             var saltBytes = Convert.FromBase64String(entry.SaltBase64);
             if (rememberMe)
             {
@@ -675,13 +687,20 @@ public sealed class LocalProfileManager : IDisposable
                         entry.MissingThumbnails.Clear();
                     }
                 }
+                var removedKey = _rememberedProtectedKeyBase64;
                 _activeProfile = null;
                 _activeUsername = null;
+                _rememberMe = false;
                 _rememberedUsername = null;
                 _rememberedProtectedKeyBase64 = null;
-                SaveAuthHeaderToDiskLocked();
+                if (!SaveAuthHeaderToDiskLocked() && removedKey is not null)
+                {
+                    // The remembered key is still on disk: keep ignoring it and retry on the next sync.
+                    _unpersistedLogoutKeyBase64 = removedKey;
+                }
                 changed = true;
             }
+            _userLoggedOutThisSession = true;
             LastError = null;
         }
 
@@ -2715,6 +2734,34 @@ public sealed class LocalProfileManager : IDisposable
             _rememberedUsername = string.IsNullOrWhiteSpace(doc.RememberedUsername) ? null : doc.RememberedUsername.Trim();
             _rememberedProtectedKeyBase64 = string.IsNullOrWhiteSpace(doc.RememberedProtectedKeyBase64) ? null : doc.RememberedProtectedKeyBase64.Trim();
 
+            // Documents written before remember-me became opt-in carry a session that was remembered by the
+            // pre-ticked default, not by the user's choice: drop it once and persist the cleared header.
+            var rewriteHeader = false;
+            if (doc.RememberMeOptIn != true &&
+                (_rememberMe || _rememberedUsername is not null || _rememberedProtectedKeyBase64 is not null))
+            {
+                _rememberMe = false;
+                _rememberedUsername = null;
+                _rememberedProtectedKeyBase64 = null;
+                rewriteHeader = true;
+            }
+
+            // A logout whose header write failed: the stale remembered key must not survive the reload.
+            if (_unpersistedLogoutKeyBase64 is { } staleKey)
+            {
+                if (string.Equals(_rememberedProtectedKeyBase64, staleKey, StringComparison.Ordinal))
+                {
+                    _rememberMe = false;
+                    _rememberedUsername = null;
+                    _rememberedProtectedKeyBase64 = null;
+                    rewriteHeader = true;
+                }
+                else
+                {
+                    _unpersistedLogoutKeyBase64 = null;
+                }
+            }
+
             var anyMigratedFromLegacyJson = false;
             foreach (var dto in doc.Profiles)
             {
@@ -2736,7 +2783,8 @@ public sealed class LocalProfileManager : IDisposable
                 };
 
                 // If this session doesn't have the vault key yet, check if the remembered key on disk unlocks this profile
-                if (!_sessionVaultKeys.ContainsKey(entry.Username) &&
+                if (!_userLoggedOutThisSession &&
+                    !_sessionVaultKeys.ContainsKey(entry.Username) &&
                     _rememberMe &&
                     string.Equals(_rememberedUsername, entry.Username, StringComparison.OrdinalIgnoreCase) &&
                     !string.IsNullOrWhiteSpace(_rememberedProtectedKeyBase64))
@@ -2778,7 +2826,7 @@ public sealed class LocalProfileManager : IDisposable
             _lastSyncedJson = json;
             _lastSyncedGeneration = GlobalFileWriteGeneration.GetValueOrDefault(FilePath, 0L);
 
-            if (anyMigratedFromLegacyJson)
+            if (anyMigratedFromLegacyJson || rewriteHeader)
             {
                 SaveAuthHeaderToDiskLocked();
             }
@@ -2791,7 +2839,26 @@ public sealed class LocalProfileManager : IDisposable
         }
     }
 
-    private void SaveAuthHeaderToDiskLocked()
+    /// <summary>
+    /// Writes the auth header (profiles + remembered session) atomically, retrying briefly on IO errors.
+    /// Returns <c>false</c> when the file could not be written; the in-memory state is kept either way.
+    /// </summary>
+    private bool SaveAuthHeaderToDiskLocked()
+    {
+        const int maxAttempts = 3;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            if (TryWriteAuthHeaderLocked())
+            {
+                _unpersistedLogoutKeyBase64 = null;
+                return true;
+            }
+            if (attempt < maxAttempts) Thread.Sleep(25 * attempt);
+        }
+        return false;
+    }
+
+    private bool TryWriteAuthHeaderLocked()
     {
         try
         {
@@ -2814,6 +2881,9 @@ public sealed class LocalProfileManager : IDisposable
                 LastUsername = _lastUsername,
                 RememberedUsername = _rememberMe ? _rememberedUsername : null,
                 RememberedProtectedKeyBase64 = _rememberMe ? _rememberedProtectedKeyBase64 : null,
+                RememberMeOptIn = _rememberMe && _rememberedUsername is not null && _rememberedProtectedKeyBase64 is not null
+                    ? true
+                    : null,
                 Profiles = _profiles.Values
                     .OrderBy(p => p.Username, StringComparer.OrdinalIgnoreCase)
                     .Select(p => new ProfileDto
@@ -2829,15 +2899,15 @@ public sealed class LocalProfileManager : IDisposable
             };
 
             var json = JsonSerializer.Serialize(doc, JsonOptions);
-            if (AtomicFileStore.WriteAllTextAtomic(FilePath, json))
-            {
-                _lastSyncedJson = json;
-                BumpInMemoryGenerationLocked();
-            }
+            if (!AtomicFileStore.WriteAllTextAtomic(FilePath, json)) return false;
+            _lastSyncedJson = json;
+            BumpInMemoryGenerationLocked();
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Keep changes in memory if disk write is blocked.
+            return false;
         }
     }
 
@@ -3046,7 +3116,13 @@ public sealed class LocalProfileManager : IDisposable
     private sealed class ProfilesDocument
     {
         public int Version { get; set; } = 3;
-        public bool RememberMe { get; set; } = true;
+        public bool RememberMe { get; set; }
+
+        /// <summary>
+        /// <c>true</c> only when the remembered session below was created by the user ticking "remember me".
+        /// Missing (older documents) means the session came from the old pre-ticked default and is dropped.
+        /// </summary>
+        public bool? RememberMeOptIn { get; set; }
         public string? LastUsername { get; set; }
         public string? RememberedUsername { get; set; }
         public string? RememberedProtectedKeyBase64 { get; set; }

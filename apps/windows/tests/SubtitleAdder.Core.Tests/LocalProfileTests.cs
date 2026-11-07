@@ -136,12 +136,12 @@ public sealed class LocalProfileTests : IDisposable
     }
 
     [Fact]
-    public void RememberMe_DefaultTrue_AutoRestoresEncryptedSessionAcrossNewInstancesUntilLogout()
+    public void RememberMe_OptIn_AutoRestoresEncryptedSessionAcrossNewInstancesUntilLogout()
     {
         var videoPath = Path.Combine(_tempDir, "remembered_show.mp4");
 
         var firstSession = new LocalProfileManager(_profilesPath);
-        Assert.True(firstSession.Register("emre", "pass2026")); // default rememberMe = true
+        Assert.True(firstSession.Register("emre", "pass2026", rememberMe: true));
         Assert.True(firstSession.RememberMe);
         firstSession.RecordWatch(videoPath, positionSeconds: 50, durationSeconds: 200);
         firstSession.SetLiked(videoPath, true);
@@ -213,9 +213,9 @@ public sealed class LocalProfileTests : IDisposable
         var video1 = Path.Combine(_tempDir, "Instance1_Episode01.mp4");
         var video2 = Path.Combine(_tempDir, "Instance2_Episode02.mp4");
 
-        // Instance 1 registers and logs in (with RememberMe = true)
+        // Instance 1 registers and logs in (opting in to RememberMe)
         var instance1 = new LocalProfileManager(_profilesPath);
-        Assert.True(instance1.Register("shared_user", "shared_pass_123"));
+        Assert.True(instance1.Register("shared_user", "shared_pass_123", rememberMe: true));
 
         // Instance 2 opens concurrently while Instance 1 is still open and auto-restores the same profile
         var instance2 = new LocalProfileManager(_profilesPath);
@@ -355,7 +355,7 @@ public sealed class LocalProfileTests : IDisposable
             var ep2 = Path.Combine(_tempDir, "Episode_02.mp4");
 
             // Instance 0 registers and logs in -> broadcast over Named Pipe Engine to Instances 1..4
-            Assert.True(managers[0].Register("five_window_user", "Pass!12345"));
+            Assert.True(managers[0].Register("five_window_user", "Pass!12345", rememberMe: true));
             await WaitUntilAsync(() => managers.All(m => m.IsLoggedIn && m.CurrentUsername == "five_window_user"));
 
             // Instance 2 watches ep1 and likes it -> broadcast over Named Pipe Engine to all 5 instances

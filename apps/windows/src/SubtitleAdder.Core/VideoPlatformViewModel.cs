@@ -166,7 +166,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     private int _activeVideoViewCount;
     private bool _activeVideoIsLiked;
     private int _activeVideoRating;
-    private bool _rememberMe = true;
+    private bool _rememberMe;
 
     public VideoPlatformViewModel(LocalProfileManager? profileManager = null, LanguageState? languageState = null, IUiDispatcher? ui = null)
     {
@@ -196,7 +196,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     /// <summary>Most recently used username on this machine for convenience pre-filling.</summary>
     public string? LastUsername => _profileManager.LastUsername;
 
-    /// <summary>Whether "Girişi hatırla" (remember login across restarts and instances) is checked (default <c>true</c>).</summary>
+    /// <summary>Whether "Girişi hatırla" (remember login across restarts and instances) is checked. Opt-in: <c>false</c> unless the user ticked it for the current remembered session.</summary>
     public bool RememberMe
     {
         get => _rememberMe;
@@ -386,6 +386,8 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     public void Logout()
     {
         _profileManager.Logout();
+        // The remembered session is gone; the next login must be ticked again by the user.
+        RememberMe = false;
         AuthError = null;
         _activeCustomListId = null;
         if (_activeFilter == VideoFeedFilter.CustomList)
