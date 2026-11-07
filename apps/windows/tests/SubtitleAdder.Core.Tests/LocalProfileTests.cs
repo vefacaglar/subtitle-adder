@@ -858,7 +858,7 @@ public sealed class LocalProfileTests : IDisposable
         Assert.True(manager.SqlStore.Flush(TimeSpan.FromSeconds(5)));
         Assert.Null(manager.SqlStore.LastWriteError);
 
-        var counts = manager.SqlStore.GetTableRowCounts("emre");
+        var counts = manager.GetSqliteTableRowCounts();
         Assert.Equal(1, counts.Videos);
         Assert.Equal(1, counts.WatchProgress);
         Assert.Equal(1, counts.CustomLists);
@@ -893,7 +893,7 @@ public sealed class LocalProfileTests : IDisposable
         Assert.True(migratedMgr.Login("legacy_user", "secret_pw"));
         migratedMgr.RecordWatch(video1, 33, 100);
         Assert.True(migratedMgr.SqlStore.Flush(TimeSpan.FromSeconds(5)));
-        var migratedCounts = migratedMgr.SqlStore.GetTableRowCounts("legacy_user");
+        var migratedCounts = migratedMgr.GetSqliteTableRowCounts();
         Assert.Equal(1, migratedCounts.Videos);
         Assert.Equal(1, migratedCounts.WatchProgress);
         migratedMgr.Dispose();

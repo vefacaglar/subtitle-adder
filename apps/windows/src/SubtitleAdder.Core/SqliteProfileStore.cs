@@ -113,8 +113,36 @@ internal sealed class SqliteProfileStore : IDisposable
         ReplaceCustomListItems,
         UpsertThumbnail,
         MigrateVideoKey,
+        PurgeLegacyVideoKeys,
+        RetagOwner,
         FlushBarrier,
     }
+
+    /// <summary>
+    /// Prefix of every <c>video_key</c> written by the current schema: a keyed hash of the video identity
+    /// (<c>HMAC-SHA256(vaultKey, ...)</c>), so the row key never reveals a path, a file size or a fingerprint.
+    /// </summary>
+    internal const string HashedVideoKeyPrefix = "hk:";
+
+    /// <summary>Prefix of opaque random keys that replaced legacy plaintext keys before the profile logged in again.</summary>
+    internal const string OpaqueLegacyVideoKeyPrefix = "rk:";
+
+    /// <summary>
+    /// Prefix of the owner value stored in the <c>username</c> column of the data tables (videos, watch_progress,
+    /// thumbnails, custom_lists, custom_list_items): a keyed hash of the profile's vault key, so per-profile row counts
+    /// and row order can't be attributed to a profile name without its key. Only <c>profiles</c> holds the name.
+    /// </summary>
+    internal const string OwnerTagPrefix = "ot:";
+
+    private const string PrivacySchemaMetaKey = "privacy_schema";
+    private const string PrivacySchemaVersion = "1";
+    // Set only once VACUUM succeeded after the scrub, so a VACUUM that failed (SQLITE_BUSY from a second instance)
+    // is retried at the next open instead of leaving legacy plaintext in free pages for good.
+    private const string PrivacyVacuumMetaKey = "privacy_vacuum";
+    private const string PrivacyVacuumVersion = "1";
+    // Idempotency ids only (random, no owner, no time). Large enough that a request can only age out long after any
+    // broker could still resend it.
+    private const int MaxProcessedRequestRows = 4096;
 
     internal readonly record struct ListItemRow(string ListId, string ItemHash, int Ord, byte[] EncryptedPathBlob);
 
@@ -263,6 +291,30 @@ internal sealed class SqliteProfileStore : IDisposable
 
     internal void EnqueueItem(WriteItem item) => Enqueue(item);
 
+    /// <summary>
+    /// Drops the in-memory copies of <paramref name="username"/>'s recently written thumbnail blobs (keyed by row key),
+    /// so nothing of an ended session stays in this process. Pending writes still commit from their own items.
+    /// </summary>
+    public void ForgetCachedThumbnails(string? username)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            _recentThumbnailBlobs.Clear();
+            return;
+        }
+        var userUpper = username.Trim().ToUpperInvariant();
+        foreach (var k in _recentThumbnailBlobs.Keys)
+        {
+            if (string.Equals(k.User, userUpper, StringComparison.Ordinal))
+            {
+                _recentThumbnailBlobs.TryRemove(k, out _);
+            }
+        }
+    }
+
+    /// <summary>Number of thumbnail blobs currently held in memory for not-yet-read writes (diagnostics and tests).</summary>
+    internal int CachedThumbnailBlobCount => _recentThumbnailBlobs.Count;
+
     private void Enqueue(WriteItem item)
     {
         if (_disposed)
@@ -281,15 +333,12 @@ internal sealed class SqliteProfileStore : IDisposable
                 _recentThumbnailBlobs[(item.Username.ToUpperInvariant(), item.SecondaryKey.ToUpperInvariant())] = movedThumb;
             }
         }
-        else if (item.Kind == WriteKind.DeleteProfileCascade)
+        else if (item.Kind is WriteKind.DeleteProfileCascade or WriteKind.ReplaceAllVideosAndProgress or WriteKind.PurgeLegacyVideoKeys or WriteKind.RetagOwner)
         {
-            var userUpper = item.Username.ToUpperInvariant();
-            foreach (var k in _recentThumbnailBlobs.Keys)
+            ForgetCachedThumbnails(item.Username);
+            if (!string.IsNullOrWhiteSpace(item.SecondaryKey) && item.Kind is WriteKind.DeleteProfileCascade or WriteKind.RetagOwner)
             {
-                if (string.Equals(k.User, userUpper, StringComparison.Ordinal))
-                {
-                    _recentThumbnailBlobs.TryRemove(k, out _);
-                }
+                ForgetCachedThumbnails(item.SecondaryKey);
             }
         }
 
@@ -721,6 +770,7 @@ internal sealed class SqliteProfileStore : IDisposable
                 for (var i = 0; i < batch.Count; i++)
                 {
                     var bItem = batch[i];
+                    ReleaseCachedThumbnail(bItem);
                     var isDup = duplicateFlags is not null && i < duplicateFlags.Length && duplicateFlags[i];
                     if (bItem.OnCompleted is { } cb)
                     {
@@ -743,6 +793,7 @@ internal sealed class SqliteProfileStore : IDisposable
                     Interlocked.Add(ref _pendingWriteCount, -droppedCount);
                     foreach (var bItem in batch)
                     {
+                        ReleaseCachedThumbnail(bItem);
                         if (bItem.OnCompleted is { } cb)
                         {
                             completedCallbacks.Add((cb, false, false, _lastWriteError));
@@ -842,7 +893,7 @@ internal sealed class SqliteProfileStore : IDisposable
                         case WriteKind.UpsertThumbnail:
                             lastIndexForThumbKey[pair] = i;
                             break;
-                        case WriteKind.DeleteVideo or WriteKind.ReplaceAllVideosAndProgress or WriteKind.MigrateVideoKey or WriteKind.DeleteProfileCascade:
+                        case WriteKind.DeleteVideo or WriteKind.ReplaceAllVideosAndProgress or WriteKind.MigrateVideoKey or WriteKind.DeleteProfileCascade or WriteKind.PurgeLegacyVideoKeys or WriteKind.RetagOwner:
                             lastIndexForVideoKey.Clear();
                             accumulatedViewCountDelta.Clear();
                             lastProgressBlobForVideoKey.Clear();
@@ -852,6 +903,7 @@ internal sealed class SqliteProfileStore : IDisposable
                 }
 
                 long progressCount = 0;
+                var recordedRequests = false;
                 for (var i = 0; i < batch.Count; i++)
                 {
                     if (duplicateFlags[i]) continue;
@@ -863,7 +915,8 @@ internal sealed class SqliteProfileStore : IDisposable
                     {
                         if (!string.IsNullOrEmpty(item.RequestId))
                         {
-                            RecordProcessedRequestLocked(item.RequestId, item.Username, item.UpdatedTicks);
+                            RecordProcessedRequestLocked(item.RequestId, item.Username);
+                            recordedRequests = true;
                         }
                         continue;
                     }
@@ -873,7 +926,8 @@ internal sealed class SqliteProfileStore : IDisposable
                     {
                         if (!string.IsNullOrEmpty(item.RequestId))
                         {
-                            RecordProcessedRequestLocked(item.RequestId, item.Username, item.UpdatedTicks);
+                            RecordProcessedRequestLocked(item.RequestId, item.Username);
+                            recordedRequests = true;
                         }
                         continue;
                     }
@@ -883,7 +937,8 @@ internal sealed class SqliteProfileStore : IDisposable
                     {
                         if (!string.IsNullOrEmpty(item.RequestId))
                         {
-                            RecordProcessedRequestLocked(item.RequestId, item.Username, item.UpdatedTicks);
+                            RecordProcessedRequestLocked(item.RequestId, item.Username);
+                            recordedRequests = true;
                         }
                         continue;
                     }
@@ -899,13 +954,18 @@ internal sealed class SqliteProfileStore : IDisposable
                     ExecuteSingleWriteLocked(item, effectiveDelta, effectiveSecondaryBlob);
                     if (!string.IsNullOrEmpty(item.RequestId))
                     {
-                        RecordProcessedRequestLocked(item.RequestId, item.Username, item.UpdatedTicks);
+                        RecordProcessedRequestLocked(item.RequestId, item.Username);
+                        recordedRequests = true;
                     }
                     if ((item.Kind == WriteKind.UpsertWatchProgress && item.Blob is not null) ||
                         (item.Kind == WriteKind.UpsertVideo && effectiveSecondaryBlob is not null))
                     {
                         progressCount++;
                     }
+                }
+                if (recordedRequests)
+                {
+                    PruneProcessedRequestsLocked();
                 }
                 if (!TryExecNonQueryLocked("COMMIT;", out var commitErr))
                 {
@@ -954,8 +1014,12 @@ internal sealed class SqliteProfileStore : IDisposable
         }
     }
 
-    private void RecordProcessedRequestLocked(string requestId, string username, long ticks)
+    // Only the random idempotency id is kept: no owner (so the table gives no per-profile activity count), no
+    // timestamp, and the table is capped to the newest MaxProcessedRequestRows rows. The ids are deliberately kept
+    // across "clear history": a resent pre-clear write must still be recognised as a duplicate.
+    private void RecordProcessedRequestLocked(string requestId, string username)
     {
+        _ = username;
         if (string.IsNullOrWhiteSpace(requestId)) return;
         const string sql = """
             INSERT OR IGNORE INTO processed_requests (request_id, username, processed_at_ticks)
@@ -968,8 +1032,8 @@ internal sealed class SqliteProfileStore : IDisposable
         try
         {
             BindText(stmt, 1, requestId);
-            BindText(stmt, 2, username ?? "");
-            sqlite3_bind_int64(stmt, 3, ticks > 0 ? ticks : DateTimeOffset.UtcNow.UtcTicks);
+            BindText(stmt, 2, "");
+            sqlite3_bind_int64(stmt, 3, 0);
             StepDoneOrThrow(stmt, "RecordProcessedRequest");
         }
         finally
@@ -978,77 +1042,45 @@ internal sealed class SqliteProfileStore : IDisposable
         }
     }
 
+    private void PruneProcessedRequestsLocked()
+    {
+        if (!TryExecNonQueryLocked(
+                $"DELETE FROM processed_requests WHERE rowid NOT IN (SELECT rowid FROM processed_requests ORDER BY rowid DESC LIMIT {MaxProcessedRequestRows});",
+                out var error))
+        {
+            throw new InvalidOperationException(error ?? "Pruning processed_requests failed.");
+        }
+    }
+
+    // The view count lives only inside the encrypted blob: view_count stays -1 and updated_at_ticks 0, so the
+    // plaintext columns never reveal how often or when a video was watched.
     private void UpsertVideoRowLocked(
         string username,
         string key,
-        byte[] encryptedBlob,
-        long updatedAtTicks,
-        int explicitViewCount,
-        int viewCountDelta)
+        byte[] encryptedBlob)
     {
-        if (viewCountDelta > 0)
+        const string sql = """
+            INSERT INTO videos (username, video_key, encrypted_blob, updated_at_ticks, view_count)
+            VALUES (?1, ?2, ?3, 0, -1)
+            ON CONFLICT(username, video_key) DO UPDATE SET
+                encrypted_blob = excluded.encrypted_blob,
+                updated_at_ticks = 0,
+                view_count = -1;
+            """;
+        if (!TryPrepareLocked(sql, out var stmt))
         {
-            var initialViews = explicitViewCount >= viewCountDelta ? explicitViewCount : viewCountDelta;
-            const string sql = """
-                INSERT INTO videos (username, video_key, encrypted_blob, updated_at_ticks, view_count)
-                VALUES (?1, ?2, ?3, ?4, ?5)
-                ON CONFLICT(username, video_key) DO UPDATE SET
-                    encrypted_blob = excluded.encrypted_blob,
-                    updated_at_ticks = excluded.updated_at_ticks,
-                    view_count = CASE
-                        WHEN videos.view_count >= 0 THEN videos.view_count + ?6
-                        ELSE ?5
-                    END;
-                """;
-            if (!TryPrepareLocked(sql, out var stmt))
-            {
-                throw new InvalidOperationException("Failed to prepare UpsertVideoRowDelta statement.");
-            }
-            try
-            {
-                BindText(stmt, 1, username);
-                BindText(stmt, 2, key);
-                BindBlob(stmt, 3, encryptedBlob);
-                sqlite3_bind_int64(stmt, 4, updatedAtTicks);
-                sqlite3_bind_int64(stmt, 5, initialViews);
-                sqlite3_bind_int64(stmt, 6, viewCountDelta);
-                StepDoneOrThrow(stmt, "UpsertVideoRowDelta");
-            }
-            finally
-            {
-                sqlite3_finalize(stmt);
-            }
+            throw new InvalidOperationException("Failed to prepare UpsertVideoRow statement.");
         }
-        else
+        try
         {
-            const string sql = """
-                INSERT INTO videos (username, video_key, encrypted_blob, updated_at_ticks, view_count)
-                VALUES (?1, ?2, ?3, ?4, ?5)
-                ON CONFLICT(username, video_key) DO UPDATE SET
-                    encrypted_blob = excluded.encrypted_blob,
-                    updated_at_ticks = excluded.updated_at_ticks,
-                    view_count = CASE
-                        WHEN ?5 >= 0 AND videos.view_count < 0 THEN ?5
-                        ELSE videos.view_count
-                    END;
-                """;
-            if (!TryPrepareLocked(sql, out var stmt))
-            {
-                throw new InvalidOperationException("Failed to prepare UpsertVideoRow statement.");
-            }
-            try
-            {
-                BindText(stmt, 1, username);
-                BindText(stmt, 2, key);
-                BindBlob(stmt, 3, encryptedBlob);
-                sqlite3_bind_int64(stmt, 4, updatedAtTicks);
-                sqlite3_bind_int64(stmt, 5, explicitViewCount);
-                StepDoneOrThrow(stmt, "UpsertVideoRow");
-            }
-            finally
-            {
-                sqlite3_finalize(stmt);
-            }
+            BindText(stmt, 1, username);
+            BindText(stmt, 2, key);
+            BindBlob(stmt, 3, encryptedBlob);
+            StepDoneOrThrow(stmt, "UpsertVideoRow");
+        }
+        finally
+        {
+            sqlite3_finalize(stmt);
         }
     }
 
@@ -1089,25 +1121,38 @@ internal sealed class SqliteProfileStore : IDisposable
                 break;
 
             case WriteKind.DeleteProfileCascade:
-                DeleteByUsernameLocked("DELETE FROM processed_requests WHERE username = ?1;", item.Username);
-                DeleteByUsernameLocked("DELETE FROM thumbnails WHERE username = ?1;", item.Username);
-                DeleteByUsernameLocked("DELETE FROM custom_list_items WHERE username = ?1;", item.Username);
-                DeleteByUsernameLocked("DELETE FROM custom_lists WHERE username = ?1;", item.Username);
-                DeleteByUsernameLocked("DELETE FROM watch_progress WHERE username = ?1;", item.Username);
-                DeleteByUsernameLocked("DELETE FROM videos WHERE username = ?1;", item.Username);
+                // Data rows are owned by the profile's owner tag (SecondaryKey); rows of earlier versions still carry
+                // the profile name.
+                foreach (var owner in new[] { item.Username, item.SecondaryKey })
+                {
+                    if (string.IsNullOrWhiteSpace(owner)) continue;
+                    foreach (var table in OwnedDataTables)
+                    {
+                        DeleteByUsernameLocked($"DELETE FROM {table} WHERE username = ?1;", owner);
+                    }
+                }
                 DeleteByUsernameLocked("DELETE FROM profiles WHERE username = ?1;", item.Username);
+                break;
+
+            case WriteKind.RetagOwner:
+                // Moves a profile's rows from its plaintext name to its owner tag; a row that already exists under the
+                // tag is newer, so the legacy duplicate is dropped.
+                if (!string.IsNullOrWhiteSpace(item.Username) &&
+                    item.SecondaryKey.StartsWith(OwnerTagPrefix, StringComparison.Ordinal))
+                {
+                    foreach (var table in OwnedDataTables)
+                    {
+                        DeleteKeyedRowLocked($"UPDATE OR IGNORE {table} SET username = ?2 WHERE username = ?1;", item.Username, item.SecondaryKey);
+                        DeleteByUsernameLocked($"DELETE FROM {table} WHERE username = ?1;", item.Username);
+                    }
+                }
                 break;
 
             case WriteKind.UpsertVideo:
                 if (item.Blob is not null)
                 {
-                    UpsertVideoRowLocked(
-                        item.Username,
-                        item.Key,
-                        item.Blob,
-                        item.UpdatedTicks,
-                        item.ViewCount,
-                        effectiveViewCountDelta);
+                    _ = effectiveViewCountDelta;
+                    UpsertVideoRowLocked(item.Username, item.Key, item.Blob);
                 }
                 if (effectiveSecondaryBlob is not null)
                 {
@@ -1132,7 +1177,7 @@ internal sealed class SqliteProfileStore : IDisposable
                     UpsertKeyedBlobLocked(
                         """
                         INSERT OR IGNORE INTO videos (username, video_key, encrypted_blob, updated_at_ticks, view_count)
-                        VALUES (?1, ?2, ?3, ?4, 0);
+                        VALUES (?1, ?2, ?3, ?4, -1);
                         """,
                         item.Username,
                         item.Key,
@@ -1169,7 +1214,7 @@ internal sealed class SqliteProfileStore : IDisposable
                     UpsertBatchLocked(
                         """
                         INSERT OR REPLACE INTO videos (username, video_key, encrypted_blob, updated_at_ticks, view_count)
-                        VALUES (?1, ?2, ?3, ?4, 0);
+                        VALUES (?1, ?2, ?3, ?4, -1);
                         """,
                         item.Username,
                         vRows);
@@ -1184,6 +1229,16 @@ internal sealed class SqliteProfileStore : IDisposable
                         item.Username,
                         pRows);
                 }
+                // Thumbnails of the videos that left the history go with them.
+                DeleteByUsernameLocked(
+                    "DELETE FROM thumbnails WHERE username = ?1 AND video_key NOT IN (SELECT video_key FROM videos WHERE username = ?1);",
+                    item.Username);
+                break;
+
+            case WriteKind.PurgeLegacyVideoKeys:
+                DeleteByUsernameLocked($"DELETE FROM watch_progress WHERE username = ?1 AND substr(video_key, 1, 3) <> '{HashedVideoKeyPrefix}';", item.Username);
+                DeleteByUsernameLocked($"DELETE FROM videos WHERE username = ?1 AND substr(video_key, 1, 3) <> '{HashedVideoKeyPrefix}';", item.Username);
+                DeleteByUsernameLocked($"DELETE FROM thumbnails WHERE username = ?1 AND substr(video_key, 1, 3) <> '{HashedVideoKeyPrefix}';", item.Username);
                 break;
 
             case WriteKind.UpsertCustomList:
@@ -1298,7 +1353,7 @@ internal sealed class SqliteProfileStore : IDisposable
                     UpsertKeyedBlobLocked(
                         """
                         INSERT OR IGNORE INTO videos (username, video_key, encrypted_blob, updated_at_ticks, view_count)
-                        VALUES (?1, ?2, ?3, ?4, 0);
+                        VALUES (?1, ?2, ?3, ?4, -1);
                         """,
                         item.Username,
                         item.Key,
@@ -1351,13 +1406,7 @@ internal sealed class SqliteProfileStore : IDisposable
                 }
                 if (item.Blob is not null)
                 {
-                    UpsertVideoRowLocked(
-                        item.Username,
-                        item.SecondaryKey,
-                        item.Blob,
-                        item.UpdatedTicks,
-                        item.ViewCount,
-                        viewCountDelta: 0);
+                    UpsertVideoRowLocked(item.Username, item.SecondaryKey, item.Blob);
                 }
                 if (effectiveSecondaryBlob is not null)
                 {
@@ -1517,6 +1566,27 @@ internal sealed class SqliteProfileStore : IDisposable
         }
     }
 
+    /// <summary>
+    /// True when any data table still has a committed row owned by <paramref name="owner"/> (no flush: used at login
+    /// to find rows earlier versions stored under the plain profile name).
+    /// </summary>
+    public bool HasRowsOwnedBy(string owner)
+    {
+        if (string.IsNullOrWhiteSpace(owner)) return false;
+        lock (_dbLock)
+        {
+            if (!EnsureConnectionLocked()) return false;
+            foreach (var table in OwnedDataTables)
+            {
+                if (CountRowsByUserLocked($"SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE username = ?1 LIMIT 1);", owner) > 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
     private long CountRowsByUserLocked(string sql, string username)
     {
         if (!TryPrepareLocked(sql, out var stmt)) return 0;
@@ -1568,6 +1638,8 @@ internal sealed class SqliteProfileStore : IDisposable
                 PRAGMA journal_mode=WAL;
                 PRAGMA synchronous=NORMAL;
                 PRAGMA temp_store=MEMORY;
+                PRAGMA secure_delete=ON;
+                PRAGMA journal_size_limit=0;
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY NOT NULL,
                     value TEXT
@@ -1627,6 +1699,258 @@ internal sealed class SqliteProfileStore : IDisposable
                 """,
                 out _);
             TryExecNonQueryLocked("ALTER TABLE videos ADD COLUMN view_count INTEGER NOT NULL DEFAULT -1;", out _);
+            MigratePlaintextHistoryColumnsLocked();
+        }
+    }
+
+    private static readonly string[] OwnedDataTables = ["thumbnails", "custom_list_items", "custom_lists", "watch_progress", "videos"];
+
+    // Drops the in-memory copy of a thumbnail once its write has committed (or was dropped): the row is then read
+    // from the database, so a process (for example the one hosting the broker for other windows) never keeps other
+    // profiles' thumbnail ciphertexts beyond the moment they are written.
+    private void ReleaseCachedThumbnail(WriteItem item)
+    {
+        if (item.Kind == WriteKind.UpsertThumbnail && item.Blob is { } blob)
+        {
+            _recentThumbnailBlobs.TryRemove(new KeyValuePair<(string, string), byte[]>(
+                (item.Username.ToUpperInvariant(), item.Key.ToUpperInvariant()), blob));
+        }
+        else if (item.Kind == WriteKind.MigrateVideoKey && !string.IsNullOrEmpty(item.SecondaryKey))
+        {
+            _recentThumbnailBlobs.TryRemove((item.Username.ToUpperInvariant(), item.SecondaryKey.ToUpperInvariant()), out _);
+        }
+    }
+
+    /// <summary>
+    /// One-time scrub of watch data that earlier versions kept in plaintext columns, done without any profile key:
+    /// legacy row keys (full paths or <c>fp:&lt;length&gt;:&lt;hash&gt;</c>) become opaque random keys (the real identity is
+    /// inside the encrypted blob, and the next login rewrites them as keyed hashes), view counts and timestamps are
+    /// cleared, the processed-request log is emptied, and the file is vacuumed so the old text leaves the free pages and WAL.
+    /// </summary>
+    private void MigratePlaintextHistoryColumnsLocked()
+    {
+        if (ScrubPlaintextHistoryColumnsLocked())
+        {
+            // Earlier builds stored the owner of each processed request; the ids alone are enough.
+            TryExecNonQueryLocked("UPDATE processed_requests SET username = '' WHERE username <> '';", out _);
+            EnsurePrivacyVacuumLocked();
+        }
+    }
+
+    // Rebuilds the file once after the scrub so deleted plaintext (including cells freed by earlier versions before
+    // secure_delete was on) no longer sits in free pages or in the WAL. The flag is written only after VACUUM
+    // succeeded, so a failed attempt is retried at the next open.
+    private void EnsurePrivacyVacuumLocked()
+    {
+        if (ReadMetaValueLocked(PrivacyVacuumMetaKey) == PrivacyVacuumVersion) return;
+        if (!TryExecNonQueryLocked("VACUUM;", out var error))
+        {
+            DiagnosticLog.Write("SQLite", $"Privacy VACUUM deferred: {error}");
+            return;
+        }
+        TryExecNonQueryLocked("PRAGMA wal_checkpoint(TRUNCATE);", out _);
+        TryExecNonQueryLocked(
+            $"INSERT OR REPLACE INTO meta (key, value) VALUES ('{PrivacyVacuumMetaKey}', '{PrivacyVacuumVersion}');",
+            out _);
+    }
+
+    // Returns true once the scrub is in place (now or earlier).
+    private bool ScrubPlaintextHistoryColumnsLocked()
+    {
+        if (ReadMetaValueLocked(PrivacySchemaMetaKey) == PrivacySchemaVersion) return true;
+        if (!TryExecNonQueryLocked("BEGIN IMMEDIATE;", out _)) return false;
+        try
+        {
+            if (ReadMetaValueLocked(PrivacySchemaMetaKey) == PrivacySchemaVersion)
+            {
+                TryExecNonQueryLocked("COMMIT;", out _);
+                return true;
+            }
+
+            const string legacyFilter = $"substr(video_key, 1, 3) NOT IN ('{HashedVideoKeyPrefix}', '{OpaqueLegacyVideoKeyPrefix}')";
+            var ok = TryExecNonQueryLocked(
+                $"""
+                DROP TABLE IF EXISTS temp.legacy_video_keys;
+                CREATE TEMP TABLE legacy_video_keys (
+                    username TEXT NOT NULL COLLATE NOCASE,
+                    old_key TEXT NOT NULL COLLATE NOCASE,
+                    new_key TEXT NOT NULL,
+                    PRIMARY KEY (username, old_key)
+                );
+                INSERT OR IGNORE INTO temp.legacy_video_keys (username, old_key, new_key)
+                    SELECT username, video_key, '{OpaqueLegacyVideoKeyPrefix}' || lower(hex(randomblob(16)))
+                    FROM (
+                        SELECT username, video_key FROM videos
+                        UNION SELECT username, video_key FROM watch_progress
+                        UNION SELECT username, video_key FROM thumbnails
+                    )
+                    WHERE {legacyFilter};
+                UPDATE videos SET video_key = (
+                    SELECT m.new_key FROM temp.legacy_video_keys m
+                    WHERE m.username = videos.username AND m.old_key = videos.video_key)
+                WHERE {legacyFilter};
+                UPDATE watch_progress SET video_key = (
+                    SELECT m.new_key FROM temp.legacy_video_keys m
+                    WHERE m.username = watch_progress.username AND m.old_key = watch_progress.video_key)
+                WHERE {legacyFilter};
+                UPDATE thumbnails SET video_key = (
+                    SELECT m.new_key FROM temp.legacy_video_keys m
+                    WHERE m.username = thumbnails.username AND m.old_key = thumbnails.video_key)
+                WHERE {legacyFilter};
+                DROP TABLE temp.legacy_video_keys;
+                UPDATE videos SET updated_at_ticks = 0, view_count = -1;
+                UPDATE watch_progress SET updated_at_ticks = 0;
+                UPDATE thumbnails SET updated_at_ticks = 0;
+                UPDATE custom_lists SET updated_at_ticks = 0;
+                DELETE FROM processed_requests;
+                DELETE FROM meta WHERE key = '{PrivacyVacuumMetaKey}';
+                INSERT OR REPLACE INTO meta (key, value) VALUES ('{PrivacySchemaMetaKey}', '{PrivacySchemaVersion}');
+                """,
+                out var error);
+            if (!ok || !TryExecNonQueryLocked("COMMIT;", out error))
+            {
+                DiagnosticLog.Write("SQLite", $"Privacy schema migration failed: {error}");
+                TryExecNonQueryLocked("ROLLBACK;", out _);
+                return false;
+            }
+            return true;
+        }
+        catch
+        {
+            TryExecNonQueryLocked("ROLLBACK;", out _);
+            return false;
+        }
+    }
+
+    /// <summary>True once the post-scrub VACUUM has completed (privacy regression tests).</summary>
+    internal bool IsPrivacyVacuumDoneForTests()
+    {
+        lock (_dbLock)
+        {
+            return EnsureConnectionLocked() && ReadMetaValueLocked(PrivacyVacuumMetaKey) == PrivacyVacuumVersion;
+        }
+    }
+
+    private string? ReadMetaValueLocked(string key)
+    {
+        if (!TryPrepareLocked("SELECT value FROM meta WHERE key = ?1 LIMIT 1;", out var stmt)) return null;
+        try
+        {
+            BindText(stmt, 1, key);
+            return StepWithRetry(stmt) == SqliteRow ? ReadTextColumn(stmt, 0) : null;
+        }
+        finally
+        {
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    /// <summary>Reads every <c>(table, username, video_key, updated_at_ticks, view_count)</c> row; for privacy regression tests.</summary>
+    internal List<(string Table, string Username, string Key, long UpdatedTicks, long ViewCount)> DumpPlaintextVideoColumns()
+    {
+        var rows = new List<(string, string, string, long, long)>();
+        FlushForPath(DbPath);
+        lock (_dbLock)
+        {
+            if (!EnsureConnectionLocked()) return rows;
+            foreach (var (table, viewCol) in new[] { ("videos", "view_count"), ("watch_progress", "-1"), ("thumbnails", "-1") })
+            {
+                if (!TryPrepareLocked($"SELECT username, video_key, updated_at_ticks, {viewCol} FROM {table};", out var stmt)) continue;
+                try
+                {
+                    while (StepWithRetry(stmt) == SqliteRow)
+                    {
+                        rows.Add((table, ReadTextColumn(stmt, 0), ReadTextColumn(stmt, 1), sqlite3_column_int64(stmt, 2), sqlite3_column_int64(stmt, 3)));
+                    }
+                }
+                finally
+                {
+                    sqlite3_finalize(stmt);
+                }
+            }
+        }
+        return rows;
+    }
+
+    /// <summary>Reads every <c>(username, processed_at_ticks)</c> row of <c>processed_requests</c>; for privacy regression tests.</summary>
+    internal List<(string Username, long Ticks)> DumpProcessedRequests()
+    {
+        var rows = new List<(string, long)>();
+        FlushForPath(DbPath);
+        lock (_dbLock)
+        {
+            if (!EnsureConnectionLocked()) return rows;
+            if (!TryPrepareLocked("SELECT username, processed_at_ticks FROM processed_requests;", out var stmt)) return rows;
+            try
+            {
+                while (StepWithRetry(stmt) == SqliteRow)
+                {
+                    rows.Add((ReadTextColumn(stmt, 0), sqlite3_column_int64(stmt, 1)));
+                }
+            }
+            finally
+            {
+                sqlite3_finalize(stmt);
+            }
+        }
+        return rows;
+    }
+
+    /// <summary>Reads <c>(table, username, length(blob))</c> of every data row; for privacy regression tests.</summary>
+    internal List<(string Table, string Owner, long BlobLength)> DumpOwnersAndBlobLengths()
+    {
+        var rows = new List<(string, string, long)>();
+        FlushForPath(DbPath);
+        lock (_dbLock)
+        {
+            if (!EnsureConnectionLocked()) return rows;
+            foreach (var table in OwnedDataTables)
+            {
+                var blobCol = table == "custom_list_items" ? "encrypted_path_blob" : "encrypted_blob";
+                if (!TryPrepareLocked($"SELECT username, length({blobCol}) FROM {table};", out var stmt)) continue;
+                try
+                {
+                    while (StepWithRetry(stmt) == SqliteRow)
+                    {
+                        rows.Add((table, ReadTextColumn(stmt, 0), sqlite3_column_int64(stmt, 1)));
+                    }
+                }
+                finally
+                {
+                    sqlite3_finalize(stmt);
+                }
+            }
+        }
+        return rows;
+    }
+
+    /// <summary>Runs a statement directly; for tests that seed legacy-format rows.</summary>
+    internal bool ExecuteRawForTests(string sql)
+    {
+        lock (_dbLock)
+        {
+            return EnsureConnectionLocked() && TryExecNonQueryLocked(sql, out _);
+        }
+    }
+
+    /// <summary>Runs the open-time privacy steps again (scrub if needed, then the VACUUM if it has not succeeded yet).</summary>
+    internal void RunStartupPrivacyStepsForTests()
+    {
+        lock (_dbLock)
+        {
+            if (!EnsureConnectionLocked()) return;
+            MigratePlaintextHistoryColumnsLocked();
+        }
+    }
+
+    /// <summary>Re-runs the one-time plaintext scrub as if the database had just been opened by this version.</summary>
+    internal void RerunPrivacyMigrationForTests()
+    {
+        lock (_dbLock)
+        {
+            if (!EnsureConnectionLocked()) return;
+            TryExecNonQueryLocked($"DELETE FROM meta WHERE key = '{PrivacySchemaMetaKey}';", out _);
+            MigratePlaintextHistoryColumnsLocked();
         }
     }
 
@@ -1744,7 +2068,9 @@ internal sealed class SqliteProfileStore : IDisposable
             BindText(stmt, 1, username);
             BindText(stmt, 2, key);
             BindBlob(stmt, 3, encryptedBlob);
-            sqlite3_bind_int64(stmt, 4, updatedAtTicks);
+            // Timestamps live inside the encrypted blobs only; the plaintext column is always 0.
+            _ = updatedAtTicks;
+            sqlite3_bind_int64(stmt, 4, 0);
             StepDoneOrThrow(stmt, "UpsertKeyedBlob");
         }
         finally

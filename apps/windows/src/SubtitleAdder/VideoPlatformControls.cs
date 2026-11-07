@@ -1550,7 +1550,16 @@ public sealed class VideoPlatformHubView : Grid
     {
         if (!_isActiveTab)
         {
+            // Hidden hubs still release the previous profile's cards, stats and thumbnails right away.
             _dirtyWhileHidden = true;
+            if (_dispatcherQueue is { } hiddenDq && !hiddenDq.HasThreadAccess)
+            {
+                hiddenDq.TryEnqueue(ClearPersonalUiIfProfileChanged);
+            }
+            else
+            {
+                ClearPersonalUiIfProfileChanged();
+            }
             return;
         }
         if (_dispatcherQueue is { } dq)
@@ -1798,6 +1807,14 @@ public sealed class VideoPlatformHubView : Grid
                 return;
             }
 
+            if (!_vm.IsLoggedIn)
+            {
+                // Without a profile there is no history at all; the hint must not suggest that one is being kept.
+                _emptyStateTitle.Text = L("Gösterilecek video bulunamadı");
+                _emptyStateSubtitle.Text = L("Profil açık değilken izleme geçmişi tutulmaz. Klasör gezgininden bir video açabilir veya geçmişinizi görmek için giriş yapabilirsiniz.");
+                return;
+            }
+
             _emptyStateTitle.Text = _vm.ActiveFilter switch
             {
                 VideoFeedFilter.History => L("Henüz izleme geçmişi yok"),
@@ -2008,6 +2025,8 @@ public sealed class VideoPlatformHubView : Grid
             Background = new SolidColorBrush(ColorHelper.FromArgb(0xC8, 0x00, 0x00, 0x00)),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
+            // Watch state (views, progress, last watched) exists only for a logged-in profile.
+            Visibility = _vm.IsLoggedIn ? Visibility.Visible : Visibility.Collapsed,
             Child = viewsPillText,
         };
         thumbGrid.Children.Add(viewsPill);
@@ -2044,7 +2063,7 @@ public sealed class VideoPlatformHubView : Grid
             Background = new SolidColorBrush(ColorHelper.FromArgb(0x55, 0xFF, 0xFF, 0xFF)),
             VerticalAlignment = VerticalAlignment.Bottom,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Visibility = item.HasProgress ? Visibility.Visible : Visibility.Collapsed,
+            Visibility = item.HasProgress && _vm.IsLoggedIn ? Visibility.Visible : Visibility.Collapsed,
             Child = progressFill,
         };
         thumbGrid.Children.Add(progressTrack);
@@ -2144,10 +2163,15 @@ public sealed class VideoPlatformHubView : Grid
 
     private void UpdateVideoCardInPlace(RenderedVideoCard rendered, VideoCardViewModel item)
     {
-        rendered.ViewsPillText.Text = item.ViewsText;
+        var loggedIn = _vm.IsLoggedIn;
+        rendered.ViewsPillText.Text = loggedIn ? item.ViewsText : "";
+        if (rendered.ViewsPillText.Parent is Border viewsPill)
+        {
+            viewsPill.Visibility = loggedIn ? Visibility.Visible : Visibility.Collapsed;
+        }
         rendered.DurationPillText.Text = item.DurationText;
         rendered.DurationPill.Visibility = string.IsNullOrEmpty(item.DurationText) ? Visibility.Collapsed : Visibility.Visible;
-        rendered.ProgressTrack.Visibility = item.HasProgress ? Visibility.Visible : Visibility.Collapsed;
+        rendered.ProgressTrack.Visibility = item.HasProgress && loggedIn ? Visibility.Visible : Visibility.Collapsed;
         rendered.ProgressFill.Width = Math.Clamp(192 * item.ProgressRatio, 4, 192);
         rendered.TitleText.Text = item.Title;
         rendered.FolderText.Text = item.FolderDisplay;
@@ -2172,13 +2196,16 @@ public sealed class VideoPlatformHubView : Grid
         var badgesRow = rendered.BadgesRow;
         badgesRow.Children.Clear();
 
-        badgesRow.Children.Add(new TextBlock
+        if (_vm.IsLoggedIn)
         {
-            Text = $"{item.ViewsText} · {item.LastWatchedText}",
-            FontSize = 11.5,
-            Opacity = 0.78,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
+            badgesRow.Children.Add(new TextBlock
+            {
+                Text = $"{item.ViewsText} · {item.LastWatchedText}",
+                FontSize = 11.5,
+                Opacity = 0.78,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
 
         if (item.HasSubtitle)
         {
@@ -2382,6 +2409,7 @@ public sealed class VideoPlatformHubView : Grid
         // and drop the result if the profile logged out or changed while it was awaited.
         var generation = _authGeneration;
         var session = _vm.CurrentUsername;
+        var sessionToken = _vm.SessionToken;
         try
         {
             var bytes = item.ThumbnailBytes;
@@ -2428,7 +2456,8 @@ public sealed class VideoPlatformHubView : Grid
                 {
                     var pathToSave = item.VideoPath;
                     var bytesToSave = capturedBytes;
-                    _ = Task.Run(() => _vm.SaveEncryptedThumbnail(pathToSave, bytesToSave));
+                    // Saved only into the session that started the capture, never into a profile that logged in meanwhile.
+                    _ = Task.Run(() => _vm.SaveEncryptedThumbnail(pathToSave, bytesToSave, sessionToken));
                 }
                 await ApplyAndCacheThumbnailBytesAsync(item.VideoPath, capturedBytes, targetImage, generation, session);
             }

@@ -178,7 +178,8 @@ public sealed class MediaLibraryIndexTests : IDisposable
         Assert.Single(vm.Files);
         Assert.Equal("parent_clip.mp4", vm.Files[0].FileName);
         Assert.Equal(3, vm.TotalIndexedFiles);
-        Assert.Equal(MediaLibraryIndex.NormalizeDirectoryPath(parentDir), settings.GetString(FileExplorerViewModel.LastFolderDefaultsKey));
+        // The browsed folder is never persisted in plaintext settings.
+        Assert.Null(settings.GetString(FileExplorerViewModel.LastFolderDefaultsKey));
 
         // Navigate into Child
         await vm.NavigateToAsync(childDir, crawlSubfolders: false);

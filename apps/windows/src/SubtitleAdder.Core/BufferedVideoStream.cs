@@ -44,6 +44,7 @@ public sealed class BufferedVideoStream : Stream
     private readonly int _readAheadChunks;
     private readonly long _totalChunks;
     private readonly EncryptedVideoCacheStore? _cacheStore;
+    private readonly EncryptedVideoCacheStore.CacheSession? _cacheSession;
     private readonly string? _videoIdentity;
 
     private readonly Lock _cacheLock = new();
@@ -113,8 +114,12 @@ public sealed class BufferedVideoStream : Stream
         _maxCachedChunks = Math.Max(2, maxCachedChunks);
         _readAheadChunks = Math.Clamp(readAheadChunks, 0, _maxCachedChunks - 1);
         _totalChunks = _length <= 0 ? 0 : ((_length - 1) / _chunkSize) + 1;
-        _cacheStore = cacheStore;
-        _videoIdentity = !string.IsNullOrWhiteSpace(videoIdentity)
+        // The SSD cache belongs to the profile that is active when the stream opens; while logged out nothing is
+        // cached on disk, and once that session ends the store refuses this stream's reads and writes.
+        _cacheSession = cacheStore?.TryBeginSession();
+        _cacheStore = _cacheSession is null ? null : cacheStore;
+        cacheStore = _cacheStore;
+        _videoIdentity = !string.IsNullOrWhiteSpace(videoIdentity) && cacheStore is not null
             ? videoIdentity
             : (cacheStore is not null && !string.IsNullOrWhiteSpace(filePath)
                 ? EncryptedVideoCacheStore.ComputeVideoIdentity(filePath, _length, _chunkSize)
@@ -139,7 +144,7 @@ public sealed class BufferedVideoStream : Stream
         if (_disposed || _cacheStore is null || string.IsNullOrWhiteSpace(_videoIdentity) || _totalChunks <= 0) return;
         try
         {
-            var existing = _cacheStore.GetCachedChunkIndices(_videoIdentity, _totalChunks, _chunkSize, _length);
+            var existing = _cacheStore.GetCachedChunkIndices(_cacheSession, _videoIdentity, _totalChunks, _chunkSize, _length);
             if (existing.Count == 0 || _disposed) return;
             lock (_cacheLock)
             {
@@ -421,7 +426,7 @@ public sealed class BufferedVideoStream : Stream
         // Fast path 2: Already in per-profile AES-256-GCM encrypted SSD cache -> decrypt into RAM without locking HDD stream!
         if (expectedBytes > 0 && _cacheStore is not null && !string.IsNullOrWhiteSpace(_videoIdentity))
         {
-            var decrypted = _cacheStore.TryReadChunk(_videoIdentity, _chunkSize, chunkIndex, expectedBytes);
+            var decrypted = _cacheStore.TryReadChunk(_cacheSession, _videoIdentity, _chunkSize, chunkIndex, expectedBytes);
             if (decrypted is not null && decrypted.Length == expectedBytes)
             {
                 Interlocked.Increment(ref _encryptedCacheReadCount);
@@ -526,7 +531,7 @@ public sealed class BufferedVideoStream : Stream
             else
             {
                 // Synchronous write for in-memory test streams so unit tests can immediately inspect .vcache files
-                _cacheStore.TryWriteChunk(_videoIdentity, _chunkSize, chunkIndex, data.AsSpan(0, totalRead));
+                _cacheStore.TryWriteChunk(_cacheSession, _videoIdentity, _chunkSize, chunkIndex, data.AsSpan(0, totalRead));
             }
         }
 
@@ -552,7 +557,7 @@ public sealed class BufferedVideoStream : Stream
                 if (_cacheStore is null || string.IsNullOrWhiteSpace(_videoIdentity)) break;
                 try
                 {
-                    _cacheStore.TryWriteChunk(_videoIdentity, _chunkSize, item.ChunkIndex, item.Data.AsSpan(0, item.Length));
+                    _cacheStore.TryWriteChunk(_cacheSession, _videoIdentity, _chunkSize, item.ChunkIndex, item.Data.AsSpan(0, item.Length));
                 }
                 catch
                 {

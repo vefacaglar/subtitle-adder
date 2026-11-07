@@ -149,6 +149,14 @@ public sealed class LocalProfileManager : IDisposable
     // disk it is ignored on every sync and the cleared header is written again.
     private string? _unpersistedLogoutKeyBase64;
 
+    // Changes whenever the active profile session starts, ends or switches. Deferred work (debounced watch
+    // recording, thumbnail saves, buffered progress) captures it and is dropped when it no longer matches.
+    private long _sessionToken;
+
+    // Key rewrites and legacy purges already queued in this process: syncs that run before they commit would
+    // otherwise queue the same rewrite again.
+    private readonly HashSet<string> _submittedVideoKeyRewrites = new(StringComparer.OrdinalIgnoreCase);
+
     public LocalProfileManager(string? filePath = null, StateSyncBroker? broker = null)
     {
         FilePath = string.IsNullOrWhiteSpace(filePath) ? DefaultPath : Path.GetFullPath(filePath);
@@ -211,12 +219,15 @@ public sealed class LocalProfileManager : IDisposable
     /// <summary>Returns row counts across the 5 normalized encrypted SQLite tables for the active user.</summary>
     public (long Videos, long WatchProgress, long CustomLists, long CustomListItems, long Thumbnails) GetSqliteTableRowCounts()
     {
-        string? username;
+        string? owner = null;
         lock (_sync)
         {
-            username = _activeProfile?.Username;
+            if (_activeProfile is not null && _sessionVaultKeys.TryGetValue(_activeProfile.Username, out var key))
+            {
+                owner = StorageOwnerTag(key);
+            }
         }
-        return string.IsNullOrEmpty(username) ? (0, 0, 0, 0, 0) : SqlStore.GetTableRowCounts(username);
+        return string.IsNullOrEmpty(owner) ? (0, 0, 0, 0, 0) : SqlStore.GetTableRowCounts(owner);
     }
 
     /// <summary>Raised whenever authentication state, active profile video stats, or custom lists change.</summary>
@@ -295,6 +306,188 @@ public sealed class LocalProfileManager : IDisposable
             username = "";
             vaultKey = [];
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Identifies the current profile session: it changes on every login, logout, profile switch or session restore.
+    /// Work captured under one session (a pending watch, a thumbnail capture) passes it back and is ignored when the
+    /// session has changed meanwhile, so it can never land in the next profile's history.
+    /// </summary>
+    public long SessionToken
+    {
+        get
+        {
+            SqlStore.TryDrainWhenHealthyNonBlocking();
+            lock (_sync)
+            {
+                EnsureSyncedIfChangedLocked();
+                return _sessionToken;
+            }
+        }
+    }
+
+    private bool IsExpectedSessionLocked(long? expectedSessionToken) =>
+        expectedSessionToken is not { } expected || expected == _sessionToken;
+
+    /// <summary>
+    /// Row key under which a video's rows are stored in SQLite: a keyed hash of the logical key (fingerprint or path),
+    /// so <c>profiles.db</c> never holds a path, file size or fingerprint in plaintext and nobody without the
+    /// profile's key can test whether a given file is in the history.
+    /// </summary>
+    internal static string StorageVideoKey(byte[] vaultKey, string logicalKey)
+    {
+        var input = Encoding.UTF8.GetBytes("SubtitleAdder.VideoKey.v1\n" + (logicalKey ?? "").Trim().ToUpperInvariant());
+        var mac = HMACSHA256.HashData(vaultKey, input);
+        return SqliteProfileStore.HashedVideoKeyPrefix + Convert.ToHexStringLower(mac.AsSpan(0, 20));
+    }
+
+    /// <summary>
+    /// Owner value stored in the data tables' <c>username</c> column instead of the profile name: a keyed hash of the
+    /// profile's vault key, so without the key nobody can tell whose rows they are, nor count a named profile's
+    /// watched videos. Only the <c>profiles</c> table holds the name.
+    /// </summary>
+    internal static string StorageOwnerTag(byte[] vaultKey)
+    {
+        var mac = HMACSHA256.HashData(vaultKey, Encoding.UTF8.GetBytes("SubtitleAdder.StorageOwner.v1"));
+        return SqliteProfileStore.OwnerTagPrefix + Convert.ToHexStringLower(mac.AsSpan(0, 20));
+    }
+
+    // The owner tag of an unlocked profile, or its plain name when its key is not held (nothing new is written then).
+    private string StorageOwnerLocked(string username) =>
+        _sessionVaultKeys.TryGetValue(username, out var key) ? StorageOwnerTag(key) : username;
+
+    /// <summary>Locks <paramref name="username"/> again: zeroes and drops its vault key and its decrypted data.</summary>
+    private void EndSessionLocked(string username)
+    {
+        string? owner = null;
+        if (_sessionVaultKeys.Remove(username, out var key))
+        {
+            owner = StorageOwnerTag(key);
+            CryptographicOperations.ZeroMemory(key);
+        }
+        if (_profiles.TryGetValue(username, out var entry))
+        {
+            ClearDecryptedDataLocked(entry);
+        }
+        SqlStore.ForgetCachedThumbnails(username);
+        if (owner is not null) SqlStore.ForgetCachedThumbnails(owner);
+    }
+
+    /// <summary>
+    /// Ends every unlocked session in this process (not only the active one) and drops process-wide caches that
+    /// remember watched paths, so nothing of a previous session survives a logout or a profile switch.
+    /// </summary>
+    private void EndAllSessionsLocked()
+    {
+        foreach (var user in _sessionVaultKeys.Keys.ToList())
+        {
+            EndSessionLocked(user);
+        }
+        foreach (var entry in _profiles.Values)
+        {
+            ClearDecryptedDataLocked(entry);
+        }
+        _processedRequestIds.Clear();
+        FingerprintCache.Clear();
+    }
+
+    private static void ClearDecryptedDataLocked(ProfileEntry entry)
+    {
+        entry.Videos.Clear();
+        entry.CustomLists.Clear();
+        entry.DecodedThumbnails.Clear();
+        entry.MissingThumbnails.Clear();
+    }
+
+    /// <summary>
+    /// Rewrites the rows whose key is not the keyed hash of their logical key (legacy plaintext keys that the startup
+    /// scrub replaced with opaque <c>rk:</c> keys, or keys computed before a fingerprint was known), then purges every
+    /// row of this profile that still has no hashed key.
+    /// </summary>
+    private void RewriteUnhashedVideoKeysLocked(
+        ProfileEntry entry,
+        byte[] vaultKey,
+        Dictionary<string, string> logicalKeyByStorageKey,
+        bool hasUnhashedRows)
+    {
+        foreach (var (storageKey, logicalKey) in logicalKeyByStorageKey)
+        {
+            var expected = StorageVideoKey(vaultKey, logicalKey);
+            if (string.Equals(storageKey, expected, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!entry.Videos.TryGetValue(logicalKey, out var stats)) continue;
+            if (!_submittedVideoKeyRewrites.Add($"{entry.Username}|{storageKey}|{expected}")) continue;
+            _broker.SubmitWriteRequest(new StateSyncWriteRequest
+            {
+                RequestId = Guid.NewGuid().ToString("N"),
+                SenderInstanceId = _instanceId,
+                DbPath = SqliteDbPath,
+                Kind = nameof(SqliteProfileStore.WriteKind.MigrateVideoKey),
+                Username = StorageOwnerTag(vaultKey),
+                Key = storageKey,
+                SecondaryKey = expected,
+                Blob = EncryptVideoRowBlob(stats, vaultKey),
+                SecondaryBlob = stats.LastPositionSeconds > 0 || stats.DurationSeconds > 0
+                    ? EncryptWatchProgressRowBlob(stats, vaultKey)
+                    : null,
+            });
+        }
+
+        // The rewrites above already delete the rows they move; the purge drops what is left of the legacy keys
+        // (rows whose blob could not be mapped). Queued after the rewrites, so it never races them.
+        if (hasUnhashedRows && _submittedVideoKeyRewrites.Add($"{entry.Username}|purge"))
+        {
+            _broker.SubmitWriteRequest(new StateSyncWriteRequest
+            {
+                RequestId = Guid.NewGuid().ToString("N"),
+                SenderInstanceId = _instanceId,
+                DbPath = SqliteDbPath,
+                Kind = nameof(SqliteProfileStore.WriteKind.PurgeLegacyVideoKeys),
+                Username = StorageOwnerTag(vaultKey),
+            });
+        }
+    }
+
+    /// <summary>Number of profiles whose vault key is held in this process (privacy regression tests).</summary>
+    internal int UnlockedProfileCountForTests
+    {
+        get
+        {
+            lock (_sync) return _sessionVaultKeys.Count;
+        }
+    }
+
+    /// <summary>Decrypted videos, lists and thumbnails held in memory across all profiles (privacy regression tests).</summary>
+    internal int DecryptedItemCountForTests
+    {
+        get
+        {
+            lock (_sync) return _profiles.Values.Sum(e => e.Videos.Count + e.CustomLists.Count + e.DecodedThumbnails.Count);
+        }
+    }
+
+    /// <summary>True while the process-wide fingerprint cache remembers <paramref name="videoPath"/> (privacy regression tests).</summary>
+    internal static bool IsFingerprintCachedForTests(string videoPath) =>
+        FingerprintCache.ContainsKey(NormalizeVideoPath(videoPath));
+
+    /// <summary>Builds a broker event exactly as this window would publish it (privacy regression tests).</summary>
+    internal StateSyncEvent CreateBrokerEventForTests(
+        string topic,
+        StateSyncEventKind kind,
+        string? videoPath = null,
+        double? positionSeconds = null,
+        double? durationSeconds = null,
+        string? payloadBase64 = null)
+    {
+        lock (_sync)
+        {
+            return CreateBrokerEvent(
+                topic,
+                kind,
+                videoPath: videoPath is null ? null : NormalizeVideoPath(videoPath),
+                positionSeconds: positionSeconds,
+                durationSeconds: durationSeconds,
+                payloadBase64: payloadBase64);
         }
     }
 
@@ -567,10 +760,13 @@ public sealed class LocalProfileManager : IDisposable
                 EncryptedVaultBase64 = EncryptVaultMarker(vaultKey),
             };
 
+            // A new session never inherits the previous one's decrypted history or key.
+            EndAllSessionsLocked();
             _sessionVaultKeys[cleanUser] = vaultKey;
             _profiles[cleanUser] = entry;
             _activeProfile = entry;
             _activeUsername = entry.Username;
+            _sessionToken++;
             _lastUsername = entry.Username;
             _rememberMe = rememberMe;
             _userLoggedOutThisSession = false;
@@ -636,10 +832,13 @@ public sealed class LocalProfileManager : IDisposable
                 return false;
             }
 
+            // A new session never inherits the previous one's decrypted history or key.
+            EndAllSessionsLocked();
             _sessionVaultKeys[entry.Username] = vaultKey;
             DecryptIntoProfileEntryLocked(entry, vaultKey);
             _activeProfile = entry;
             _activeUsername = entry.Username;
+            _sessionToken++;
             _lastUsername = entry.Username;
             _rememberMe = rememberMe;
             _userLoggedOutThisSession = false;
@@ -676,17 +875,6 @@ public sealed class LocalProfileManager : IDisposable
             SyncFromDiskLocked();
             if (_activeProfile is not null || _activeUsername is not null || _rememberedUsername is not null)
             {
-                if (_activeUsername is { } user)
-                {
-                    _sessionVaultKeys.Remove(user);
-                    if (_profiles.TryGetValue(user, out var entry))
-                    {
-                        entry.Videos.Clear();
-                        entry.CustomLists.Clear();
-                        entry.DecodedThumbnails.Clear();
-                        entry.MissingThumbnails.Clear();
-                    }
-                }
                 var removedKey = _rememberedProtectedKeyBase64;
                 _activeProfile = null;
                 _activeUsername = null;
@@ -700,6 +888,9 @@ public sealed class LocalProfileManager : IDisposable
                 }
                 changed = true;
             }
+            // Every unlocked profile (not only the active one) is locked again and its decrypted data dropped.
+            EndAllSessionsLocked();
+            _sessionToken++;
             _userLoggedOutThisSession = true;
             LastError = null;
         }
@@ -730,19 +921,22 @@ public sealed class LocalProfileManager : IDisposable
             using var crossLock = AcquireCrossProcessMutex();
             SyncFromDiskLocked();
             if (!_profiles.TryGetValue(cleanUser, out var entry) ||
-                !TryVerifyAndUnlockProfileLocked(password, entry, out _))
+                !TryVerifyAndUnlockProfileLocked(password, entry, out var deleteKey))
             {
                 error = LastError = L("Kullanıcı adı veya şifre hatalı.");
                 return false;
             }
+            var deletedOwner = StorageOwnerTag(deleteKey);
+            CryptographicOperations.ZeroMemory(deleteKey);
 
+            EndSessionLocked(entry.Username);
             _profiles.Remove(cleanUser);
-            _sessionVaultKeys.Remove(entry.Username);
             if (_activeProfile is not null &&
                 string.Equals(_activeProfile.Username, entry.Username, StringComparison.OrdinalIgnoreCase))
             {
                 _activeProfile = null;
                 _activeUsername = null;
+                _sessionToken++;
             }
             if (string.Equals(_rememberedUsername, entry.Username, StringComparison.OrdinalIgnoreCase))
             {
@@ -758,6 +952,7 @@ public sealed class LocalProfileManager : IDisposable
                 DbPath = SqliteDbPath,
                 Kind = nameof(SqliteProfileStore.WriteKind.DeleteProfileCascade),
                 Username = entry.Username,
+                SecondaryKey = deletedOwner,
                 PostCommitEvents =
                 [
                     CreateBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ProfileDeleted, username: cleanUser),
@@ -776,7 +971,12 @@ public sealed class LocalProfileManager : IDisposable
     /// an encrypted SQLite row update on the centralized background write worker with an idempotency <paramref name="requestId"/>.
     /// Does nothing and returns <c>null</c> when logged out.
     /// </summary>
-    public VideoUserStats? RecordWatch(string videoPath, double positionSeconds = 0, double durationSeconds = 0, string? requestId = null)
+    public VideoUserStats? RecordWatch(
+        string videoPath,
+        double positionSeconds = 0,
+        double durationSeconds = 0,
+        string? requestId = null,
+        long? expectedSessionToken = null)
     {
         var normalized = NormalizeVideoPath(videoPath);
         if (normalized.Length == 0) return null;
@@ -787,7 +987,7 @@ public sealed class LocalProfileManager : IDisposable
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
-            if (_activeProfile is null) return null;
+            if (_activeProfile is null || !IsExpectedSessionLocked(expectedSessionToken)) return null;
             var now = DateTimeOffset.UtcNow;
             var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now);
 
@@ -850,18 +1050,23 @@ public sealed class LocalProfileManager : IDisposable
     /// Enqueues a coalesced update to the dedicated <c>watch_progress</c> SQLite table without touching the <c>videos</c> table.
     /// Does nothing and returns <c>null</c> when logged out.
     /// </summary>
-    public VideoUserStats? UpdatePlaybackProgress(string videoPath, double positionSeconds, double durationSeconds)
+    public VideoUserStats? UpdatePlaybackProgress(
+        string videoPath,
+        double positionSeconds,
+        double durationSeconds,
+        long? expectedSessionToken = null)
     {
         var normalized = NormalizeVideoPath(videoPath);
         if (normalized.Length == 0) return null;
 
         VideoUserStats updated;
         var changedSignificantly = false;
+        StateSyncEvent? progressEvent = null;
         SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
-            if (_activeProfile is null) return null;
+            if (_activeProfile is null || !IsExpectedSessionLocked(expectedSessionToken)) return null;
             var now = DateTimeOffset.UtcNow;
             var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, now, persistNewVideoRowIfCreated: true);
             var cleanDuration = SanitizeSeconds(durationSeconds, existing.DurationSeconds);
@@ -879,6 +1084,16 @@ public sealed class LocalProfileManager : IDisposable
                 UpdatedAtUtc = changedSignificantly ? now : existing.UpdatedAtUtc,
             };
             _activeProfile.Videos[key] = updated;
+            if (!changedSignificantly)
+            {
+                // Built under the lock: it is sealed with the session's key, which a logout may remove right after.
+                progressEvent = CreateBrokerEvent(
+                    StateSyncTopics.WatchProgress,
+                    StateSyncEventKind.ProgressUpdated,
+                    videoPath: normalized,
+                    positionSeconds: updated.LastPositionSeconds,
+                    durationSeconds: updated.DurationSeconds);
+            }
             if (changedSignificantly)
             {
                 EnqueueWatchProgressUpsertOnlyLocked(
@@ -898,15 +1113,10 @@ public sealed class LocalProfileManager : IDisposable
             }
         }
 
-        if (!changedSignificantly)
+        if (!changedSignificantly && progressEvent is not null)
         {
             // Broadcast lightweight watch-progress event to other instances in memory; never invoke StateChanged (zero UI flicker).
-            PublishBrokerEvent(
-                StateSyncTopics.WatchProgress,
-                StateSyncEventKind.ProgressUpdated,
-                videoPath: normalized,
-                positionSeconds: updated.LastPositionSeconds,
-                durationSeconds: updated.DurationSeconds);
+            _broker.Publish(StateSyncTopics.WatchProgress, progressEvent);
         }
         return updated;
     }
@@ -934,6 +1144,8 @@ public sealed class LocalProfileManager : IDisposable
                 if (!current.IsLiked && current.Rating <= 0 && !listedPaths.Contains(current.VideoPath))
                 {
                     _activeProfile.Videos.Remove(key);
+                    _activeProfile.DecodedThumbnails.Remove(key);
+                    _activeProfile.MissingThumbnails.Remove(key);
                 }
                 else
                 {
@@ -953,16 +1165,17 @@ public sealed class LocalProfileManager : IDisposable
                 var remainingProgress = new List<StateSyncBatchBlobDto>();
                 foreach (var (k, v) in _activeProfile.Videos)
                 {
+                    var storageKey = StorageVideoKey(vaultKey, k);
                     remainingVideos.Add(new StateSyncBatchBlobDto(
-                        k,
+                        storageKey,
                         EncryptVideoRowBlob(v, vaultKey),
-                        v.UpdatedAtUtc.UtcTicks));
+                        0));
                     if (v.LastPositionSeconds > 0 || v.DurationSeconds > 0)
                     {
                         remainingProgress.Add(new StateSyncBatchBlobDto(
-                            k,
+                            storageKey,
                             EncryptWatchProgressRowBlob(v, vaultKey),
-                            v.UpdatedAtUtc.UtcTicks));
+                            0));
                     }
                 }
                 _broker.SubmitWriteRequest(new StateSyncWriteRequest
@@ -971,7 +1184,7 @@ public sealed class LocalProfileManager : IDisposable
                     SenderInstanceId = _instanceId,
                     DbPath = SqliteDbPath,
                     Kind = nameof(SqliteProfileStore.WriteKind.ReplaceAllVideosAndProgress),
-                    Username = _activeProfile.Username,
+                    Username = StorageOwnerTag(vaultKey),
                     BatchVideos = remainingVideos,
                     BatchProgress = remainingProgress,
                     PostCommitEvents = [CreateBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged)],
@@ -1181,7 +1394,7 @@ public sealed class LocalProfileManager : IDisposable
     /// Stores an encrypted video thumbnail image (<paramref name="thumbnailBytes"/>) as a binary AES-256-GCM <c>BLOB</c>
     /// inside the <c>thumbnails</c> SQLite table via the background write queue. Never writes plaintext or Base64 to disk.
     /// </summary>
-    public bool SetThumbnail(string videoPath, byte[] thumbnailBytes)
+    public bool SetThumbnail(string videoPath, byte[] thumbnailBytes, long? expectedSessionToken = null)
     {
         var normalized = NormalizeVideoPath(videoPath);
         if (normalized.Length == 0 || thumbnailBytes is null || thumbnailBytes.Length == 0)
@@ -1191,7 +1404,7 @@ public sealed class LocalProfileManager : IDisposable
         lock (_sync)
         {
             EnsureSyncedIfChangedLocked();
-            if (_activeProfile is null) return false;
+            if (_activeProfile is null || !IsExpectedSessionLocked(expectedSessionToken)) return false;
             var (key, _) = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow, persistNewVideoRowIfCreated: true);
             if (_activeProfile.DecodedThumbnails.TryGetValue(key, out var existingBytes) &&
                 existingBytes.AsSpan().SequenceEqual(thumbnailBytes))
@@ -1211,10 +1424,9 @@ public sealed class LocalProfileManager : IDisposable
                     SenderInstanceId = _instanceId,
                     DbPath = SqliteDbPath,
                     Kind = nameof(SqliteProfileStore.WriteKind.UpsertThumbnail),
-                    Username = _activeProfile.Username,
-                    Key = key,
+                    Username = StorageOwnerTag(vaultKey),
+                    Key = StorageVideoKey(vaultKey, key),
                     Blob = encryptedBlob,
-                    UpdatedTicks = DateTimeOffset.UtcNow.UtcTicks,
                     PostCommitEvents =
                     [
                         CreateBrokerEvent(
@@ -1345,7 +1557,7 @@ public sealed class LocalProfileManager : IDisposable
                 SenderInstanceId = _instanceId,
                 DbPath = SqliteDbPath,
                 Kind = nameof(SqliteProfileStore.WriteKind.DeleteCustomList),
-                Username = _activeProfile.Username,
+                Username = StorageOwnerLocked(_activeProfile.Username),
                 Key = listId,
                 PostCommitEvents = [CreateBrokerEvent(StateSyncTopics.Profiles, StateSyncEventKind.ListChanged)],
             });
@@ -1937,13 +2149,11 @@ public sealed class LocalProfileManager : IDisposable
                     SenderInstanceId = _instanceId,
                     DbPath = SqliteDbPath,
                     Kind = nameof(SqliteProfileStore.WriteKind.MigrateVideoKey),
-                    Username = profile.Username,
-                    Key = foundKey,
-                    SecondaryKey = canonicalKey,
+                    Username = StorageOwnerTag(vaultKey),
+                    Key = StorageVideoKey(vaultKey, foundKey),
+                    SecondaryKey = StorageVideoKey(vaultKey, canonicalKey),
                     Blob = vBlob,
                     SecondaryBlob = pBlob,
-                    UpdatedTicks = updated.UpdatedAtUtc.UtcTicks,
-                    ViewCount = updated.ViewCount,
                 });
             }
 
@@ -2009,7 +2219,7 @@ public sealed class LocalProfileManager : IDisposable
                     SenderInstanceId = _instanceId,
                     DbPath = SqliteDbPath,
                     Kind = nameof(SqliteProfileStore.WriteKind.ReplaceCustomListItems),
-                    Username = profile.Username,
+                    Username = StorageOwnerTag(vaultKey),
                     Key = updatedList.Id,
                     BatchListItems = dtoList,
                 });
@@ -2040,7 +2250,16 @@ public sealed class LocalProfileManager : IDisposable
                 }
                 else if (info.Exists && info.Length > 64L * 1024L * 1024L)
                 {
-                    _ = Task.Run(() => TryComputeFingerprintOnly(normalizedPath));
+                    // The path stays in the process-wide fingerprint cache only while this session lasts.
+                    var sessionAtStart = _sessionToken;
+                    _ = Task.Run(() =>
+                    {
+                        TryComputeFingerprintOnly(normalizedPath);
+                        if (Interlocked.Read(ref _sessionToken) != sessionAtStart)
+                        {
+                            FingerprintCache.TryRemove(normalizedPath, out _);
+                        }
+                    });
                 }
             }
             catch
@@ -2134,6 +2353,23 @@ public sealed class LocalProfileManager : IDisposable
     private static string EncryptVaultMarker(byte[] vaultKey) =>
         Convert.ToBase64String(EncryptBytesToBlob(Encoding.UTF8.GetBytes(SqliteVaultMarkerPlaintext), vaultKey));
 
+    // Row blobs embed paths and names; padding the plaintext to a size bucket (at least minBytes, then powers of two)
+    // keeps the ciphertext length from revealing how long a watched path is. JSON blobs are padded with spaces
+    // (ignored by the parser), path blobs with NUL (never part of a path, stripped on read).
+    internal static byte[] PadToBucket(byte[] plaintext, int minBytes, byte padByte)
+    {
+        var target = Math.Max(minBytes, (int)Math.Min(int.MaxValue, System.Numerics.BitOperations.RoundUpToPowerOf2((uint)Math.Max(1, plaintext.Length))));
+        if (target <= plaintext.Length) return plaintext;
+        var padded = new byte[target];
+        plaintext.CopyTo(padded, 0);
+        if (padByte != 0) padded.AsSpan(plaintext.Length).Fill(padByte);
+        return padded;
+    }
+
+    private const int VideoRowBlobBucket = 1024;
+    private const int SmallRowBlobBucket = 256;
+    private const int ListItemPathBucket = 512;
+
     private static byte[] EncryptVideoRowBlob(VideoUserStats video, byte[] vaultKey)
     {
         var dto = new VideoRowDto
@@ -2149,7 +2385,7 @@ public sealed class LocalProfileManager : IDisposable
             UpdatedAtUtc = video.UpdatedAtUtc,
         };
         var utf8 = JsonSerializer.SerializeToUtf8Bytes(dto, CompactJsonOptions);
-        return EncryptBytesToBlob(utf8, vaultKey);
+        return EncryptBytesToBlob(PadToBucket(utf8, VideoRowBlobBucket, (byte)' '), vaultKey);
     }
 
     private static VideoRowDto? DecryptVideoRowBlob(byte[] blob, byte[] vaultKey)
@@ -2169,7 +2405,7 @@ public sealed class LocalProfileManager : IDisposable
             UpdatedAtUtc = video.UpdatedAtUtc,
         };
         var utf8 = JsonSerializer.SerializeToUtf8Bytes(dto, CompactJsonOptions);
-        return EncryptBytesToBlob(utf8, vaultKey);
+        return EncryptBytesToBlob(PadToBucket(utf8, SmallRowBlobBucket, (byte)' '), vaultKey);
     }
 
     private static WatchProgressRowDto? DecryptWatchProgressRowBlob(byte[] blob, byte[] vaultKey)
@@ -2190,7 +2426,7 @@ public sealed class LocalProfileManager : IDisposable
             UpdatedAtUtc = list.UpdatedAtUtc,
         };
         var utf8 = JsonSerializer.SerializeToUtf8Bytes(dto, CompactJsonOptions);
-        return EncryptBytesToBlob(utf8, vaultKey);
+        return EncryptBytesToBlob(PadToBucket(utf8, SmallRowBlobBucket, (byte)' '), vaultKey);
     }
 
     private static CustomListHeaderDto? DecryptCustomListHeaderBlob(byte[] blob, byte[] vaultKey)
@@ -2216,7 +2452,7 @@ public sealed class LocalProfileManager : IDisposable
         byte[] vaultKey)
     {
         var itemHash = ComputeListItemHash(username, listId, normalizedVideoPath, vaultKey);
-        var encryptedPath = EncryptBytesToBlob(Encoding.UTF8.GetBytes(normalizedVideoPath), vaultKey);
+        var encryptedPath = EncryptBytesToBlob(PadToBucket(Encoding.UTF8.GetBytes(normalizedVideoPath), ListItemPathBucket, 0), vaultKey);
         return new SqliteProfileStore.ListItemRow(listId, itemHash, ord, encryptedPath);
     }
 
@@ -2270,6 +2506,9 @@ public sealed class LocalProfileManager : IDisposable
         List<StateSyncEvent>? postCommitEvents = null)
     {
         if (!_sessionVaultKeys.TryGetValue(username, out var vaultKey)) return;
+        // The view count travels and is stored only inside the encrypted blob (no plaintext count or delta).
+        _ = viewCountDelta;
+        var storageKey = StorageVideoKey(vaultKey, key);
         var videoBlob = EncryptVideoRowBlob(stats, vaultKey);
         var reqId = string.IsNullOrWhiteSpace(requestId) ? Guid.NewGuid().ToString("N") : requestId;
         _broker.SubmitWriteRequest(new StateSyncWriteRequest
@@ -2278,12 +2517,9 @@ public sealed class LocalProfileManager : IDisposable
             SenderInstanceId = _instanceId,
             DbPath = SqliteDbPath,
             Kind = nameof(SqliteProfileStore.WriteKind.UpsertVideo),
-            Username = username,
-            Key = key,
+            Username = StorageOwnerTag(vaultKey),
+            Key = storageKey,
             Blob = videoBlob,
-            UpdatedTicks = stats.UpdatedAtUtc.UtcTicks,
-            ViewCount = stats.ViewCount,
-            ViewCountDelta = viewCountDelta,
             PostCommitEvents = includeProgress ? null : postCommitEvents,
         });
         if (includeProgress)
@@ -2295,10 +2531,9 @@ public sealed class LocalProfileManager : IDisposable
                 SenderInstanceId = _instanceId,
                 DbPath = SqliteDbPath,
                 Kind = nameof(SqliteProfileStore.WriteKind.UpsertWatchProgress),
-                Username = username,
-                Key = key,
+                Username = StorageOwnerTag(vaultKey),
+                Key = storageKey,
                 Blob = progressBlob,
-                UpdatedTicks = stats.UpdatedAtUtc.UtcTicks,
                 PostCommitEvents = postCommitEvents,
             });
         }
@@ -2318,10 +2553,9 @@ public sealed class LocalProfileManager : IDisposable
             SenderInstanceId = _instanceId,
             DbPath = SqliteDbPath,
             Kind = nameof(SqliteProfileStore.WriteKind.UpsertWatchProgress),
-            Username = username,
-            Key = key,
+            Username = StorageOwnerTag(vaultKey),
+            Key = StorageVideoKey(vaultKey, key),
             Blob = progressBlob,
-            UpdatedTicks = stats.UpdatedAtUtc.UtcTicks,
             PostCommitEvents = postCommitEvents,
         });
     }
@@ -2339,10 +2573,9 @@ public sealed class LocalProfileManager : IDisposable
             SenderInstanceId = _instanceId,
             DbPath = SqliteDbPath,
             Kind = nameof(SqliteProfileStore.WriteKind.UpsertCustomList),
-            Username = username,
+            Username = StorageOwnerTag(vaultKey),
             Key = list.Id,
             Blob = blob,
-            UpdatedTicks = list.UpdatedAtUtc.UtcTicks,
             PostCommitEvents = postCommitEvents,
         });
     }
@@ -2362,7 +2595,7 @@ public sealed class LocalProfileManager : IDisposable
             SenderInstanceId = _instanceId,
             DbPath = SqliteDbPath,
             Kind = nameof(SqliteProfileStore.WriteKind.UpsertCustomListItem),
-            Username = username,
+            Username = StorageOwnerTag(vaultKey),
             Key = listId,
             SecondaryKey = row.ItemHash,
             Ord = row.Ord,
@@ -2385,34 +2618,100 @@ public sealed class LocalProfileManager : IDisposable
             SenderInstanceId = _instanceId,
             DbPath = SqliteDbPath,
             Kind = nameof(SqliteProfileStore.WriteKind.DeleteCustomListItem),
-            Username = username,
+            Username = StorageOwnerTag(vaultKey),
             Key = listId,
             SecondaryKey = itemHash,
             PostCommitEvents = postCommitEvents,
         });
     }
 
+    private const string DpapiRememberedKeyPrefix = "dpapi1:";
+
+    /// <summary>
+    /// Wraps the vault key for "remember me". On Windows it is protected with DPAPI for the current Windows account, so a
+    /// copied <c>profiles.json</c> cannot be unwrapped elsewhere (the previous wrapping was derived only from the user and
+    /// machine names, which are not secret). Other platforms keep the old derivation.
+    /// </summary>
     private static string ProtectVaultKey(byte[] vaultKey, byte[] salt)
     {
-        var userEntropy = Encoding.UTF8.GetBytes($"SubtitleAdder.RememberKey.{Environment.UserName}.{Environment.MachineName}");
-        var wrapKey = Rfc2898DeriveBytes.Pbkdf2(userEntropy, salt, 10_000, HashAlgorithmName.SHA256, 32);
-        return Convert.ToBase64String(EncryptBytesToBlob(vaultKey, wrapKey));
+        if (OperatingSystem.IsWindows() && WindowsDataProtection.Protect(vaultKey, RememberedKeyEntropy(salt)) is { } wrapped)
+        {
+            return DpapiRememberedKeyPrefix + Convert.ToBase64String(wrapped);
+        }
+        return Convert.ToBase64String(EncryptBytesToBlob(vaultKey, LegacyRememberWrapKey(salt)));
     }
 
-    private static byte[]? UnprotectVaultKey(string? protectedBase64, byte[] salt)
+    private static byte[]? UnprotectVaultKey(string? protectedBase64, byte[] salt) =>
+        UnprotectVaultKey(protectedBase64, salt, out _);
+
+    private static byte[]? UnprotectVaultKey(string? protectedBase64, byte[] salt, out bool legacyWrapping)
     {
+        legacyWrapping = false;
         if (string.IsNullOrWhiteSpace(protectedBase64)) return null;
         try
         {
+            if (protectedBase64.StartsWith(DpapiRememberedKeyPrefix, StringComparison.Ordinal))
+            {
+                if (!OperatingSystem.IsWindows()) return null;
+                var wrapped = Convert.FromBase64String(protectedBase64[DpapiRememberedKeyPrefix.Length..]);
+                var unwrapped = WindowsDataProtection.Unprotect(wrapped, RememberedKeyEntropy(salt));
+                return unwrapped is { Length: 32 } ? unwrapped : null;
+            }
+
             var combined = Convert.FromBase64String(protectedBase64);
-            var userEntropy = Encoding.UTF8.GetBytes($"SubtitleAdder.RememberKey.{Environment.UserName}.{Environment.MachineName}");
-            var wrapKey = Rfc2898DeriveBytes.Pbkdf2(userEntropy, salt, 10_000, HashAlgorithmName.SHA256, 32);
-            var plain = DecryptBlobToBytes(combined, wrapKey);
+            var plain = DecryptBlobToBytes(combined, LegacyRememberWrapKey(salt));
+            legacyWrapping = plain is { Length: 32 } && OperatingSystem.IsWindows();
             return plain is { Length: 32 } ? plain : null;
         }
         catch
         {
             return null;
+        }
+    }
+
+    private static byte[] RememberedKeyEntropy(byte[] salt) =>
+        [.. Encoding.UTF8.GetBytes("SubtitleAdder.RememberKey.v2"), .. salt];
+
+    private static byte[] LegacyRememberWrapKey(byte[] salt)
+    {
+        var userEntropy = Encoding.UTF8.GetBytes($"SubtitleAdder.RememberKey.{Environment.UserName}.{Environment.MachineName}");
+        return Rfc2898DeriveBytes.Pbkdf2(userEntropy, salt, 10_000, HashAlgorithmName.SHA256, 32);
+    }
+
+    /// <summary>Removes the remembered-session fields (an auto-unlock key) from a profiles.json document.</summary>
+    internal static string StripRememberedSession(string headerJson)
+    {
+        try
+        {
+            if (System.Text.Json.Nodes.JsonNode.Parse(headerJson) is not System.Text.Json.Nodes.JsonObject node) return headerJson;
+            var changed = false;
+            foreach (var name in new[] { "rememberMe", "rememberMeOptIn", "rememberedUsername", "rememberedProtectedKeyBase64" })
+            {
+                changed |= node.Remove(name);
+            }
+            return changed ? node.ToJsonString(JsonOptions) : headerJson;
+        }
+        catch (JsonException)
+        {
+            return headerJson;
+        }
+    }
+
+    /// <summary>
+    /// One-time cleanup of the legacy-vault backup (<c>profiles.json.bak</c>): earlier versions copied the whole header,
+    /// including a remembered key that unlocks the profile without its password.
+    /// </summary>
+    private void ScrubBackupFile()
+    {
+        try
+        {
+            if (!File.Exists(BackupFilePath)) return;
+            if (AtomicFileStore.ReadAllTextShared(BackupFilePath) is not { } backup) return;
+            if (!backup.Contains("rememberedProtectedKeyBase64", StringComparison.Ordinal)) return;
+            AtomicFileStore.WriteAllTextAtomic(BackupFilePath, StripRememberedSession(backup));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
         }
     }
 
@@ -2456,9 +2755,10 @@ public sealed class LocalProfileManager : IDisposable
         }
 
         var store = SqlStore;
-        var blob = store.TryGetThumbnailBlob(profile.Username, key)
+        var owner = StorageOwnerTag(vaultKey);
+        var blob = store.TryGetThumbnailBlob(owner, StorageVideoKey(vaultKey, key))
             ?? (!string.Equals(key, normalizedPath, StringComparison.OrdinalIgnoreCase)
-                ? store.TryGetThumbnailBlob(profile.Username, normalizedPath)
+                ? store.TryGetThumbnailBlob(owner, StorageVideoKey(vaultKey, normalizedPath))
                 : null);
         if (blob is { Length: > 0 } && DecryptBlobToBytes(blob, vaultKey) is { Length: > 0 } decrypted)
         {
@@ -2479,6 +2779,25 @@ public sealed class LocalProfileManager : IDisposable
 
         var store = SqlStore;
         var migratedLegacy = false;
+        var owner = StorageOwnerTag(vaultKey);
+
+        // Rows written by earlier versions carry the profile name: move them under the owner tag. Queued like any
+        // other write (so it runs before this session's writes) and read from both owners below until it commits.
+        var hasLegacyOwnerRows = store.HasRowsOwnedBy(entry.Username);
+        if (hasLegacyOwnerRows)
+        {
+            _broker.SubmitWriteRequest(new StateSyncWriteRequest
+            {
+                RequestId = Guid.NewGuid().ToString("N"),
+                SenderInstanceId = _instanceId,
+                DbPath = SqliteDbPath,
+                Kind = nameof(SqliteProfileStore.WriteKind.RetagOwner),
+                Username = entry.Username,
+                SecondaryKey = owner,
+            });
+        }
+        List<T> LoadBothOwners<T>(Func<string, List<T>> load) =>
+            hasLegacyOwnerRows ? [.. load(owner), .. load(entry.Username)] : load(owner);
 
         // 1. Check if profiles.json contains a legacy monolithic EncryptedVaultBase64 that needs migration to SQLite
         if (TryDecryptLegacyJsonVault(entry.EncryptedVaultBase64, vaultKey) is { } legacyVault)
@@ -2492,9 +2811,11 @@ public sealed class LocalProfileManager : IDisposable
             {
                 try
                 {
-                    if (File.Exists(FilePath) && !File.Exists(BackupFilePath))
+                    if (File.Exists(FilePath) && !File.Exists(BackupFilePath) &&
+                        AtomicFileStore.ReadAllTextShared(FilePath) is { } currentHeader)
                     {
-                        File.Copy(FilePath, BackupFilePath, overwrite: false);
+                        // The backup keeps the encrypted legacy vault, never a remembered (auto-unlock) key.
+                        AtomicFileStore.WriteAllTextAtomic(BackupFilePath, StripRememberedSession(currentHeader));
                     }
                 }
                 catch
@@ -2527,10 +2848,11 @@ public sealed class LocalProfileManager : IDisposable
                             ViewCount = Math.Max(0, video.ViewCount),
                         };
                         entry.Videos[key] = sanitized;
-                        videoRows.Add((key, EncryptVideoRowBlob(sanitized, vaultKey), sanitized.UpdatedAtUtc.UtcTicks));
+                        var storageKey = StorageVideoKey(vaultKey, key);
+                        videoRows.Add((storageKey, EncryptVideoRowBlob(sanitized, vaultKey), 0));
                         if (sanitized.LastPositionSeconds > 0 || sanitized.DurationSeconds > 0)
                         {
-                            progressRows.Add((key, EncryptWatchProgressRowBlob(sanitized, vaultKey), sanitized.UpdatedAtUtc.UtcTicks));
+                            progressRows.Add((storageKey, EncryptWatchProgressRowBlob(sanitized, vaultKey), 0));
                         }
                     }
                 }
@@ -2552,25 +2874,24 @@ public sealed class LocalProfileManager : IDisposable
                             VideoPaths = normalizedPaths,
                         };
                         entry.CustomLists.Add(sanitizedList);
-                        listRows.Add((sanitizedList.Id, EncryptCustomListHeaderBlob(sanitizedList, vaultKey), sanitizedList.UpdatedAtUtc.UtcTicks));
+                        listRows.Add((sanitizedList.Id, EncryptCustomListHeaderBlob(sanitizedList, vaultKey), 0));
                         listItemRows.AddRange(BuildEncryptedListItemRows(entry.Username, sanitizedList.Id, normalizedPaths, vaultKey));
                     }
                 }
 
                 if (legacyVault.Thumbnails is not null)
                 {
-                    var nowTicks = DateTimeOffset.UtcNow.UtcTicks;
                     foreach (var (k, b64) in legacyVault.Thumbnails)
                     {
                         if (string.IsNullOrWhiteSpace(k) || TryDecodeBase64(b64) is not { Length: > 0 } rawThumbBytes)
                             continue;
                         entry.DecodedThumbnails[k] = rawThumbBytes;
-                        thumbRows.Add((k, EncryptThumbnailBlob(rawThumbBytes, vaultKey), nowTicks));
+                        thumbRows.Add((StorageVideoKey(vaultKey, k), EncryptThumbnailBlob(rawThumbBytes, vaultKey), 0));
                     }
                 }
 
                 store.EnqueueUpsertProfile(entry.Username, entry.SaltBase64, entry.PasswordHashBase64, entry.Iterations, entry.CreatedAtUtc);
-                if (store.ImportLegacyVaultBatchAndVerify(entry.Username, videoRows, progressRows, listRows, listItemRows, thumbRows))
+                if (store.ImportLegacyVaultBatchAndVerify(owner, videoRows, progressRows, listRows, listItemRows, thumbRows))
                 {
                     entry.EncryptedVaultBase64 = EncryptVaultMarker(vaultKey);
                     migratedLegacy = true;
@@ -2583,17 +2904,28 @@ public sealed class LocalProfileManager : IDisposable
             }
         }
 
-        // 2. Load normalized encrypted rows from SQLite (videos, watch_progress, custom_lists, custom_list_items)
-        var dbVideos = store.LoadVideosWithViewCounts(entry.Username);
+        // 2. Load normalized encrypted rows from SQLite (videos, watch_progress, custom_lists, custom_list_items).
+        // Row keys are keyed hashes ("hk:"), so the logical key (fingerprint or path) comes from the decrypted blob.
+        var dbVideos = LoadBothOwners(store.LoadVideosWithViewCounts);
+        var logicalKeyByStorageKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var hasUnhashedRows = false;
+        // Rows written before blobs were padded still have path-length-dependent sizes; they are rewritten below.
+        var unpaddedStorageKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (key, blob, dbViewCount) in dbVideos)
         {
+            if (blob.Length < EncryptedBlobOverhead + VideoRowBlobBucket) unpaddedStorageKeys.Add(key);
+            if (!key.StartsWith(SqliteProfileStore.HashedVideoKeyPrefix, StringComparison.Ordinal))
+            {
+                hasUnhashedRows = true;
+            }
             if (DecryptVideoRowBlob(blob, vaultKey) is not { } dto) continue;
             var norm = NormalizeVideoPath(dto.VideoPath);
             if (norm.Length == 0) continue;
             var fp = !string.IsNullOrWhiteSpace(dto.ContentFingerprint)
                 ? dto.ContentFingerprint.Trim()
                 : TryGetCachedFingerprint(norm);
-            var canonicalKey = fp ?? key;
+            var canonicalKey = fp ?? norm;
+            logicalKeyByStorageKey[key] = canonicalKey;
             var authoritativeViewCount = dbViewCount >= 0 ? (int)dbViewCount : Math.Max(0, dto.ViewCount);
             entry.Videos[canonicalKey] = new VideoUserStats
             {
@@ -2611,11 +2943,17 @@ public sealed class LocalProfileManager : IDisposable
             };
         }
 
-        var dbProgress = store.LoadWatchProgress(entry.Username);
-        foreach (var (key, blob) in dbProgress)
+        var dbProgress = LoadBothOwners(store.LoadWatchProgress);
+        foreach (var (storageKey, blob) in dbProgress)
         {
+            if (!storageKey.StartsWith(SqliteProfileStore.HashedVideoKeyPrefix, StringComparison.Ordinal))
+            {
+                hasUnhashedRows = true;
+            }
+            if (blob.Length < EncryptedBlobOverhead + SmallRowBlobBucket) unpaddedStorageKeys.Add(storageKey);
             if (DecryptWatchProgressRowBlob(blob, vaultKey) is not { } prog) continue;
-            if (entry.Videos.TryGetValue(key, out var existingVideo))
+            if (logicalKeyByStorageKey.TryGetValue(storageKey, out var key) &&
+                entry.Videos.TryGetValue(key, out var existingVideo))
             {
                 entry.Videos[key] = existingVideo with
                 {
@@ -2626,11 +2964,16 @@ public sealed class LocalProfileManager : IDisposable
             }
         }
 
+        RewriteUnhashedVideoKeysLocked(entry, vaultKey, logicalKeyByStorageKey, hasUnhashedRows);
+        RepadLegacyVideoBlobsLocked(entry, vaultKey, owner, logicalKeyByStorageKey, unpaddedStorageKeys);
+
         var dbListItemsByListId = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (listId, pathBlob) in store.LoadCustomListItems(entry.Username))
+        var unpaddedListIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (listId, pathBlob) in LoadBothOwners(store.LoadCustomListItems))
         {
+            if (pathBlob.Length < EncryptedBlobOverhead + ListItemPathBucket) unpaddedListIds.Add(listId);
             if (DecryptBlobToBytes(pathBlob, vaultKey) is not { Length: > 0 } pathBytes) continue;
-            var norm = NormalizeVideoPath(Encoding.UTF8.GetString(pathBytes));
+            var norm = NormalizeVideoPath(Encoding.UTF8.GetString(pathBytes).TrimEnd('\0'));
             if (norm.Length == 0) continue;
             if (!dbListItemsByListId.TryGetValue(listId, out var paths))
             {
@@ -2653,7 +2996,7 @@ public sealed class LocalProfileManager : IDisposable
             }
         }
 
-        var dbLists = store.LoadCustomLists(entry.Username);
+        var dbLists = LoadBothOwners(store.LoadCustomLists);
         if (dbLists.Count > 0)
         {
             entry.CustomLists.Clear();
@@ -2670,10 +3013,58 @@ public sealed class LocalProfileManager : IDisposable
                     CreatedAtUtc = header.CreatedAtUtc,
                     UpdatedAtUtc = header.UpdatedAtUtc,
                 });
+                if (unpaddedListIds.Contains(header.Id) && paths.Count > 0)
+                {
+                    var itemRows = BuildEncryptedListItemRows(entry.Username, header.Id, paths, vaultKey);
+                    _broker.SubmitWriteRequest(new StateSyncWriteRequest
+                    {
+                        RequestId = Guid.NewGuid().ToString("N"),
+                        SenderInstanceId = _instanceId,
+                        DbPath = SqliteDbPath,
+                        Kind = nameof(SqliteProfileStore.WriteKind.ReplaceCustomListItems),
+                        Username = owner,
+                        Key = header.Id,
+                        BatchListItems = itemRows.Select(r => new StateSyncListItemDto(r.ListId, r.ItemHash, r.Ord, r.EncryptedPathBlob)).ToList(),
+                    });
+                }
             }
         }
 
         return migratedLegacy;
+    }
+
+    private const int EncryptedBlobOverhead = 28; // 12 nonce + 16 tag
+
+    // Rewrites, once, the video and progress rows that were encrypted before row blobs were padded, so their
+    // ciphertext length no longer depends on the length of the watched path.
+    private void RepadLegacyVideoBlobsLocked(
+        ProfileEntry entry,
+        byte[] vaultKey,
+        string owner,
+        Dictionary<string, string> logicalKeyByStorageKey,
+        HashSet<string> unpaddedStorageKeys)
+    {
+        foreach (var storageKey in unpaddedStorageKeys)
+        {
+            if (!storageKey.StartsWith(SqliteProfileStore.HashedVideoKeyPrefix, StringComparison.Ordinal)) continue;
+            if (!logicalKeyByStorageKey.TryGetValue(storageKey, out var logicalKey)) continue;
+            if (!string.Equals(StorageVideoKey(vaultKey, logicalKey), storageKey, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!entry.Videos.TryGetValue(logicalKey, out var stats)) continue;
+            if (!_submittedVideoKeyRewrites.Add($"{owner}|repad|{storageKey}")) continue;
+            _broker.SubmitWriteRequest(new StateSyncWriteRequest
+            {
+                RequestId = Guid.NewGuid().ToString("N"),
+                SenderInstanceId = _instanceId,
+                DbPath = SqliteDbPath,
+                Kind = nameof(SqliteProfileStore.WriteKind.UpsertVideo),
+                Username = owner,
+                Key = storageKey,
+                Blob = EncryptVideoRowBlob(stats, vaultKey),
+                SecondaryBlob = stats.LastPositionSeconds > 0 || stats.DurationSeconds > 0
+                    ? EncryptWatchProgressRowBlob(stats, vaultKey)
+                    : null,
+            });
+        }
     }
 
     private void LoadFromDisk()
@@ -2681,6 +3072,7 @@ public sealed class LocalProfileManager : IDisposable
         SqlStore.TryDrainWhenHealthyNonBlocking();
         lock (_sync)
         {
+            ScrubBackupFile();
             SyncFromDiskLocked(force: true);
         }
     }
@@ -2725,6 +3117,12 @@ public sealed class LocalProfileManager : IDisposable
             var doc = JsonSerializer.Deserialize<ProfilesDocument>(json, JsonOptions);
             if (doc?.Profiles is null) return false;
 
+            var previousActiveUsername = _activeUsername;
+            // The entries are rebuilt below; drop the decrypted data of the old ones instead of leaving it to the GC.
+            foreach (var oldEntry in _profiles.Values)
+            {
+                ClearDecryptedDataLocked(oldEntry);
+            }
             _profiles.Clear();
             _rememberMe = doc.RememberMe;
             if (!string.IsNullOrWhiteSpace(doc.LastUsername))
@@ -2782,9 +3180,12 @@ public sealed class LocalProfileManager : IDisposable
                     EncryptedVaultBase64 = dto.EncryptedVaultBase64,
                 };
 
-                // If this session doesn't have the vault key yet, check if the remembered key on disk unlocks this profile
+                // If this session doesn't have the vault key yet, check if the remembered key on disk unlocks this profile.
+                // Only when no other profile is active here: a remembered session of another window never unlocks a
+                // second profile in this one (its history would sit decrypted next to the active profile's).
                 if (!_userLoggedOutThisSession &&
                     !_sessionVaultKeys.ContainsKey(entry.Username) &&
+                    (_activeUsername is null || string.Equals(_activeUsername, entry.Username, StringComparison.OrdinalIgnoreCase)) &&
                     _rememberMe &&
                     string.Equals(_rememberedUsername, entry.Username, StringComparison.OrdinalIgnoreCase) &&
                     !string.IsNullOrWhiteSpace(_rememberedProtectedKeyBase64))
@@ -2792,12 +3193,15 @@ public sealed class LocalProfileManager : IDisposable
                     try
                     {
                         var saltBytes = Convert.FromBase64String(entry.SaltBase64);
-                        if (UnprotectVaultKey(_rememberedProtectedKeyBase64, saltBytes) is { } restoredKey)
+                        if (UnprotectVaultKey(_rememberedProtectedKeyBase64, saltBytes, out var legacyWrapping) is { } restoredKey)
                         {
                             _sessionVaultKeys[entry.Username] = restoredKey;
-                            if (_activeUsername is null)
+                            _activeUsername ??= entry.Username;
+                            if (legacyWrapping)
                             {
-                                _activeUsername = entry.Username;
+                                // Re-wrap the remembered key with DPAPI (bound to this Windows account) and persist it.
+                                _rememberedProtectedKeyBase64 = ProtectVaultKey(restoredKey, saltBytes);
+                                rewriteHeader = true;
                             }
                         }
                     }
@@ -2821,6 +3225,23 @@ public sealed class LocalProfileManager : IDisposable
             {
                 _activeProfile = _profiles.TryGetValue(_activeUsername, out var active) ? active : null;
                 if (_activeProfile is null) _activeUsername = null;
+            }
+            else
+            {
+                _activeProfile = null;
+            }
+
+            // Only the active profile may stay unlocked in this process.
+            foreach (var user in _sessionVaultKeys.Keys.ToList())
+            {
+                if (!string.Equals(user, _activeUsername, StringComparison.OrdinalIgnoreCase))
+                {
+                    EndSessionLocked(user);
+                }
+            }
+            if (!string.Equals(previousActiveUsername, _activeUsername, StringComparison.OrdinalIgnoreCase))
+            {
+                _sessionToken++;
             }
 
             _lastSyncedJson = json;
@@ -2911,31 +3332,14 @@ public sealed class LocalProfileManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Builds a broker event. Nothing history-like crosses the pipe in plaintext: watch-progress and thumbnail events
+    /// carry their path, position, duration and image only inside <see cref="StateSyncEvent.SealedPayloadBase64"/>,
+    /// AES-GCM encrypted with a key derived from the sending profile's vault key (so only windows unlocked with that
+    /// same profile can read them), and profile events carry no video data or username at all: the receiving windows
+    /// reload their own encrypted state from disk.
+    /// </summary>
     private StateSyncEvent CreateBrokerEvent(
-        string topic,
-        StateSyncEventKind kind,
-        string? username = null,
-        string? videoPath = null,
-        int? viewCount = null,
-        double? positionSeconds = null,
-        double? durationSeconds = null,
-        string? payloadBase64 = null) =>
-        new()
-        {
-            EventId = Guid.NewGuid().ToString("N"),
-            Topic = topic,
-            Kind = kind,
-            SenderInstanceId = _instanceId,
-            ScopePath = FilePath,
-            Username = username ?? _activeUsername,
-            VideoPath = videoPath,
-            ViewCount = viewCount,
-            PositionSeconds = positionSeconds,
-            DurationSeconds = durationSeconds,
-            PayloadBase64 = payloadBase64,
-        };
-
-    private void PublishBrokerEvent(
         string topic,
         StateSyncEventKind kind,
         string? username = null,
@@ -2945,7 +3349,100 @@ public sealed class LocalProfileManager : IDisposable
         double? durationSeconds = null,
         string? payloadBase64 = null)
     {
-        _broker.Publish(topic, CreateBrokerEvent(topic, kind, username, videoPath, viewCount, positionSeconds, durationSeconds, payloadBase64));
+        _ = viewCount;
+        var evt = new StateSyncEvent
+        {
+            EventId = Guid.NewGuid().ToString("N"),
+            Topic = topic,
+            Kind = kind,
+            SenderInstanceId = _instanceId,
+            ScopePath = FilePath,
+        };
+
+        var isPersonalTopic =
+            string.Equals(topic, StateSyncTopics.WatchProgress, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(topic, StateSyncTopics.Thumbnail, StringComparison.OrdinalIgnoreCase);
+        if (!isPersonalTopic) return evt;
+
+        var sender = username ?? _activeUsername;
+        if (sender is null || !_sessionVaultKeys.TryGetValue(sender, out var vaultKey) || string.IsNullOrEmpty(videoPath))
+        {
+            return evt;
+        }
+
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new SealedWatchPayloadDto
+        {
+            VideoPath = videoPath,
+            PositionSeconds = positionSeconds,
+            DurationSeconds = durationSeconds,
+            ThumbnailBase64 = payloadBase64,
+        }, CompactJsonOptions);
+        return evt with { SealedPayloadBase64 = SealEventPayload(vaultKey, evt, payload) };
+    }
+
+    private static byte[] DeriveIpcKey(byte[] vaultKey) =>
+        HMACSHA256.HashData(vaultKey, "SubtitleAdder.StateSync.SealedEvent.v1"u8);
+
+    private static byte[] EventAad(StateSyncEvent evt) =>
+        Encoding.UTF8.GetBytes($"{evt.EventId}|{evt.Topic}|{evt.Kind}|{evt.ScopePath?.ToUpperInvariant()}");
+
+    private static string SealEventPayload(byte[] vaultKey, StateSyncEvent evt, byte[] plaintext)
+    {
+        var key = DeriveIpcKey(vaultKey);
+        try
+        {
+            var combined = new byte[12 + 16 + plaintext.Length];
+            RandomNumberGenerator.Fill(combined.AsSpan(0, 12));
+            using var aes = new AesGcm(key, 16);
+            aes.Encrypt(combined.AsSpan(0, 12), plaintext, combined.AsSpan(28), combined.AsSpan(12, 16), EventAad(evt));
+            return Convert.ToBase64String(combined);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
+    }
+
+    /// <summary>Opens a sealed event with the active profile's key; <c>null</c> for another profile's, forged or plaintext events.</summary>
+    private SealedWatchPayloadDto? TryUnsealEventPayloadLocked(StateSyncEvent evt)
+    {
+        if (_activeProfile is null ||
+            string.IsNullOrWhiteSpace(evt.SealedPayloadBase64) ||
+            !_sessionVaultKeys.TryGetValue(_activeProfile.Username, out var vaultKey) ||
+            TryDecodeBase64(evt.SealedPayloadBase64) is not { Length: > 28 } combined)
+        {
+            return null;
+        }
+
+        var key = DeriveIpcKey(vaultKey);
+        try
+        {
+            var plaintext = new byte[combined.Length - 28];
+            using var aes = new AesGcm(key, 16);
+            aes.Decrypt(combined.AsSpan(0, 12), combined.AsSpan(28), combined.AsSpan(12, 16), plaintext, EventAad(evt));
+            return JsonSerializer.Deserialize<SealedWatchPayloadDto>(plaintext, CompactJsonOptions);
+        }
+        catch (Exception ex) when (ex is CryptographicException or JsonException)
+        {
+            return null;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
+    }
+
+    private void PublishBrokerEvent(
+        string topic,
+        StateSyncEventKind kind,
+        string? username = null)
+    {
+        StateSyncEvent evt;
+        lock (_sync)
+        {
+            evt = CreateBrokerEvent(topic, kind, username);
+        }
+        _broker.Publish(topic, evt);
     }
 
     private void OnBrokerEvent(StateSyncEvent evt)
@@ -2959,15 +3456,15 @@ public sealed class LocalProfileManager : IDisposable
         // Silent in-memory updates for watch-progress and thumbnail topics (never rebuild UI cards!)
         if (string.Equals(evt.Topic, StateSyncTopics.WatchProgress, StringComparison.OrdinalIgnoreCase))
         {
-            if (string.IsNullOrWhiteSpace(evt.VideoPath)) return;
+            if (string.IsNullOrWhiteSpace(evt.SealedPayloadBase64)) return;
             lock (_sync)
             {
-                if (!IsEventForActiveProfileLocked(evt)) return;
-                var normalized = NormalizeVideoPath(evt.VideoPath);
+                if (_activeProfile is null || TryUnsealEventPayloadLocked(evt) is not { } sealedPayload) return;
+                var normalized = NormalizeVideoPath(sealedPayload.VideoPath);
                 if (normalized.Length == 0) return;
                 var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
-                var cleanDuration = SanitizeSeconds(evt.DurationSeconds ?? 0, existing.DurationSeconds);
-                var cleanPosition = Math.Max(0, evt.PositionSeconds ?? existing.LastPositionSeconds);
+                var cleanDuration = SanitizeSeconds(sealedPayload.DurationSeconds ?? 0, existing.DurationSeconds);
+                var cleanPosition = Math.Max(0, sealedPayload.PositionSeconds ?? existing.LastPositionSeconds);
                 if (cleanDuration > 0 && cleanPosition > cleanDuration) cleanPosition = cleanDuration;
                 _activeProfile.Videos[key] = existing with
                 {
@@ -2981,12 +3478,12 @@ public sealed class LocalProfileManager : IDisposable
 
         if (string.Equals(evt.Topic, StateSyncTopics.Thumbnail, StringComparison.OrdinalIgnoreCase))
         {
-            if (string.IsNullOrWhiteSpace(evt.VideoPath) || string.IsNullOrWhiteSpace(evt.PayloadBase64)) return;
-            if (TryDecodeBase64(evt.PayloadBase64) is not { Length: > 0 } thumbBytes) return;
+            if (string.IsNullOrWhiteSpace(evt.SealedPayloadBase64)) return;
             lock (_sync)
             {
-                if (!IsEventForActiveProfileLocked(evt)) return;
-                var normalized = NormalizeVideoPath(evt.VideoPath);
+                if (_activeProfile is null || TryUnsealEventPayloadLocked(evt) is not { } sealedPayload) return;
+                if (TryDecodeBase64(sealedPayload.ThumbnailBase64) is not { Length: > 0 } thumbBytes) return;
+                var normalized = NormalizeVideoPath(sealedPayload.VideoPath);
                 if (normalized.Length == 0) return;
                 var (key, _) = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
                 _activeProfile.DecodedThumbnails[key] = thumbBytes;
@@ -3004,9 +3501,11 @@ public sealed class LocalProfileManager : IDisposable
                 updated = SyncFromDiskLocked(force: true);
                 if (evt.Kind == StateSyncEventKind.ProfileLogout && _rememberedUsername is null && _activeUsername is not null)
                 {
-                    _sessionVaultKeys.Remove(_activeUsername);
+                    // The reload above decrypted the profile again; lock it and drop every decrypted copy.
+                    EndAllSessionsLocked();
                     _activeProfile = null;
                     _activeUsername = null;
+                    _sessionToken++;
                     updated = true;
                 }
             }
@@ -3017,13 +3516,15 @@ public sealed class LocalProfileManager : IDisposable
         }
     }
 
-    // Watch-progress and thumbnail events carry the sender's username; another profile's events (or
-    // events without a username) must never touch, or create rows in, the active profile.
-    [System.Diagnostics.CodeAnalysis.MemberNotNullWhen(true, nameof(_activeProfile))]
-    private bool IsEventForActiveProfileLocked(StateSyncEvent evt) =>
-        _activeProfile is not null &&
-        !string.IsNullOrWhiteSpace(evt.Username) &&
-        string.Equals(evt.Username.Trim(), _activeProfile.Username, StringComparison.OrdinalIgnoreCase);
+    // Watch-progress and thumbnail events are sealed with the sender's profile key: another profile's events (or
+    // unsealed, forged ones) cannot be opened and never touch, or create rows in, the active profile.
+    private sealed class SealedWatchPayloadDto
+    {
+        public string VideoPath { get; set; } = "";
+        public double? PositionSeconds { get; set; }
+        public double? DurationSeconds { get; set; }
+        public string? ThumbnailBase64 { get; set; }
+    }
 
     private CrossProcessMutexScope AcquireCrossProcessMutex() => new(_mutexName);
 

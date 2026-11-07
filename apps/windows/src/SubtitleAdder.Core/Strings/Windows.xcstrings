@@ -3367,6 +3367,22 @@
         }
       }
     },
+    "Profil açık değilken izleme geçmişi tutulmaz. Klasör gezgininden bir video açabilir veya geçmişinizi görmek için giriş yapabilirsiniz.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No watch history is kept while no profile is signed in. Open a video from the file explorer, or sign in to see your history."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Profil açık değilken izleme geçmişi tutulmaz. Klasör gezgininden bir video açabilir veya geçmişinizi görmek için giriş yapabilirsiniz."
+          }
+        }
+      }
+    },
     "Giriş yap / Profil oluştur": {
       "localizations": {
         "en": {

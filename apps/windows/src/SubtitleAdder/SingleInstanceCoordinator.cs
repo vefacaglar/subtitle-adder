@@ -92,7 +92,7 @@ public sealed class SingleInstanceCoordinator : IDisposable
     {
         try
         {
-            using var client = new NamedPipeClientStream(".", PipeName, PipeDirection.Out);
+            using var client = new NamedPipeClientStream(".", PipeName, PipeDirection.Out, PipeOptions.CurrentUserOnly);
             client.Connect(timeout: 1200);
             using var writer = new StreamWriter(client, new UTF8Encoding(false)) { AutoFlush = true };
             foreach (var path in filePaths)
@@ -121,7 +121,7 @@ public sealed class SingleInstanceCoordinator : IDisposable
                         PipeDirection.In,
                         maxNumberOfServerInstances: NamedPipeServerStream.MaxAllowedServerInstances,
                         PipeTransmissionMode.Byte,
-                        PipeOptions.Asynchronous);
+                        PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
 
                     await server.WaitForConnectionAsync(token).ConfigureAwait(false);
                     using var reader = new StreamReader(server, Encoding.UTF8);

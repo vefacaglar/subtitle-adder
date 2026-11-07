@@ -61,6 +61,12 @@ public sealed record StateSyncEvent
     public int? Rating { get; init; }
     public string? ListId { get; init; }
     public string? PayloadBase64 { get; init; }
+
+    /// <summary>
+    /// Personal event data (watched path, position, thumbnail) encrypted with a key derived from the sending profile's
+    /// vault key; only windows unlocked with that profile can open it. History never crosses the pipe in plaintext.
+    /// </summary>
+    public string? SealedPayloadBase64 { get; init; }
     public DateTimeOffset TimestampUtc { get; init; } = DateTimeOffset.UtcNow;
 }
 
@@ -160,11 +166,19 @@ public sealed class StateSyncBroker : IDisposable
 
     private sealed record SubscriptionEntry(string Topic, Action<StateSyncEvent> Handler);
 
-    private sealed class PendingWriteEntry(StateSyncWriteRequest request)
+    private sealed class PendingWriteEntry(StateSyncWriteRequest request, long sequence)
     {
         public StateSyncWriteRequest Request { get; } = request;
+        // Submission order: resends replay requests in the order they were made, so for example a watch recorded
+        // before "clear history" can never be applied after it.
+        public long Sequence { get; } = sequence;
         public TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
+    private long _pendingWriteSequence;
+
+    private List<PendingWriteEntry> PendingWritesInSubmissionOrder() =>
+        _pendingWriteRequests.Values.OrderBy(e => e.Sequence).ToList();
 
     private readonly string _scopeHash;
     private readonly string _pipeName;
@@ -286,7 +300,7 @@ public sealed class StateSyncBroker : IDisposable
             ? request with { RequestId = Guid.NewGuid().ToString("N") }
             : request;
 
-        _pendingWriteRequests.TryAdd(normalized.RequestId, new PendingWriteEntry(normalized));
+        _pendingWriteRequests.TryAdd(normalized.RequestId, new PendingWriteEntry(normalized, Interlocked.Increment(ref _pendingWriteSequence)));
 
         if (_engine.IsRunning && (_engine.IsHostingPipeServer || ActiveInstanceCount >= 1))
         {
@@ -310,7 +324,7 @@ public sealed class StateSyncBroker : IDisposable
     /// </summary>
     public void ResendPendingWriteRequests()
     {
-        foreach (var (_, entry) in _pendingWriteRequests)
+        foreach (var entry in PendingWritesInSubmissionOrder())
         {
             try
             {
@@ -344,7 +358,7 @@ public sealed class StateSyncBroker : IDisposable
     private void PushPendingWritesToEngineForDbPath(string dbPath)
     {
         var full = Path.GetFullPath(dbPath);
-        foreach (var (_, entry) in _pendingWriteRequests)
+        foreach (var entry in PendingWritesInSubmissionOrder())
         {
             if (string.Equals(Path.GetFullPath(entry.Request.DbPath), full, StringComparison.OrdinalIgnoreCase) &&
                 !_engine.HasEnqueuedRequest(entry.Request.RequestId))
@@ -495,7 +509,7 @@ public sealed class StateSyncBroker : IDisposable
             NamedPipeClientStream? client = null;
             try
             {
-                client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await client.ConnectAsync(150, ct).ConfigureAwait(false);
 
                 lock (_clientWriteLock)
@@ -592,7 +606,7 @@ public sealed class StateSyncBroker : IDisposable
         if (_disposed) return;
 
         // Ensure any pending write requests from this window are handed off to the centralized Engine before closing.
-        foreach (var (_, entry) in _pendingWriteRequests)
+        foreach (var entry in PendingWritesInSubmissionOrder())
         {
             try
             {
@@ -1052,7 +1066,7 @@ public sealed class StateSyncBroker : IDisposable
                         PipeDirection.InOut,
                         NamedPipeServerStream.MaxAllowedServerInstances,
                         PipeTransmissionMode.Byte,
-                        PipeOptions.Asynchronous);
+                        PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                     _allServerStreams[streamId] = server;
 
                     await server.WaitForConnectionAsync(ct).ConfigureAwait(false);

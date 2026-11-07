@@ -17,14 +17,23 @@ public sealed record ExplorerRootLocation(string FullPath, string Name, string I
 /// </summary>
 public sealed partial class FileExplorerViewModel : ObservableObject
 {
+    /// <summary>
+    /// Settings key earlier versions used to persist the last explorer folder in plaintext <c>settings.json</c>
+    /// (often the folder of the last watched video). It is no longer written; the value is removed at startup.
+    /// </summary>
     public const string LastFolderDefaultsKey = "explorerLastFolder";
 
     private readonly MediaLibraryIndex _index;
     private readonly ISettingsStore _settings;
     private readonly IUiDispatcher _ui;
-    private readonly Stack<string> _backStack = new();
+    // Each entry remembers whether that folder was shown only because a video from it was opened, so going back to
+    // it never writes it to the persistent index either.
+    private readonly Stack<(string Path, bool Transient)> _backStack = new();
 
     private string? _currentFolder;
+    // True while the current folder was opened only because a video from it was loaded (not browsed explicitly):
+    // such a folder is shown but never written to the persistent media index.
+    private bool _currentFolderIsTransient;
     private bool _isScanning;
     private string _searchQuery = "";
     private IReadOnlyList<ExplorerFolderItem> _currentFolderSubdirectories = [];
@@ -42,16 +51,11 @@ public sealed partial class FileExplorerViewModel : ObservableObject
 
         _quickLocations = BuildQuickLocations();
 
-        var savedFolder = _settings.GetString(LastFolderDefaultsKey);
-        if (!string.IsNullOrWhiteSpace(savedFolder) && Directory.Exists(savedFolder))
+        // One-time migration: the last folder used to be persisted in plaintext settings.json, which recorded where
+        // the last video was opened even without a profile. It now lives only in memory for the running session.
+        if (_settings.GetString(LastFolderDefaultsKey) is not null)
         {
-            var normalized = MediaLibraryIndex.NormalizeDirectoryPath(savedFolder);
-            _currentFolder = normalized;
-            _currentFolderSubdirectories = _index.GetCachedSubdirectories(normalized)
-                .Select(CreateFolderItem)
-                .ToList();
-            _currentFolderFiles = _index.GetCachedDirectory(normalized);
-            ApplyFilterCore();
+            _settings.Remove(LastFolderDefaultsKey);
         }
 
         _index.IndexChanged += OnIndexChanged;
@@ -149,18 +153,12 @@ public sealed partial class FileExplorerViewModel : ObservableObject
     public string StatusSummary =>
         L("%lld video · SSD indeksinde %lld dosya", (long)_files.Count, (long)TotalIndexedFiles);
 
-    /// <summary>Returns the saved folder or the system Videos / UserProfile directory as a starting point.</summary>
+    /// <summary>Returns the current folder or the system Videos / UserProfile directory as a starting point.</summary>
     public string GetInitialFolder()
     {
         if (!string.IsNullOrWhiteSpace(_currentFolder) && Directory.Exists(_currentFolder))
         {
             return _currentFolder;
-        }
-
-        var saved = _settings.GetString(LastFolderDefaultsKey);
-        if (!string.IsNullOrWhiteSpace(saved) && Directory.Exists(saved))
-        {
-            return MediaLibraryIndex.NormalizeDirectoryPath(saved);
         }
 
         var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
@@ -181,6 +179,25 @@ public sealed partial class FileExplorerViewModel : ObservableObject
     /// <summary>Navigates to <paramref name="folderPath"/>, scans it, and optionally crawls nearby subfolders onto the SSD index.</summary>
     public Task NavigateToAsync(string folderPath, bool crawlSubfolders = true) =>
         NavigateCoreAsync(folderPath, pushHistory: true, crawlSubfolders: crawlSubfolders);
+
+    /// <summary>
+    /// Forgets the folders browsed in the previous profile session (back stack, current folder and search) and returns
+    /// to the default starting folder. Called when a profile logs out or another profile takes over.
+    /// </summary>
+    public async Task ResetForSessionChangeAsync()
+    {
+        _scanCts?.Cancel();
+        _backStack.Clear();
+        OnPropertyChanged(nameof(CanGoBack));
+        _searchQuery = "";
+        OnPropertyChanged(nameof(SearchQuery));
+        _currentFolderSubdirectories = [];
+        _currentFolderFiles = [];
+        CurrentFolder = null;
+        _currentFolderIsTransient = false;
+        ApplyFilterCore();
+        await NavigateCoreAsync(GetInitialFolder(), pushHistory: false, crawlSubfolders: false);
+    }
 
     /// <summary>Navigates to the parent directory of <see cref="CurrentFolder"/> if one exists.</summary>
     public async Task GoUpAsync()
@@ -207,7 +224,7 @@ public sealed partial class FileExplorerViewModel : ObservableObject
         if (_backStack.Count == 0) return;
         var previous = _backStack.Pop();
         OnPropertyChanged(nameof(CanGoBack));
-        await NavigateCoreAsync(previous, pushHistory: false, crawlSubfolders: false);
+        await NavigateCoreAsync(previous.Path, pushHistory: false, crawlSubfolders: false, transient: previous.Transient);
     }
 
     /// <summary>Re-scans <see cref="CurrentFolder"/> (or opens the initial folder if none is active yet) and refreshes quick locations.</summary>
@@ -215,7 +232,7 @@ public sealed partial class FileExplorerViewModel : ObservableObject
     {
         QuickLocations = BuildQuickLocations();
         var target = _currentFolder ?? GetInitialFolder();
-        await NavigateCoreAsync(target, pushHistory: false, crawlSubfolders: false);
+        await NavigateCoreAsync(target, pushHistory: false, crawlSubfolders: false, transient: _currentFolderIsTransient && _currentFolder is not null);
     }
 
     /// <summary>
@@ -232,7 +249,8 @@ public sealed partial class FileExplorerViewModel : ObservableObject
         var normalizedDir = MediaLibraryIndex.NormalizeDirectoryPath(dir);
         if (string.IsNullOrWhiteSpace(_currentFolder))
         {
-            await NavigateToAsync(normalizedDir, crawlSubfolders: true);
+            // Show the video's folder, but opening a video never adds its folder to the persistent media index.
+            await NavigateCoreAsync(normalizedDir, pushHistory: true, crawlSubfolders: false, transient: true);
             return;
         }
 
@@ -251,11 +269,20 @@ public sealed partial class FileExplorerViewModel : ObservableObject
                     }
                 }
             }
-            await RefreshAsync();
+            // Refresh the listing (sidecar badges) in memory only: opening a video never writes the index file, even
+            // for a folder that was indexed by browsing.
+            await NavigateCoreAsync(
+                normalizedDir,
+                pushHistory: false,
+                crawlSubfolders: false,
+                transient: _currentFolderIsTransient,
+                persist: false);
         }
-        else
+        else if (_index.IsDirectoryIndexed(normalizedDir))
         {
-            await _index.ScanDirectoryAsync(normalizedDir);
+            // Only folders already in the index are refreshed (sidecar badges), in memory; an opened video never adds
+            // a new folder to the index nor rewrites the index file.
+            await _index.RefreshDirectoryInMemoryAsync(normalizedDir);
             await _ui.InvokeAsync(() =>
             {
                 ApplyFilterCore();
@@ -265,7 +292,7 @@ public sealed partial class FileExplorerViewModel : ObservableObject
         }
     }
 
-    private async Task NavigateCoreAsync(string folderPath, bool pushHistory, bool crawlSubfolders)
+    private async Task NavigateCoreAsync(string folderPath, bool pushHistory, bool crawlSubfolders, bool transient = false, bool persist = true)
     {
         if (string.IsNullOrWhiteSpace(folderPath)) return;
         var normalized = MediaLibraryIndex.NormalizeDirectoryPath(folderPath);
@@ -280,12 +307,12 @@ public sealed partial class FileExplorerViewModel : ObservableObject
             !string.IsNullOrWhiteSpace(_currentFolder) &&
             !string.Equals(_currentFolder, normalized, StringComparison.OrdinalIgnoreCase))
         {
-            _backStack.Push(_currentFolder);
+            _backStack.Push((_currentFolder, _currentFolderIsTransient));
             OnPropertyChanged(nameof(CanGoBack));
         }
 
         CurrentFolder = normalized;
-        _settings.SetString(LastFolderDefaultsKey, normalized);
+        _currentFolderIsTransient = transient;
 
         // Immediately populate from cache if available so folder switching feels instant.
         var cachedDirs = _index.GetCachedSubdirectories(normalized);
@@ -300,7 +327,11 @@ public sealed partial class FileExplorerViewModel : ObservableObject
         IsScanning = true;
         try
         {
-            var snapshot = await _index.ScanDirectoryAsync(normalized, token);
+            var snapshot = transient
+                ? await _index.ScanDirectoryTransientAsync(normalized, token)
+                : persist
+                    ? await _index.ScanDirectoryAsync(normalized, token)
+                    : await _index.RefreshDirectoryInMemoryAsync(normalized, token);
             if (token.IsCancellationRequested) return;
 
             await _ui.InvokeAsync(() =>
@@ -313,7 +344,7 @@ public sealed partial class FileExplorerViewModel : ObservableObject
                 OnPropertyChanged(nameof(StatusSummary));
             });
 
-            if (crawlSubfolders && !token.IsCancellationRequested)
+            if (crawlSubfolders && !transient && !token.IsCancellationRequested)
             {
                 await _index.CrawlSubtreeAsync(normalized, maxDepth: 2, token);
                 if (!token.IsCancellationRequested)

@@ -2173,7 +2173,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
         _activeJobVideo = jobVideo;
         _isJobRunning = true;
         Catalog.ActiveModels = running;
-        DiagnosticLog.Write("Job", $"StartJob jobId={id} video='{jobVideo}' models=[{string.Join(",", running)}]");
+        DiagnosticLog.Write("Job", $"StartJob jobId={id} models=[{string.Join(",", running)}]");
         bool IsCurrent() => _jobId == id && !token.IsCancellationRequested;
         // Created here (the engine only starts when it is enumerated) so the request is recorded synchronously.
         var events = stream(token);
@@ -2217,7 +2217,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             }
             catch (OperationCanceledException)
             {
-                DiagnosticLog.Write("Job", $"Canceled jobId={id} video='{jobVideo}'");
+                DiagnosticLog.Write("Job", $"Canceled jobId={id}");
                 await _ui.InvokeAsync(() =>
                 {
                     if (_jobId == id)
@@ -2229,7 +2229,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             }
             catch (Exception error)
             {
-                DiagnosticLog.Write("Job", $"Failed jobId={id} video='{jobVideo}' error='{error.Message}'");
+                DiagnosticLog.Write("Job", $"Failed jobId={id} error='{error.Message}'");
                 await _ui.InvokeAsync(() =>
                 {
                     if (_jobId == id)
@@ -2241,7 +2241,7 @@ public sealed partial class SubtitleViewModel : ObservableObject, IDisposable
             }
             finally
             {
-                DiagnosticLog.Write("Job", $"Finished jobId={id} video='{jobVideo}'");
+                DiagnosticLog.Write("Job", $"Finished jobId={id}");
                 await _ui.InvokeAsync(() =>
                 {
                     if (_jobId == id)

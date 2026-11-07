@@ -27,14 +27,10 @@ public partial class App : Application
 
     private static void LogCrash(Exception? error)
     {
-        try
-        {
-            File.AppendAllText(Path.Combine(Path.GetTempPath(), "SubtitleAdder-crash.log"), $"{DateTime.Now:O}\n{error}\n\n");
-        }
-        catch (IOException)
-        {
-            // Nothing else to do.
-        }
+        // Plaintext and readable without any profile key: exception messages can name the opened video, so paths are
+        // redacted. Appended under the same lock as the startup scrub, so a startup crash entry is never overwritten.
+        // A failed write has nothing else to fall back to.
+        _ = DiagnosticLog.AppendCrash($"{DateTime.Now:O}\n{DiagnosticLog.Redact(error?.ToString())}\n\n");
     }
 
     public static new App Current => (App)Application.Current;
@@ -73,6 +69,10 @@ public partial class App : Application
         }
 
         _ = Task.Run(SubtitleViewModel.CleanupTempDirectory);
+        // One-time privacy migrations: scrub video paths from the plaintext diagnostics log (and delete the legacy
+        // player log), and delete video-cache layouts that recorded watched videos without a profile key.
+        DiagnosticLog.Initialize();
+        _ = Task.Run(() => EncryptedVideoCacheStore.Shared.PurgeLegacyLayout());
         Settings = new JsonFileSettingsStore();
 
         if (string.Equals(Path.GetFileName(Environment.ProcessPath), "SubtitleAdder.exe", StringComparison.OrdinalIgnoreCase) &&
@@ -127,6 +127,17 @@ public partial class App : Application
         MediaIndex = new MediaLibraryIndex();
         ExplorerViewModel = new FileExplorerViewModel(MediaIndex, Settings, ui);
         PlatformViewModel = VideoPlatformViewModel.Shared;
+        // A logout or profile switch also forgets the folders browsed in the previous session.
+        var explorerSessionUser = PlatformViewModel.IsLoggedIn ? PlatformViewModel.CurrentUsername : null;
+        PlatformViewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is not (nameof(VideoPlatformViewModel.CurrentUsername) or nameof(VideoPlatformViewModel.IsLoggedIn))) return;
+            var current = PlatformViewModel.IsLoggedIn ? PlatformViewModel.CurrentUsername : null;
+            if (string.Equals(current, explorerSessionUser, StringComparison.OrdinalIgnoreCase)) return;
+            var previous = explorerSessionUser;
+            explorerSessionUser = current;
+            if (previous is not null) _ = ExplorerViewModel.ResetForSessionChangeAsync();
+        };
         PlatformViewModel.SetDiscoveredPaths(MediaIndex.Search("", 500).Select(f => f.FullPath));
         MediaIndex.IndexChanged += (_, _) =>
         {

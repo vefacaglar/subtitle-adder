@@ -197,23 +197,40 @@ public sealed class ProfilePrivacyTests : IDisposable
         using var broker = new StateSyncBroker(_scope);
         using var manager = new LocalProfileManager(_profilesPath, broker);
         Assert.True(manager.Register("alice", "pass123"));
+        Assert.True(manager.Register("bob", "pass456"));
+        Assert.True(manager.Login("alice", "pass123"));
         manager.RecordWatch(watched, positionSeconds: 10, durationSeconds: 100);
+        Assert.True(manager.FlushPendingWrites(TimeSpan.FromSeconds(5)));
+
+        // Another window (its own broker scope, so it does not hear this test's events) unlocked as bob.
+        using var bobBroker = new StateSyncBroker(_scope + "-bob");
+        using var bobWindow = new LocalProfileManager(_profilesPath, bobBroker);
+        Assert.True(bobWindow.Login("bob", "pass456"));
 
         var otherThumb = Encoding.UTF8.GetBytes("BOB_THUMBNAIL");
-        broker.Publish(MakeEvent(manager, StateSyncTopics.WatchProgress, StateSyncEventKind.ProgressUpdated, "bob", watched, position: 99, duration: 100));
-        broker.Publish(MakeEvent(manager, StateSyncTopics.WatchProgress, StateSyncEventKind.ProgressUpdated, "bob", unseen, position: 50, duration: 100));
-        broker.Publish(MakeEvent(manager, StateSyncTopics.Thumbnail, StateSyncEventKind.ThumbnailCaptured, "bob", unseen, payload: otherThumb));
-        broker.Publish(MakeEvent(manager, StateSyncTopics.Thumbnail, StateSyncEventKind.ThumbnailCaptured, null, watched, payload: otherThumb));
+        broker.Publish(bobWindow.CreateBrokerEventForTests(StateSyncTopics.WatchProgress, StateSyncEventKind.ProgressUpdated, watched, 99, 100));
+        broker.Publish(bobWindow.CreateBrokerEventForTests(StateSyncTopics.WatchProgress, StateSyncEventKind.ProgressUpdated, unseen, 50, 100));
+        broker.Publish(bobWindow.CreateBrokerEventForTests(StateSyncTopics.Thumbnail, StateSyncEventKind.ThumbnailCaptured, unseen, payloadBase64: Convert.ToBase64String(otherThumb)));
+
+        // Plaintext events (the old wire format, or forged ones) are never trusted, even with alice's name on them.
+        broker.Publish(MakeEvent(manager, StateSyncTopics.WatchProgress, StateSyncEventKind.ProgressUpdated, "alice", watched, position: 77, duration: 100));
+        broker.Publish(MakeEvent(manager, StateSyncTopics.Thumbnail, StateSyncEventKind.ThumbnailCaptured, "alice", watched, payload: otherThumb));
+        broker.Publish(MakeEvent(manager, StateSyncTopics.Thumbnail, StateSyncEventKind.ThumbnailCaptured, null, unseen, payload: otherThumb));
 
         Assert.Equal(10, manager.GetStatsFastInMemory(watched)?.LastPositionSeconds);
         Assert.Null(manager.GetStatsFastInMemory(unseen));
         Assert.Null(manager.GetThumbnail(unseen));
         Assert.Null(manager.GetThumbnail(watched));
 
-        // The same profile's events (case-insensitive username) still apply silently.
+        // Events sealed by another window unlocked with the same profile still apply silently.
+        using var aliceBroker = new StateSyncBroker(_scope + "-alice");
+        using var aliceWindow = new LocalProfileManager(_profilesPath, aliceBroker);
+        Assert.True(aliceWindow.Login("ALICE", "pass123"));
+        // That login rewrote profiles.json; let this window reload it before the silent in-memory updates arrive.
+        Assert.Null(manager.GetThumbnail(watched));
         var ownThumb = Encoding.UTF8.GetBytes("ALICE_THUMBNAIL");
-        broker.Publish(MakeEvent(manager, StateSyncTopics.WatchProgress, StateSyncEventKind.ProgressUpdated, "ALICE", watched, position: 42, duration: 100));
-        broker.Publish(MakeEvent(manager, StateSyncTopics.Thumbnail, StateSyncEventKind.ThumbnailCaptured, "Alice", watched, payload: ownThumb));
+        broker.Publish(aliceWindow.CreateBrokerEventForTests(StateSyncTopics.WatchProgress, StateSyncEventKind.ProgressUpdated, watched, 42, 100));
+        broker.Publish(aliceWindow.CreateBrokerEventForTests(StateSyncTopics.Thumbnail, StateSyncEventKind.ThumbnailCaptured, watched, payloadBase64: Convert.ToBase64String(ownThumb)));
         Assert.Equal(42, manager.GetStatsFastInMemory(watched)?.LastPositionSeconds);
         Assert.Equal(ownThumb, manager.GetThumbnail(watched));
     }

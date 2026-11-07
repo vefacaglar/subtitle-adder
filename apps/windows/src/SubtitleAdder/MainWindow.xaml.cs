@@ -158,6 +158,9 @@ public sealed partial class MainWindow : Window
         GenerateAndTranslateButton.IsEnabled = !Vm.IsWorking;
         Vm.GenerateAndTranslateCommand.CanExecuteChanged += (_, _) => GenerateAndTranslateButton.IsEnabled = !Vm.IsWorking;
         Vm.PropertyChanged += OnViewModelChanged;
+        // A login while a video is open makes that video the active one for likes, ratings and lists (its playback
+        // before the login is not recorded).
+        PlatformVm.OpenVideoProvider = () => Vm.Video;
         Vm.LocalizationChanged += (_, _) => RefreshAll();
         Vm.Catalog.PropertyChanged += OnCatalogChanged;
         App.Current.Appearance.PropertyChanged += OnAppearanceChanged;
@@ -171,6 +174,7 @@ public sealed partial class MainWindow : Window
         Root.Loaded += async (_, _) => await Vm.Catalog.LoadAsync();
         Closed += (_, _) =>
         {
+            PlatformVm.OpenVideoProvider = null;
             Vm.PropertyChanged -= OnViewModelChanged;
             Vm.Catalog.PropertyChanged -= OnCatalogChanged;
             App.Current.Appearance.PropertyChanged -= OnAppearanceChanged;
@@ -304,16 +308,19 @@ public sealed partial class MainWindow : Window
             var cts = new CancellationTokenSource();
             _videoOpenedDebounceCts = cts;
             var token = cts.Token;
+            // The watch belongs to the session the video was opened in: a logout or profile switch during the
+            // debounce drops it instead of recording it for whoever is logged in when the timer fires.
+            var sessionToken = PlatformVm.SessionToken;
             _ = Task.Run(async () =>
             {
                 try
                 {
                     await Task.Delay(150, token).ConfigureAwait(false);
                     if (token.IsCancellationRequested) return;
-                    PlatformVm.RecordWatchOnly(currentVideo);
+                    PlatformVm.RecordWatchOnly(currentVideo, sessionToken);
                     DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
                     {
-                        if (token.IsCancellationRequested) return;
+                        if (token.IsCancellationRequested || PlatformVm.SessionToken != sessionToken) return;
                         if (string.Equals(Vm.Video, currentVideo, StringComparison.OrdinalIgnoreCase))
                         {
                             PlatformVm.SetActiveVideoImmediate(currentVideo);

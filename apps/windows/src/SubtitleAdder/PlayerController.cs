@@ -83,20 +83,8 @@ public sealed class PlayerController : IDisposable
                     : extErr is { } ex && !string.IsNullOrWhiteSpace(ex.Message)
                         ? $"{err}: {ex.Message.Trim()} (0x{ex.HResult:X8})"
                         : $"{err} (0x{extErr?.HResult ?? 0:X8})";
-                var failedPath = _currentPath;
-                DiagnosticLog.Write("Player", $"MediaFailed gen={eventToken.Generation} path='{failedPath}': {details}");
-                _ = Task.Run(() =>
-                {
-                    try
-                    {
-                        File.AppendAllText(
-                            Path.Combine(Path.GetTempPath(), "SubtitleAdder-player.log"),
-                            $"{DateTimeOffset.Now:O} [{failedPath}] {details}\n");
-                    }
-                    catch
-                    {
-                    }
-                });
+                // The plaintext log never names the video (no path, no file name): that would be a viewing record.
+                DiagnosticLog.Write("Player", $"MediaFailed gen={eventToken.Generation}: {details}");
                 Failed?.Invoke(details);
             });
         };
@@ -221,7 +209,6 @@ public sealed class PlayerController : IDisposable
 
                 var boundSource = newSource;
                 var boundGen = generation;
-                var boundPath = path;
                 var boundToken = _sessionGate.CreateBoundToken(boundGen, boundSource);
                 boundSource.StateChanged += (_, args) =>
                 {
@@ -250,7 +237,7 @@ public sealed class PlayerController : IDisposable
                         {
                             return;
                         }
-                        DiagnosticLog.Write("Player", $"OpenOperationCompleted error gen={boundGen} path='{boundPath}': {openErr.Message} (0x{openErr.HResult:X8})");
+                        DiagnosticLog.Write("Player", $"OpenOperationCompleted error gen={boundGen}:{openErr.Message} (0x{openErr.HResult:X8})");
                     });
                 };
             }

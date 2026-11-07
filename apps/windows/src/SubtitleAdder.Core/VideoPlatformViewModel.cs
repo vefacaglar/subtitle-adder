@@ -163,6 +163,12 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     private IReadOnlyList<VideoCardViewModel> _feedItems = [];
     private IReadOnlyList<UserVideoList> _customLists = [];
     private string? _activeVideoPath;
+    // Session the active video was opened under; the video is forgotten as soon as the session changes, so progress
+    // ticks of a video opened by one profile (or while logged out) never land in another profile's history.
+    private long _activeVideoSessionToken;
+    // False for a video that was already open when the session began (adopted at login): likes, ratings and lists
+    // work for it, but its playback is not recorded as this profile's watch or resume position.
+    private bool _activeVideoRecordsProgress;
     private int _activeVideoViewCount;
     private bool _activeVideoIsLiked;
     private int _activeVideoRating;
@@ -189,6 +195,19 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
 
     /// <summary>Whether a user profile is currently logged in.</summary>
     public bool IsLoggedIn => _profileManager.IsLoggedIn;
+
+    /// <summary>
+    /// Current profile session (see <see cref="LocalProfileManager.SessionToken"/>). Deferred work captures it and passes
+    /// it back so it is dropped if the profile logged out or switched meanwhile.
+    /// </summary>
+    public long SessionToken => _profileManager.SessionToken;
+
+    /// <summary>
+    /// Returns the video currently open in the player (the window's own state, not kept here). When a profile logs
+    /// in while a video is open, that video becomes the active one so the engagement bar works for it; its earlier
+    /// (logged-out or other-profile) playback is still not recorded.
+    /// </summary>
+    public Func<string?>? OpenVideoProvider { get; set; }
 
     /// <summary>Currently logged-in username, or <c>null</c> when logged out.</summary>
     public string? CurrentUsername => _profileManager.CurrentUsername;
@@ -370,12 +389,15 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
         return false;
     }
 
-    /// <summary>Stores an encrypted thumbnail (<c>byte[]</c>) for <paramref name="videoPath"/> inside the active user's AES-256-GCM vault.</summary>
-    public bool SaveEncryptedThumbnail(string videoPath, byte[] thumbnailBytes)
+    /// <summary>
+    /// Stores an encrypted thumbnail (<c>byte[]</c>) for <paramref name="videoPath"/> inside the active user's AES-256-GCM vault.
+    /// With <paramref name="sessionToken"/>, nothing is saved unless that session is still the active one.
+    /// </summary>
+    public bool SaveEncryptedThumbnail(string videoPath, byte[] thumbnailBytes, long? sessionToken = null)
     {
         if (!IsLoggedIn || string.IsNullOrWhiteSpace(videoPath) || thumbnailBytes is not { Length: > 0 })
             return false;
-        return _profileManager.SetThumbnail(videoPath, thumbnailBytes);
+        return _profileManager.SetThumbnail(videoPath, thumbnailBytes, sessionToken);
     }
 
     /// <summary>Retrieves the decrypted thumbnail (<c>byte[]</c>) for <paramref name="videoPath"/> from the active user's vault.</summary>
@@ -386,6 +408,7 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     public void Logout()
     {
         _profileManager.Logout();
+        ClearActiveVideo();
         // The remembered session is gone; the next login must be ticked again by the user.
         RememberMe = false;
         AuthError = null;
@@ -416,12 +439,11 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     /// </summary>
     public void OnVideoOpened(string? videoPath)
     {
-        var normalized = LocalProfileManager.NormalizeVideoPath(videoPath);
-        ActiveVideoPath = normalized.Length > 0 ? normalized : null;
+        SetActiveVideoPathForCurrentSession(videoPath);
 
         if (IsLoggedIn && ActiveVideoPath is { } activePath)
         {
-            _profileManager.RecordWatch(activePath);
+            _profileManager.RecordWatch(activePath, expectedSessionToken: _activeVideoSessionToken);
             return;
         }
 
@@ -434,28 +456,65 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     /// </summary>
     public void SetActiveVideoImmediate(string? videoPath)
     {
-        var normalized = LocalProfileManager.NormalizeVideoPath(videoPath);
-        ActiveVideoPath = normalized.Length > 0 ? normalized : null;
+        SetActiveVideoPathForCurrentSession(videoPath);
         RefreshActiveVideoStats();
     }
 
     /// <summary>
     /// Records a watch for <paramref name="videoPath"/> if a profile is logged in (safe to invoke from a debounced background task).
+    /// With <paramref name="sessionToken"/> (captured when the video was opened) nothing is recorded if the profile
+    /// logged out or switched in between.
     /// </summary>
-    public void RecordWatchOnly(string? videoPath)
+    public void RecordWatchOnly(string? videoPath, long? sessionToken = null)
     {
         var normalized = LocalProfileManager.NormalizeVideoPath(videoPath);
         if (IsLoggedIn && normalized.Length > 0)
         {
-            _profileManager.RecordWatch(normalized);
+            _profileManager.RecordWatch(normalized, expectedSessionToken: sessionToken);
         }
     }
 
-    /// <summary>Updates playback resume progress for the active video without incrementing view count.</summary>
+    /// <summary>
+    /// Updates playback resume progress for the active video without incrementing view count. Only for the session the
+    /// video was opened in: after a logout or profile switch the active video is forgotten and ticks are ignored.
+    /// </summary>
     public void UpdateActiveVideoProgress(double positionSeconds, double durationSeconds)
     {
-        if (!IsLoggedIn || ActiveVideoPath is not { } activePath) return;
-        _profileManager.UpdatePlaybackProgress(activePath, positionSeconds, durationSeconds);
+        if (!_activeVideoRecordsProgress || !IsLoggedIn || ActiveVideoPath is not { } activePath) return;
+        _profileManager.UpdatePlaybackProgress(activePath, positionSeconds, durationSeconds, _activeVideoSessionToken);
+    }
+
+    // The active video exists only for a logged-in session: while logged out no path is kept at all.
+    private void SetActiveVideoPathForCurrentSession(string? videoPath)
+    {
+        var normalized = LocalProfileManager.NormalizeVideoPath(videoPath);
+        if (normalized.Length == 0 || !IsLoggedIn)
+        {
+            ClearActiveVideo();
+            return;
+        }
+        _activeVideoSessionToken = _profileManager.SessionToken;
+        _activeVideoRecordsProgress = true;
+        ActiveVideoPath = normalized;
+    }
+
+    private void ClearActiveVideo()
+    {
+        ActiveVideoPath = null;
+        _activeVideoSessionToken = 0;
+        _activeVideoRecordsProgress = false;
+    }
+
+    // A profile logged in while a video was open: make it the active video for explicit actions only.
+    private void AdoptOpenVideoForNewSession()
+    {
+        if (ActiveVideoPath is not null || !IsLoggedIn || OpenVideoProvider?.Invoke() is not { Length: > 0 } open) return;
+        var normalized = LocalProfileManager.NormalizeVideoPath(open);
+        if (normalized.Length == 0) return;
+        _activeVideoSessionToken = _profileManager.SessionToken;
+        _activeVideoRecordsProgress = false;
+        ActiveVideoPath = normalized;
+        RefreshActiveVideoStats();
     }
 
     /// <summary>Toggles the like status of the currently open video.</summary>
@@ -649,6 +708,11 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
 
     private void SyncFromProfileManager()
     {
+        if (ActiveVideoPath is not null && (!IsLoggedIn || _profileManager.SessionToken != _activeVideoSessionToken))
+        {
+            ClearActiveVideo();
+        }
+        AdoptOpenVideoForNewSession();
         OnPropertyChanged(nameof(IsLoggedIn));
         OnPropertyChanged(nameof(CurrentUsername));
         OnPropertyChanged(nameof(LastUsername));
