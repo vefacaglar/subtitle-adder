@@ -193,13 +193,15 @@
         },
         {
             "label": "windows: engine build",
-            "detail": "Builds the Rust engine (cargo build --release -p se-cli) and stages it with its runtime DLLs into engine/dist, where the dev app finds it.",
+            "detail": "Builds the Rust engine and stages it with its runtime DLLs into engine/dist, where the dev app finds it; skipped when engine/dist is newer than the engine sources (engine/scripts/build-dev.ps1).",
             "type": "process",
-            "command": "pwsh.exe",
+            "command": "powershell.exe",
             "args": [
                 "-NoProfile",
-                "-Command",
-                "$ErrorActionPreference = 'Stop'; $PSNativeCommandUseErrorActionPreference = $true; & '${workspaceFolder}/engine/scripts/fetch-runtime.ps1'; if (-not $env:FFMPEG_DIR) { $env:FFMPEG_DIR = '${workspaceFolder}/engine/.runtime/ffmpeg' }; cargo build --release -p se-cli -j 2; & '${workspaceFolder}/engine/scripts/stage-runtime.ps1'"
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/engine/scripts/build-dev.ps1"
             ],
             "options": {
                 "cwd": "${workspaceFolder}/engine",
