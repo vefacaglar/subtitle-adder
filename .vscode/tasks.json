@@ -195,7 +195,7 @@
             "label": "windows: engine build",
             "detail": "Builds the Rust engine and stages it with its runtime DLLs into engine/dist, where the dev app finds it; skipped when engine/dist is newer than the engine sources (engine/scripts/build-dev.ps1).",
             "type": "process",
-            "command": "powershell.exe",
+            "command": "${env:SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
             "args": [
                 "-NoProfile",
                 "-ExecutionPolicy",
