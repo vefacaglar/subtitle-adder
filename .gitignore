@@ -32,6 +32,6 @@ obj/
 TestResults/
 
 # Rust engine build output and staged runtime
-engine-rs/target/
-engine-rs/dist/
+engine/target/
+engine/dist/
 .claude/worktrees/
