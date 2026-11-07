@@ -20,16 +20,61 @@ jobs:
         os: [ubuntu-latest, macos-26, windows-latest]
     defaults:
       run:
+        shell: bash
         working-directory: engine
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      # Outside the checkout and short: the CMake-built oneDNN/CTranslate2 objects hit MAX_PATH on Windows under a
+      # deep target dir. rust-cache below points at the same folder.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../t
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          enable-cache: true
-          cache-dependency-glob: engine/uv.lock
-      - run: uv sync --locked --no-group cuda
-      # Slow tests download real models; they are excluded by default (pyproject addopts).
-      - run: uv run --no-group cuda pytest -q
+          workspaces: engine -> ../../t
+
+      # Native runtimes. sherpa-onnx 2.0.1 (C API + onnxruntime) on every OS comes from fetch-runtime, which also
+      # exports SUBTITLE_ENGINE_SHERPA_DIR (and FFMPEG_DIR where it provides FFmpeg) through GITHUB_ENV.
+      - name: Runtimes (Linux; FFmpeg 8.1 from BtbN, apt only has older FFmpeg)
+        if: runner.os == 'Linux'
+        run: bash scripts/fetch-runtime.sh
+      - name: Runtimes (macOS; FFmpeg 8 from Homebrew)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ffmpeg pkgconf
+          bash scripts/fetch-runtime.sh
+      - name: Runtimes (Windows; FFmpeg 8.1 SDK from BtbN)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/fetch-runtime.ps1
+      # Windows: CMake + Ninja + cl from the preinstalled Visual Studio (the static-CRT toolchain file in
+      # .cargo/config.toml is tested with Ninja), libclang from the preinstalled LLVM (ffmpeg-sys-next bindgen),
+      # nuget.exe for the MKL / Intel OpenMP packages of intel-onemkl-prebuild.
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - uses: nuget/setup-nuget@v2
+        if: runner.os == 'Windows'
+      - name: Windows build environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+          "CC=cl" >> $env:GITHUB_ENV
+          "CXX=cl" >> $env:GITHUB_ENV
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      # -j 2: the oneDNN/MKL debug rlibs are huge and parallel rustc processes run out of memory.
+      # Tests needing real models skip themselves (or are #[ignore]d); no model is downloaded.
+      - name: cargo test
+        if: runner.os != 'Windows'
+        run: cargo test --workspace -j 2
+      # pwsh on Windows: in bash, Git's /usr/bin/link would shadow MSVC's link.exe from msvc-dev-cmd.
+      - name: cargo test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo test --workspace -j 2
 
   macos-app:
     name: macOS app
@@ -39,8 +84,7 @@ jobs:
         working-directory: apps/macos
     steps:
       - uses: actions/checkout@v4
-      # The dev-engine lookup test expects uv (the app runs the engine through `uv run` in development).
-      - uses: astral-sh/setup-uv@v6
+      # The dev-engine lookup tests only launch engine/dist when it is staged, so no engine build is needed here.
       - run: swift --version
       - uses: actions/cache@v4
         with:
@@ -65,8 +109,7 @@ jobs:
         working-directory: apps/windows
     steps:
       - uses: actions/checkout@v4
-      # The dev-engine lookup tests expect uv (the app runs the engine through `uv run` in development).
-      - uses: astral-sh/setup-uv@v6
+      # The dev-engine lookup tests only launch engine\dist when it is staged, so no engine build is needed here.
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x

@@ -16,10 +16,14 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      # The Rust engine: package-macos.sh runs fetch-runtime.sh (sherpa-onnx 2.0.1), cargo build --release -p se-cli
+      # and stage-runtime.sh (copies Homebrew's FFmpeg dylibs into engine/dist and rewrites their install names).
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          enable-cache: true
-          cache-dependency-glob: engine/uv.lock
+          workspaces: engine
+      - name: FFmpeg 8 (Homebrew)
+        run: brew install ffmpeg pkgconf
       - name: Version from tag
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0-dev"; fi
@@ -41,10 +45,23 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      # The Rust engine: package-windows.ps1 runs fetch-runtime.ps1 (sherpa-onnx 2.0.1, FFmpeg 8.1 SDK),
+      # cargo build --release -p se-cli and stage-runtime.ps1. Build tools: MSVC + CMake + Ninja from the preinstalled
+      # Visual Studio (msvc-dev-cmd), libclang from the preinstalled LLVM, nuget.exe for intel-onemkl-prebuild.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          enable-cache: true
-          cache-dependency-glob: engine/uv.lock
+          workspaces: engine -> ../../t
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: nuget/setup-nuget@v2
+      - name: Engine build environment
+        run: |
+          # Short target dir outside the checkout (MAX_PATH in the CMake-built oneDNN/CTranslate2); matches rust-cache.
+          "CARGO_TARGET_DIR=$(Split-Path -Parent $env:GITHUB_WORKSPACE)\t" >> $env:GITHUB_ENV
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+          "CC=cl" >> $env:GITHUB_ENV
+          "CXX=cl" >> $env:GITHUB_ENV
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
