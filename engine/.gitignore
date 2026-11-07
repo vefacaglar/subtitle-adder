@@ -1,1 +1,4 @@
 /target
+/dist
+# Pinned native runtimes downloaded by scripts/fetch-runtime.*
+/.runtime

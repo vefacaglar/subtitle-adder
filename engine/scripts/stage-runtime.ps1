@@ -19,11 +19,11 @@ and OpenMP import DLLs from the executable's folder, so the dist folder runs wit
 Cargo target dir (default: $env:CARGO_TARGET_DIR, else engine\target).
 
 .PARAMETER FFmpegDir
-FFmpeg 8.x shared SDK (default: $env:FFMPEG_DIR).
+FFmpeg 8.x shared SDK (default: $env:FFMPEG_DIR, else engine\.runtime\ffmpeg from fetch-runtime.ps1).
 
 .PARAMETER SherpaDir
-Folder holding sherpa-onnx-c-api.dll and onnxruntime.dll (default: $env:SUBTITLE_ENGINE_SHERPA_DIR, else the
-Python venv's sherpa_onnx\lib).
+Folder holding sherpa-onnx-c-api.dll and onnxruntime.dll (default: $env:SUBTITLE_ENGINE_SHERPA_DIR, else
+engine\.runtime\sherpa-onnx from fetch-runtime.ps1).
 #>
 [CmdletBinding()]
 param(
@@ -36,12 +36,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $EngineRs = Split-Path -Parent $PSScriptRoot
-$Root = Split-Path -Parent $EngineRs
 
 if (-not $TargetDir) { $TargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $EngineRs 'target' } }
 if (-not $Dist) { $Dist = Join-Path $EngineRs 'dist' }
-if (-not $SherpaDir) { $SherpaDir = Join-Path $Root 'engine\.venv\Lib\site-packages\sherpa_onnx\lib' }
-if (-not $FFmpegDir) { throw 'FFmpeg SDK not found: pass -FFmpegDir or set FFMPEG_DIR.' }
+$RuntimeDir = Join-Path $EngineRs '.runtime'
+if (-not $SherpaDir) { $SherpaDir = Join-Path $RuntimeDir 'sherpa-onnx' }
+if (-not $FFmpegDir -and (Test-Path (Join-Path $RuntimeDir 'ffmpeg\bin'))) { $FFmpegDir = Join-Path $RuntimeDir 'ffmpeg' }
+if (-not $FFmpegDir) { throw 'FFmpeg SDK not found: pass -FFmpegDir, set FFMPEG_DIR or run engine\scripts\fetch-runtime.ps1.' }
+if (-not (Test-Path (Join-Path $SherpaDir 'sherpa-onnx-c-api.dll'))) {
+    throw "sherpa-onnx runtime not found in ${SherpaDir}: pass -SherpaDir, set SUBTITLE_ENGINE_SHERPA_DIR or run engine\scripts\fetch-runtime.ps1."
+}
 
 $Bin = Join-Path $TargetDir $Profile
 $Exe = Join-Path $Bin 'subtitle-engine.exe'

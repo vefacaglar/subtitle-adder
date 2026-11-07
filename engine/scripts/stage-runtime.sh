@@ -9,7 +9,7 @@
 #   DIST              output folder (default engine/dist, gitignored)
 #   FFMPEG_DIR        FFmpeg 8.x shared install (lib/*.dylib); default: `brew --prefix ffmpeg`
 #   SHERPA_DIR        folder with libsherpa-onnx-c-api.dylib and libonnxruntime*.dylib
-#                     (default: $SUBTITLE_ENGINE_SHERPA_DIR, else the venv's sherpa_onnx/lib)
+#                     (default: $SUBTITLE_ENGINE_SHERPA_DIR, else engine/.runtime/sherpa-onnx from fetch-runtime.sh)
 #
 # The FFmpeg dylibs are copied next to the binary and every absolute install name (Homebrew) is rewritten to
 # @executable_path/<name>, so the folder runs without DYLD_* variables. The engine finds the sherpa-onnx and
@@ -20,20 +20,18 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 engine_rs="$(dirname "$here")"
-root="$(dirname "$engine_rs")"
 target="${CARGO_TARGET_DIR:-$engine_rs/target}"
 profile="${PROFILE:-release}"
 dist="${DIST:-$engine_rs/dist}"
 ffmpeg="${FFMPEG_DIR:-$(brew --prefix ffmpeg 2>/dev/null || true)}"
-sherpa="${SHERPA_DIR:-${SUBTITLE_ENGINE_SHERPA_DIR:-}}"
-if [[ -z "$sherpa" ]]; then
-  sherpa="$(ls -d "$root"/engine/.venv/lib/python3*/site-packages/sherpa_onnx/lib 2>/dev/null | head -1 || true)"
-fi
+sherpa="${SHERPA_DIR:-${SUBTITLE_ENGINE_SHERPA_DIR:-$engine_rs/.runtime/sherpa-onnx}}"
+[[ "$(uname -s)" == Darwin ]] || { echo "stage-runtime.sh supports macOS only (Windows: stage-runtime.ps1)" >&2; exit 1; }
 
 exe="$target/$profile/subtitle-engine"
 [[ -x "$exe" ]] || { echo "subtitle-engine not found in $target/$profile (cargo build --release -p se-cli)" >&2; exit 1; }
 [[ -d "$ffmpeg/lib" ]] || { echo "FFmpeg not found: set FFMPEG_DIR" >&2; exit 1; }
-[[ -d "$sherpa" ]] || { echo "sherpa-onnx libs not found: set SHERPA_DIR" >&2; exit 1; }
+[[ -f "$sherpa/libsherpa-onnx-c-api.dylib" ]] || {
+  echo "sherpa-onnx libs not found in $sherpa: set SHERPA_DIR or run engine/scripts/fetch-runtime.sh" >&2; exit 1; }
 
 mkdir -p "$dist"
 echo "Staging into $dist"

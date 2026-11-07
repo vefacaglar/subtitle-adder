@@ -1,7 +1,7 @@
 //! ONNX Runtime shared library (load-dynamic). One onnxruntime per process: the one shipped with sherpa-onnx.
 //!
 //! Search order: `ORT_DYLIB_PATH` (a file), else next to the executable, else `$SUBTITLE_ENGINE_SHERPA_DIR`
-//! (dev: `engine/.venv/Lib/site-packages/sherpa_onnx/lib`); see [`se_core::fsutil::find_native_library`].
+//! (debug builds: also `engine/.runtime/sherpa-onnx`); see [`se_core::fsutil::find_native_library`].
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

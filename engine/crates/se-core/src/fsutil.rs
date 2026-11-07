@@ -148,8 +148,8 @@ pub fn gettempdir() -> PathBuf {
 pub const SHERPA_DIR_ENV_VAR: &str = "SUBTITLE_ENGINE_SHERPA_DIR";
 
 /// Folders searched for a bundled native library (`onnxruntime`, `sherpa-onnx-c-api`), in order: the
-/// executable's folder, then `$SUBTITLE_ENGINE_SHERPA_DIR` (dev copy, e.g. the venv's `sherpa_onnx/lib`).
-/// `ORT_DYLIB_PATH` (a full file path) is checked by the ONNX Runtime loader before these.
+/// executable's folder, then `$SUBTITLE_ENGINE_SHERPA_DIR` (dev override), then, in debug builds only,
+/// [`dev_runtime_dir`]. `ORT_DYLIB_PATH` (a full file path) is checked by the ONNX Runtime loader before these.
 pub fn native_library_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
@@ -161,7 +161,20 @@ pub fn native_library_dirs() -> Vec<PathBuf> {
             dirs.push(PathBuf::from(dir));
         }
     }
+    dirs.extend(dev_runtime_dir());
     dirs
+}
+
+/// `engine/.runtime/sherpa-onnx`, where `engine/scripts/fetch-runtime.*` puts the pinned sherpa-onnx C API and
+/// its onnxruntime (debug builds only, and only when the folder exists).
+pub fn dev_runtime_dir() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    // CARGO_MANIFEST_DIR = engine/crates/se-core
+    let engine = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2)?;
+    let dir = engine.join(".runtime").join("sherpa-onnx");
+    dir.is_dir().then_some(dir)
 }
 
 /// The first existing `<dir>/<file_name>` among [`native_library_dirs`].

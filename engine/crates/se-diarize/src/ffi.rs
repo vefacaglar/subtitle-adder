@@ -1,10 +1,10 @@
 //! sherpa-onnx C API (`c-api.h`) loaded at run time with `libloading` (no static link). The `#[repr(C)]`
-//! structs match sherpa-onnx **2.0.1** (`engine/.venv/Lib/site-packages/sherpa_onnx/include/sherpa-onnx/c-api/c-api.h`;
-//! dev copy of the libraries: `engine/.venv/Lib/site-packages/sherpa_onnx/lib`).
+//! structs match sherpa-onnx **2.0.1** (`sherpa-onnx/c-api/c-api.h` of the v2.0.1 release; dev copy of the
+//! libraries: `engine/.runtime/sherpa-onnx`, fetched by `engine/scripts/fetch-runtime.*`).
 //!
 //! Library search: the directory of `$ORT_DYLIB_PATH` (when it holds the C API library), next to the
-//! executable, `$SUBTITLE_ENGINE_SHERPA_DIR` ([`se_core::fsutil::find_native_library`]) and, in debug builds
-//! only, the dev copy in the Python venv. Its onnxruntime must be the one `se-asr` loads: when
+//! executable, `$SUBTITLE_ENGINE_SHERPA_DIR` and, in debug builds only, `engine/.runtime/sherpa-onnx`
+//! ([`se_core::fsutil::find_native_library`]). Its onnxruntime must be the one `se-asr` loads: when
 //! `ORT_DYLIB_PATH` is set, that library is loaded first so the C API binds to the same module.
 
 use std::ffi::{c_char, c_void};
@@ -128,25 +128,6 @@ pub struct SherpaApi {
 unsafe impl Send for SherpaApi {}
 unsafe impl Sync for SherpaApi {}
 
-/// The dev copy of the libraries in the Python venv (debug builds only).
-fn dev_library_dir() -> Option<PathBuf> {
-    if !cfg!(debug_assertions) {
-        return None;
-    }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3)?.to_path_buf();
-    let dir = if cfg!(windows) {
-        root.join("engine").join(".venv").join("Lib").join("site-packages").join("sherpa_onnx").join("lib")
-    } else {
-        // POSIX venvs: lib/pythonX.Y/site-packages; pick the first match.
-        let lib = root.join("engine").join(".venv").join("lib");
-        let py = std::fs::read_dir(&lib).ok()?.flatten().map(|e| e.path()).find(|p| {
-            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("python"))
-        })?;
-        py.join("site-packages").join("sherpa_onnx").join("lib")
-    };
-    dir.is_dir().then_some(dir)
-}
-
 /// The C API library to load, or `None` if none is found.
 pub fn locate() -> Option<PathBuf> {
     if let Some(ort) = std::env::var_os("ORT_DYLIB_PATH") {
@@ -156,7 +137,6 @@ pub fn locate() -> Option<PathBuf> {
         }
     }
     se_core::fsutil::find_native_library(SHERPA_LIBRARY_NAME)
-        .or_else(|| dev_library_dir().map(|d| d.join(SHERPA_LIBRARY_NAME)).filter(|p| p.is_file()))
 }
 
 /// Opens a library so that its own directory is searched for its dependencies (onnxruntime).
