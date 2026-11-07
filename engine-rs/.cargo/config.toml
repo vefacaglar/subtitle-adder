@@ -1,3 +1,8 @@
 # ct2rs links CTranslate2 with the static CRT (/MT); every crate must use the same CRT.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# CMake-built native deps (CTranslate2, oneDNN) must use the static CRT too; oneDNN's CMake defaults to /MD.
+# cmake-rs reads this target-specific variable only when building for x86_64-pc-windows-msvc. See the file.
+"CMAKE_TOOLCHAIN_FILE_x86_64-pc-windows-msvc" = { value = "cmake/static-crt-toolchain.cmake", relative = true }
