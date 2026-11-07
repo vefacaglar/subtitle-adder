@@ -379,3 +379,20 @@ fn test_usage_error_exits_2_without_json_event() {
     let (code, out, _) = run(&Fake::default(), &["--version"]);
     assert_eq!((code, out.as_str()), (0, "subtitle-engine protocol 1\n"));
 }
+
+/// Rust-only: a panic inside a handler reaches the app like Python's catch-all `except Exception`
+/// (an `error` event with `--json`, `hata: ...` otherwise; exit code 1).
+#[test]
+#[serial]
+fn test_handler_panic_becomes_error_event() {
+    let _g = Guard::new();
+    let fake = Fake { delete_result: Box::new(|_| panic!("boom")), ..Fake::default() };
+    let (code, out, err) = run(&fake, &["delete-model", "small", "--json"]);
+    assert_eq!(code, 1);
+    assert_eq!(out, "{\"event\": \"error\", \"message\": \"boom\"}\n");
+    assert_eq!(err, "");
+    let (code, out, err) = run(&fake, &["--lang", "en", "delete-model", "small"]);
+    assert_eq!(code, 1);
+    assert_eq!(out, "");
+    assert_eq!(err, "error: boom\n");
+}

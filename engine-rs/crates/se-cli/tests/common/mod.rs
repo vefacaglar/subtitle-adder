@@ -12,6 +12,11 @@ use se_audio::{AudioBackend, FfmpegBackend};
 use se_cli::{Io, Services, main_with};
 use se_core::json::Value;
 use se_core::{EngineError, ProgressFn, Result, Transcript, Word, WordsFn};
+use se_diarize::Diarizer;
+use se_translate::Translator;
+
+pub type DiarizerMaker = Box<dyn Fn() -> Result<Box<dyn Diarizer>>>;
+pub type TranslatorMaker = Box<dyn Fn(&str) -> Result<Box<dyn Translator>>>;
 
 /// The autouse conftest fixtures: no `SUBTITLE_ENGINE_LANG`, no language override, strict offline off, HF
 /// offline state restored, an isolated `tempfile.gettempdir()`. Tests using it must be `#[serial]`.
@@ -174,6 +179,12 @@ pub struct Fake {
     pub whisper_calls: RefCell<Vec<String>>,
     pub audio: FakeExtractor,
     pub text: &'static str,
+    /// `diarize.create_diarizer` replacement (`None` → the real one).
+    pub diarizer: Option<DiarizerMaker>,
+    /// `translate.create_translator` replacement (`None` → the real one).
+    pub translator: Option<TranslatorMaker>,
+    /// `models.require_download` replacement (`None` → built on `needs_download`).
+    pub require: Option<Box<dyn Fn(&str) -> Result<bool>>>,
 }
 
 impl Default for Fake {
@@ -190,6 +201,9 @@ impl Default for Fake {
             whisper_calls: RefCell::default(),
             audio: FakeExtractor::new(ExtractMode::Real),
             text: "Merhaba dünya. Görüşürüz.",
+            diarizer: None,
+            translator: None,
+            require: None,
         }
     }
 }
@@ -207,6 +221,34 @@ impl Services for Fake {
 
     fn is_downloaded(&self, model_id: &str) -> bool {
         (self.downloaded)(model_id)
+    }
+
+    fn create_diarizer(&self) -> Result<Box<dyn Diarizer>> {
+        match &self.diarizer {
+            Some(make) => make(),
+            None => se_diarize::create_diarizer(),
+        }
+    }
+
+    fn create_translator(&self, model_id: &str) -> Result<Box<dyn Translator>> {
+        match &self.translator {
+            Some(make) => make(model_id),
+            None => se_translate::create_translator(model_id, se_translate::Device::Auto, "int8"),
+        }
+    }
+
+    fn require_download(&self, model_id: &str) -> Result<bool> {
+        if let Some(f) = &self.require {
+            return f(model_id);
+        }
+        let missing = self.needs_download(model_id);
+        if missing && se_core::offline::offline_requested() {
+            return Err(EngineError::value(se_core::t!(
+                "offline_missing_model",
+                model = se_core::i18n::display_name(model_id)
+            )));
+        }
+        Ok(missing)
     }
 
     fn needs_download(&self, model_id: &str) -> bool {
@@ -247,6 +289,10 @@ impl Services for Fake {
 
     fn needs_cuda_download(&self) -> bool {
         false
+    }
+
+    fn require_llama_download(&self) -> Result<bool> {
+        Ok(false)
     }
 
     fn audio(&self) -> &dyn AudioBackend {

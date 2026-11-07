@@ -55,16 +55,32 @@ pub fn main_with(argv: &[OsString], services: &dyn Services, io: &mut Io<'_>) ->
     if se_core::offline::offline_requested() || !may_download {
         se_core::offline::go_offline();
     }
-    match commands::run_command(&args.command, services, io) {
-        Ok(code) => code,
-        Err(err) => {
-            if args.json() {
-                let _ = se_core::events::emit(io.stdout, &se_core::events::error(&err.to_string()));
-            } else {
-                let _ = writeln!(io.stderr, "{}: {}", se_core::t!("error_prefix"), err).and_then(|_| io.stderr.flush());
-            }
-            1
-        }
+    // Python catches every `Exception` of a handler; a Rust panic (a bug, like an unexpected Python
+    // `IndexError`) must likewise reach the app as an `error` event with exit code 1, not as exit code 101.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        commands::run_command(&args.command, services, &mut *io)
+    }));
+    let message = match outcome {
+        Ok(Ok(code)) => return code,
+        Ok(Err(err)) => err.to_string(),
+        Err(payload) => panic_message(payload.as_ref()),
+    };
+    if args.json() {
+        let _ = se_core::events::emit(io.stdout, &se_core::events::error(&message));
+    } else {
+        let _ = writeln!(io.stderr, "{}: {}", se_core::t!("error_prefix"), message).and_then(|_| io.stderr.flush());
+    }
+    1
+}
+
+/// The text of a panic payload (`panic!("...")` carries a `&str` or a `String`).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "internal error".to_string()
     }
 }
 
