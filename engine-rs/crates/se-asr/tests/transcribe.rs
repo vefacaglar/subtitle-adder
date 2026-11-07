@@ -282,6 +282,11 @@ fn fw_segment(end: f64, words: &[(f64, f64, &str)]) -> FwSegment {
 
 type Script = Box<dyn FnMut(Device, AudioInput<'_>, &TranscribeOptions) -> Result<(FwInfo, Vec<Result<FwSegment>>)>>;
 
+/// A script whose model call returns no segments.
+fn empty_script() -> Script {
+    Box::new(|_: Device, _: AudioInput<'_>, _: &TranscribeOptions| Ok((info("en", 1.0), Vec::new())))
+}
+
 struct FakeWhisperModel {
     device: Device,
     script: Rc<RefCell<Script>>,
@@ -377,7 +382,7 @@ fn test_cpu_fallback_after_a_mid_run_cuda_error_keeps_progress_monotonic() {
 
 #[test]
 fn test_whisper_uses_cpu_when_cuda_is_not_usable() {
-    let (hooks, loads) = fake_hooks(false, Box::new(|_, _, _| Ok((info("en", 1.0), Vec::new()))));
+    let (hooks, loads) = fake_hooks(false, empty_script());
     FasterWhisperTranscriber::with_hooks("base", Device::Auto, None, hooks).unwrap();
     assert_eq!(pairs(&loads.borrow()), vec![("cpu".to_string(), "int8".to_string())]);
 }
@@ -401,7 +406,7 @@ fn test_cached_whisper_model_loads_without_contacting_the_hub() {
                 c.borrow_mut().push(local_files_only);
                 Ok(Box::new(FakeWhisperModel {
                     device: Device::Cpu,
-                    script: Rc::new(RefCell::new(Box::new(|_, _, _| Ok((info("en", 1.0), Vec::new()))) as Script)),
+                    script: Rc::new(RefCell::new(empty_script())),
                 }) as Box<dyn WhisperBackend>)
             }),
         };

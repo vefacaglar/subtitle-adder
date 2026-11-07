@@ -26,9 +26,15 @@ regex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
-flate2.workspace = true
+flate2 = { workspace = true, features = ["zlib"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+# Same CPU backends as the Python ctranslate2 wheel (and se-translate): MKL on Intel CPUs, oneDNN for SGEMM/int8
+# elsewhere (without oneDNN, int8 is unavailable on AMD CPUs), and on Windows Intel OpenMP (see build.rs). oneDNN
+# only links with the static CRT through engine-rs/cmake/static-crt-toolchain.cmake (set in .cargo/config.toml).
+[target.'cfg(windows)'.dependencies]
+ct2rs = { workspace = true, features = ["whisper", "mkl", "dnnl", "openmp-runtime-intel"] }
+
+[target.'cfg(all(not(windows), not(target_os = "macos")))'.dependencies]
 ct2rs = { workspace = true, features = ["whisper", "mkl", "dnnl"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

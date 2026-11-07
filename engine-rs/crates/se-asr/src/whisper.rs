@@ -1,6 +1,5 @@
 //! `FasterWhisperTranscriber` on CTranslate2 (spec transcribe.md §2-§4).
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use se_core::{ErrorKind, EngineError, ProgressFn, Result, Transcript, Word, WordsFn};
@@ -160,7 +159,9 @@ impl Progress<'_> {
     }
 }
 
-fn words_of(seg: &FwSegment, offset: f64) -> Vec<Word> {
+/// The engine words of a segment: `Word(round(offset + w.start, 3), round(offset + w.end, 3), w.word.strip())`
+/// for non-blank words (numpy or Python rounding by the value's origin).
+pub fn words_of(seg: &FwSegment, offset: f64) -> Vec<Word> {
     seg.words
         .iter()
         .filter_map(|w| {
@@ -275,7 +276,7 @@ impl FasterWhisperTranscriber {
     ) -> Result<Transcript> {
         let root = self.checkpoint_root.clone().unwrap_or_else(chunks::default_checkpoint_root);
         let ckpt = chunks::checkpoint_path(&root, audio, &self.model_size, language);
-        let (cached_lang, mut cached): (Option<String>, BTreeMap<i64, Vec<Word>>) =
+        let (cached_lang, mut cached): (Option<String>, chunks::ChunkMap) =
             chunks::load_checkpoint(ckpt.as_deref());
         let options = engine_options();
         let mut words: Vec<Word> = Vec::new();

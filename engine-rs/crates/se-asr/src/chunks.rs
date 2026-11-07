@@ -1,7 +1,6 @@
 //! Long-audio chunking for Whisper (>180 s) and the ASR checkpoint
 //! (`<temp>/SubtitleAdder/transcriptions/asr-<hash>.json`; spec transcribe.md §2.4-§2.9).
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -257,6 +256,50 @@ pub fn checkpoint_path(root: &Path, audio: &Path, model_size: &str, language: Op
     Some(root.join(format!("asr-{}.json", &digest[..20])))
 }
 
+/// The checkpoint's `{chunk index: words}`: a Python `dict` with `int` keys, so it keeps insertion order (the
+/// order of the file, then new chunks appended) and a repeated key keeps its first position with the last value.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChunkMap(Vec<(i64, Vec<Word>)>);
+
+impl ChunkMap {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn get(&self, key: &i64) -> Option<&Vec<Word>> {
+        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+
+    /// `d[key] = words`.
+    pub fn insert(&mut self, key: i64, words: Vec<Word>) {
+        match self.0.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = words,
+            None => self.0.push((key, words)),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Entries in insertion order.
+    pub fn iter(&self) -> impl Iterator<Item = (&i64, &Vec<Word>)> {
+        self.0.iter().map(|(k, v)| (k, v))
+    }
+}
+
+impl std::ops::Index<&i64> for ChunkMap {
+    type Output = Vec<Word>;
+
+    fn index(&self, key: &i64) -> &Vec<Word> {
+        self.get(key).expect("chunk index present")
+    }
+}
+
 /// Python `float(x)` for a JSON value (numbers, bools and numeric strings).
 fn py_float(v: &Value) -> Option<f64> {
     match v {
@@ -265,16 +308,34 @@ fn py_float(v: &Value) -> Option<f64> {
         Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         Value::BigInt(s) => s.parse::<f64>().ok().filter(|f| f.is_finite()),
         Value::Str(s) => {
-            let t = se_core::pyfmt::strip(s).replace('_', "");
+            let t = se_core::pyfmt::strip(s);
+            if !underscores_between_digits(t) {
+                return None;
+            }
+            let t = t.replace('_', "");
+            // Rust also parses "infinity"/"nan" spellings Python accepts; it rejects nothing Python accepts
+            // except non-ASCII digits, which never occur in a checkpoint the engine wrote.
             t.parse::<f64>().ok()
         }
         _ => None,
     }
 }
 
+/// Python numeric literals in `int()`/`float()` allow a single `_` only between two digits.
+fn underscores_between_digits(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.iter().enumerate().all(|(i, &c)| {
+        c != b'_' || (i > 0 && i + 1 < b.len() && b[i - 1].is_ascii_digit() && b[i + 1].is_ascii_digit())
+    })
+}
+
 /// Python `int(str)` for a dict key.
 fn py_int_key(k: &str) -> Option<i64> {
-    se_core::pyfmt::strip(k).replace('_', "").parse::<i64>().ok()
+    let t = se_core::pyfmt::strip(k);
+    if !underscores_between_digits(t) {
+        return None;
+    }
+    t.replace('_', "").parse::<i64>().ok()
 }
 
 fn load_words(list: &Value) -> Option<Vec<Word>> {
@@ -295,7 +356,7 @@ fn load_words(list: &Value) -> Option<Vec<Word>> {
     Some(words)
 }
 
-fn load_inner(path: &Path) -> Option<(Option<String>, BTreeMap<i64, Vec<Word>>)> {
+fn load_inner(path: &Path) -> Option<(Option<String>, ChunkMap)> {
     let bytes = fs::read(path).ok()?;
     let text = json::decode_utf8_strict(&bytes).ok()?;
     let raw = json::parse(text).ok()?;
@@ -304,7 +365,7 @@ fn load_inner(path: &Path) -> Option<(Option<String>, BTreeMap<i64, Vec<Word>>)>
         Some(Value::Str(s)) => Some(s.clone()),
         _ => None,
     };
-    let mut chunks = BTreeMap::new();
+    let mut chunks = ChunkMap::new();
     match obj.get("chunks") {
         None => {}
         Some(v) if !v.is_truthy() => {}
@@ -320,14 +381,14 @@ fn load_inner(path: &Path) -> Option<(Option<String>, BTreeMap<i64, Vec<Word>>)>
 
 /// `_load_transcribe_checkpoint(path) -> (language, {chunk index: words})` (lenient; missing/corrupt → empty,
 /// all or nothing). A non-string `language` is read as `None`.
-pub fn load_checkpoint(path: Option<&Path>) -> (Option<String>, BTreeMap<i64, Vec<Word>>) {
+pub fn load_checkpoint(path: Option<&Path>) -> (Option<String>, ChunkMap) {
     let Some(path) = path else {
-        return (None, BTreeMap::new());
+        return (None, ChunkMap::new());
     };
     if !path.is_file() {
-        return (None, BTreeMap::new());
+        return (None, ChunkMap::new());
     }
-    load_inner(path).unwrap_or((None, BTreeMap::new()))
+    load_inner(path).unwrap_or((None, ChunkMap::new()))
 }
 
 fn tmp_path(path: &Path) -> PathBuf {
@@ -336,12 +397,12 @@ fn tmp_path(path: &Path) -> PathBuf {
 }
 
 /// `_save_transcribe_checkpoint(path, language, chunks)` (atomic; errors ignored).
-pub fn save_checkpoint(path: Option<&Path>, language: Option<&str>, chunks: &BTreeMap<i64, Vec<Word>>) {
+pub fn save_checkpoint(path: Option<&Path>, language: Option<&str>, chunks: &ChunkMap) {
     let Some(path) = path else {
         return;
     };
     let mut chunk_map = Map::new();
-    for (k, words) in chunks {
+    for (k, words) in chunks.iter() {
         let list: Vec<Value> = words
             .iter()
             .map(|w| {
@@ -412,7 +473,7 @@ mod tests {
     fn checkpoint_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("asr-x.json");
-        let mut chunks = BTreeMap::new();
+        let mut chunks = ChunkMap::new();
         chunks.insert(0, vec![Word::new(0.1, 0.4, "olá")]);
         chunks.insert(1, vec![]);
         save_checkpoint(Some(&path), Some("pt"), &chunks);
@@ -425,7 +486,7 @@ mod tests {
         assert_eq!(lang.as_deref(), Some("pt"));
         assert_eq!(loaded, chunks);
         fs::write(&path, r#"{"language": "pt", "chunks": {"x": []}}"#).unwrap();
-        assert_eq!(load_checkpoint(Some(&path)), (None, BTreeMap::new()));
+        assert_eq!(load_checkpoint(Some(&path)), (None, ChunkMap::new()));
         fs::write(&path, r#"{"language": null, "chunks": {" 2 ": [{"start": "1.5", "end": 2, "text": 7}]}}"#)
             .unwrap();
         let (lang, loaded) = load_checkpoint(Some(&path));

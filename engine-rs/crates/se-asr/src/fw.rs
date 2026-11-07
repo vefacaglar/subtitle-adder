@@ -210,7 +210,22 @@ impl WhisperModel {
         let duration_after_vad = audio.len() as f64 / 16000.0;
         let features = self.fe.compute(&audio);
         drop(audio);
+        self.start_features(features, speeches, duration, duration_after_vad, language, options)
+    }
 
+    /// The part of `WhisperModel.transcribe` after the VAD and the feature extractor: language detection,
+    /// tokenizer and the lazy segment generator over precomputed `features` (of the VAD-concatenated audio) and
+    /// the VAD `speeches` (sample positions in the original audio; empty = no VAD). Parity checks feed the Python
+    /// feature extractor's output through it.
+    pub fn start_features<'a>(
+        &'a self,
+        features: Features,
+        speeches: Vec<fw_vad::Speech>,
+        duration: f64,
+        duration_after_vad: f64,
+        language: Option<&str>,
+        options: &TranscribeOptions,
+    ) -> Result<(FwInfo, SegmentGenerator<'a>)> {
         let (language, language_probability) = match language {
             None if !self.multilingual => ("en".to_string(), 1.0),
             None => self.detect_language(&features)?,

@@ -146,7 +146,9 @@ fn test_compression_ratio_matches_python_zlib() {
     );
     let out = Command::new(&py).arg("-c").arg(&script).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let reference: Vec<f64> = serde_json::from_slice(&out.stdout).unwrap();
+    // se-core's parser rounds floats exactly like Python (serde_json's default parser can be one ulp off).
+    let parsed = se_core::json::parse(std::str::from_utf8(&out.stdout).unwrap().trim()).unwrap();
+    let reference: Vec<f64> = parsed.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
     let mismatches: Vec<(&String, f64, f64)> = texts
         .iter()
         .zip(&reference)
