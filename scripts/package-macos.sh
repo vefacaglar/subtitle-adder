@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Packages Subtitle Adder.app: the SwiftUI app + the PyInstaller (onedir) engine.
+# Packages Subtitle Adder.app: the SwiftUI app + the Rust engine folder (binary + dylibs).
 #
 #   scripts/package-macos.sh
 #
@@ -11,7 +11,7 @@
 #   VERSION         Short version (default: 0.1.0)   BUILD_NUMBER (default: 1)
 #   BUNDLE_ID       default: app.subtitleadder.mac
 #   MAKE_DMG=1      Also builds build/Subtitle Adder.dmg.
-#   SKIP_ENGINE_BUILD=1  Skips PyInstaller if build/engine-dist is already built.
+#   SKIP_ENGINE_BUILD=1  Reuses an already staged engine/dist (skips fetch/cargo/stage).
 #
 # Builds only for the architecture of the build machine (arm64 on Apple Silicon); not universal.
 set -euo pipefail
@@ -20,7 +20,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
 APP="$BUILD/Subtitle Adder.app"
 CONTENTS="$APP/Contents"
-ENGINE_DIST="$BUILD/engine-dist/subtitle-engine"
+ENGINE_DIST="$ROOT/engine/dist"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 VERSION="${VERSION:-0.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
@@ -42,13 +42,9 @@ notarize() {
     fi
 }
 
-if ! command -v uv >/dev/null 2>&1; then
-    for d in "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin "$HOME/.cargo/bin"; do
-        if [ -x "$d/uv" ]; then PATH="$d:$PATH"; break; fi
-    done
+if ! command -v cargo >/dev/null 2>&1 && [ -x "$HOME/.cargo/bin/cargo" ]; then
+    PATH="$HOME/.cargo/bin:$PATH"
 fi
-# python.org's framework-style Python puts a nested .framework in the onedir; uv's own Python doesn't.
-export UV_PYTHON_PREFERENCE=only-managed
 
 log "1/5 Building app (swift build -c release)"
 (cd "$ROOT/apps/macos" && swift build -c release)
@@ -56,13 +52,14 @@ APP_BIN_DIR="$(cd "$ROOT/apps/macos" && swift build -c release --show-bin-path)"
 APP_BIN="$APP_BIN_DIR/SubtitleAdderApp"
 
 if [ "${SKIP_ENGINE_BUILD:-0}" != "1" ] || [ ! -x "$ENGINE_DIST/subtitle-engine" ]; then
-    log "2/5 Building engine (PyInstaller onedir)"
-    if ! command -v uv >/dev/null 2>&1; then
-        echo "uv not found; add it to PATH (https://docs.astral.sh/uv/)." >&2
+    log "2/5 Building engine (cargo build --release -p se-cli + stage-runtime)"
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "cargo not found; install Rust (https://rustup.rs/)." >&2
         exit 1
     fi
-    (cd "$ROOT/engine" && uv run --group build pyinstaller subtitle-engine.spec --noconfirm \
-        --distpath "$BUILD/engine-dist" --workpath "$BUILD/engine-work")
+    bash "$ROOT/engine/scripts/fetch-runtime.sh"
+    (cd "$ROOT/engine" && cargo build --release -p se-cli)
+    bash "$ROOT/engine/scripts/stage-runtime.sh"
 else
     log "2/5 Engine build skipped"
 fi
@@ -84,9 +81,9 @@ for name in SubtitleAdder_SubtitleAdderApp.bundle SubtitleAdder_EngineKit.bundle
 done
 # The engine lives under Contents/Resources/subtitle-engine: codesign rejects any non-Mach-O file
 # in places like Frameworks/MacOS/Helpers ("code object is not signed at all"),
-# while the PyInstaller folder contains many data files such as .py/.json/.onnx. The Mach-O files
+# while the engine folder holds the binary plus loose dylibs (FFmpeg, sherpa-onnx, ONNX Runtime). The Mach-O files
 # in Resources are signed one by one below (notarization wants all of them, wherever they are).
-# cp -R: keeps PyInstaller's symlinks as they are.
+# cp -R: keeps any symlinks (versioned dylib names) as they are.
 cp -R "$ENGINE_DIST" "$CONTENTS/Resources/subtitle-engine"
 sed -e "s|__BUNDLE_ID__|$BUNDLE_ID|" -e "s|__VERSION__|$VERSION|" -e "s|__BUILD__|$BUILD_NUMBER|" \
     "$ROOT/scripts/macos/Info.plist.in" > "$CONTENTS/Info.plist"

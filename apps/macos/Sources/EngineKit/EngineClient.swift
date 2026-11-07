@@ -1,6 +1,6 @@
 import Foundation
 
-/// Command that launches the engine. `uv run` in development, the binary inside the bundle in the packaged app.
+/// Command that launches the engine: the staged Rust engine (`engine/dist`) in development, the binary inside the bundle in the packaged app.
 public struct EngineCommand: Sendable {
     public var executable: URL
     public var arguments: [String]
@@ -10,7 +10,7 @@ public struct EngineCommand: Sendable {
         self.arguments = arguments
     }
 
-    /// Location of the bundled engine: `Contents/Resources/subtitle-engine/subtitle-engine` (PyInstaller onedir),
+    /// Location of the bundled engine: `Contents/Resources/subtitle-engine/subtitle-engine` (the staged Rust engine folder: binary plus dylibs),
     /// otherwise `Contents/MacOS/subtitle-engine`. `nil` if not found.
     public static func bundledEngine(in bundle: Bundle = .main) -> URL? {
         if let resources = bundle.resourceURL {
@@ -21,7 +21,8 @@ public struct EngineCommand: Sendable {
     }
 
     /// In order: the `SUBTITLE_ENGINE` environment variable (engine binary), the `subtitle-engine`
-    /// in the bundle, and in development the `engine/` project in the repo (`uv run`).
+    /// in the bundle, and in development the staged `engine/dist/subtitle-engine` of the repo
+    /// (`cargo build --release -p se-cli` in `engine/`, then `engine/scripts/stage-runtime.sh`).
     public static func locate(environment: [String: String] = ProcessInfo.processInfo.environment) -> EngineCommand? {
         // An empty or blank variable counts as unset (a stray `SUBTITLE_ENGINE=` must not shadow the bundled engine).
         if let path = environment["SUBTITLE_ENGINE"]?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
@@ -30,24 +31,17 @@ public struct EngineCommand: Sendable {
         if let bundled = bundledEngine() {
             return EngineCommand(executable: bundled)
         }
-        let repoEngine = URL(filePath: #filePath)
+        let repo = URL(filePath: #filePath)
             .deletingLastPathComponent()  // EngineKit
             .deletingLastPathComponent()  // Sources
             .deletingLastPathComponent()  // apps/macos
             .deletingLastPathComponent()  // apps
             .deletingLastPathComponent()  // repo
-            .appending(path: "engine")
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        // Apps launched from Finder get a minimal PATH, so the usual install locations come first; PATH covers the rest (CI, mise, …).
-        let pathDirs = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map { "\($0)/uv" }
-        let uvCandidates = ["\(home)/.local/bin/uv", "/opt/homebrew/bin/uv", "/usr/local/bin/uv", "\(home)/.cargo/bin/uv"] + pathDirs
-        guard FileManager.default.fileExists(atPath: repoEngine.appending(path: "pyproject.toml").path),
-              let uv = uvCandidates.first(where: FileManager.default.isExecutableFile(atPath:))
+        let binary = repo.appending(path: "engine/dist/subtitle-engine")
+        guard FileManager.default.fileExists(atPath: repo.appending(path: "engine/Cargo.toml").path),
+              FileManager.default.isExecutableFile(atPath: binary.path)
         else { return nil }
-        return EngineCommand(
-            executable: URL(filePath: uv),
-            arguments: ["run", "--quiet", "--project", repoEngine.path, "subtitle-engine"]
-        )
+        return EngineCommand(executable: binary)
     }
 }
 
@@ -57,7 +51,7 @@ public enum EngineError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .notFound: engineString("Altyazı motoru bulunamadı (uv kurulu mu, ya da SUBTITLE_ENGINE ayarlı mı?).")
+        case .notFound: engineString("Altyazı motoru bulunamadı (engine/dist derlendi mi, ya da SUBTITLE_ENGINE ayarlı mı?).")
         case .failed(let message): message
         }
     }
@@ -465,7 +459,7 @@ private struct RunningEngine: @unchecked Sendable {
         }
     }
 
-    /// Sends SIGTERM if the process is still running (`uv run` forwards it to the Python child).
+    /// Sends SIGTERM if the process is still running (the engine is a single process; no wrapper to forward it).
     func terminate() {
         if process.isRunning { process.terminate() }
     }

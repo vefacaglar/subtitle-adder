@@ -2,7 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- PyInstaller's Python.framework and dylibs load with their own or ad-hoc signatures -->
+    <!-- The Rust engine dlopens (libloading) the sherpa-onnx and ONNX Runtime dylibs next to it; they are re-signed
+         with our identity, but keep this so a dylib with a different Team ID (or an ad-hoc one) still loads. -->
     <key>com.apple.security.cs.disable-library-validation</key><true/>
 </dict>
 </plist>

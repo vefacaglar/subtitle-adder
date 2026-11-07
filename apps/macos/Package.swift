@@ -14,7 +14,7 @@ let package = Package(
         .executable(name: "SubtitleAdderApp", targets: ["SubtitleAdderApp"]),
     ],
     targets: [
-        // Runs the Python engine as a subprocess and turns the JSON event stream into Swift types.
+        // Runs the Rust engine as a subprocess and turns the JSON event stream into Swift types.
         .target(name: "EngineKit", resources: [.process("Resources")]),
         // UI-free app data: media index, local profiles and their encrypted vault, translation providers, secrets.
         // No strings of its own: errors are typed and the app localizes them.

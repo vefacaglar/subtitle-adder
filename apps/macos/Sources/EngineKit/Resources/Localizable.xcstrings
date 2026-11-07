@@ -1,18 +1,18 @@
 {
   "sourceLanguage": "tr",
   "strings": {
-    "Altyazı motoru bulunamadı (uv kurulu mu, ya da SUBTITLE_ENGINE ayarlı mı?).": {
+    "Altyazı motoru bulunamadı (engine/dist derlendi mi, ya da SUBTITLE_ENGINE ayarlı mı?).": {
       "localizations": {
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Altyazı motoru bulunamadı (uv kurulu mu, ya da SUBTITLE_ENGINE ayarlı mı?)."
+            "value": "Altyazı motoru bulunamadı (engine/dist derlendi mi, ya da SUBTITLE_ENGINE ayarlı mı?)."
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Subtitle engine not found (is uv installed, or is SUBTITLE_ENGINE set?)."
+            "value": "Subtitle engine not found (is engine/dist built, or is SUBTITLE_ENGINE set?)."
           }
         }
       }
