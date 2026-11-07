@@ -778,6 +778,11 @@ public sealed class VideoPlatformHubView : Grid
     private bool _showExplicitSignInCard;
     private bool _refreshQueued;
 
+    // Profile the personal UI (cards, thumbnails, badge, list pills) was rendered for; null when logged out.
+    private string? _renderedUsername;
+    // Bumped whenever personal UI is cleared, so in-flight thumbnail loads of the old session are dropped.
+    private int _authGeneration;
+
     private sealed class RenderedVideoCard
     {
         public required string VideoPath { get; init; }
@@ -1486,6 +1491,17 @@ public sealed class VideoPlatformHubView : Grid
         {
             return;
         }
+
+        // Personal UI of a profile that is no longer active must disappear right away, even while the hub
+        // is hidden (logout from the toolbar flyout on another tab), so it can never flash on return.
+        if (_dispatcherQueue is { HasThreadAccess: false } dq)
+        {
+            dq.TryEnqueue(ClearPersonalUiIfProfileChanged);
+        }
+        else
+        {
+            ClearPersonalUiIfProfileChanged();
+        }
         SafeRefresh();
     }
 
@@ -1497,8 +1513,32 @@ public sealed class VideoPlatformHubView : Grid
         if (isActive && _dirtyWhileHidden)
         {
             _dirtyWhileHidden = false;
-            SafeRefresh();
+            // Synchronous: the stale state must be replaced before the hub's first frame is shown.
+            Refresh();
         }
+    }
+
+    /// <summary>
+    /// Clears cards, cached thumbnails, the profile badge and list pills when the logged-in profile went away
+    /// or changed (logged-in → logged-out, or another username). Logged-out → logged-in needs no clearing.
+    /// </summary>
+    private void ClearPersonalUiIfProfileChanged()
+    {
+        var current = _vm.IsLoggedIn ? _vm.CurrentUsername : null;
+        if (string.Equals(current, _renderedUsername, StringComparison.OrdinalIgnoreCase)) return;
+        var previous = _renderedUsername;
+        _renderedUsername = current;
+        if (previous is null) return;
+
+        _authGeneration++;
+        _cardsPanel.Children.Clear();
+        _renderedCards.Clear();
+        _cardByPath.Clear();
+        _thumbnailImageCache.Clear();
+        _thumbnailLoadingPaths.Clear();
+        _customListPillsPanel.Children.Clear();
+        _activeProfileBadgeText.Text = "";
+        if (!_isActiveTab) _dirtyWhileHidden = true;
     }
 
     public void MarkDirtyWhileHidden()
@@ -1529,6 +1569,7 @@ public sealed class VideoPlatformHubView : Grid
 
     public void Refresh()
     {
+        ClearPersonalUiIfProfileChanged();
         if (!_isActiveTab)
         {
             _dirtyWhileHidden = true;
@@ -2337,6 +2378,10 @@ public sealed class VideoPlatformHubView : Grid
             return;
         }
 
+        // Thumbnails can come from the profile's encrypted vault: remember whose session started this load
+        // and drop the result if the profile logged out or changed while it was awaited.
+        var generation = _authGeneration;
+        var session = _vm.CurrentUsername;
         try
         {
             var bytes = item.ThumbnailBytes;
@@ -2344,10 +2389,11 @@ public sealed class VideoPlatformHubView : Grid
             {
                 var pathCopy = item.VideoPath;
                 bytes = await Task.Run(() => _vm.GetEncryptedThumbnail(pathCopy));
+                if (!IsSameThumbnailSession(generation, session)) return;
             }
             if (bytes is { Length: > 0 })
             {
-                await ApplyAndCacheThumbnailBytesAsync(item.VideoPath, bytes, targetImage);
+                await ApplyAndCacheThumbnailBytesAsync(item.VideoPath, bytes, targetImage, generation, session);
                 return;
             }
 
@@ -2377,13 +2423,14 @@ public sealed class VideoPlatformHubView : Grid
 
             if (capturedBytes is { Length: > 0 })
             {
+                if (!IsSameThumbnailSession(generation, session)) return;
                 if (_vm.IsLoggedIn)
                 {
                     var pathToSave = item.VideoPath;
                     var bytesToSave = capturedBytes;
                     _ = Task.Run(() => _vm.SaveEncryptedThumbnail(pathToSave, bytesToSave));
                 }
-                await ApplyAndCacheThumbnailBytesAsync(item.VideoPath, capturedBytes, targetImage);
+                await ApplyAndCacheThumbnailBytesAsync(item.VideoPath, capturedBytes, targetImage, generation, session);
             }
         }
         catch
@@ -2392,11 +2439,24 @@ public sealed class VideoPlatformHubView : Grid
         }
         finally
         {
-            _thumbnailLoadingPaths.Remove(item.VideoPath);
+            // After a profile change the set was already cleared and may hold a newer session's load.
+            if (generation == _authGeneration)
+            {
+                _thumbnailLoadingPaths.Remove(item.VideoPath);
+            }
         }
     }
 
-    private async Task ApplyAndCacheThumbnailBytesAsync(string videoPath, byte[] bytes, Image targetImage)
+    private bool IsSameThumbnailSession(int generation, string? session) =>
+        generation == _authGeneration &&
+        string.Equals(_vm.CurrentUsername, session, StringComparison.OrdinalIgnoreCase);
+
+    private async Task ApplyAndCacheThumbnailBytesAsync(
+        string videoPath,
+        byte[] bytes,
+        Image targetImage,
+        int generation,
+        string? session)
     {
         using var stream = new InMemoryRandomAccessStream();
         using (var writer = new DataWriter(stream))
@@ -2413,6 +2473,7 @@ public sealed class VideoPlatformHubView : Grid
             DecodePixelWidth = 192,
         };
         await bmp.SetSourceAsync(stream);
+        if (!IsSameThumbnailSession(generation, session)) return;
         _thumbnailImageCache[videoPath] = bmp;
         targetImage.Source = bmp;
 
