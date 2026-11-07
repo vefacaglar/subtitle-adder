@@ -117,6 +117,12 @@ else {
     # The FFmpeg bindings link against FFMPEG_DIR at build time; default to the fetched SDK.
     $fetchedFFmpeg = Join-Path $EngineDir '.runtime\ffmpeg'
     if (-not $env:FFMPEG_DIR -and (Test-Path (Join-Path $fetchedFFmpeg 'bin'))) { $env:FFMPEG_DIR = $fetchedFFmpeg }
+    # Toolchain: when MSVC's cl.exe is not on PATH (not a VS Developer shell), dot-source a machine-local setup script:
+    # $env:SUBTITLE_ENGINE_DEVENV, else %USERPROFILE%\.devtools\devenv.ps1 (for example a portable MSVC). Not in the repo.
+    $devenv = if ($env:SUBTITLE_ENGINE_DEVENV) { $env:SUBTITLE_ENGINE_DEVENV } else { Join-Path $env:USERPROFILE '.devtools\devenv.ps1' }
+    if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue) -and (Test-Path $devenv)) { . $devenv }
+    # Long target paths break cl.exe, so default to a short one outside the repo.
+    if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE '.subtitle-adder-target' }
     Push-Location $EngineDir
     try {
         & $cargo build --release -p se-cli -j 2

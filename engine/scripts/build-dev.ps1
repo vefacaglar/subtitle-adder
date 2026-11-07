@@ -5,10 +5,10 @@ engine\dist is already newer than every engine source.
 
     pwsh -NoProfile -File engine/scripts/build-dev.ps1 [-Force]
 
-Toolchain: MSVC (cl/link), CMake, Ninja, libclang and nuget must be reachable, as from a VS Developer shell. A
-machine-local setup script %LOCALAPPDATA%\subtitle-adder\devenv.ps1 is dot-sourced first when it exists (for example
-to point at a portable MSVC); it is not part of the repo. CARGO_TARGET_DIR defaults to a short path under
-%LOCALAPPDATA% because long paths break cl.exe.
+Toolchain: MSVC (cl/link), CMake, Ninja, libclang and nuget must be reachable, as from a VS Developer shell. When
+cl.exe is not on PATH, a machine-local setup script is dot-sourced first ($env:SUBTITLE_ENGINE_DEVENV, else
+%USERPROFILE%\.devtools\devenv.ps1; not part of the repo). CARGO_TARGET_DIR defaults to %USERPROFILE%\.subtitle-adder-target
+because long paths break cl.exe.
 #>
 param([switch]$Force)
 $ErrorActionPreference = 'Stop'
@@ -27,9 +27,12 @@ if (-not $Force -and (Test-Path $exe)) {
     Write-Host "Rebuilding the engine ($($newer.FullName) changed)."
 }
 
-$hook = Join-Path $env:LOCALAPPDATA 'subtitle-adder\devenv.ps1'
-if (Test-Path $hook) { . $hook }
-if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $env:LOCALAPPDATA 'subtitle-adder\target' }
+# Toolchain: when MSVC's cl.exe is not on PATH (not a VS Developer shell), dot-source a machine-local setup script:
+# $env:SUBTITLE_ENGINE_DEVENV, else %USERPROFILE%\.devtools\devenv.ps1 (for example a portable MSVC). Not in the repo.
+$devenv = if ($env:SUBTITLE_ENGINE_DEVENV) { $env:SUBTITLE_ENGINE_DEVENV } else { Join-Path $env:USERPROFILE '.devtools\devenv.ps1' }
+if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue) -and (Test-Path $devenv)) { . $devenv }
+# Long target paths break cl.exe, so default to a short one outside the repo.
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE '.subtitle-adder-target' }
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     $env:Path = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:Path
 }
