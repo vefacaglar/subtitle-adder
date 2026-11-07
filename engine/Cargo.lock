@@ -2208,6 +2208,7 @@ dependencies = [
  "ct2rs",
  "fancy-regex",
  "hex",
+ "libc",
  "rand",
  "regex",
  "se-core",
@@ -2223,6 +2224,7 @@ dependencies = [
  "ureq",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

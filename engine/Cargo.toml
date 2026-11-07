@@ -56,5 +56,9 @@ realfft = "3"
 hound = "3.5.1"
 glob = "0.3"
 
+# Process guards (llama-server cleanup on signals / engine exit)
+libc = "0.2.191"
+windows-sys = "0.61.2"
+
 # Test helpers
 serial_test = "3"

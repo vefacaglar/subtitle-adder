@@ -97,7 +97,6 @@ fn test_api_key_is_sent_over_https_or_to_the_local_network() {
         "http://127.0.0.1:1234",
         "http://localhost:11434",
         "http://[fd00::1]:1234",
-        "http://mac-studio.local:1234",
         "http://ollama:11434",
         "mac-studio:1234",
     ] {
@@ -156,6 +155,8 @@ fn test_the_key_is_not_sent_to_a_local_llama_server() {
     assert!(!headers.iter().any(|(k, _)| k == "Authorization"));
 }
 
+const UNRESOLVED_LOCAL_TR: &str = "mac-studio.local yerel ağda bulunamadı (mDNS yanıt vermedi); API anahtarı doğrulanmamış bir adrese gönderilmez. Sunucunun IP adresini girin.";
+
 // ---- the `.local` subnet-scan fallback must never carry the key -----------------------------------------
 
 /// mDNS blocked (`socket.gaierror`); the scan returns `scan` and records the ports it was asked for.
@@ -205,7 +206,7 @@ fn test_complete_asks_for_a_scan_only_without_a_key() {
         let mut options = external("http://mac-studio.local:1234", Some("m"), key, FakeTransport::json(CHAT_REPLY));
         options.resolver = Some(Box::new(move |u: &str, allow: bool| {
             rec.lock().unwrap().push(allow);
-            u.to_string()
+            u.replace("mac-studio.local", "192.168.1.5")
         }));
         let mut translator = LlamaTranslator::new("madlad-3b", options).unwrap();
         translator.complete(&messages()).unwrap();
@@ -216,14 +217,104 @@ fn test_complete_asks_for_a_scan_only_without_a_key() {
 #[test]
 #[serial]
 fn test_a_failed_mdns_lookup_with_a_key_makes_no_probe_connection() {
+    // No scan (fake_net forbids it) and, since the name stayed unresolved, no request carrying the key either:
+    // the HTTP client would resolve the name itself to an address nobody checked.
+    let _env = Env::new();
+    let mut options = external("http://mac-studio.local:1234", Some("m"), Some(KEY), FakeTransport::forbid());
+    options.resolver = Some(Box::new(se_translate::lan::NetResolver(fake_net(None, true))));
+    let mut translator = LlamaTranslator::new("madlad-3b", options).unwrap();
+    assert_eq!(translator.complete(&messages()).unwrap_err().to_string(), UNRESOLVED_LOCAL_TR);
+}
+
+#[test]
+#[serial]
+fn test_a_failed_mdns_lookup_without_a_key_still_sends_to_the_name() {
     let _env = Env::new();
     let transport = FakeTransport::json(CHAT_REPLY);
-    let mut options = external("http://mac-studio.local:1234", Some("m"), Some(KEY), transport.clone());
-    options.resolver = Some(Box::new(se_translate::lan::NetResolver(fake_net(None, true))));
+    let mut options = external("http://mac-studio.local:1234", Some("m"), None, transport.clone());
+    options.resolver = Some(Box::new(se_translate::lan::NetResolver(fake_net(None, false))));
     let mut translator = LlamaTranslator::new("madlad-3b", options).unwrap();
     translator.complete(&messages()).unwrap();
     let urls: Vec<String> = transport.requests().into_iter().map(|r| r.url).collect();
     assert_eq!(urls, vec!["http://mac-studio.local:1234/v1/chat/completions"]); // unchanged address
+}
+
+#[test]
+#[serial]
+fn test_a_resolved_local_name_gets_the_key() {
+    let _env = Env::new();
+    let transport = FakeTransport::json(CHAT_REPLY);
+    let mut options = external("http://mac-studio.local:1234", Some("m"), Some(KEY), transport.clone());
+    options.resolver = Some(Box::new(|u: &str, _: bool| u.replace("mac-studio.local", "192.168.1.77")));
+    let mut translator = LlamaTranslator::new("madlad-3b", options).unwrap();
+    translator.complete(&messages()).unwrap();
+    let requests = transport.requests();
+    assert_eq!(requests[0].url, "http://192.168.1.77:1234/v1/chat/completions");
+    assert_eq!(requests[0].header("Authorization"), Some(format!("Bearer {KEY}").as_str()));
+}
+
+#[test]
+#[serial]
+fn test_model_discovery_resolves_the_local_name_before_sending_the_key() {
+    let _env = Env::new();
+    let seen: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+    let rec = seen.clone();
+    let transport = FakeTransport::json(r#"{"data": [{"id": "remote-model"}]}"#);
+    let mut options = external("http://mac-studio.local:1234", None, Some(KEY), transport.clone());
+    options.resolver = Some(Box::new(move |u: &str, allow: bool| {
+        rec.lock().unwrap().push(allow);
+        u.replace("mac-studio.local", "192.168.1.77")
+    }));
+    let mut translator = LlamaTranslator::new("madlad-3b", options).unwrap();
+    assert_eq!(translator.discover_external_model().unwrap(), "remote-model");
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "http://192.168.1.77:1234/v1/models");
+    assert_eq!(requests[0].header("Authorization"), Some(format!("Bearer {KEY}").as_str()));
+    assert_eq!(*seen.lock().unwrap(), vec![false]); // resolved once, without a subnet scan
+}
+
+#[test]
+#[serial]
+fn test_model_discovery_refuses_the_key_for_an_unresolved_local_name() {
+    let _env = Env::new();
+    let mut options = external("http://mac-studio.local:1234", None, Some(KEY), FakeTransport::forbid());
+    options.resolver = identity_resolver();
+    let mut translator = LlamaTranslator::new("madlad-3b", options).unwrap();
+    // Not the https hint: the problem is the unresolved name, not the scheme.
+    assert_eq!(translator.discover_external_model().unwrap_err().to_string(), UNRESOLVED_LOCAL_TR);
+}
+
+#[test]
+#[serial]
+fn test_model_discovery_without_a_key_does_not_resolve_the_local_name() {
+    // Without a key there is nothing to protect: discovery asks the name directly (no mDNS lookup or subnet
+    // scan), and only complete() resolves it, so a failed lookup costs no extra delay or probes.
+    let _env = Env::new();
+    let calls: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+    let rec = calls.clone();
+    let transport = FakeTransport::json(r#"{"data": [{"id": "remote-model"}]}"#);
+    let mut options = external("http://mac-studio.local:1234", None, None, transport.clone());
+    options.resolver = Some(Box::new(move |u: &str, allow: bool| {
+        rec.lock().unwrap().push(allow);
+        u.to_string()
+    }));
+    let mut translator = LlamaTranslator::new("madlad-3b", options).unwrap();
+    assert_eq!(translator.discover_external_model().unwrap(), "remote-model");
+    assert!(calls.lock().unwrap().is_empty());
+    assert_eq!(transport.requests()[0].url, "http://mac-studio.local:1234/v1/models");
+}
+
+#[test]
+#[serial]
+fn test_https_to_an_unresolved_local_name_still_gets_the_key() {
+    let _env = Env::new();
+    let transport = FakeTransport::json(CHAT_REPLY);
+    let mut options = external("https://mac-studio.local:1234", Some("m"), Some(KEY), transport.clone());
+    options.resolver = identity_resolver();
+    let mut translator = LlamaTranslator::new("madlad-3b", options).unwrap();
+    translator.complete(&messages()).unwrap();
+    assert_eq!(transport.requests()[0].header("Authorization"), Some(format!("Bearer {KEY}").as_str()));
 }
 
 #[test]
@@ -535,4 +626,70 @@ fn test_check_external_llm_returns_the_chat_url() {
 fn test_a_hostless_address_still_gets_the_address_error() {
     let _env = Env::new();
     assert!(check_external_llm("http://", Some(KEY)).unwrap_err().to_string().contains("Harici LLM sunucusu adresi boş olamaz."));
+}
+
+// ---- strict offline mode and redirects -------------------------------------------------------------------
+
+/// Answers the first hop with a 302 to `location`, then 200.
+struct RedirectOnce {
+    location: String,
+    seen: Mutex<Vec<String>>,
+}
+
+impl se_translate::http::HopSender for RedirectOnce {
+    fn send(&self, request: &HttpRequest, _timeout: std::time::Duration) -> Result<se_translate::http::RawResponse, HttpFailure> {
+        let mut seen = self.seen.lock().unwrap();
+        seen.push(request.url.clone());
+        let first = seen.len() == 1;
+        Ok(se_translate::http::RawResponse {
+            status: if first { 302 } else { 200 },
+            reason: if first { "Found".into() } else { "OK".into() },
+            location: first.then(|| self.location.clone()),
+            uri: None,
+            body: b"{}".to_vec(),
+        })
+    }
+}
+
+fn redirect_from_lan(location: &str) -> (Result<se_translate::http::HttpResponse, HttpFailure>, Vec<String>) {
+    let sender = RedirectOnce { location: location.to_string(), seen: Mutex::new(Vec::new()) };
+    let req = HttpRequest::new(
+        "GET",
+        "http://192.168.1.42:1234/v1/models",
+        vec![("Authorization".into(), format!("Bearer {KEY}"))],
+        None,
+    );
+    let result = se_translate::http::open_with_redirects(&sender, &req, std::time::Duration::from_secs(1));
+    let seen = sender.seen.into_inner().unwrap();
+    (result, seen)
+}
+
+#[test]
+#[serial]
+fn test_offline_mode_refuses_a_redirect_to_the_internet() {
+    let env = Env::new();
+    env.offline();
+    let (result, seen) = redirect_from_lan("https://api.example.com/v1/models");
+    assert_eq!(seen, vec!["http://192.168.1.42:1234/v1/models"]); // the public host was never contacted
+    let text = result.unwrap_err().to_string();
+    assert!(text.starts_with("Çevrimdışı mod açık") && text.contains("(api.example.com)"), "{text}");
+}
+
+#[test]
+#[serial]
+fn test_offline_mode_follows_a_redirect_within_the_local_network() {
+    let env = Env::new();
+    env.offline();
+    let (result, seen) = redirect_from_lan("http://192.168.1.43:1234/v1/models");
+    assert_eq!(result.unwrap().status, 200);
+    assert_eq!(seen.len(), 2);
+}
+
+#[test]
+#[serial]
+fn test_online_mode_follows_a_redirect_to_the_internet() {
+    let _env = Env::new();
+    let (result, seen) = redirect_from_lan("https://api.example.com/v1/models");
+    assert_eq!(result.unwrap().status, 200);
+    assert_eq!(seen, vec!["http://192.168.1.42:1234/v1/models", "https://api.example.com/v1/models"]);
 }

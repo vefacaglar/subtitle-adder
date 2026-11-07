@@ -13,10 +13,15 @@ use std::time::Duration;
 use ureq::unversioned::resolver::DefaultResolver;
 use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
 
-use se_core::{Value, json, pyfmt};
+use se_core::{Value, json, pyfmt, t};
 
-use crate::external::api_key_transport_allowed;
+use crate::external::{api_key_transport_allowed, is_local_network_host};
 use crate::pyurl;
+
+/// Largest chat completion response body read into memory (larger ones fail the request).
+pub const MAX_CHAT_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+/// Largest model discovery (`GET .../models`) response body read into memory.
+pub const MAX_DISCOVERY_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A request as `urllib.request.Request` holds it: the full URL, the method, the headers given at
 /// construction (in order) and the body.
@@ -174,8 +179,77 @@ pub fn open_with_redirects(sender: &dyn HopSender, request: &HttpRequest, timeou
             return Err(HttpFailure::Other("<urlopen error ftp error: redirects to ftp are not supported>".to_string()));
         }
         next = strip_fragment(next);
+        // Strict offline mode: a LAN server must not bounce the request (key, subtitle text) to the internet.
+        if se_core::offline::offline_requested() {
+            let host = pyurl::url_host(&next.url);
+            if !is_local_network_host(host.as_deref()) {
+                let shown = host.unwrap_or_else(|| next.url.clone());
+                return Err(HttpFailure::Other(t!("offline_external_llm", host = shown)));
+            }
+        }
         req = next;
     }
+}
+
+/// The proxy `urllib.request.ProxyHandler` would use for `url`, from the environment (`env(name)` reads one
+/// variable): only the scheme's own `<scheme>_proxy` (lowercase wins, an empty lowercase value disables the
+/// uppercase one; `ALL_PROXY` is never used), `HTTP_PROXY` ignored when `REQUEST_METHOD` is set (CGI; a
+/// lowercase `http_proxy` still counts outside Windows, as in urllib), and
+/// `no_proxy` honored. A host on the local network (loopback, private ranges, `.local`, single-label names,
+/// see [`is_local_network_host`]) never goes through a proxy, so LAN requests stay on the LAN.
+pub fn proxy_for_url(url: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let parts = pyurl::urlsplit(url).ok()?;
+    let scheme = parts.scheme.to_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    if is_local_network_host(parts.hostname().as_deref()) {
+        return None;
+    }
+    let proxy = if scheme == "http" && env("REQUEST_METHOD").is_some() {
+        // CGI: `HTTP_PROXY` may come from a request header, so urllib drops it, but its second pass re-adds a
+        // lowercase `http_proxy`. On Windows the names are one case-insensitive variable and Python's
+        // `os.environ` keys are uppercase, so nothing is re-added there.
+        if cfg!(windows) {
+            return None;
+        }
+        env("http_proxy").filter(|v| !v.is_empty())?
+    } else {
+        env_pair(&format!("{scheme}_proxy"), env)?
+    };
+    let host = parts.netloc.rsplit('@').next().unwrap_or("").to_lowercase();
+    if env_pair("no_proxy", env).is_some_and(|no| proxy_bypass(&host, &no)) {
+        return None;
+    }
+    Some(proxy)
+}
+
+/// `getproxies_environment` for one name: the lowercase variable when set (empty = none), else the uppercase.
+fn env_pair(lower: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    match env(lower) {
+        Some(v) => Some(v).filter(|v| !v.is_empty()),
+        None => env(&lower.to_uppercase()).filter(|v| !v.is_empty()),
+    }
+}
+
+/// `proxy_bypass_environment(host, {"no": no_proxy})`; `host` is the lowercase `host[:port]`.
+fn proxy_bypass(host: &str, no_proxy: &str) -> bool {
+    if no_proxy == "*" {
+        return true;
+    }
+    let host_only = match host.rfind(':') {
+        Some(i) if host[i + 1..].chars().all(|c| c.is_ascii_digit()) && !host[..i].ends_with(':') => &host[..i],
+        _ => host,
+    };
+    no_proxy.split(',').map(str::trim).filter(|n| !n.is_empty()).any(|name| {
+        let name = name.trim_start_matches('.').to_lowercase();
+        let dotted = format!(".{name}");
+        host_only == name || host == name || host_only.ends_with(&dotted) || host.ends_with(&dotted)
+    })
+}
+
+fn system_env(name: &str) -> Option<String> {
+    std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
 }
 
 fn strip_fragment(mut req: HttpRequest) -> HttpRequest {
@@ -185,8 +259,9 @@ fn strip_fragment(mut req: HttpRequest) -> HttpRequest {
     req
 }
 
-/// The production transport: `ureq` (HTTP/1.1, rustls), one hop at a time, per-read timeouts like Python's
-/// socket timeouts, environment proxies except for loopback hosts.
+/// The production transport: `ureq` (HTTP/1.1, rustls with the operating system's certificate verifier like the
+/// model downloads), one hop at a time, per-read timeouts like Python's socket timeouts, the scheme's environment
+/// proxy ([`proxy_for_url`]; never for local-network hosts).
 pub struct UreqTransport {
     _private: (),
 }
@@ -197,12 +272,8 @@ impl UreqTransport {
     }
 
     fn config(&self, url: &str, timeout: Duration) -> ureq::config::Config {
-        let host = pyurl::url_host(url).unwrap_or_default();
-        let loopback = host == "localhost"
-            || host.ends_with(".localhost")
-            || pyurl::ip_address(&host).is_some_and(|ip| ip.is_loopback());
-        let proxy = if loopback { None } else { ureq::Proxy::try_from_env() };
-        ureq::Agent::config_builder()
+        let proxy = proxy_for_url(url, &system_env).and_then(|p| ureq::Proxy::new(&p).ok());
+        se_models::http::config_builder()
             .max_redirects(0)
             .http_status_as_error(false)
             .proxy(proxy)
@@ -348,8 +419,14 @@ impl HopSender for UreqTransport {
         let sniffed = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
         let reason = sniffed.unwrap_or_else(|| status.canonical_reason().unwrap_or("").to_string());
         let code = status.as_u16();
+        let limit = if request.method == "GET" { MAX_DISCOVERY_RESPONSE_BYTES } else { MAX_CHAT_RESPONSE_BYTES };
         let mut body = response.into_body();
-        let bytes = body.with_config().limit(u64::MAX).read_to_vec().map_err(map_ureq_error)?;
+        let bytes = body.with_config().limit(limit).read_to_vec().map_err(|e| match e {
+            ureq::Error::BodyExceedsLimit(_) => {
+                HttpFailure::Other(t!("external_llm_response_too_large", limit = limit / (1024 * 1024)))
+            }
+            other => map_ureq_error(other),
+        })?;
         Ok(RawResponse { status: code, reason, location, uri, body: bytes })
     }
 }
@@ -434,6 +511,90 @@ mod tests {
         assert_eq!(first.to_string(), "HTTP Error 503: Model Loading");
         let second = transport.open(&req, Duration::from_secs(5)).unwrap_err();
         assert_eq!(second.to_string(), "HTTP Error 599: ");
+        server.join().unwrap();
+    }
+
+    fn env_of(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |name| vars.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
+    }
+
+    #[test]
+    fn proxy_is_only_the_schemes_own_and_never_all_proxy() {
+        let env = env_of(&[("all_proxy", "http://all:1"), ("https_proxy", "http://secure:3128")]);
+        assert_eq!(proxy_for_url("https://api.openai.com/v1/chat/completions", &env).as_deref(), Some("http://secure:3128"));
+        // No http_proxy: plain http goes direct instead of through ALL_PROXY or the https proxy.
+        assert_eq!(proxy_for_url("http://api.example.com:8080/v1/chat/completions", &env), None);
+        let env = env_of(&[("HTTP_PROXY", "http://plain:8080")]);
+        assert_eq!(proxy_for_url("http://api.example.com/v1", &env).as_deref(), Some("http://plain:8080"));
+        assert_eq!(proxy_for_url("https://api.example.com/v1", &env), None);
+        // An empty lowercase variable disables the uppercase one (urllib).
+        let env = env_of(&[("http_proxy", ""), ("HTTP_PROXY", "http://plain:8080")]);
+        assert_eq!(proxy_for_url("http://api.example.com/v1", &env), None);
+        // CGI: HTTP_PROXY may come from a request header and is dropped; urllib re-adds a lowercase http_proxy
+        // (outside Windows, where the two names are the same variable).
+        let env = env_of(&[("HTTP_PROXY", "http://plain:8080"), ("REQUEST_METHOD", "GET")]);
+        assert_eq!(proxy_for_url("http://api.example.com/v1", &env), None);
+        let env = env_of(&[("http_proxy", "http://lower:8080"), ("REQUEST_METHOD", "GET")]);
+        let expected = if cfg!(windows) { None } else { Some("http://lower:8080") };
+        assert_eq!(proxy_for_url("http://api.example.com/v1", &env).as_deref(), expected);
+        let env = env_of(&[("https_proxy", "http://secure:3128"), ("REQUEST_METHOD", "GET")]);
+        assert_eq!(proxy_for_url("https://api.example.com/v1", &env).as_deref(), Some("http://secure:3128"));
+    }
+
+    #[test]
+    fn local_network_hosts_never_use_a_proxy() {
+        let env = env_of(&[("http_proxy", "http://p:1"), ("https_proxy", "http://p:1")]);
+        for url in [
+            "http://127.0.0.1:8080/v1/chat/completions",
+            "http://localhost:11434/api/chat",
+            "http://192.168.1.42:1234/v1/models",
+            "http://10.0.0.5:1234/v1",
+            "http://[fd00::1]:1234/v1",
+            "http://mac-studio.local:1234/v1",
+            "https://mac-studio.local:1234/v1",
+            "http://ollama:11434/v1",
+        ] {
+            assert_eq!(proxy_for_url(url, &env), None, "{url}");
+        }
+        assert_eq!(proxy_for_url("http://203.0.113.9:1234/v1", &env).as_deref(), Some("http://p:1"));
+    }
+
+    #[test]
+    fn no_proxy_is_honored() {
+        let env = env_of(&[("https_proxy", "http://p:1"), ("no_proxy", " .example.com, other.org:443 ")]);
+        assert_eq!(proxy_for_url("https://api.example.com/v1", &env), None);
+        assert_eq!(proxy_for_url("https://example.com/v1", &env), None);
+        assert_eq!(proxy_for_url("https://other.org/v1", &env).as_deref(), Some("http://p:1"));
+        assert_eq!(proxy_for_url("https://other.org:443/v1", &env), None);
+        assert_eq!(proxy_for_url("https://notexample.com/v1", &env).as_deref(), Some("http://p:1"));
+        let env = env_of(&[("https_proxy", "http://p:1"), ("NO_PROXY", "*")]);
+        assert_eq!(proxy_for_url("https://api.openai.com/v1", &env), None);
+    }
+
+    #[test]
+    fn oversized_response_bodies_are_refused() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let size = MAX_DISCOVERY_RESPONSE_BYTES as usize + 1;
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = conn.read(&mut buf);
+            let _ = conn.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {size}\r\n\r\n").as_bytes());
+            let chunk = vec![b' '; 1 << 20];
+            let mut left = size;
+            while left > 0 {
+                let n = left.min(chunk.len());
+                if conn.write_all(&chunk[..n]).is_err() {
+                    break;
+                }
+                left -= n;
+            }
+        });
+        let req = HttpRequest::new("GET", &format!("http://127.0.0.1:{port}/v1/models"), Vec::new(), None);
+        let err = UreqTransport::new().open(&req, Duration::from_secs(10)).unwrap_err();
+        assert_eq!(err, HttpFailure::Other(t!("external_llm_response_too_large", limit = 16)));
         server.join().unwrap();
     }
 

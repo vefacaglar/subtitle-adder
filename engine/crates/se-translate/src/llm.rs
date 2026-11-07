@@ -296,8 +296,14 @@ impl LlamaTranslator {
             ("User-Agent".to_string(), "SubtitleAdder/1.0".to_string()),
         ];
         if let (Some(key), Some(chat_url)) = (&self.external_api_key, &self.external_chat_url) {
-            if !api_key_transport_allowed(url.unwrap_or(chat_url)) {
+            let target = url.unwrap_or(chat_url);
+            if !api_key_transport_allowed(target) {
                 return Err(EngineError::model(t!("external_llm_key_insecure")));
+            }
+            if is_unresolved_local_http(target) {
+                // Not an https problem: the name did not resolve, so the address the key would go to is unknown.
+                let host = crate::pyurl::url_host(target).unwrap_or_default();
+                return Err(EngineError::model(t!("external_llm_key_unresolved_local", host = host)));
             }
             headers.push(("Authorization".to_string(), format!("Bearer {key}")));
         }
@@ -310,10 +316,28 @@ impl LlamaTranslator {
     }
 
     /// `_discover_external_model()`: the configured model, else the first model the server lists
-    /// (`GET .../models`, 2.5 s, every failure swallowed), else the catalog id; cached.
+    /// (`GET .../models`, 2.5 s, every failure swallowed), else the catalog id; cached. With an API key a `.local`
+    /// chat URL is resolved first (mDNS only, no subnet scan), so the key is checked against (and only sent to) the
+    /// address actually used; without a key discovery uses the name as before and only `complete()` resolves it.
     pub fn discover_external_model(&mut self) -> Result<String> {
+        self.discover_external_model_with(true)
+    }
+
+    /// `.local` resolution of the external chat URL (`_resolve_lan_url`; no subnet scan with an API key), stored
+    /// back like Python's `_complete` does. Returns the (possibly unchanged) URL.
+    fn resolve_external_chat_url(&mut self) -> Option<String> {
+        let chat_url = self.external_chat_url.clone()?;
+        let resolved = self.resolver.resolve(&chat_url, self.external_api_key.is_none());
+        self.external_chat_url = Some(resolved.clone());
+        Some(resolved)
+    }
+
+    fn discover_external_model_with(&mut self, resolve: bool) -> Result<String> {
         if let Some(m) = self.resolved_external_model.as_ref().filter(|m| !m.is_empty()) {
             return Ok(m.clone());
+        }
+        if resolve && self.external_api_key.is_some() && self.external_chat_url.as_deref().is_some_and(has_local_name) {
+            self.resolve_external_chat_url();
         }
         if let Some(chat_url) = self.external_chat_url.clone().filter(|u| !u.is_empty()) {
             if let Some(models_url) = external_models_url(&chat_url) {
@@ -407,15 +431,13 @@ impl LlamaTranslator {
             return f(messages);
         }
         let messages_value = Value::Array(messages.iter().map(ChatMessage::to_value).collect());
-        let (url, body) = if let Some(chat_url) = self.external_chat_url.clone() {
-            let resolved = self.resolver.resolve(&chat_url, self.external_api_key.is_none());
-            self.external_chat_url = Some(resolved.clone());
+        let (url, body) = if let Some(resolved) = self.resolve_external_chat_url() {
             let mut url = resolved;
             if url.to_lowercase().contains(":11434/v1/chat/completions") {
                 let keep = url.chars().count().saturating_sub("/v1/chat/completions".len());
                 url = url.chars().take(keep).collect::<String>() + "/api/chat";
             }
-            let model = self.discover_external_model()?;
+            let model = self.discover_external_model_with(false)?; // just resolved above
             let profile = profile_for_model(&model);
             let mut body = Map::new()
                 .with("model", model.as_str())
@@ -486,6 +508,17 @@ impl LlamaTranslator {
             CheckpointMode::Custom(f) => f(model_id, target, source, sentences, identity),
         }
     }
+}
+
+/// Is the URL's host a `.local` name (not yet replaced by an address)?
+fn has_local_name(url: &str) -> bool {
+    crate::pyurl::url_host(url).is_some_and(|h| h.trim_end_matches('.').to_lowercase().ends_with(".local"))
+}
+
+/// A plain-http URL whose host is still an unresolved `.local` name: mDNS failed (or returned only IPv6), so the
+/// HTTP client would resolve the name itself to an address nobody checked; the key must not go there.
+fn is_unresolved_local_http(url: &str) -> bool {
+    crate::pyurl::urlsplit(url).is_ok_and(|p| p.scheme.eq_ignore_ascii_case("http")) && has_local_name(url)
 }
 
 fn merge(body: &mut Map, options: Value) {
@@ -629,6 +662,8 @@ impl Translator for LlamaTranslator {
             return Ok(result);
         }
 
+        // The checkpoint identity keeps the configured address (before `.local` resolution), as before.
+        let identity_url = self.external_chat_url.clone();
         let remote_model = if self.external_chat_url.is_some() { self.discover_external_model()? } else { String::new() };
         let profile: TranslationProfile =
             profile_for_model(if remote_model.is_empty() { self.info.id } else { remote_model.as_str() });
@@ -643,7 +678,7 @@ impl Translator for LlamaTranslator {
             "{}\n{}\n{}\n{}",
             profile.py_repr(),
             system_prompt,
-            self.external_chat_url.as_deref().unwrap_or(""),
+            identity_url.as_deref().unwrap_or(""),
             remote_model
         );
         let checkpoint_path = self.checkpoint_path_for(target, source, sentences, &identity)?;
@@ -657,6 +692,9 @@ impl Translator for LlamaTranslator {
         let total = pending.len();
         let mut processed = 0usize;
         for (start, end) in translation_batches(&pending_refs, self.batch_size) {
+            // The reader of the translation events is gone: stop before paying for more requests (the
+            // checkpoint keeps the finished batches).
+            se_core::cancel::check()?;
             let batch = &pending[start..end];
             self.emit(
                 "batch_start",
@@ -718,6 +756,7 @@ impl Translator for LlamaTranslator {
                 let mut accepted: BTreeMap<usize, String> = BTreeMap::new();
                 let mut review_offsets: BTreeSet<usize> = BTreeSet::new();
                 for attempt in 0..2 {
+                    se_core::cancel::check()?;
                     let raw_reply = self.complete(&messages)?;
                     let parsed_raw: BTreeMap<usize, String> = if window_translation {
                         let wp = parse_numbered_translations(&raw_reply, window.len());
@@ -791,6 +830,7 @@ impl Translator for LlamaTranslator {
                             &build_user_prompt(&[s.text.clone()], Some(&before), Some(target), Some(&after), None),
                         ),
                     };
+                    se_core::cancel::check()?;
                     let reply = self.complete(&single_messages)?;
                     let single = parse_numbered_translations(&reply, 1).get(&1).cloned().unwrap_or_default();
                     let single = clean_translation_pair(&s.text, &single);

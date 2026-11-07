@@ -93,6 +93,8 @@ pub static MESSAGES: &[(&str, &str, &str)] = &[
     ("external_llm_unreachable", "Harici LLM sunucusuna ulaşılamadı ({url}): {error}", "Could not reach the external LLM server ({url}): {error}"),
     ("external_llm_url_empty", "Harici LLM sunucusu adresi boş olamaz.", "The external LLM server address cannot be empty."),
     ("external_llm_key_insecure", "API anahtarı şifrelenmemiş bağlantıyla (http) gönderilmez; adresi https:// ile girin.", "The API key is not sent over an unencrypted (http) connection; enter the address with https://."),
+    ("external_llm_key_unresolved_local", "{host} yerel ağda bulunamadı (mDNS yanıt vermedi); API anahtarı doğrulanmamış bir adrese gönderilmez. Sunucunun IP adresini girin.", "{host} could not be found on the local network (no mDNS answer); the API key is not sent to an unverified address. Enter the server's IP address."),
+    ("external_llm_response_too_large", "Sunucunun yanıtı {limit} MiB sınırını aşıyor.", "The server's response exceeds the {limit} MiB limit."),
     ("offline_external_llm", "Çevrimdışı mod açık: çeviri internetteki bir sağlayıcıya ({host}) gönderilemez. Çevrimdışı modu kapatın ya da yerel bir model/sunucu seçin.", "Offline mode is on: translation can't be sent to an internet provider ({host}). Turn offline mode off or choose a local model/server."),
     ("not_transcription_model", "{model} bir konuşma tanıma modeli değil; 'models' komutu geçerli modelleri listeler.", "{model} is not a speech recognition model; the 'models' command lists the valid models."),
     ("speakers_needs_diarize", "--speakers yalnız --diarize ile kullanılabilir.", "--speakers can only be used with --diarize."),

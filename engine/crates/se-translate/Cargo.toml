@@ -35,6 +35,12 @@ anyhow.workspace = true
 # engine/cmake/static-crt-toolchain.cmake.
 [target.'cfg(windows)'.dependencies]
 ct2rs = { workspace = true, features = ["whisper", "mkl", "dnnl", "openmp-runtime-intel"] }
+# llama-server in a kill-on-close Job Object; the engine's std handles made non-inheritable.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Threading"] }
+
+# SIGTERM/SIGINT/SIGHUP handler that kills a running llama-server before the engine dies.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [target.'cfg(all(not(windows), not(target_os = "macos")))'.dependencies]
 ct2rs = { workspace = true, features = ["whisper", "mkl", "dnnl"] }
