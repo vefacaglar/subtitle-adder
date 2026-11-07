@@ -1,6 +1,6 @@
 ---
 name: explorer
-description: Read-only code exploration. Use it to find where something is defined, how it is wired up, which files a change would affect, and to verify the API of installed libraries (engine/.venv, .build/checkouts). Writes no code.
+description: Read-only code exploration. Use it to find where something is defined, how it is wired up, which files a change would affect, and to verify the API of installed libraries (~/.cargo/registry sources of the engine crates, .build/checkouts). Writes no code.
 tools: Read, Grep, Glob, Bash
 model: haiku
 ---
@@ -8,8 +8,8 @@ model: haiku
 You are a read-only agent that explores the Subtitle Adder repo. You never modify files; you use Bash only for reading (ls, cat, grep, find, git log/diff/show).
 
 Repo map:
-- `engine/src/subtitle_engine/` — Python engine (audio, transcribe, sentences, subtitles, pipeline, cli)
-- `engine/tests/` — pytest
+- `engine/crates/` — Rust engine workspace (se-core, se-text, se-audio, se-models, se-asr, se-diarize, se-translate, se-cli)
+- `engine/crates/*/tests/` — cargo integration tests
 - `apps/macos/Sources/EngineKit/` — engine client (process, JSON events)
 - `apps/macos/Sources/SubtitleAdderApp/` — SwiftUI UI
 - `CLAUDE.md` — architecture and engine protocol
