@@ -252,11 +252,11 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
     }
 
     /// <summary>
-    /// True when the user is logged out and has selected a personal profile tab (History, Liked, TopRated, MostWatched, CustomList)
-    /// without an active search query. When on "Keşfet" (<see cref="VideoFeedFilter.All"/>) or searching, SSD-indexed videos are shown even when logged out.
+    /// True whenever no profile is logged in, on every tab including "Keşfet" (<see cref="VideoFeedFilter.All"/>) and
+    /// search: the SSD media index lists the files of folders browsed in earlier sessions (newest first), which would
+    /// reveal what was watched, so nothing from it is shown without a profile.
     /// </summary>
-    public bool RequiresAuthForCurrentTab =>
-        !IsLoggedIn && _activeFilter != VideoFeedFilter.All && string.IsNullOrWhiteSpace(_searchQuery);
+    public bool RequiresAuthForCurrentTab => !IsLoggedIn;
 
     /// <summary>Search query filtering the video platform feed by file name or folder path.</summary>
     public string SearchQuery
@@ -593,15 +593,8 @@ public sealed partial class VideoPlatformViewModel : ObservableObject, IDisposab
 
         if (!IsLoggedIn)
         {
-            if (_activeFilter == VideoFeedFilter.All || !string.IsNullOrWhiteSpace(_searchQuery))
-            {
-                var anonStats = _profileManager.GetFeed(VideoFeedFilter.All, _searchQuery, _discoveredPaths);
-                FeedItems = anonStats.Select(s => new VideoCardViewModel(s, [])).ToList();
-            }
-            else
-            {
-                FeedItems = [];
-            }
+            // No feed at all without a profile: the indexed paths come from earlier sessions' browsing.
+            FeedItems = [];
             return;
         }
 

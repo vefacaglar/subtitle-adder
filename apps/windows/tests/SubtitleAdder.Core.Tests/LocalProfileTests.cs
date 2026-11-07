@@ -654,21 +654,43 @@ public sealed class LocalProfileTests : IDisposable
         vm.SearchQuery = "";
         Assert.Equal(4, vm.FeedItems.Count);
 
-        // Logout clears active user stats and locks personal tabs while still allowing anonymous SSD search on "All"
+        // Logout clears active user stats and locks every tab: no feed, not even indexed files on "All" or in search
         vm.Logout();
         Assert.False(vm.IsLoggedIn);
         Assert.Equal(0, vm.ActiveVideoViewCount);
         Assert.False(vm.ActiveVideoIsLiked);
         Assert.Equal(0, vm.ActiveVideoRating);
-        Assert.All(vm.FeedItems, item =>
-        {
-            Assert.Equal(0, item.ViewCount);
-            Assert.False(item.IsLiked);
-            Assert.Equal(0, item.Rating);
-        });
+        Assert.True(vm.RequiresAuthForCurrentTab);
+        Assert.Empty(vm.FeedItems);
+
+        vm.SearchQuery = "sezon 2 bolum";
+        Assert.True(vm.RequiresAuthForCurrentTab);
+        Assert.Empty(vm.FeedItems);
+        vm.SearchQuery = "";
 
         vm.ActiveFilter = VideoFeedFilter.History;
         Assert.True(vm.RequiresAuthForCurrentTab);
+        Assert.Empty(vm.FeedItems);
+    }
+
+    [Fact]
+    public void LoggedOut_FreshViewModel_ShowsNoIndexedVideosOnAnyTab()
+    {
+        var manager = new LocalProfileManager(_profilesPath);
+        using var vm = new VideoPlatformViewModel(manager);
+        var watched = Path.Combine(_tempDir, "Watched_Before.mp4");
+        File.WriteAllBytes(watched, [1, 2, 3]);
+        vm.SetDiscoveredPaths([watched]);
+
+        foreach (var filter in new[] { VideoFeedFilter.All, VideoFeedFilter.History, VideoFeedFilter.MostWatched })
+        {
+            vm.ActiveFilter = filter;
+            Assert.True(vm.RequiresAuthForCurrentTab);
+            Assert.Empty(vm.FeedItems);
+        }
+
+        vm.ActiveFilter = VideoFeedFilter.All;
+        vm.SearchQuery = "watched";
         Assert.Empty(vm.FeedItems);
     }
 
