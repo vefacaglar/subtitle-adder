@@ -7,7 +7,11 @@
 //! host or over plain http to the internet.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use ureq::unversioned::resolver::DefaultResolver;
+use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
 
 use se_core::{Value, json, pyfmt};
 
@@ -192,7 +196,7 @@ impl UreqTransport {
         Self { _private: () }
     }
 
-    fn agent(&self, url: &str, timeout: Duration) -> ureq::Agent {
+    fn config(&self, url: &str, timeout: Duration) -> ureq::config::Config {
         let host = pyurl::url_host(url).unwrap_or_default();
         let loopback = host == "localhost"
             || host.ends_with(".localhost")
@@ -207,10 +211,88 @@ impl UreqTransport {
             .timeout_per_write(Some(timeout))
             .user_agent(ureq::config::AutoHeaderValue::None)
             .accept(ureq::config::AutoHeaderValue::None)
-            .accept_encoding(ureq::config::AutoHeaderValue::Provided(std::sync::Arc::new("identity".to_string())))
+            .accept_encoding(ureq::config::AutoHeaderValue::Provided(Arc::new("identity".to_string())))
             .max_idle_connections(0)
             .build()
-            .new_agent()
+    }
+}
+
+/// Where [`ReasonSniffer`] stores the reason phrase of the response status line of one request.
+type ReasonSlot = Arc<Mutex<Option<String>>>;
+
+/// A connector at the end of ureq's default chain that wraps the (decrypted) transport so the HTTP/1.1 status
+/// line can be read: ureq drops the reason phrase, but Python's `HTTPError` text (`HTTP Error 503: Model
+/// Loading`) carries the server's own phrase, which may differ from the canonical one or be absent from it.
+#[derive(Debug)]
+struct ReasonSniffer(ReasonSlot);
+
+impl Connector<Box<dyn Transport>> for ReasonSniffer {
+    type Out = Box<dyn Transport>;
+
+    fn connect(
+        &self,
+        _details: &ConnectionDetails,
+        chained: Option<Box<dyn Transport>>,
+    ) -> Result<Option<Self::Out>, ureq::Error> {
+        Ok(chained.map(|inner| Box::new(SniffTransport { inner, slot: self.0.clone(), done: false }) as Box<dyn Transport>))
+    }
+}
+
+#[derive(Debug)]
+struct SniffTransport {
+    inner: Box<dyn Transport>,
+    slot: ReasonSlot,
+    done: bool,
+}
+
+/// `http.client.HTTPResponse._read_status`: the line is decoded as ISO-8859-1, split on whitespace at most
+/// twice, and the reason is the stripped rest (`""` when absent). Returns `(status, reason)`.
+fn parse_status_line(line: &[u8]) -> Option<(u16, String)> {
+    let text: String = line.iter().map(|&b| b as char).collect();
+    let mut parts = pyfmt::lstrip(&text).splitn(2, pyfmt::isspace);
+    let version = parts.next()?;
+    if !version.starts_with("HTTP/") {
+        return None;
+    }
+    let rest = pyfmt::lstrip(parts.next().unwrap_or(""));
+    let mut parts = rest.splitn(2, pyfmt::isspace);
+    let status = parts.next()?.parse::<u16>().ok()?;
+    let reason = pyfmt::strip(parts.next().unwrap_or("")).to_string();
+    Some((status, reason))
+}
+
+impl Transport for SniffTransport {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        self.inner.buffers()
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        self.inner.transmit_output(amount, timeout)
+    }
+
+    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        let progress = self.inner.await_input(timeout)?;
+        if !self.done {
+            let input = self.inner.buffers().input();
+            if let Some(end) = input.windows(2).position(|w| w == b"\r\n") {
+                if let Some((status, reason)) = parse_status_line(&input[..end]) {
+                    *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+                    // Python skips interim 1xx responses; keep looking for the final status line.
+                    self.done = status >= 200;
+                } else {
+                    self.done = true;
+                }
+            }
+        }
+        Ok(progress)
+    }
+
+    fn is_open(&mut self) -> bool {
+        self.inner.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
     }
 }
 
@@ -241,7 +323,9 @@ fn map_ureq_error(err: ureq::Error) -> HttpFailure {
 
 impl HopSender for UreqTransport {
     fn send(&self, request: &HttpRequest, timeout: Duration) -> Result<RawResponse, HttpFailure> {
-        let agent = self.agent(&request.url, timeout);
+        let slot: ReasonSlot = Arc::new(Mutex::new(None));
+        let connector = DefaultConnector::new().chain(ReasonSniffer(slot.clone()));
+        let agent = ureq::Agent::with_parts(self.config(&request.url, timeout), connector, DefaultResolver::default());
         let mut builder = http_request_builder(request);
         for (k, v) in &request.headers {
             builder = builder.header(k.as_str(), v.as_str());
@@ -261,7 +345,8 @@ impl HopSender for UreqTransport {
         let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
         let location = header("location");
         let uri = header("uri");
-        let reason = status.canonical_reason().unwrap_or("").to_string();
+        let sniffed = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let reason = sniffed.unwrap_or_else(|| status.canonical_reason().unwrap_or("").to_string());
         let code = status.as_u16();
         let mut body = response.into_body();
         let bytes = body.with_config().limit(u64::MAX).read_to_vec().map_err(map_ureq_error)?;
@@ -319,6 +404,37 @@ mod tests {
     fn test_http_error_does_not_dump_html_or_large_body() {
         let failure = HttpFailure::Http { code: 502, reason: "Bad Gateway".into(), body: b"<html>".repeat(3000) };
         assert_eq!(http_error_detail(&failure, None), "HTTP Error 502: Bad Gateway");
+    }
+
+    #[test]
+    fn status_line_reason_like_http_client() {
+        assert_eq!(parse_status_line(b"HTTP/1.1 503 Model Loading "), Some((503, "Model Loading".to_string())));
+        assert_eq!(parse_status_line(b"HTTP/1.1 599"), Some((599, String::new())));
+        assert_eq!(parse_status_line(b"HTTP/1.0 200 OK"), Some((200, "OK".to_string())));
+        assert_eq!(parse_status_line(b"HTTP/1.1 418 I\xe7m"), Some((418, "I\u{e7}m".to_string())));
+        assert_eq!(parse_status_line(b"garbage"), None);
+    }
+
+    #[test]
+    fn real_response_keeps_the_servers_reason_phrase() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            for reply in [&b"HTTP/1.1 503 Model Loading\r\nContent-Length: 1\r\n\r\nx"[..], b"HTTP/1.1 599\r\nContent-Length: 0\r\n\r\n"] {
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = conn.read(&mut buf);
+                conn.write_all(reply).unwrap();
+            }
+        });
+        let transport = UreqTransport::new();
+        let req = HttpRequest::new("GET", &format!("http://127.0.0.1:{port}/v1/models"), Vec::new(), None);
+        let first = transport.open(&req, Duration::from_secs(5)).unwrap_err();
+        assert_eq!(first.to_string(), "HTTP Error 503: Model Loading");
+        let second = transport.open(&req, Duration::from_secs(5)).unwrap_err();
+        assert_eq!(second.to_string(), "HTTP Error 599: ");
+        server.join().unwrap();
     }
 
     #[test]

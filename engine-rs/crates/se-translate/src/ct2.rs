@@ -302,10 +302,20 @@ pub struct SentencePieceTokenizer {
 
 impl SentencePieceTokenizer {
     pub fn open(path: &Path) -> Result<Self> {
-        // Read the bytes in Rust: the C++ loader's file name handling differs per platform.
-        let data = std::fs::read(path).map_err(|e| EngineError::os(&e, Some(path)))?;
+        // Read the bytes in Rust: the C++ loader's file name handling differs per platform. The messages are
+        // the ones Python's `SentencePieceProcessor(model_file=...)` raises (RuntimeError, `str(exc)`):
+        // `NOT_FOUND: "<path>": <strerror> Error #<errno>` and `INTERNAL: could not parse ModelProto from <path>`.
+        let shown = se_core::paths::py_path_str(path);
+        let data = std::fs::read(path).map_err(|e| {
+            let (errno, text) = match e.kind() {
+                std::io::ErrorKind::PermissionDenied => (13, "Permission denied"),
+                std::io::ErrorKind::IsADirectory => (13, "Permission denied"),
+                _ => (2, "No such file or directory"),
+            };
+            EngineError::runtime(format!("NOT_FOUND: \"{shown}\": {text} Error #{errno}"))
+        })?;
         let processor = sentencepiece::SentencePieceProcessor::from_serialized_proto(&data)
-            .map_err(|e| EngineError::runtime(format!("Failed to load {}: {e}", se_core::paths::py_path_str(path))))?;
+            .map_err(|_| EngineError::runtime(format!("INTERNAL: could not parse ModelProto from {shown}")))?;
         Ok(Self { processor })
     }
 }

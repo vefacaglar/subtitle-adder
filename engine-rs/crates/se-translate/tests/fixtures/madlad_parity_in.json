@@ -1,0 +1,4 @@
+[{"id": 1, "start": 0, "end": 1.5, "text": "Merhaba, nasılsın?", "speaker": 0},
+ {"id": 2, "start": 1.5, "end": 3, "text": "   "},
+ {"id": 3, "start": 3, "end": 4.25, "text": "Oda numarası 42, Mehmet ile görüşün.", "speaker": 1},
+ {"id": 4, "start": 4.25, "end": 6, "text": "Yarın sabah erkenden yola çıkacağız, hazır ol."}]

@@ -8,8 +8,6 @@
 //!   strict offline, `.local` resolution).
 //! * [`prompts`], [`validate`], [`profiles`], [`checkpoint`], [`diag`]: prompt texts, output validators,
 //!   per-model profiles, `chunk-<hash>.json` checkpoints and `[translation]` stderr diagnostics.
-// Skeleton stage: bodies are `todo!()`; remove this allow when implementing.
-#![allow(unused_variables, dead_code)]
 
 pub mod checkpoint;
 pub mod ct2;

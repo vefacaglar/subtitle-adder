@@ -29,8 +29,15 @@ tempfile.workspace = true
 sentencepiece.workspace = true
 anyhow.workspace = true
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-ct2rs = { workspace = true, features = ["whisper", "mkl"] }
+# The same CPU backends as se-asr and the Python ctranslate2 wheel: MKL on Intel CPUs, oneDNN for SGEMM/int8
+# elsewhere (without it int8 is unavailable on AMD CPUs, and ruy gives different beams and is ~3x slower), and on
+# Windows Intel OpenMP (see build.rs). oneDNN only links with the static CRT when CMAKE_TOOLCHAIN_FILE points at
+# engine-rs/cmake/static-crt-toolchain.cmake.
+[target.'cfg(windows)'.dependencies]
+ct2rs = { workspace = true, features = ["whisper", "mkl", "dnnl", "openmp-runtime-intel"] }
+
+[target.'cfg(all(not(windows), not(target_os = "macos")))'.dependencies]
+ct2rs = { workspace = true, features = ["whisper", "mkl", "dnnl"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 ct2rs = { workspace = true, features = ["whisper", "accelerate"] }

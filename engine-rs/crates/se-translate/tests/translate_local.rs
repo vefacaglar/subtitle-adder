@@ -466,6 +466,13 @@ fn test_check_request_order_and_messages() {
         check_request("nllb-1.3b", "es", Some("ko")).unwrap_err().to_string(),
         "NLLB ko dilinden çeviri yapamıyor. Desteklenen diller: tr, en, pt, es, ru, de, fr, ja, zh."
     );
+    // A missing or empty source (Python `not source`) is the same error.
+    for source in [None, Some("")] {
+        assert_eq!(
+            check_request("nllb-1.3b", "es", source).unwrap_err().to_string(),
+            "NLLB için kaynak dil (--from) zorunlu; ör. --from tr."
+        );
+    }
     assert_eq!(check_request("nllb-1.3b", "es", Some("tr")).unwrap().id, "nllb-1.3b");
     assert_eq!(check_request("madlad-3b", "es", Some("xx")).unwrap().id, "madlad-3b");
     assert_eq!(check_request("gemma-4-e4b", "zh", None).unwrap().id, "gemma-4-e4b");
@@ -477,6 +484,10 @@ fn test_check_request_order_and_messages() {
     assert_eq!(
         check_request("nllb-1.3b", "es", Some("ko")).unwrap_err().to_string(),
         "NLLB cannot translate from ko. Supported languages: tr, en, pt, es, ru, de, fr, ja, zh."
+    );
+    assert_eq!(
+        check_request("nllb-1.3b", "es", None).unwrap_err().to_string(),
+        "NLLB requires a source language (--from), e.g. --from tr."
     );
 }
 
@@ -563,4 +574,134 @@ fn test_real_madlad_golden_batch() {
     assert_eq!(es[1].text, "Habitación 42, reúnase con Mehmet.");
     let pt = translator.translate(&sentences[1..2], "pt", None, None, None).unwrap();
     assert_eq!(pt[0].text, "Olá, como estás?");
+}
+
+/// Byte parity with the Python engine on the real model: the `translation` / `translating` lines that
+/// `subtitle-engine translate --to es --json` printed for `fixtures/madlad_parity_in.json`
+/// (`fixtures/madlad_parity_es.jsonl`, generated with the Python engine on this machine).
+#[test]
+#[ignore = "real model (slow): needs madlad-3b in the HF cache"]
+fn test_real_madlad_events_match_the_python_engine() {
+    let _ = real_dir().expect("madlad-3b is downloaded");
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let input = std::fs::read_to_string(base.join("madlad_parity_in.json")).unwrap();
+    let expected = std::fs::read_to_string(base.join("madlad_parity_es.jsonl")).unwrap().replace("\r\n", "\n");
+    let sentences = se_core::types::sentences_from_value(&se_core::json::parse(&input).unwrap()).unwrap();
+    let mut translator = Ct2Translator::new("madlad-3b", Device::Cpu, "int8").unwrap();
+    let out: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    let mut on_batch = |prefix: &[Sentence]| {
+        se_core::events::emit(&mut *out.borrow_mut(), &se_core::events::translation("es", prefix)).unwrap();
+    };
+    let mut on_progress = |f: f64| {
+        se_core::events::emit(&mut *out.borrow_mut(), &se_core::events::stage("translating", Some(f))).unwrap();
+    };
+    let result = translator.translate(&sentences, "es", None, Some(&mut on_progress), Some(&mut on_batch)).unwrap();
+    se_core::events::emit(&mut *out.borrow_mut(), &se_core::events::translation("es", &result)).unwrap();
+    assert_eq!(String::from_utf8(out.into_inner()).unwrap(), expected);
+}
+
+/// Byte parity on two batches (16 + 7 lines) with blank, whitespace-padded, multi-line, emoji, CJK and
+/// speaker lines, for a Latin and a CJK target (`fixtures/madlad_parity2_*.jsonl`, Python engine output of
+/// `translate --to <L> --json` without the CLI's own `loading_model` / `translating null` lines).
+#[test]
+#[ignore = "real model (slow): needs madlad-3b in the HF cache"]
+fn test_real_madlad_two_batch_events_match_the_python_engine() {
+    let _ = real_dir().expect("madlad-3b is downloaded");
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let input = std::fs::read_to_string(base.join("madlad_parity2_in.json")).unwrap();
+    let sentences = se_core::types::sentences_from_value(&se_core::json::parse(&input).unwrap()).unwrap();
+    let mut translator = Ct2Translator::new("madlad-3b", Device::Cpu, "int8").unwrap();
+    for target in ["es", "zh"] {
+        let expected = std::fs::read_to_string(base.join(format!("madlad_parity2_{target}.jsonl")))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let out: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+        let mut on_batch = |prefix: &[Sentence]| {
+            se_core::events::emit(&mut *out.borrow_mut(), &se_core::events::translation(target, prefix)).unwrap();
+        };
+        let mut on_progress = |f: f64| {
+            se_core::events::emit(&mut *out.borrow_mut(), &se_core::events::stage("translating", Some(f))).unwrap();
+        };
+        let result =
+            translator.translate(&sentences, target, None, Some(&mut on_progress), Some(&mut on_batch)).unwrap();
+        se_core::events::emit(&mut *out.borrow_mut(), &se_core::events::translation(target, &result)).unwrap();
+        let actual = String::from_utf8(out.into_inner()).unwrap();
+        if let Ok(dump) = std::env::var("SE_PARITY_DUMP") {
+            std::fs::write(format!("{dump}/rust_{target}.jsonl"), &actual).unwrap();
+        }
+        // Beam search on borderline lines differs from the Python wheel because the GEMM kernels differ
+        // (onednn-src 3.14.1 vs the oneDNN 3.1.1 the ctranslate2 4.8.4 wheel links; the Rust build is also
+        // sensitive to ONEDNN_MAX_CPU_ISA while the wheel is not). Observed on a Ryzen 7500F: es 2/26 (ids 12,
+        // 25), zh 6/26 texts differ. Those texts may differ,
+        // everything else (ids, times, speakers, blank lines, batch prefixes, fractions) must be byte-identical.
+        let texts = |line: &str| -> Vec<(i64, String)> {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            v["sentences"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| (s["id"].as_i64().unwrap(), s["text"].as_str().unwrap().to_string()))
+                .collect()
+        };
+        let rust_texts = texts(actual.lines().last().unwrap());
+        let python_texts = texts(expected.lines().last().unwrap());
+        assert_eq!(rust_texts.len(), python_texts.len());
+        let mut patched = actual.clone();
+        let mut differing = Vec::new();
+        for ((id, rust), (_, python)) in rust_texts.iter().zip(&python_texts) {
+            if rust != python {
+                differing.push(format!("id {id}: rust {rust:?} / python {python:?}"));
+                let enc = |t: &str| format!("\"text\": {}", serde_json::to_string(t).unwrap());
+                patched = patched.replace(&enc(rust), &enc(python));
+            }
+        }
+        eprintln!("target {target}: {} of {} texts differ: {differing:#?}", differing.len(), rust_texts.len());
+        assert!(differing.len() * 4 <= rust_texts.len(), "target {target}: {differing:#?}");
+        assert_eq!(patched, expected, "target {target}");
+    }
+}
+
+/// `_SentencePieceTokenizer` encode/decode parity with Python sentencepiece 0.2.x on the real `spiece.model`
+/// (`fixtures/spm_golden.json`: tagged subtitle lines, normalization, control and special-piece cases).
+#[test]
+#[ignore = "real model (slow): needs madlad-3b in the HF cache"]
+fn test_real_sentencepiece_matches_python() {
+    let dir = real_dir().expect("madlad-3b is downloaded");
+    let tokenizer = se_translate::ct2::SentencePieceTokenizer::open(&dir.join("spiece.model")).unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/spm_golden.json");
+    let golden: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let strings = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect()
+    };
+    for case in golden["encode"].as_array().unwrap() {
+        let text = case[0].as_str().unwrap();
+        assert_eq!(tokenizer.encode(text).unwrap(), strings(&case[1]), "encode {text:?}");
+    }
+    for case in golden["decode"].as_array().unwrap() {
+        let pieces = strings(&case[0]);
+        assert_eq!(tokenizer.decode(&pieces).unwrap(), case[1].as_str().unwrap(), "decode {pieces:?}");
+    }
+}
+
+/// `_SentencePieceTokenizer` load failures carry Python sentencepiece's RuntimeError text (the CLI emits
+/// `str(exc)`); values observed with sentencepiece 0.2.2 on Windows.
+#[test]
+fn test_sentencepiece_load_errors_match_python() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nope").join("spiece.model");
+    let err = se_translate::ct2::SentencePieceTokenizer::open(&missing).err().unwrap();
+    let shown = se_core::paths::py_path_str(&missing);
+    assert_eq!(err.to_string(), format!("NOT_FOUND: \"{shown}\": No such file or directory Error #2"));
+    let folder = dir.path().join("dir.model");
+    std::fs::create_dir(&folder).unwrap();
+    let err = se_translate::ct2::SentencePieceTokenizer::open(&folder).err().unwrap();
+    let shown = se_core::paths::py_path_str(&folder);
+    if cfg!(windows) {
+        assert_eq!(err.to_string(), format!("NOT_FOUND: \"{shown}\": Permission denied Error #13"));
+    }
+    let bad = dir.path().join("bad.model");
+    std::fs::write(&bad, b"garbage").unwrap();
+    let err = se_translate::ct2::SentencePieceTokenizer::open(&bad).err().unwrap();
+    let shown = se_core::paths::py_path_str(&bad);
+    assert_eq!(err.to_string(), format!("INTERNAL: could not parse ModelProto from {shown}"));
 }

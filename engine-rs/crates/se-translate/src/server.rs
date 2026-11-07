@@ -36,7 +36,8 @@ impl LlamaServer {
         if self.stderr_file.seek(SeekFrom::Start(0)).is_ok() {
             let _ = self.stderr_file.read_to_end(&mut bytes);
         }
-        let text = String::from_utf8_lossy(&bytes);
+        // Python reads the text-mode temp file back with universal newlines (CRLF and CR become LF).
+        let text = pyfmt::universal_newlines(&String::from_utf8_lossy(&bytes));
         let stripped = pyfmt::strip(&text);
         let n = stripped.chars().count();
         stripped.chars().skip(n.saturating_sub(400)).collect()
@@ -89,7 +90,8 @@ pub fn start_server(server_path: &Path, model_path: &Path, gpu_layers: u32, devi
     while Instant::now() < deadline {
         if server.exited() {
             let tail = server.stderr_tail();
-            let code = server.child.try_wait().ok().flatten().and_then(|s| s.code());
+            // Windows exit codes are DWORDs in Python (`3221225477`, not a negative i32).
+            let code = server.child.try_wait().ok().flatten().and_then(|s| py_returncode(&s));
             server.stop();
             if gpu_layers > 0 && device_auto {
                 eprintln!("llama-server GPU init failed, retrying on CPU...");
@@ -111,6 +113,24 @@ pub fn start_server(server_path: &Path, model_path: &Path, gpu_layers: u32, devi
     }
     server.stop();
     Err(EngineError::model(t!("llama_unavailable", error = "timed out waiting for llama-server /health")))
+}
+
+/// `Popen.returncode`: Windows exit codes are DWORDs (`3221225477`, not a negative i32); a POSIX process killed
+/// by a signal is `-signal`.
+fn py_returncode(status: &std::process::ExitStatus) -> Option<i64> {
+    #[cfg(windows)]
+    {
+        status.code().map(|c| (c as u32) as i64)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.code().map(i64::from).or_else(|| status.signal().map(|s| -i64::from(s)))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        status.code().map(i64::from)
+    }
 }
 
 fn os_text(e: &std::io::Error) -> String {

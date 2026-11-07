@@ -154,7 +154,6 @@ pub struct LlamaTranslator {
     completion_fn: Option<CompletionFn>,
     completion_keeps_checkpoint: bool,
     external_chat_url: Option<String>,
-    external_model: Option<String>,
     external_api_key: Option<String>,
     resolved_external_model: Option<String>,
     session_id: String,
@@ -214,8 +213,7 @@ impl LlamaTranslator {
             completion_fn: options.completion_fn,
             completion_keeps_checkpoint: options.completion_keeps_checkpoint,
             external_chat_url,
-            resolved_external_model: external_model.clone(),
-            external_model,
+            resolved_external_model: external_model,
             external_api_key,
             session_id: uuid::Uuid::new_v4().simple().to_string(),
             request_count: 0,
@@ -498,10 +496,24 @@ fn merge(body: &mut Map, options: Value) {
     }
 }
 
+/// `bytes.decode("utf-8")` with CPython's `UnicodeDecodeError` text.
+pub(crate) fn py_decode_utf8(body: &[u8]) -> std::result::Result<&str, String> {
+    std::str::from_utf8(body).map_err(|e| {
+        let pos = e.valid_up_to();
+        let (len, reason) = match e.error_len() {
+            Some(n) => (n, if matches!(body[pos], 0xc2..=0xf4) { "invalid continuation byte" } else { "invalid start byte" }),
+            None => (body.len() - pos, "unexpected end of data"),
+        };
+        if len == 1 {
+            format!("'utf-8' codec can't decode byte 0x{:02x} in position {pos}: {reason}", body[pos])
+        } else {
+            format!("'utf-8' codec can't decode bytes in position {pos}-{}: {reason}", pos + len - 1)
+        }
+    })
+}
+
 fn parse_json_body(body: &[u8]) -> std::result::Result<Value, HttpFailure> {
-    let text = std::str::from_utf8(body).map_err(|e| {
-        HttpFailure::Other(format!("'utf-8' codec can't decode bytes in position {}: invalid continuation byte", e.valid_up_to()))
-    })?;
+    let text = py_decode_utf8(body).map_err(HttpFailure::Other)?;
     json::parse(text).map_err(|e| HttpFailure::Other(e.to_string()))
 }
 
@@ -531,6 +543,9 @@ fn response_summary(data: &Value) -> std::result::Result<(bool, usize, usize), H
     let empty = Value::Object(Map::new());
     let choice = match get_or(map, "choices") {
         Some(Value::Array(items)) => items.first().cloned().unwrap_or(Value::Null),
+        // `"abc"[0]` is "a" (then `.get` fails), `{...}[0]` is `KeyError: 0`, numbers are not subscriptable.
+        Some(Value::Str(_)) => return Err(HttpFailure::Other("'str' object has no attribute 'get'".to_string())),
+        Some(Value::Object(_)) => return Err(HttpFailure::Other("0".to_string())),
         Some(other) => return Err(HttpFailure::Other(format!("'{}' object is not subscriptable", other.py_type_name()))),
         None => empty.clone(),
     };
@@ -751,7 +766,9 @@ impl Translator for LlamaTranslator {
                     }
                     self.emit("line_recovery", Map::new().with("offset", (start + offset - 1) as i64));
                     let before_all: Vec<String> = context_lines.iter().chain(&batch_texts[..offset - 1]).cloned().collect();
-                    let before: Vec<String> = before_all[before_all.len().saturating_sub(ctx_n)..].to_vec();
+                    // Python `[-n:]`: `[-0:]` is the whole list.
+                    let keep_from = if ctx_n == 0 { 0 } else { before_all.len().saturating_sub(ctx_n) };
+                    let before: Vec<String> = before_all[keep_from..].to_vec();
                     let after: Vec<String> =
                         batch_texts[offset..].iter().chain(&following_lines).take(ctx_n).cloned().collect();
                     let single_messages = match profile.name.as_str() {

@@ -672,3 +672,23 @@ fn test_discovery_uses_the_first_listed_model_and_falls_back_to_the_catalog_id()
     assert_eq!(translator.discover_external_model().unwrap(), "madlad-3b");
     assert_eq!(failing.requests().len(), 1); // cached
 }
+
+#[test]
+fn test_added_markup_is_detected() {
+    for text in [BAD, "**Merhaba.**", "_Merhaba._", "`Merhaba.`"] {
+        assert!(se_translate::validate::has_unrequested_markup(MARKUP_SOURCE, text), "{text}");
+    }
+}
+
+#[test]
+fn test_literal_symbols_and_existing_source_formatting_are_preserved() {
+    for (source, translated) in [
+        ("*Hello.*", "*Merhaba.*"),
+        ("Use user_name.", "user_name kullan."),
+        ("Two times three.", "2 * 3"),
+        ("A censored word.", "s*ktir"),
+        ("Hello.", "Merhaba."),
+    ] {
+        assert!(!se_translate::validate::has_unrequested_markup(source, translated), "{source} -> {translated}");
+    }
+}
