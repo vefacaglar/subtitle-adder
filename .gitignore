@@ -30,3 +30,8 @@ bin/
 obj/
 *.user
 TestResults/
+
+# Rust engine build output and staged runtime
+engine-rs/target/
+engine-rs/dist/
+.claude/worktrees/

@@ -1,0 +1,206 @@
+{
+ "cases": [
+  {
+   "doc": "{\"event\": \"stage\", \"stage\": \"x\", \"fraction\": null}",
+   "compact": "{\"event\": \"stage\", \"stage\": \"x\", \"fraction\": null}",
+   "ascii": "{\"event\": \"stage\", \"stage\": \"x\", \"fraction\": null}",
+   "indent2": "{\n  \"event\": \"stage\",\n  \"stage\": \"x\",\n  \"fraction\": null\n}",
+   "sorted_indent1": "{\n \"event\": \"stage\",\n \"fraction\": null,\n \"stage\": \"x\"\n}"
+  },
+  {
+   "doc": "[{\"id\": 1, \"start\": 0, \"end\": 1.0, \"text\": \"D\\u00fczenlendi.\", \"words\": [], \"speaker\": null}]",
+   "compact": "[{\"id\": 1, \"start\": 0, \"end\": 1.0, \"text\": \"D\u00fczenlendi.\", \"words\": [], \"speaker\": null}]",
+   "ascii": "[{\"id\": 1, \"start\": 0, \"end\": 1.0, \"text\": \"D\\u00fczenlendi.\", \"words\": [], \"speaker\": null}]",
+   "indent2": "[\n  {\n    \"id\": 1,\n    \"start\": 0,\n    \"end\": 1.0,\n    \"text\": \"D\u00fczenlendi.\",\n    \"words\": [],\n    \"speaker\": null\n  }\n]",
+   "sorted_indent1": "[\n {\n  \"end\": 1.0,\n  \"id\": 1,\n  \"speaker\": null,\n  \"start\": 0,\n  \"text\": \"D\\u00fczenlendi.\",\n  \"words\": []\n }\n]"
+  },
+  {
+   "doc": "{\"a\": \"\\u0000\\u001f\\b\\f\\n\\r\\t\\\"\\\\/\", \"b\": \"\\u007f\\u0080\\u00a0\\u2028\\u2029\\ud83d\\ude00\\u00e9\\u0130\"}",
+   "compact": "{\"a\": \"\\u0000\\u001f\\b\\f\\n\\r\\t\\\"\\\\/\", \"b\": \"\u007f\u0080\u00a0\u2028\u2029\ud83d\ude00\u00e9\u0130\"}",
+   "ascii": "{\"a\": \"\\u0000\\u001f\\b\\f\\n\\r\\t\\\"\\\\/\", \"b\": \"\\u007f\\u0080\\u00a0\\u2028\\u2029\\ud83d\\ude00\\u00e9\\u0130\"}",
+   "indent2": "{\n  \"a\": \"\\u0000\\u001f\\b\\f\\n\\r\\t\\\"\\\\/\",\n  \"b\": \"\u007f\u0080\u00a0\u2028\u2029\ud83d\ude00\u00e9\u0130\"\n}",
+   "sorted_indent1": "{\n \"a\": \"\\u0000\\u001f\\b\\f\\n\\r\\t\\\"\\\\/\",\n \"b\": \"\\u007f\\u0080\\u00a0\\u2028\\u2029\\ud83d\\ude00\\u00e9\\u0130\"\n}"
+  },
+  {
+   "doc": "{\"n\": [1E3, 1.50, -0, 0.0, 1e-7, 1e400, -1e400, 123456789012345678901234567890, NaN, Infinity, -Infinity]}",
+   "compact": "{\"n\": [1000.0, 1.5, 0, 0.0, 1e-07, Infinity, -Infinity, 123456789012345678901234567890, NaN, Infinity, -Infinity]}",
+   "ascii": "{\"n\": [1000.0, 1.5, 0, 0.0, 1e-07, Infinity, -Infinity, 123456789012345678901234567890, NaN, Infinity, -Infinity]}",
+   "indent2": "{\n  \"n\": [\n    1000.0,\n    1.5,\n    0,\n    0.0,\n    1e-07,\n    Infinity,\n    -Infinity,\n    123456789012345678901234567890,\n    NaN,\n    Infinity,\n    -Infinity\n  ]\n}",
+   "sorted_indent1": "{\n \"n\": [\n  1000.0,\n  1.5,\n  0,\n  0.0,\n  1e-07,\n  Infinity,\n  -Infinity,\n  123456789012345678901234567890,\n  NaN,\n  Infinity,\n  -Infinity\n ]\n}"
+  },
+  {
+   "doc": "{\"nested\": {\"x\": [[], {}, [1, [2, {\"y\": true}]]], \"z\": false}, \"\": \"empty key\"}",
+   "compact": "{\"nested\": {\"x\": [[], {}, [1, [2, {\"y\": true}]]], \"z\": false}, \"\": \"empty key\"}",
+   "ascii": "{\"nested\": {\"x\": [[], {}, [1, [2, {\"y\": true}]]], \"z\": false}, \"\": \"empty key\"}",
+   "indent2": "{\n  \"nested\": {\n    \"x\": [\n      [],\n      {},\n      [\n        1,\n        [\n          2,\n          {\n            \"y\": true\n          }\n        ]\n      ]\n    ],\n    \"z\": false\n  },\n  \"\": \"empty key\"\n}",
+   "sorted_indent1": "{\n \"\": \"empty key\",\n \"nested\": {\n  \"x\": [\n   [],\n   {},\n   [\n    1,\n    [\n     2,\n     {\n      \"y\": true\n     }\n    ]\n   ]\n  ],\n  \"z\": false\n }\n}"
+  },
+  {
+   "doc": "{\"a\": 1, \"b\": 2, \"a\": 3}",
+   "compact": "{\"a\": 3, \"b\": 2}",
+   "ascii": "{\"a\": 3, \"b\": 2}",
+   "indent2": "{\n  \"a\": 3,\n  \"b\": 2\n}",
+   "sorted_indent1": "{\n \"a\": 3,\n \"b\": 2\n}"
+  },
+  {
+   "doc": "\"just a string \\u3053\\u3093\\u306b\\u3061\\u306f\"",
+   "compact": "\"just a string \u3053\u3093\u306b\u3061\u306f\"",
+   "ascii": "\"just a string \\u3053\\u3093\\u306b\\u3061\\u306f\"",
+   "indent2": "\"just a string \u3053\u3093\u306b\u3061\u306f\"",
+   "sorted_indent1": "\"just a string \\u3053\\u3093\\u306b\\u3061\\u306f\""
+  },
+  {
+   "doc": "[]",
+   "compact": "[]",
+   "ascii": "[]",
+   "indent2": "[]",
+   "sorted_indent1": "[]"
+  },
+  {
+   "doc": "{}",
+   "compact": "{}",
+   "ascii": "{}",
+   "indent2": "{}",
+   "sorted_indent1": "{}"
+  },
+  {
+   "doc": "5",
+   "compact": "5",
+   "ascii": "5",
+   "indent2": "5",
+   "sorted_indent1": "5"
+  },
+  {
+   "doc": "-12.5e+3",
+   "compact": "-12500.0",
+   "ascii": "-12500.0",
+   "indent2": "-12500.0",
+   "sorted_indent1": "-12500.0"
+  },
+  {
+   "doc": "null",
+   "compact": "null",
+   "ascii": "null",
+   "indent2": "null",
+   "sorted_indent1": "null"
+  }
+ ],
+ "errors": [
+  {
+   "doc": "",
+   "error": "Expecting value: line 1 column 1 (char 0)"
+  },
+  {
+   "doc": " ",
+   "error": "Expecting value: line 1 column 2 (char 1)"
+  },
+  {
+   "doc": "[1,]",
+   "error": "Expecting value: line 1 column 4 (char 3)"
+  },
+  {
+   "doc": "{\"a\":1,}",
+   "error": "Expecting property name enclosed in double quotes: line 1 column 8 (char 7)"
+  },
+  {
+   "doc": "[1 2]",
+   "error": "Expecting ',' delimiter: line 1 column 4 (char 3)"
+  },
+  {
+   "doc": "{\"a\" 1}",
+   "error": "Expecting ':' delimiter: line 1 column 6 (char 5)"
+  },
+  {
+   "doc": "{\"a\":}",
+   "error": "Expecting value: line 1 column 6 (char 5)"
+  },
+  {
+   "doc": "{1:2}",
+   "error": "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+  },
+  {
+   "doc": "[] x",
+   "error": "Extra data: line 1 column 4 (char 3)"
+  },
+  {
+   "doc": "\n\n  \"abc",
+   "error": "Unterminated string starting at: line 3 column 3 (char 4)"
+  },
+  {
+   "doc": "\"a\nb\"",
+   "error": "Invalid control character at: line 1 column 3 (char 2)"
+  },
+  {
+   "doc": "\"\\x\"",
+   "error": "Invalid \\escape: line 1 column 2 (char 1)"
+  },
+  {
+   "doc": "\"\\u12\"",
+   "error": "Invalid \\uXXXX escape: line 1 column 3 (char 2)"
+  },
+  {
+   "doc": "\ufeff[]",
+   "error": "Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)"
+  },
+  {
+   "doc": "[",
+   "error": "Expecting value: line 1 column 2 (char 1)"
+  },
+  {
+   "doc": "{",
+   "error": "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+  },
+  {
+   "doc": "{\"a\"",
+   "error": "Expecting ':' delimiter: line 1 column 5 (char 4)"
+  },
+  {
+   "doc": "{\"a\":1",
+   "error": "Expecting ',' delimiter: line 1 column 7 (char 6)"
+  },
+  {
+   "doc": "[1,",
+   "error": "Expecting value: line 1 column 4 (char 3)"
+  },
+  {
+   "doc": "-",
+   "error": "Expecting value: line 1 column 1 (char 0)"
+  },
+  {
+   "doc": "01",
+   "error": "Extra data: line 1 column 2 (char 1)"
+  },
+  {
+   "doc": "1.",
+   "error": "Extra data: line 1 column 2 (char 1)"
+  },
+  {
+   "doc": "1e",
+   "error": "Extra data: line 1 column 2 (char 1)"
+  },
+  {
+   "doc": "nul",
+   "error": "Expecting value: line 1 column 1 (char 0)"
+  },
+  {
+   "doc": "tru",
+   "error": "Expecting value: line 1 column 1 (char 0)"
+  },
+  {
+   "doc": "[nan]",
+   "error": "Expecting value: line 1 column 2 (char 1)"
+  },
+  {
+   "doc": "{\"a\": [1, 2,\n 3,, 4]}",
+   "error": "Expecting value: line 2 column 4 (char 16)"
+  },
+  {
+   "doc": "\"abc\\",
+   "error": "Unterminated string starting at: line 1 column 1 (char 0)"
+  },
+  {
+   "doc": "[\r\n1\r\n,]",
+   "error": "Expecting value: line 3 column 2 (char 7)"
+  }
+ ]
+}

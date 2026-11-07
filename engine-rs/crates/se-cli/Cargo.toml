@@ -1,0 +1,33 @@
+[package]
+name = "se-cli"
+description = "subtitle-engine command-line binary (argparse-compatible parser, pipeline, command handlers)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "subtitle-engine"
+path = "src/main.rs"
+
+[lib]
+name = "se_cli"
+path = "src/lib.rs"
+
+[features]
+cuda = ["se-asr/cuda", "se-translate/cuda"]
+
+[dependencies]
+se-core.workspace = true
+se-text.workspace = true
+se-audio.workspace = true
+se-models.workspace = true
+se-asr.workspace = true
+se-diarize.workspace = true
+se-translate.workspace = true
+
+[dev-dependencies]
+serial_test.workspace = true
+tempfile.workspace = true
+filetime.workspace = true

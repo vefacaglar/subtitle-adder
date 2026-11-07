@@ -1,0 +1,2281 @@
+[
+ {
+  "argv": [],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: the following arguments are required: command\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "-h"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\n\npositional arguments:\n  {extract-audio,preview,transcribe,translate,render,models,delete-model}\n    extract-audio       extract 16 kHz mono WAV audio from a video\n    preview             create a local MP4 playback copy\n    transcribe          generate subtitles from a video\n    translate           translate the sentence JSON on stdin with a local\n                        model\n    render              convert the sentence JSON on stdin to a subtitle\n                        format\n    models              list the model catalog and download status\n    delete-model        delete a downloaded model from the cache\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  --offline             never use the network, not even to download models\n                        (also SUBTITLE_ENGINE_OFFLINE=1)\n  --version             show program's version number and exit\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--help"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\n\npositional arguments:\n  {extract-audio,preview,transcribe,translate,render,models,delete-model}\n    extract-audio       extract 16 kHz mono WAV audio from a video\n    preview             create a local MP4 playback copy\n    transcribe          generate subtitles from a video\n    translate           translate the sentence JSON on stdin with a local\n                        model\n    render              convert the sentence JSON on stdin to a subtitle\n                        format\n    models              list the model catalog and download status\n    delete-model        delete a downloaded model from the cache\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  --offline             never use the network, not even to download models\n                        (also SUBTITLE_ENGINE_OFFLINE=1)\n  --version             show program's version number and exit\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--he"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\n\npositional arguments:\n  {extract-audio,preview,transcribe,translate,render,models,delete-model}\n    extract-audio       extract 16 kHz mono WAV audio from a video\n    preview             create a local MP4 playback copy\n    transcribe          generate subtitles from a video\n    translate           translate the sentence JSON on stdin with a local\n                        model\n    render              convert the sentence JSON on stdin to a subtitle\n                        format\n    models              list the model catalog and download status\n    delete-model        delete a downloaded model from the cache\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  --offline             never use the network, not even to download models\n                        (also SUBTITLE_ENGINE_OFFLINE=1)\n  --version             show program's version number and exit\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--version"
+  ],
+  "code": 0,
+  "stdout": "subtitle-engine protocol 1\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--v"
+  ],
+  "code": 0,
+  "stdout": "subtitle-engine protocol 1\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--version",
+   "models"
+  ],
+  "code": 0,
+  "stdout": "subtitle-engine protocol 1\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "-h",
+   "models"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\n\npositional arguments:\n  {extract-audio,preview,transcribe,translate,render,models,delete-model}\n    extract-audio       extract 16 kHz mono WAV audio from a video\n    preview             create a local MP4 playback copy\n    transcribe          generate subtitles from a video\n    translate           translate the sentence JSON on stdin with a local\n                        model\n    render              convert the sentence JSON on stdin to a subtitle\n                        format\n    models              list the model catalog and download status\n    delete-model        delete a downloaded model from the cache\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  --offline             never use the network, not even to download models\n                        (also SUBTITLE_ENGINE_OFFLINE=1)\n  --version             show program's version number and exit\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "bogus"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: argument command: invalid choice: 'bogus' (choose from 'extract-audio', 'preview', 'transcribe', 'translate', 'render', 'models', 'delete-model')\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--lang"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: argument --lang: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--lang",
+   "en"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: the following arguments are required: command\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--lang=en",
+   "models"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": "en",
+   "offline": false,
+   "command": "models",
+   "sub_lang": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "--lan",
+   "en",
+   "models"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": "en",
+   "offline": false,
+   "command": "models",
+   "sub_lang": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "--off",
+   "models"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": true,
+   "command": "models",
+   "sub_lang": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "--offline",
+   "models",
+   "--json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": true,
+   "command": "models",
+   "sub_lang": null,
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "--lang",
+   "en",
+   "--lang",
+   "xx",
+   "models"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": "xx",
+   "offline": false,
+   "command": "models",
+   "sub_lang": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "-x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: the following arguments are required: command\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "-x",
+   "models"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: -x\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--lang",
+   "en",
+   "--",
+   "models"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: argument command: invalid choice: '--' (choose from 'extract-audio', 'preview', 'transcribe', 'translate', 'render', 'models', 'delete-model')\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   "--",
+   "--json"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: -- --json\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   "--offline"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: --offline\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   "--version"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: --version\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   "-h"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine models [-h] [--lang tr|en] [--json]\n\noptions:\n  -h, --help    show this help message and exit\n  --lang tr|en  language of user-facing messages (overrides\n                SUBTITLE_ENGINE_LANG; anything but en means tr)\n  --json        write a single JSON line\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   "--js"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "models",
+   "sub_lang": null,
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "models",
+   "--json=x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine models [-h] [--lang tr|en] [--json]\nsubtitle-engine models: error: argument --json: ignored explicit argument 'x'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   "--json="
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine models [-h] [--lang tr|en] [--json]\nsubtitle-engine models: error: argument --json: ignored explicit argument ''\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   "x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: x\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   "--lang",
+   "en"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "models",
+   "sub_lang": "en",
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "models",
+   "--lang=",
+   "--json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "models",
+   "sub_lang": "",
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "models",
+   "--lang"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine models [-h] [--lang tr|en] [--json]\nsubtitle-engine models: error: argument --lang: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "extract-audio"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine extract-audio [-h] [--lang tr|en] [-o OUT_DIR] [--json]\n                                     video\nsubtitle-engine extract-audio: error: the following arguments are required: video\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "-h"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine extract-audio [-h] [--lang tr|en] [-o OUT_DIR] [--json]\n                                     video\n\npositional arguments:\n  video\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  -o OUT_DIR, --out-dir OUT_DIR\n  --json                write a JSON event stream to stdout\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "v.mp4"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "v.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "v.mp4",
+   "-o",
+   "d",
+   "--json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "v.mp4"
+   },
+   "out_dir": {
+    "path": "d"
+   },
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "v.mp4",
+   "-od"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "v.mp4"
+   },
+   "out_dir": {
+    "path": "d"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "v.mp4",
+   "-o=d"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "v.mp4"
+   },
+   "out_dir": {
+    "path": "d"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "v.mp4",
+   "--out",
+   "d"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "v.mp4"
+   },
+   "out_dir": {
+    "path": "d"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "-1"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "-1"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "-1.5",
+   "-o",
+   "-2"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "-1.5"
+   },
+   "out_dir": {
+    "path": "-2"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "-x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine extract-audio [-h] [--lang tr|en] [-o OUT_DIR] [--json]\n                                     video\nsubtitle-engine extract-audio: error: the following arguments are required: video\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "a b"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "a b"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "--a b"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "--a b"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "-"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "-"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "preview"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine preview [-h] [--lang tr|en] --output OUTPUT [--json]\n                               video\nsubtitle-engine preview: error: the following arguments are required: video, --output\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "preview",
+   "x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine preview [-h] [--lang tr|en] --output OUTPUT [--json]\n                               video\nsubtitle-engine preview: error: the following arguments are required: --output\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "preview",
+   "-h"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine preview [-h] [--lang tr|en] --output OUTPUT [--json]\n                               video\n\npositional arguments:\n  video            source file, or - for an open file on stdin\n\noptions:\n  -h, --help       show this help message and exit\n  --lang tr|en     language of user-facing messages (overrides\n                   SUBTITLE_ENGINE_LANG; anything but en means tr)\n  --output OUTPUT\n  --json           report errors as JSON\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "preview",
+   "-",
+   "--output",
+   "o.mp4",
+   "--json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "preview",
+   "sub_lang": null,
+   "video": {
+    "path": "-"
+   },
+   "output": {
+    "path": "o.mp4"
+   },
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "preview",
+   "x",
+   "--out",
+   "o"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "preview",
+   "sub_lang": null,
+   "video": {
+    "path": "x"
+   },
+   "output": {
+    "path": "o"
+   },
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "preview",
+   "x",
+   "--output"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine preview [-h] [--lang tr|en] --output OUTPUT [--json]\n                               video\nsubtitle-engine preview: error: argument --output: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: the following arguments are required: video\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "-h"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\n\npositional arguments:\n  video\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  -o OUT_DIR, --out-dir OUT_DIR\n  -l LANGUAGE, --language LANGUAGE\n                        e.g. tr, en (auto-detected if omitted)\n  -m MODEL, --model MODEL\n                        model id (see the models command); other names are\n                        passed to faster-whisper\n  -f {srt,vtt,json} [{srt,vtt,json} ...], --format {srt,vtt,json} [{srt,vtt,json} ...]\n  --max-chars MAX_CHARS\n  --max-duration MAX_DURATION\n  --diarize             separate speakers (local); adds a speaker to each\n                        sentence\n  --speakers SPEAKERS   number of speakers (only with --diarize; auto if\n                        omitted)\n  --json                write a JSON event stream to stdout\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-f"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument -f/--format: expected at least one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-l"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument -l/--language: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "-f",
+   "srt",
+   "vtt",
+   "x.mp4"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument -f/--format: invalid choice: 'x.mp4' (choose from 'srt', 'vtt', 'json')\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-f",
+   "srt",
+   "srt",
+   "json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt",
+    "srt",
+    "json"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--ma",
+   "3"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: ambiguous option: --ma could match --max-chars, --max-duration\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-c",
+   "3"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 3,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-chars",
+   "abc"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument --max-chars: invalid int value: 'abc'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-chars",
+   " 1_000 "
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 1000,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-chars",
+   "1__0"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument --max-chars: invalid int value: '1__0'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-chars",
+   "+7"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 7,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-chars",
+   "-7"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": -7,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-chars",
+   "١٢"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 12,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-chars",
+   "1.0"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument --max-chars: invalid int value: '1.0'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--speakers",
+   "2.5"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument --speakers: invalid int value: '2.5'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--speak",
+   "2",
+   "--dia"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": true,
+   "speakers": 2,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-duration",
+   "x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument --max-duration: invalid float value: 'x'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-duration",
+   "nan"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": NaN,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-duration",
+   "-Infinity"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument --max-duration: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-duration",
+   "1_0.2_5e1"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 102.5,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-duration",
+   ".5"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 0.5,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-duration",
+   "5."
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 5.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-duration",
+   "1e"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument --max-duration: invalid float value: '1e'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--max-duration",
+   "_1"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument --max-duration: invalid float value: '_1'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--form=json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "json"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-fjson"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "json"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-f=vtt"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "vtt"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-f",
+   "xx"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument -f/--format: invalid choice: 'xx' (choose from 'srt', 'vtt', 'json')\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--l",
+   "tr"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: ambiguous option: --l could match --lang, --language\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--la",
+   "tr"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: ambiguous option: --la could match --lang, --language\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--langu",
+   "tr"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": "tr",
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-l",
+   "",
+   "-m",
+   "base"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": "",
+   "model": "base",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "--offline",
+   "x.mp4"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: --offline\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "--bogus",
+   "x",
+   "--json"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: --bogus\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "y.mp4"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: y.mp4\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--speakers",
+   "-1",
+   "--json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": -1,
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-l",
+   "-1"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": "-1",
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-l",
+   "-x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument -l/--language: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-o"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument -o/--out-dir: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--json",
+   "-h"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\n\npositional arguments:\n  video\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  -o OUT_DIR, --out-dir OUT_DIR\n  -l LANGUAGE, --language LANGUAGE\n                        e.g. tr, en (auto-detected if omitted)\n  -m MODEL, --model MODEL\n                        model id (see the models command); other names are\n                        passed to faster-whisper\n  -f {srt,vtt,json} [{srt,vtt,json} ...], --format {srt,vtt,json} [{srt,vtt,json} ...]\n  --max-chars MAX_CHARS\n  --max-duration MAX_DURATION\n  --diarize             separate speakers (local); adds a speaker to each\n                        sentence\n  --speakers SPEAKERS   number of speakers (only with --diarize; auto if\n                        omitted)\n  --json                write a JSON event stream to stdout\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-hx"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\n\npositional arguments:\n  video\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  -o OUT_DIR, --out-dir OUT_DIR\n  -l LANGUAGE, --language LANGUAGE\n                        e.g. tr, en (auto-detected if omitted)\n  -m MODEL, --model MODEL\n                        model id (see the models command); other names are\n                        passed to faster-whisper\n  -f {srt,vtt,json} [{srt,vtt,json} ...], --format {srt,vtt,json} [{srt,vtt,json} ...]\n  --max-chars MAX_CHARS\n  --max-duration MAX_DURATION\n  --diarize             separate speakers (local); adds a speaker to each\n                        sentence\n  --speakers SPEAKERS   number of speakers (only with --diarize; auto if\n                        omitted)\n  --json                write a JSON event stream to stdout\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "-h=x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument -h/--help: ignored explicit argument 'x'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--diarize=1"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine transcribe [-h] [--lang tr|en] [-o OUT_DIR]\n                                  [-l LANGUAGE] [-m MODEL]\n                                  [-f {srt,vtt,json} [{srt,vtt,json} ...]]\n                                  [--max-chars MAX_CHARS]\n                                  [--max-duration MAX_DURATION] [--diarize]\n                                  [--speakers SPEAKERS] [--json]\n                                  video\nsubtitle-engine transcribe: error: argument --diarize: ignored explicit argument '1'\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "transcribe",
+   "-m",
+   "base",
+   "-l",
+   "tr",
+   "--max-chars",
+   "40",
+   "--max-duration",
+   "3.5",
+   "--diarize",
+   "--speakers",
+   "2",
+   "-o",
+   "out",
+   "-f",
+   "srt",
+   "vtt",
+   "--json",
+   "--",
+   "x.mp4"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": null,
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "out"
+   },
+   "language": "tr",
+   "model": "base",
+   "format": [
+    "srt",
+    "vtt"
+   ],
+   "max_chars": 40,
+   "max_duration": 3.5,
+   "diarize": true,
+   "speakers": 2,
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "transcribe",
+   "x.mp4",
+   "--lang",
+   "en",
+   "-o",
+   "o"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": "en",
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "o"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "--lang",
+   "tr",
+   "transcribe",
+   "x.mp4",
+   "--lang",
+   "en"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": "tr",
+   "offline": false,
+   "command": "transcribe",
+   "sub_lang": "en",
+   "video": {
+    "path": "x.mp4"
+   },
+   "out_dir": {
+    "path": "output"
+   },
+   "language": null,
+   "model": "small",
+   "format": [
+    "srt"
+   ],
+   "max_chars": 84,
+   "max_duration": 6.0,
+   "diarize": false,
+   "speakers": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "translate"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine translate [-h] [--lang tr|en] --to TO [--from SOURCE]\n                                 [-m MODEL] [--json]\nsubtitle-engine translate: error: the following arguments are required: --to\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "translate",
+   "-h"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine translate [-h] [--lang tr|en] --to TO [--from SOURCE]\n                                 [-m MODEL] [--json]\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  --to TO               target language (e.g. tr, en, es, pt, ru)\n  --from SOURCE         source language; required for NLLB\n  -m MODEL, --model MODEL\n                        translation model (see the models command)\n  --json                write a JSON event stream to stdout\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "translate",
+   "--to"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine translate [-h] [--lang tr|en] --to TO [--from SOURCE]\n                                 [-m MODEL] [--json]\nsubtitle-engine translate: error: argument --to: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "translate",
+   "--to",
+   "en"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "translate",
+   "sub_lang": null,
+   "to": "en",
+   "source": null,
+   "model": "madlad-3b",
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "translate",
+   "--to",
+   "en",
+   "--from",
+   "tr",
+   "-m",
+   "nllb-1.3b",
+   "--json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "translate",
+   "sub_lang": null,
+   "to": "en",
+   "source": "tr",
+   "model": "nllb-1.3b",
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "translate",
+   "--t",
+   "en",
+   "--fr",
+   "tr"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "translate",
+   "sub_lang": null,
+   "to": "en",
+   "source": "tr",
+   "model": "madlad-3b",
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "translate",
+   "--to=es",
+   "-mqwen3.5-4b"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "translate",
+   "sub_lang": null,
+   "to": "es",
+   "source": null,
+   "model": "qwen3.5-4b",
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "translate",
+   "x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine translate [-h] [--lang tr|en] --to TO [--from SOURCE]\n                                 [-m MODEL] [--json]\nsubtitle-engine translate: error: the following arguments are required: --to\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "translate",
+   "--to",
+   "en",
+   "x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: x\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "render"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "render",
+   "sub_lang": null,
+   "format": "srt",
+   "out": null
+  }
+ },
+ {
+  "argv": [
+   "render",
+   "-h"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine render [-h] [--lang tr|en] [-f {srt,vtt,json}] [-o OUT]\n\noptions:\n  -h, --help            show this help message and exit\n  --lang tr|en          language of user-facing messages (overrides\n                        SUBTITLE_ENGINE_LANG; anything but en means tr)\n  -f {srt,vtt,json}, --format {srt,vtt,json}\n  -o OUT, --out OUT\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "render",
+   "-f",
+   "xx"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine render [-h] [--lang tr|en] [-f {srt,vtt,json}] [-o OUT]\nsubtitle-engine render: error: argument -f/--format: invalid choice: 'xx' (choose from 'srt', 'vtt', 'json')\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "render",
+   "--out"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine render [-h] [--lang tr|en] [-f {srt,vtt,json}] [-o OUT]\nsubtitle-engine render: error: argument -o/--out: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "render",
+   "-f",
+   "srt",
+   "-f",
+   "json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "render",
+   "sub_lang": null,
+   "format": "json",
+   "out": null
+  }
+ },
+ {
+  "argv": [
+   "render",
+   "-o",
+   "a.srt",
+   "-f",
+   "vtt"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "render",
+   "sub_lang": null,
+   "format": "vtt",
+   "out": {
+    "path": "a.srt"
+   }
+  }
+ },
+ {
+  "argv": [
+   "render",
+   "-o",
+   ""
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "render",
+   "sub_lang": null,
+   "format": "srt",
+   "out": {
+    "path": "."
+   }
+  }
+ },
+ {
+  "argv": [
+   "render",
+   "--json"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: --json\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "render",
+   "-f",
+   "srt",
+   "vtt"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: vtt\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "delete-model"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine delete-model [-h] [--lang tr|en] [--json] id\nsubtitle-engine delete-model: error: the following arguments are required: id\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "delete-model",
+   "-h"
+  ],
+  "code": 0,
+  "stdout": "usage: subtitle-engine delete-model [-h] [--lang tr|en] [--json] id\n\npositional arguments:\n  id            model id (see the models command)\n\noptions:\n  -h, --help    show this help message and exit\n  --lang tr|en  language of user-facing messages (overrides\n                SUBTITLE_ENGINE_LANG; anything but en means tr)\n  --json        write a single JSON line\n",
+  "stderr": "",
+  "ns": null
+ },
+ {
+  "argv": [
+   "delete-model",
+   "base"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "delete-model",
+   "sub_lang": null,
+   "id": "base",
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "delete-model",
+   "a",
+   "b"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: b\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "delete-model",
+   "nope",
+   "--lang",
+   "en",
+   "--json"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "delete-model",
+   "sub_lang": "en",
+   "id": "nope",
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "delete-model",
+   "nope",
+   "--lang"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine delete-model [-h] [--lang tr|en] [--json] id\nsubtitle-engine delete-model: error: argument --lang: expected one argument\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "delete-model",
+   "--json",
+   "--",
+   "-x"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "delete-model",
+   "sub_lang": null,
+   "id": "-x",
+   "json": true
+  }
+ },
+ {
+  "argv": [
+   "delete-model",
+   "--",
+   "--",
+   "x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: x\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "delete-model",
+   "-5"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "delete-model",
+   "sub_lang": null,
+   "id": "-5",
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "delete-model",
+   "--lang",
+   "tr",
+   "nope",
+   "--lang",
+   "en"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "delete-model",
+   "sub_lang": "en",
+   "id": "nope",
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "--",
+   "-x",
+   "--json"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: --json\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   "-",
+   "x"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: - x\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--lang=",
+   "models"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": "",
+   "offline": false,
+   "command": "models",
+   "sub_lang": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "--lang",
+   "",
+   "models"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": "",
+   "offline": false,
+   "command": "models",
+   "sub_lang": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "",
+   "models"
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: argument command: invalid choice: '' (choose from 'extract-audio', 'preview', 'transcribe', 'translate', 'render', 'models', 'delete-model')\n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "models",
+   ""
+  ],
+  "code": 2,
+  "stdout": "",
+  "stderr": "usage: subtitle-engine [-h] [--lang tr|en] [--offline] [--version]\n                       {extract-audio,preview,transcribe,translate,render,models,delete-model}\n                       ...\nsubtitle-engine: error: unrecognized arguments: \n",
+  "ns": null
+ },
+ {
+  "argv": [
+   "--offline",
+   "--offline",
+   "models"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": true,
+   "command": "models",
+   "sub_lang": null,
+   "json": false
+  }
+ },
+ {
+  "argv": [
+   "extract-audio",
+   "v",
+   "-o",
+   "a",
+   "-o",
+   "b"
+  ],
+  "code": null,
+  "stdout": "",
+  "stderr": "",
+  "ns": {
+   "lang": null,
+   "offline": false,
+   "command": "extract-audio",
+   "sub_lang": null,
+   "video": {
+    "path": "v"
+   },
+   "out_dir": {
+    "path": "b"
+   },
+   "json": false
+  }
+ }
+]

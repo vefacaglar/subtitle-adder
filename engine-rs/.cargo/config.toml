@@ -1,0 +1,3 @@
+# ct2rs links CTranslate2 with the static CRT (/MT); every crate must use the same CRT.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

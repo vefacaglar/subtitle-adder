@@ -1,0 +1,29 @@
+[package]
+name = "se-models"
+description = "Model catalog, Hugging Face cache, downloads, delete-model, CUDA and llama.cpp runtimes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-core.workspace = true
+se-text.workspace = true
+ureq = { workspace = true, features = ["platform-verifier"] }
+url.workspace = true
+sha2.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
+filetime.workspace = true
+glob.workspace = true
+dunce.workspace = true
+uuid.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+serial_test.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "se-core"
+description = "Shared engine core: i18n, Python-compatible JSON, events, data types, errors, paths"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+dunce.workspace = true
+
+[dev-dependencies]
+serial_test.workspace = true
+tempfile.workspace = true
+filetime.workspace = true

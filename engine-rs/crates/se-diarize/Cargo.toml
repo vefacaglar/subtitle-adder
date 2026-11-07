@@ -1,0 +1,22 @@
+[package]
+name = "se-diarize"
+description = "Speaker diarization through the sherpa-onnx C API (dynamically loaded) and its post-processing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+se-core.workspace = true
+se-text.workspace = true
+se-models.workspace = true
+libloading.workspace = true
+
+[dev-dependencies]
+hound.workspace = true
+serial_test.workspace = true
+tempfile.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+serde_json.workspace = true
