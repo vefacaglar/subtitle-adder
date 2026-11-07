@@ -110,6 +110,11 @@ fn test_whisper_base_matches_python_engine_on_synthesized_speech() {
         eprintln!("skipped: needs Windows, engine/.venv and the cached faster-whisper-base model");
         return;
     }
+    // A stale venv whose `subtitle_engine` source was removed skips instead of failing with ModuleNotFoundError.
+    if !Command::new(&python).args(["-c", "import subtitle_engine"]).output().is_ok_and(|o| o.status.success()) {
+        eprintln!("skipped: the Python reference package `subtitle_engine` cannot be imported from engine/.venv");
+        return;
+    }
     if std::env::var_os("ORT_DYLIB_PATH").is_none() && std::env::var_os("SUBTITLE_ENGINE_SHERPA_DIR").is_none() {
         // SAFETY: set before any thread of this test binary loads onnxruntime (single test in this file).
         unsafe {

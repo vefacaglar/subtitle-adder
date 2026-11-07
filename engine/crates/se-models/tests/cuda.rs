@@ -8,7 +8,9 @@ use std::time::Duration;
 use serial_test::serial;
 use sha2::{Digest, Sha256};
 
-use se_models::cuda::{CUDA_DIR_ENV_VAR, CudaEnv, CudaWheel, cuda_cache_dir, ensure_cuda_with, needs_cuda_download_with};
+use se_models::cuda::{
+    CUDA_DIR_ENV_VAR, CudaEnv, CudaWheel, cuda_cache_dir, ensure_cuda_with, needs_cuda_download_with, sweep_stale_wheel_temps,
+};
 use se_models::http::Opener;
 
 fn make_fake_wheel(subdir: &str, lib_folder: &str, filename: &str) -> (Vec<u8>, String) {
@@ -84,7 +86,9 @@ fn test_ensure_cuda_downloads_and_extracts_wheel_binaries() {
     assert!(!cache_dir.join("nvidia/cublas/include/header.h").exists());
     assert_eq!(*progress.last().unwrap(), 1.0);
     assert!(refreshed.get());
-    assert!(!cache_dir.join(".cublas.whl.tmp").exists());
+    let temps: Vec<_> =
+        std::fs::read_dir(&cache_dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).collect();
+    assert!(temps.is_empty(), "the PID-scoped wheel temp file is removed: {temps:?}");
 }
 
 #[test]
@@ -125,6 +129,9 @@ fn test_ensure_cuda_sha_mismatch_falls_back_to_cpu() {
     assert!(!ensure_cuda_with(&env, None, &mut stderr));
     assert!(String::from_utf8(stderr).unwrap().contains("SHA-256 mismatch for cublas CUDA wheel"));
     assert!(!PathBuf::from(dir.path()).join("nvidia").exists());
+    let temps: Vec<_> =
+        std::fs::read_dir(dir.path()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).collect();
+    assert!(temps.is_empty(), "the wheel temp file is removed on error: {temps:?}");
 }
 
 #[test]
@@ -158,4 +165,32 @@ fn test_needs_cuda_download_is_false_in_strict_offline_mode() {
 #[test]
 fn test_device_resolve_cpu_stays_cpu() {
     assert_eq!(se_models::cuda::Device::Cpu.resolve(), se_models::cuda::Device::Cpu);
+}
+
+#[test]
+fn test_stale_wheel_temp_files_are_swept_and_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let wheels = [CudaWheel { subdir: "cublas", url: "https://example.invalid/cublas.whl", sha256: "00", size: 1 }];
+    let backdate = |p: &std::path::Path| {
+        let f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600)).unwrap();
+    };
+    let stale = root.join(".cublas.424242.whl.tmp");
+    let legacy = root.join(".cublas.whl.tmp");
+    let young = root.join(".cublas.434343.whl.tmp");
+    let other_wheel = root.join(".cudnn.424242.whl.tmp");
+    let unrelated = root.join(".notes.tmp");
+    for p in [&stale, &legacy, &young, &other_wheel, &unrelated] {
+        std::fs::write(p, b"partial").unwrap();
+    }
+    for p in [&stale, &legacy, &other_wheel, &unrelated] {
+        backdate(p);
+    }
+    sweep_stale_wheel_temps(root, &wheels);
+    assert!(!stale.exists());
+    assert!(!legacy.exists());
+    assert!(young.exists(), "a younger temp file may belong to a running download");
+    assert!(other_wheel.exists(), "only the given wheels' temp files are ours");
+    assert!(unrelated.exists());
 }

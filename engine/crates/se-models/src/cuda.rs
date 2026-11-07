@@ -282,7 +282,44 @@ fn compute_usable() -> bool {
 /// `needs_cuda_download()`: not strict offline, Windows/Linux, a GPU, and the libraries are not usable.
 /// Tests stub this to `false` (conftest `_no_implicit_cuda_download`) through the CLI's `Services`.
 pub fn needs_cuda_download() -> bool {
+    // Checked on every GPU-capable run, so a temp file a killed download left behind is reclaimed even after a
+    // later download succeeded (and `ensure_cuda` never runs again).
+    sweep_stale_wheel_temps(&cuda_cache_dir(), wheels_for(platform()));
     needs_cuda_download_with(platform(), &has_nvidia_gpu, &cuda_usable)
+}
+
+/// Wheel temp files of another process younger than this may belong to a download still in progress.
+const STALE_WHEEL_TEMP_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// Is `name` a wheel download temp file of one of `wheels`: `.<subdir>.<pid>.whl.tmp`, or the fixed
+/// `.<subdir>.whl.tmp` older engines used?
+fn is_wheel_temp(name: &str, wheels: &[CudaWheel]) -> bool {
+    let Some(stem) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".whl.tmp")) else { return false };
+    let subdir = match stem.rsplit_once('.') {
+        Some((subdir, pid)) if !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()) => subdir,
+        _ => stem,
+    };
+    wheels.iter().any(|w| w.subdir == subdir)
+}
+
+/// Removes the wheel temp files ([`is_wheel_temp`]) in `root` that are [`STALE_WHEEL_TEMP_AFTER`] old: leftovers
+/// of a killed or cancelled download (hundreds of MB each). Younger ones are left to their (possibly live) owner;
+/// every other file is never touched.
+pub fn sweep_stale_wheel_temps(root: &Path, wheels: &[CudaWheel]) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for e in entries.flatten() {
+        if !is_wheel_temp(&e.file_name().to_string_lossy(), wheels) {
+            continue;
+        }
+        let stale = fs::symlink_metadata(e.path())
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= STALE_WHEEL_TEMP_AFTER);
+        if stale && e.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = fs::remove_file(e.path());
+        }
+    }
 }
 
 /// [`needs_cuda_download`] with injectable platform / GPU / usability checks.
@@ -333,6 +370,7 @@ pub fn ensure_cuda_with(env: &CudaEnv<'_>, on_progress: Option<ProgressFn<'_>>, 
         return (env.usable)();
     }
     let root = &env.cache_dir;
+    sweep_stale_wheel_temps(root, env.wheels);
     let sub = lib_subdir(env.platform);
     let mut missing: Vec<&CudaWheel> = env.wheels.iter().filter(|w| !wheel_installed(root, w, sub)).collect();
     if missing.is_empty() {
@@ -344,7 +382,8 @@ pub fn ensure_cuda_with(env: &CudaEnv<'_>, on_progress: Option<ProgressFn<'_>>, 
         fs::create_dir_all(root).map_err(|e| se_core::EngineError::win(&e, Some(root)).message)?;
         let mut downloaded = 0u64;
         for wheel in &missing {
-            let tmp = root.join(format!(".{}.whl.tmp", wheel.subdir));
+            // PID-scoped, so concurrent engines never write the same temp file.
+            let tmp = root.join(format!(".{}.{}.whl.tmp", wheel.subdir, se_core::fsutil::pid()));
             let outcome = (|| -> Result<(), String> {
                 let base = downloaded;
                 let mut seen = 0u64;

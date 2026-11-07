@@ -77,6 +77,8 @@ pub fn download_to_file_with(opener: &dyn Opener, url: &str, dest: &Path, on_byt
     let mut buf = vec![0u8; CHUNK_SIZE];
     let mut total = 0u64;
     loop {
+        // The reader of our progress events is gone: stop instead of downloading the rest.
+        se_core::cancel::check()?;
         let n = read_full(&mut *reader, &mut buf).map_err(|e| EngineError::new(ErrorKind::Network, e.to_string()))?;
         if n == 0 {
             break;

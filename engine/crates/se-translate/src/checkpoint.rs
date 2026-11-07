@@ -149,24 +149,29 @@ pub fn load(path: &Path) -> Cache {
     .unwrap_or_default()
 }
 
-fn with_json_tmp_suffix(path: &Path) -> PathBuf {
-    // Path.with_suffix(".json.tmp"): replaces the last suffix.
-    path.with_extension("json.tmp")
+/// The temp file a save writes before replacing `path`: `chunk-<hash>.<pid>.json.tmp`, PID-scoped so two
+/// engines translating the same request never write the same temp file.
+pub fn temp_path(path: &Path) -> PathBuf {
+    path.with_extension(format!("{}.json.tmp", se_core::fsutil::pid()))
 }
 
-/// `_save_temp_checkpoint(path, cache)` (`<path>.json.tmp` + replace, errors ignored).
+/// `_save_temp_checkpoint(path, cache)` (PID-scoped temp file + replace, errors ignored; the temp file is
+/// removed when the write or the replace fails).
 pub fn save(path: &Path, cache: &Cache) {
-    let tmp = with_json_tmp_suffix(path);
-    if std::fs::write(&tmp, cache.to_json().as_bytes()).is_ok() {
-        let _ = se_core::fsutil::replace(&tmp, path);
+    let tmp = temp_path(path);
+    let ok = std::fs::write(&tmp, cache.to_json().as_bytes()).is_ok() && se_core::fsutil::replace(&tmp, path).is_ok();
+    if !ok {
+        se_core::fsutil::unlink_quiet(&tmp);
     }
 }
 
-/// `_delete_temp_checkpoint(path)` (errors ignored).
+/// `_delete_temp_checkpoint(path)` (errors ignored): the checkpoint, this process's temp file and the
+/// unscoped `<stem>.json.tmp` older engines wrote.
 pub fn delete(path: Option<&Path>) {
     if let Some(path) = path {
         let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_file(with_json_tmp_suffix(path));
+        let _ = std::fs::remove_file(temp_path(path));
+        let _ = std::fs::remove_file(path.with_extension("json.tmp"));
     }
 }
 
@@ -182,6 +187,26 @@ mod tests {
         assert_eq!(py_int_key("٣"), Some(3));
         assert_eq!(py_int_key("x"), None);
         assert_eq!(py_int_key("_1"), None);
+    }
+
+    #[test]
+    fn save_uses_a_pid_scoped_temp_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chunk-abc.json");
+        let tmp = temp_path(&path);
+        assert_eq!(tmp.file_name().unwrap().to_string_lossy(), format!("chunk-abc.{}.json.tmp", se_core::fsutil::pid()));
+        let mut c = Cache::new();
+        c.insert(1, "a".into());
+        save(&path, &c);
+        assert_eq!(load(&path), c);
+        assert!(!tmp.exists());
+        // A failing replace (the target is a folder) leaves no temp file behind.
+        let blocked = dir.path().join("chunk-dir.json");
+        std::fs::create_dir_all(blocked.join("x")).unwrap();
+        save(&blocked, &c);
+        assert!(!temp_path(&blocked).exists());
+        delete(Some(&path));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

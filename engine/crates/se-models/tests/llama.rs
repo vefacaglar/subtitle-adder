@@ -127,7 +127,8 @@ fn test_sha_mismatch_is_llama_unavailable() {
     a.sha256 = "deadbeef";
     let e = ensure_llama_with(&BytesOpener(raw), dir.path(), "win32", Some(&a), None, Duration::ZERO).unwrap_err();
     assert_eq!(e.message, "Yerel LLM çalışma zamanı (llama.cpp) başlatılamadı: SHA-256 mismatch for llama-test.zip");
-    assert!(!dir.path().join(".llama-test.zip.tmp").exists());
+    let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert!(left.is_empty(), "no archive temp or staging folder is left behind: {left:?}");
 }
 
 #[test]
@@ -188,6 +189,92 @@ fn test_archive_without_server_binary() {
     let a = archive("llama-test.zip", &raw);
     let e = ensure_llama_with(&BytesOpener(raw), dir.path(), "win32", Some(&a), None, Duration::ZERO).unwrap_err();
     assert_eq!(e.message, "Yerel LLM çalışma zamanı (llama.cpp) başlatılamadı: llama-server binary not found in archive");
+}
+
+#[test]
+#[serial]
+fn test_interrupted_install_is_not_treated_as_installed_and_is_repaired() {
+    reset();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let exe = server_binary_name();
+    // A killed extraction: the binary is there, its staging folder too, no completion marker.
+    std::fs::write(root.join(exe), b"half").unwrap();
+    std::fs::create_dir_all(root.join(".staging-424242").join("sub")).unwrap();
+    assert_eq!(llama_server_path_in(root), None);
+    let raw = zip_with(&[(exe, b"server"), ("ggml.dll", b"lib")]);
+    let a = archive("llama-test.zip", &raw);
+    let server = ensure_llama_with(&BytesOpener(raw), root, "win32", Some(&a), None, Duration::ZERO).unwrap();
+    assert_eq!(server, root.join(exe));
+    assert_eq!(std::fs::read(&server).unwrap(), b"server");
+    assert!(root.join(INSTALL_MARKER).is_file());
+    assert!(root.join("ggml.dll").is_file());
+    // This process's own staging folder is gone; another (possibly live) process's young one is left alone,
+    // and the marker keeps the install valid regardless.
+    assert!(!root.join(format!(".staging-{}", std::process::id())).exists());
+    assert_eq!(llama_server_path_in(root), Some(root.join(exe)));
+}
+
+fn backdate(path: &Path, by: Duration) {
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_modified(std::time::SystemTime::now() - by).unwrap();
+}
+
+#[test]
+fn test_unrelated_dot_tmp_files_do_not_mark_a_hand_prepared_folder_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join(server_binary_name()), b"mine").unwrap();
+    // An editor's or sync client's temp file, and a dot-folder that is not a staging folder.
+    std::fs::write(root.join(".notes.txt.tmp"), b"x").unwrap();
+    std::fs::create_dir_all(root.join(".staging-notes")).unwrap();
+    assert_eq!(llama_server_path_in(root), Some(root.join(server_binary_name())));
+    let e = ensure_llama_with(&BytesOpener(Vec::new()), root, "win32", None, None, Duration::ZERO).unwrap();
+    assert_eq!(std::fs::read(e).unwrap(), b"mine");
+    assert!(root.join(".notes.txt.tmp").is_file());
+}
+
+#[test]
+fn test_completed_install_sweeps_only_stale_leftovers_of_other_processes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join(server_binary_name()), b"server").unwrap();
+    std::fs::write(root.join(INSTALL_MARKER), RELEASE_TAG).unwrap();
+    let stale = root.join(".llama-test.zip.999991.tmp");
+    let young = root.join(".llama-test.zip.999992.tmp");
+    let unrelated = root.join(".notes.txt.tmp");
+    for p in [&stale, &young, &unrelated] {
+        std::fs::write(p, b"zip").unwrap();
+    }
+    backdate(&stale, Duration::from_secs(3600));
+    backdate(&unrelated, Duration::from_secs(3600));
+    ensure_llama_with(&BytesOpener(Vec::new()), root, "win32", None, None, Duration::ZERO).unwrap();
+    assert!(!stale.exists(), "a killed attempt's archive temp file is reclaimed after a later install");
+    assert!(young.exists(), "a possibly live download is left alone");
+    assert!(unrelated.exists(), "files that are not ours are never touched");
+}
+
+#[test]
+fn test_legacy_in_place_extraction_with_archive_temp_is_not_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join(server_binary_name()), b"half").unwrap();
+    std::fs::write(root.join(".llama-b12032-bin-win-vulkan-x64.zip.tmp"), b"zip").unwrap();
+    assert_eq!(llama_server_path_in(root), None);
+    std::fs::write(root.join(INSTALL_MARKER), RELEASE_TAG).unwrap();
+    assert_eq!(llama_server_path_in(root), Some(root.join(server_binary_name())));
+}
+
+#[test]
+#[serial]
+fn test_archive_without_server_leaves_nothing_in_place() {
+    reset();
+    let dir = tempfile::tempdir().unwrap();
+    let raw = zip_with(&[("ggml.dll", b"lib")]);
+    let a = archive("llama-test.zip", &raw);
+    assert!(ensure_llama_with(&BytesOpener(raw), dir.path(), "win32", Some(&a), None, Duration::ZERO).is_err());
+    let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 #[test]

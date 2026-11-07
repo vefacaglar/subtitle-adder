@@ -8,12 +8,28 @@ use std::process::Command;
 use se_asr::chunks::{self, ChunkConfig};
 use se_asr::wave::write_pcm16;
 
-fn python() -> Option<PathBuf> {
+fn find_python() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("SE_PYTHON") {
         return Some(PathBuf::from(p));
     }
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../engine/.venv/Scripts/python.exe");
     p.is_file().then_some(p)
+}
+
+/// [`find_python`] when it can import the reference package: a stale venv whose `subtitle_engine` source was
+/// removed skips like a missing one instead of failing with `ModuleNotFoundError`. Probed once per test binary.
+fn python() -> Option<PathBuf> {
+    static PYTHON: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    PYTHON
+        .get_or_init(|| {
+            let py = find_python()?;
+            let ok = Command::new(&py).args(["-c", "import subtitle_engine"]).output().is_ok_and(|o| o.status.success());
+            if !ok {
+                eprintln!("Python reference package `subtitle_engine` cannot be imported from {}; skipping", py.display());
+            }
+            ok.then_some(py)
+        })
+        .clone()
 }
 
 fn run_py(py: &Path, script: &str, tmp: &Path) -> String {

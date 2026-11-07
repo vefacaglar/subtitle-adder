@@ -144,12 +144,14 @@ impl HfHub {
     /// `hf_hub_download(repo, file, revision=commit)` into the cache.
     fn download_file(&self, repo: &str, commit: &str, file: &str, counter: &mut dyn FnMut(u64)) -> Result<PathBuf> {
         let storage = repo_folder(&self.cache_dir, repo);
-        let relative: PathBuf = file.split('/').collect();
+        check_path_token("revision sha", commit)?;
+        let relative = safe_relative_path(file)?;
         let pointer = storage.join("snapshots").join(commit).join(&relative);
         if fsx::exists(&pointer) {
             return Ok(pointer);
         }
         let meta = self.file_metadata(repo, commit, file)?;
+        check_path_token("ETag", &meta.etag)?;
         let blob = storage.join("blobs").join(&meta.etag);
         let io = |e: std::io::Error, p: &Path| EngineError::win(&e, Some(p));
         fs::create_dir_all(storage.join("blobs")).map_err(|e| io(e, &storage))?;
@@ -159,6 +161,8 @@ impl HfHub {
         create_cachedir_tag(&self.cache_dir);
         let lock_path = self.cache_dir.join(".locks").join(scan_name(&storage)).join(format!("{}.lock", meta.etag));
         let _lock = fsx::FileLock::acquire(&lock_path).map_err(|e| io(e, &lock_path))?;
+        // Every writer of this blob holds the lock, so any temp file of it now is a killed download's leftover.
+        sweep_incomplete(&storage.join("blobs"), &meta.etag);
         if fsx::exists(&blob) {
             if !fsx::exists(&pointer) {
                 create_pointer(&blob, &pointer, false).map_err(|e| io(e, &pointer))?;
@@ -200,6 +204,8 @@ impl HfHub {
         let mut buf = vec![0u8; CHUNK_SIZE];
         let mut written = 0u64;
         loop {
+            // The reader of our progress events is gone: stop instead of downloading the rest.
+            se_core::cancel::check()?;
             let n = read_full(&mut reader, &mut buf).map_err(|e| net(e.to_string()))?;
             if n == 0 {
                 break;
@@ -225,6 +231,39 @@ impl Default for HfHub {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Removes the `<etag>.<8hex>.incomplete` temp files this client leaves behind when it is killed mid-download.
+/// Call only while holding the blob's lock (`.locks/<repo>/<etag>.lock`). huggingface_hub's own resumable
+/// `<etag>.incomplete` is left alone.
+pub fn sweep_incomplete(blobs: &Path, etag: &str) {
+    let Ok(entries) = fs::read_dir(blobs) else { return };
+    let prefix = format!("{etag}.");
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(middle) = name.strip_prefix(&prefix).and_then(|r| r.strip_suffix(".incomplete")) else { continue };
+        if middle.len() == 8 && middle.bytes().all(|b| b.is_ascii_hexdigit()) && e.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+}
+
+/// A Hub-provided commit sha or ETag used as a single path component: non-empty, only `[A-Za-z0-9._-]`, and not
+/// made of dots alone (`.`/`..`).
+pub fn check_path_token(what: &str, value: &str) -> Result<()> {
+    let ok = !value.is_empty()
+        && value.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        && !value.bytes().all(|b| b == b'.');
+    if ok { Ok(()) } else { Err(net(format!("Invalid {what} from the Hub: {value:?}"))) }
+}
+
+/// A Hub `rfilename` as a relative path below the snapshot: `/`-separated components that are non-empty, not
+/// `.`/`..`, and free of `\`, `:` (drives, alternate streams) and NUL.
+pub fn safe_relative_path(file: &str) -> Result<PathBuf> {
+    let ok = file
+        .split('/')
+        .all(|c| !c.is_empty() && c != "." && c != ".." && !c.contains(['\\', ':', '\0']));
+    if ok { Ok(file.split('/').collect()) } else { Err(net(format!("Invalid file name from the Hub: {file:?}"))) }
 }
 
 fn scan_name(storage: &Path) -> String {
@@ -431,6 +470,7 @@ impl Hub for HfHub {
                 return Err(net(message));
             }
         };
+        check_path_token("revision sha", &commit)?;
         let wanted: Vec<String> = filter_repo_objects(&files, patterns).into_iter().cloned().collect();
         let snapshot = storage.join("snapshots").join(&commit);
         write_ref(&storage, &commit).map_err(|e| EngineError::win(&e, Some(&storage.join("refs").join("main"))))?;
@@ -456,6 +496,32 @@ mod tests {
         assert_eq!(normalize_etag("W/\"abc\""), "abc");
         assert_eq!(normalize_etag("\"abc\""), "abc");
         assert_eq!(normalize_etag("Wabc"), "abc");
+    }
+
+    #[test]
+    fn hub_path_tokens_and_file_names_are_validated() {
+        assert!(check_path_token("ETag", "0123abcdef").is_ok());
+        assert!(check_path_token("ETag", "abc-12").is_ok());
+        for bad in ["", ".", "..", "a/b", "a\\b", "C:", "a b"] {
+            assert!(check_path_token("ETag", bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(safe_relative_path("sub/model.bin").unwrap(), Path::new("sub").join("model.bin"));
+        for bad in ["", "/abs", "a//b", "../x", "a/../b", "./a", "a\\..\\b", "C:/x", "C:x", "a/", "f\0"] {
+            assert!(safe_relative_path(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn stale_incomplete_blobs_of_the_etag_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = dir.path();
+        for name in ["e1.0123abcd.incomplete", "e1.deadbeef.incomplete", "e1.incomplete", "e2.0123abcd.incomplete", "e1"] {
+            fs::write(blobs.join(name), b"x").unwrap();
+        }
+        sweep_incomplete(blobs, "e1");
+        let mut left: Vec<String> = fs::read_dir(blobs).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["e1", "e1.incomplete", "e2.0123abcd.incomplete"]);
     }
 
     #[test]

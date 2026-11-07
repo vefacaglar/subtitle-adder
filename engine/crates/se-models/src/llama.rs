@@ -84,12 +84,99 @@ pub fn server_candidates(root: &Path) -> Vec<PathBuf> {
     ]
 }
 
-/// [`llama_server_path`] below an explicit root.
+/// Written into the runtime folder after an archive was completely extracted and moved into place.
+pub const INSTALL_MARKER: &str = ".llama-installed";
+/// Prefix of the per-process extraction folders (`.staging-<pid>`) below the runtime folder.
+const STAGING_PREFIX: &str = ".staging-";
+/// Leftovers of another process younger than this may still be in use and are left alone.
+const STALE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// The first existing server binary among [`server_candidates`], installed or not.
+fn find_server_binary(root: &Path) -> Option<PathBuf> {
+    server_candidates(root).into_iter().find(|c| c.is_file())
+}
+
+/// Is `name` a leftover of one of our installs: a `.staging-<pid>` folder or a `.llama-*.tmp` archive temp file
+/// (every pinned archive is named `llama-...`; older engines extracted in place while it was still on disk)?
+/// Other dot-files (an editor's or sync client's temp files in a hand-prepared folder) never count.
+fn is_install_leftover(name: &str) -> bool {
+    let staging = name.strip_prefix(STAGING_PREFIX).is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+    staging || (name.starts_with(".llama-") && name.ends_with(".tmp"))
+}
+
+/// Leftovers of an interrupted install ([`is_install_leftover`]).
+fn has_install_leftovers(root: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(root) else { return false };
+    entries.flatten().any(|e| is_install_leftover(&e.file_name().to_string_lossy()))
+}
+
+/// [`llama_server_path`] below an explicit root. A binary counts only when the install completed (the
+/// [`INSTALL_MARKER`] exists), or when nothing suggests an interrupted install (a folder prepared by hand).
 pub fn llama_server_path_in(root: &Path) -> Option<PathBuf> {
     if !root.is_dir() {
         return None;
     }
-    server_candidates(root).into_iter().find(|c| c.is_file())
+    let server = find_server_binary(root)?;
+    if root.join(INSTALL_MARKER).is_file() || !has_install_leftovers(root) {
+        return Some(server);
+    }
+    None
+}
+
+fn is_stale(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age >= STALE_AFTER)
+}
+
+/// Removes staging folders and archive temp files of interrupted installs: this process's own, and other
+/// processes' once they are [`STALE_AFTER`] old (a younger one may belong to a concurrent install).
+fn clean_install_leftovers(root: &Path, own: &[&str]) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !is_install_leftover(&name) || !(own.contains(&name.as_str()) || is_stale(&e.path())) {
+            continue;
+        }
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
+            crate::fsx::rmtree_ignore_errors(&e.path());
+        } else {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+}
+
+/// After a completed install ([`INSTALL_MARKER`] present), removes other processes' stale leftovers (a killed
+/// attempt that a later install overtook). Without the marker nothing is touched: an archive temp file is what
+/// marks a legacy in-place extraction as incomplete.
+fn sweep_finished_install(root: &Path) {
+    if root.join(INSTALL_MARKER).is_file() {
+        clean_install_leftovers(root, &[]);
+    }
+}
+
+/// Moves every entry of `staging` into `root`, replacing existing entries of the same name. The entry that
+/// holds `server` goes last, so a failure part-way never leaves the binary without its libraries. An error names
+/// the entry that could not be replaced (on Windows, typically a file of a still-running llama-server).
+fn move_into_place(staging: &Path, root: &Path, server: &Path) -> std::result::Result<(), String> {
+    let os = |e: io::Error, p: &Path| EngineError::win(&e, Some(p)).message;
+    let last = server.strip_prefix(staging).ok().and_then(|r| r.components().next()).map(|c| c.as_os_str().to_owned());
+    let mut names: Vec<std::ffi::OsString> = fs::read_dir(staging)
+        .and_then(|rd| rd.map(|e| e.map(|e| e.file_name())).collect::<io::Result<_>>())
+        .map_err(|e| os(e, staging))?;
+    names.sort_by_key(|n| Some(n) == last.as_ref());
+    for name in names {
+        let target = root.join(&name);
+        match fs::symlink_metadata(&target) {
+            Ok(m) if m.is_dir() => fs::remove_dir_all(&target).map_err(|e| os(e, &target))?,
+            Ok(_) => fs::remove_file(&target).map_err(|e| os(e, &target))?,
+            Err(_) => {}
+        }
+        fs::rename(staging.join(&name), &target).map_err(|e| os(e, &target))?;
+    }
+    Ok(())
 }
 
 /// `llama_server_path()`: the first existing `llama-server[.exe]` among the known layouts, or `None`.
@@ -106,6 +193,7 @@ pub fn llama_usable() -> bool {
 /// `offline_missing_llama`; else whether this platform has an archive.
 pub fn require_llama_download() -> Result<bool> {
     if llama_usable() {
+        sweep_finished_install(&llama_cache_dir());
         return Ok(false);
     }
     if se_core::offline::offline_requested() {
@@ -140,6 +228,7 @@ pub fn ensure_llama_with(
     interval: Duration,
 ) -> Result<PathBuf> {
     if let Some(existing) = llama_server_path_in(root) {
+        sweep_finished_install(root);
         return Ok(existing);
     }
     if se_core::offline::offline_requested() {
@@ -147,16 +236,34 @@ pub fn ensure_llama_with(
     }
     let archive = archive.ok_or_else(|| unavailable(format!("unsupported platform {platform}")))?;
     let mut reporter = RuntimeReporter::new(on_progress, archive.size, interval);
-    let tmp = root.join(format!(".{}.tmp", archive.filename));
+    let pid = se_core::fsutil::pid();
+    let tmp_name = format!(".{}.{pid}.tmp", archive.filename);
+    let staging_name = format!("{STAGING_PREFIX}{pid}");
+    let tmp = root.join(&tmp_name);
+    let staging = root.join(&staging_name);
+    // Extract into a private folder and move it into place only when complete, so an interrupted install
+    // never leaves a binary that looks installed; the marker is written last.
+    // A binary already here was judged incomplete: remove it so a failed retry cannot make it look installed
+    // once the leftovers that marked it are cleaned.
+    for candidate in server_candidates(root) {
+        let _ = fs::remove_file(candidate);
+    }
+    clean_install_leftovers(root, &[&tmp_name, &staging_name]);
     let result = (|| -> std::result::Result<(), String> {
         fs::create_dir_all(root).map_err(|e| EngineError::win(&e, Some(root)).message)?;
         let digest = download_to_file_with(opener, archive.url, &tmp, &mut |n| reporter.report(n)).map_err(|e| e.message)?;
         if digest.to_lowercase() != archive.sha256.to_lowercase() {
             return Err(format!("SHA-256 mismatch for {}", archive.filename));
         }
-        extract_archive(&tmp, root).map_err(|e| e.to_string())
+        fs::create_dir_all(&staging).map_err(|e| EngineError::win(&e, Some(&staging)).message)?;
+        extract_archive(&tmp, &staging).map_err(|e| e.to_string())?;
+        let server = find_server_binary(&staging).ok_or_else(|| "llama-server binary not found in archive".to_string())?;
+        let _ = fs::remove_file(root.join(INSTALL_MARKER));
+        move_into_place(&staging, root, &server)?;
+        fs::write(root.join(INSTALL_MARKER), RELEASE_TAG).map_err(|e| EngineError::win(&e, Some(root)).message)
     })();
     let _ = fs::remove_file(&tmp);
+    crate::fsx::rmtree_ignore_errors(&staging);
     result.map_err(unavailable)?;
     let server = llama_server_path_in(root).ok_or_else(|| unavailable("llama-server binary not found in archive"))?;
     reporter.finish();
@@ -210,7 +317,7 @@ pub fn extract_archive(path: &Path, root: &Path) -> io::Result<()> {
         extract_tar_gz_data_filter(path, root)?;
     }
     #[cfg(unix)]
-    if let Some(server) = llama_server_path_in(root) {
+    if let Some(server) = find_server_binary(root) {
         use std::os::unix::fs::PermissionsExt;
         let mode = fs::metadata(&server)?.permissions().mode();
         fs::set_permissions(&server, fs::Permissions::from_mode(mode | 0o111))?;
@@ -381,6 +488,10 @@ pub fn wait_until_healthy(
 }
 
 /// A running `llama-server` child (killed by [`LlamaServer::close`] and on drop).
+///
+/// Not used by the engine: translation starts the server through `se_translate::server::start_server`, which
+/// also ties the child to the engine's lifetime (Windows job object, unix signal guard) so a killed engine never
+/// leaves it running. This type has no such guard; it must get one before anything in production uses it.
 pub struct LlamaServer {
     child: Option<Child>,
     stderr: Option<fs::File>,

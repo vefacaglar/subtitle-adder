@@ -9,7 +9,7 @@ use std::process::Command;
 
 use se_core::paths::{self, py_path_str};
 
-fn python() -> Option<PathBuf> {
+fn find_python() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("SE_PYTHON") {
         return Some(PathBuf::from(p));
     }
@@ -19,6 +19,22 @@ fn python() -> Option<PathBuf> {
         manifest.join("../../../engine/.venv/bin/python"),
     ];
     candidates.into_iter().find(|p| p.is_file())
+}
+
+/// [`find_python`] when it can import the reference package: a stale venv whose `subtitle_engine` source was
+/// removed skips like a missing one instead of failing with `ModuleNotFoundError`. Probed once per test binary.
+fn python() -> Option<PathBuf> {
+    static PYTHON: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    PYTHON
+        .get_or_init(|| {
+            let py = find_python()?;
+            let ok = Command::new(&py).args(["-c", "import subtitle_engine"]).output().is_ok_and(|o| o.status.success());
+            if !ok {
+                eprintln!("Python reference package `subtitle_engine` cannot be imported from {}; skipping", py.display());
+            }
+            ok.then_some(py)
+        })
+        .clone()
 }
 
 #[test]

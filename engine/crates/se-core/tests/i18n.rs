@@ -80,7 +80,7 @@ fn test_every_key_has_both_languages_and_same_placeholders() {
         let b: BTreeSet<&str> = i18n::placeholders(en).into_iter().collect();
         assert_eq!(a, b, "{key}");
     }
-    assert_eq!(i18n::MESSAGES.len(), 57);
+    assert_eq!(i18n::MESSAGES.len(), 59);
 }
 
 #[test]
