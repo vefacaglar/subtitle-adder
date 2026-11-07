@@ -618,15 +618,20 @@ pub struct Input {
 impl Input {
     /// `av.open(path)` (FFmpeg's own `file` protocol, no options).
     pub fn open_path(path_utf8: &str) -> Result<Input, FfError> {
-        Self::open_impl(path_utf8, None, &[])
+        Self::open_impl(path_utf8, None, &[]).map_err(|(e, _)| e)
     }
 
-    /// `av.open(file_object, options=...)`: custom IO; `name` is the file object's name.
-    pub fn open_custom(io: CustomIo, name: &str, options: &[(&str, &str)]) -> Result<Input, FfError> {
-        Self::open_impl(name, Some(io), options)
+    /// `av.open(file_object, options=...)`: custom IO; `name` is the file object's name. An I/O error raised
+    /// by a read/seek callback while probing wins over the FFmpeg error (PyAV re-raises the stashed exception
+    /// in `err_check`).
+    pub fn open_custom(io: CustomIo, name: &str, options: &[(&str, &str)]) -> Result<Input, MediaError> {
+        Self::open_impl(name, Some(io), options).map_err(|(e, stashed)| match stashed {
+            Some(io_err) => MediaError::Engine(EngineError::os(&io_err, None)),
+            None => MediaError::Ff(e),
+        })
     }
 
-    fn open_impl(name: &str, io: Option<CustomIo>, options: &[(&str, &str)]) -> Result<Input, FfError> {
+    fn open_impl(name: &str, mut io: Option<CustomIo>, options: &[(&str, &str)]) -> Result<Input, (FfError, Option<io::Error>)> {
         init();
         let cname = cstring(name);
         unsafe {
@@ -640,8 +645,9 @@ impl Input {
             let mut opts = base.copy();
             let ret = sys::avformat_open_input(&mut ctx, cname.as_ptr(), ptr::null(), &mut opts.0);
             if ret < 0 {
-                // avformat_open_input freed the context.
-                return Err(FfError::new(ret, Some(name)));
+                // avformat_open_input freed the context (not our AVIOContext).
+                let stashed = io.as_mut().and_then(CustomIo::take_stashed);
+                return Err((FfError::new(ret, Some(name)), stashed));
             }
             let mut input = Input { ctx, decoders: Vec::new(), name: name.to_string(), io };
             let before = (*ctx).nb_streams as usize;
@@ -656,7 +662,10 @@ impl Input {
             } else {
                 sys::avformat_find_stream_info(ctx, ptr::null_mut())
             };
-            check(ret, Some(name))?;
+            if let Err(e) = check(ret, Some(name)) {
+                let stashed = input.io.as_mut().and_then(CustomIo::take_stashed);
+                return Err((e, stashed));
+            }
             for i in 0..(*ctx).nb_streams as usize {
                 let st = *(*ctx).streams.add(i);
                 input.decoders.push(Decoder::for_stream(st));

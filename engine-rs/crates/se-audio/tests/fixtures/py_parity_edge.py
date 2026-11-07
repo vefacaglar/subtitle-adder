@@ -8,6 +8,7 @@ Usage: python py_parity_edge.py <work dir>   (run with the Python engine's venv:
 """
 import json
 import math
+from fractions import Fraction
 import sys
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def pcm_with_timeline(path, rate, pts_list, block=1600, codec="pcm_s16le", video
             v.width = v.height = 32
             v.pix_fmt = "yuv420p"
         a = out.add_stream(codec, rate=rate, layout="mono")
-        a.time_base = f"1/{rate}"
+        a.time_base = Fraction(1, rate)
         if v is not None:
             for i in range(2):
                 fr = av.VideoFrame.from_ndarray(np.zeros((32, 32, 3), dtype=np.uint8), format="rgb24")
@@ -187,10 +188,11 @@ def main():
             print(f"skip {name}: {exc!r}", file=sys.stderr)
 
     r = 16_000
-    # Gap (0.5 s) and overlap (0.2 s) in a 16 kHz mono s16 stream (passthrough resampler).
-    add("gap.mkv", pcm_with_timeline, r, [0, 1600, 3200, 3200 + 1600 + 8000, 16000, 16000 + 1600 - 3200, 17600])
-    # A small drift under the tolerance, an exact half-sample pad (round half even), a bogus spike and resync.
-    add("spike.mkv", pcm_with_timeline, r, [0, 1600, 3200 + 700, 6400, 6400 + 1600 * 1000, 9600, 11200])
+    # Gap (0.5 s) and overlap (1200 samples) in a 16 kHz mono s16 stream (passthrough resampler); the muxer
+    # needs monotonic timestamps, so the overlap starts after the previous frame's start.
+    add("gap.mkv", pcm_with_timeline, r, [0, 1600, 3200, 3200 + 1600 + 8000, 16000, 16400, 18000])
+    # A small drift under the tolerance, a bogus forward spike (> 60 s) and resync.
+    add("spike.mkv", pcm_with_timeline, r, [0, 1600, 3200 + 700, 6400, 6400 + 1600 * 1000, 6400 + 1601600, 6400 + 1603200])
     # 22.05 kHz pcm (resampled) with a gap of 1234.5 samples at 16 kHz.
     add("gap22.mkv", pcm_with_timeline, 22_050, [0, 2205, 4410, 6615 + 1701, 8820 + 1701], 2205)
     # Audio that starts 700 s after the video (beyond the 10 min initial pad).

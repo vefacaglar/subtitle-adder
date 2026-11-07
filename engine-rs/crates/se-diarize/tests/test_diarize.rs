@@ -390,3 +390,43 @@ fn test_verify_short_turns_recovers_swallowed_reply_after_question() {
     let refined = verify_short_turns(&raw_segments, &words, &samples, &mut embed, None);
     assert_eq!(assign_speakers(&words, &refined), some(&[0, 0, 1, 0, 0, 1, 1]));
 }
+
+struct HalfwayEngine;
+
+impl DiarizationEngine for HalfwayEngine {
+    fn process(&mut self, _samples: &[f32], callback: &mut dyn FnMut(i32, i32)) -> Result<Vec<RawSegment>> {
+        callback(1, 2);
+        Ok(vec![RawSegment { start: 0.0, end: 2.0, speaker: 0 }, RawSegment { start: 2.0, end: 4.0, speaker: 1 }])
+    }
+}
+
+struct FailingEmbedder;
+
+impl Embedder for FailingEmbedder {
+    fn embed(&mut self, _samples: &[f32]) -> Result<Vec<f64>> {
+        Err(se_core::EngineError::model("extractor failed"))
+    }
+}
+
+fn four_seconds(_: &Path) -> Result<Vec<f32>> {
+    Ok(vec![0.1; 4 * RATE])
+}
+
+#[test]
+fn test_extractor_error_stops_progress_like_the_python_exception() {
+    // Python: the extractor error is raised inside the merge pass, so 0.9 / 1.0 are never reported.
+    let builder: se_diarize::EngineBuilder =
+        Box::new(|_| Ok(Box::new(HalfwayEngine) as Box<dyn DiarizationEngine>));
+    let mut d = SherpaDiarizer::with_parts(builder, Box::new(FailingEmbedder), four_seconds);
+    let mut progress = Vec::new();
+    let mut on_progress = |f: f64| progress.push(f);
+    let err = d.diarize(Path::new("x.wav"), None, Some(&mut on_progress), None).unwrap_err();
+    assert_eq!(err.message, "extractor failed");
+    assert_eq!(progress, vec![0.425]);
+
+    // An explicit count without words never embeds: the run completes.
+    let mut progress = Vec::new();
+    let mut on_progress = |f: f64| progress.push(f);
+    d.diarize(Path::new("x.wav"), Some(2), Some(&mut on_progress), None).unwrap();
+    assert_eq!(progress, vec![0.425, 0.9, 1.0]);
+}

@@ -1,7 +1,7 @@
 //! CUDA 12 runtime libraries for NVIDIA GPUs on Windows/Linux (port of `cuda.py`, spec models.md §5).
 
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -403,10 +403,9 @@ pub fn extract_wheel_libs(whl: &Path, root: &Path, sub: &str) -> io::Result<()> 
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
+        // Streamed (`shutil.copyfileobj`): cuDNN members are hundreds of MB.
         let mut out = fs::File::create(&target)?;
-        let mut buf = Vec::new();
-        member.read_to_end(&mut buf)?;
-        io::Write::write_all(&mut out, &buf)?;
+        io::copy(&mut member, &mut out)?;
     }
     Ok(())
 }

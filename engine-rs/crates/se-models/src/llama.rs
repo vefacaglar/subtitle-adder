@@ -355,7 +355,7 @@ pub fn probe_health(port: u16) -> Health {
 #[derive(Debug, PartialEq, Eq)]
 pub enum WaitError {
     /// The process exited before becoming healthy (`returncode`).
-    Exited(Option<i32>),
+    Exited(Option<i64>),
     /// `deadline` passed.
     TimedOut,
 }
@@ -363,7 +363,7 @@ pub enum WaitError {
 /// The health loop of `_start_server`: until `deadline`, first `exited()` (→ `Exited`), then `probe()`.
 pub fn wait_until_healthy(
     deadline: Duration,
-    exited: &mut dyn FnMut() -> Option<Option<i32>>,
+    exited: &mut dyn FnMut() -> Option<Option<i64>>,
     probe: &mut dyn FnMut() -> Health,
 ) -> std::result::Result<(), WaitError> {
     let end = Instant::now() + deadline;
@@ -545,19 +545,48 @@ fn wait_for(child: &mut Child, timeout: Duration) -> bool {
 }
 
 /// Python `Popen.returncode`: the exit code, or `-signal` on POSIX.
-fn returncode(status: &std::process::ExitStatus) -> i32 {
+fn returncode(status: &std::process::ExitStatus) -> i64 {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
         if let Some(sig) = status.signal() {
-            return -sig;
+            return -i64::from(sig);
         }
     }
-    status.code().unwrap_or(-1)
+    #[cfg(windows)]
+    {
+        // GetExitCodeProcess returns a DWORD; Python shows it unsigned (an access violation is 3221225477).
+        status.code().map(|c| c as u32 as i64).unwrap_or(-1)
+    }
+    #[cfg(not(windows))]
+    {
+        status.code().map(i64::from).unwrap_or(-1)
+    }
 }
 
 /// `str(OSError)` of a failed `Popen` (Windows: `[WinError 2] ...` without a file name; POSIX:
 /// `[Errno 2] No such file or directory: 'path'`).
 fn spawn_error_text(err: &io::Error, server: &Path) -> String {
     if cfg!(windows) { EngineError::win(err, None).message } else { EngineError::os(err, Some(server)).message }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn returncode_is_unsigned_on_windows_like_python() {
+        let status = Command::new("cmd").args(["/c", "exit", "-1073741819"]).status().unwrap();
+        assert_eq!(returncode(&status), 3_221_225_477);
+        let status = Command::new("cmd").args(["/c", "exit", "3"]).status().unwrap();
+        assert_eq!(returncode(&status), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn returncode_is_minus_signal_on_posix() {
+        let status = Command::new("sh").args(["-c", "kill -9 $$"]).status().unwrap();
+        assert_eq!(returncode(&status), -9);
+    }
 }

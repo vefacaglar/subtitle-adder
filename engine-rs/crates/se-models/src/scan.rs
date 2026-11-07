@@ -129,9 +129,15 @@ fn scan_repo(repo_path: &Path) -> Result<CachedRepo, Failure> {
                 continue;
             }
             let bytes = os_fail(fs::read(&ref_path))?;
-            // Text mode: a decoding error is a ValueError (aborts the scan); newlines are translated.
-            let text = std::str::from_utf8(&bytes).map_err(|_| Failure::Fatal)?;
-            let commit = se_core::pyfmt::universal_newlines(text);
+            // Text mode with the locale encoding; newlines are translated. POSIX (UTF-8 locale): a decoding
+            // error is a ValueError that aborts the scan. Windows (ANSI code page, e.g. cp1254): almost every
+            // byte decodes, and such a "commit" never names a snapshot, so only this repo is corrupted.
+            let text = match std::str::from_utf8(&bytes) {
+                Ok(t) => std::borrow::Cow::Borrowed(t),
+                Err(_) if cfg!(windows) => String::from_utf8_lossy(&bytes),
+                Err(_) => return Err(Failure::Fatal),
+            };
+            let commit = se_core::pyfmt::universal_newlines(&text);
             refs_by_hash.entry(commit).or_default().push(file_name(&ref_path));
         }
     }
@@ -192,4 +198,51 @@ fn scan_repo(repo_path: &Path) -> Result<CachedRepo, Failure> {
         size_on_disk: blob_sizes.values().sum(),
         revisions,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo(root: &Path, name: &str, refs: &[(&str, &[u8])]) {
+        let d = root.join(name);
+        fs::create_dir_all(d.join("snapshots").join("c0ffee")).unwrap();
+        fs::write(d.join("snapshots").join("c0ffee").join("model.bin"), vec![0u8; 3000]).unwrap();
+        for (ref_name, content) in refs {
+            let p = d.join("refs").join(ref_name);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, content).unwrap();
+        }
+    }
+
+    #[test]
+    fn undecodable_ref_hides_only_that_repo_on_windows() {
+        // Python reads refs with the locale encoding: cp125x on Windows decodes the bytes (the repo is then
+        // corrupted: no such commit), a UTF-8 locale raises and the whole scan fails.
+        let dir = tempfile::tempdir().unwrap();
+        repo(dir.path(), "models--a--good", &[("main", b"c0ffee")]);
+        repo(dir.path(), "models--a--bad", &[("main", b"c0ffee"), ("pr/1", b"\xff\xfe\xe7")]);
+        let scanned = scan_cache_dir(dir.path());
+        if cfg!(windows) {
+            let ids: Vec<String> = scanned.unwrap().into_iter().map(|r| r.repo_id).collect();
+            assert_eq!(ids, ["a/good"]);
+        } else {
+            assert!(scanned.is_none());
+        }
+    }
+
+    #[test]
+    fn crlf_ref_and_ignored_names() {
+        let dir = tempfile::tempdir().unwrap();
+        repo(dir.path(), "models--a--crlf", &[("main", b"c0ffee\r\n")]);
+        repo(dir.path(), "models--a--ok", &[("main", b"c0ffee"), ("desktop.ini", b"x")]);
+        fs::create_dir_all(dir.path().join(".locks").join("x")).unwrap();
+        fs::write(dir.path().join("CACHEDIR.TAG"), b"x").unwrap();
+        fs::create_dir_all(dir.path().join("blobs")).unwrap(); // no marker: scanned and corrupted
+        let repos = scan_cache_dir(dir.path()).unwrap();
+        let ids: Vec<&str> = repos.iter().map(|r| r.repo_id.as_str()).collect();
+        assert_eq!(ids, ["a/ok"]);
+        assert_eq!(repos[0].size_on_disk, 3000);
+        assert_eq!(repos[0].repo_type, "model");
+    }
 }

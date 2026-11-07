@@ -74,10 +74,10 @@ pub fn make_preview(source: PreviewSource, output: &Path) -> Result<()> {
         }
     };
     let io = CustomIo::new(file, seekable, false);
-    let mut input = match Input::open_custom(io, &name, &[("protocol_whitelist", "pipe")]) {
-        Ok(i) => i,
-        Err(e) => return Err(EngineError::runtime(e.to_string())),
-    };
+    let mut input = Input::open_custom(io, &name, &[("protocol_whitelist", "pipe")]).map_err(|e| match e {
+        MediaError::Ff(e) => EngineError::runtime(e.to_string()),
+        MediaError::Engine(e) => e,
+    })?;
     let video = input.streams_of(sys::AVMediaType::AVMEDIA_TYPE_VIDEO).into_iter().find(|&i| unsafe {
         (*input.stream(i)).disposition & sys::AV_DISPOSITION_ATTACHED_PIC == 0
     });

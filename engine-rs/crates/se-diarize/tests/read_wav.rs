@@ -97,3 +97,49 @@ fn test_extra_chunks_and_truncated_data_are_tolerated() {
     std::fs::write(&p, &bytes).unwrap();
     assert_eq!(read_wav(&p).unwrap(), vec![0.5, -0.5]);
 }
+
+#[test]
+#[serial_test::serial]
+fn test_runtime_error_when_a_chunk_runs_past_the_riff_end() {
+    // Python `_Chunk.skip()` seeks the RIFF chunk past its end → bare RuntimeError (empty message).
+    let mut bytes = b"RIFF\x00\x00\x00\x00WAVEfmt \x10\x00\x00\x00".to_vec();
+    bytes.extend_from_slice(&[1, 0, 1, 0, 0x80, 0x3e, 0, 0, 0, 0x7d, 0, 0, 2, 0, 16, 0]);
+    bytes.extend_from_slice(b"LIST\x40\x00\x00\x00abcd");
+    bytes.extend_from_slice(b"data\x02\x00\x00\x00\x00\x40");
+    let riff = (bytes.len() - 8) as u32;
+    bytes[4..8].copy_from_slice(&riff.to_le_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("x.wav");
+    std::fs::write(&p, &bytes).unwrap();
+    assert_eq!(read_wav(&p).unwrap_err().message, "");
+    // A RIFF size that ends inside the fmt chunk: the 14-byte read comes up short → EOFError.
+    bytes[4..8].copy_from_slice(&20u32.to_le_bytes());
+    std::fs::write(&p, &bytes).unwrap();
+    assert_eq!(read_wav(&p).unwrap_err().message, "");
+}
+
+/// Differential check against Python `diarize.read_wav` on mutated WAV files (scratch generator
+/// `wavgen.py`): set `SE_DIARIZE_WAV_FUZZ=<dir with c<i>.wav and ref.json>`; without it the test returns.
+#[test]
+#[serial_test::serial]
+fn test_read_wav_matches_python_on_mutated_files() {
+    let Ok(dir) = std::env::var("SE_DIARIZE_WAV_FUZZ") else { return };
+    let dir = Path::new(&dir);
+    let cases: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("ref.json")).unwrap()).unwrap();
+    for (i, case) in cases.iter().enumerate() {
+        let got = read_wav(&dir.join(format!("c{i}.wav")));
+        if let Some(want) = case.get("ok") {
+            let want: Vec<u32> = want.as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+            let got: Vec<u32> = got.unwrap_or_else(|e| panic!("case {i}: {e:?}")).iter().map(|x| x.to_bits()).collect();
+            assert_eq!(got, want, "case {i}");
+        } else if case["type"] == "MemoryError" {
+            // Python preallocates a multi-GB read buffer for a bogus 0xFFFFFFFF data size: machine dependent.
+            continue;
+        } else {
+            let msg = got.err().unwrap_or_else(|| panic!("case {i}: expected an error")).message;
+            assert_eq!(msg, case["err"].as_str().unwrap(), "case {i} ({})", case["type"]);
+        }
+    }
+    eprintln!("{} WAV cases matched", cases.len());
+}

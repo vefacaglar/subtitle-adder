@@ -6,6 +6,7 @@
 //! [`DiarizeHooks`] (merge / verify) in [`run_diarization`].
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::ffi::{CString, c_void};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -424,22 +425,36 @@ impl Diarizer for SherpaDiarizer {
                 default.as_mut().expect("built above").as_mut()
             }
         };
-        // Extractor errors (first embedding call) end the run with that error, as the Python exception would.
-        let mut embed_error: Option<EngineError> = None;
+        // An extractor error (first embedding call) ends the run with that error, as the Python exception
+        // would: the remaining post-processing still runs on empty vectors, but no further progress is
+        // reported, so the observable events (stages, then the error) are the same as Python's.
+        let embed_error: RefCell<Option<EngineError>> = RefCell::new(None);
         let mut embed = |chunk: &[f32]| -> Vec<f64> {
-            if embed_error.is_some() {
+            if embed_error.borrow().is_some() {
                 return Vec::new();
             }
             match embedder.embed(chunk) {
                 Ok(v) => v,
                 Err(e) => {
-                    embed_error = Some(e);
+                    *embed_error.borrow_mut() = Some(e);
                     Vec::new()
                 }
             }
         };
+        let mut guarded;
+        let on_progress: Option<ProgressFn<'_>> = match on_progress {
+            Some(f) => {
+                guarded = |fraction: f64| {
+                    if embed_error.borrow().is_none() {
+                        f(fraction);
+                    }
+                };
+                Some(&mut guarded)
+            }
+            None => None,
+        };
         let result = run_diarization(engine, &samples, num_speakers, on_progress, words, &mut embed, None);
-        if let Some(e) = embed_error {
+        if let Some(e) = embed_error.into_inner() {
             return Err(e);
         }
         result
@@ -451,73 +466,131 @@ pub fn create_diarizer() -> Result<Box<dyn Diarizer>> {
     Ok(Box::new(SherpaDiarizer::new(None, CLUSTER_THRESHOLD)?))
 }
 
-/// A Python `wave.Error` (its `str()` is the message).
+/// A Python `wave.Error` / `EOFError` / `RuntimeError` (its `str()` is the message).
 fn wave_error(message: impl Into<String>) -> EngineError {
     EngineError::new(ErrorKind::Other, message)
 }
 
-/// Python `chunk.Chunk` over a byte source bounded by a parent chunk.
-struct ChunkReader<'f> {
+/// Python `wave._Chunk` for the outer RIFF chunk: reads are bounded by its size, an odd-sized chunk's pad
+/// byte is consumed when a read reaches its end, and seeks past its end raise (an empty `RuntimeError`).
+struct RiffChunk<'f> {
     file: &'f mut File,
-    /// Absolute offset of the chunk data.
-    offset: u64,
     size: u64,
-    read: u64,
+    size_read: u64,
 }
 
-impl ChunkReader<'_> {
-    /// `chunk.read(n)`: at most the rest of the chunk (and of the file).
-    fn read(&mut self, n: u64) -> Result<Vec<u8>> {
-        let n = n.min(self.size.saturating_sub(self.read));
-        self.file.seek(SeekFrom::Start(self.offset + self.read))?;
+/// File offset of the RIFF chunk data (right after `RIFF` + size).
+const RIFF_DATA: u64 = 8;
+
+impl RiffChunk<'_> {
+    /// `file.read(n)` at the chunk's current position (the file position Python would be at).
+    fn raw_read(&mut self, n: u64) -> Result<Vec<u8>> {
+        self.file.seek(SeekFrom::Start(RIFF_DATA + self.size_read))?;
         let mut buf = Vec::with_capacity(n.min(1 << 30) as usize);
         (&mut *self.file).take(n).read_to_end(&mut buf)?;
-        self.read += buf.len() as u64;
         Ok(buf)
+    }
+
+    /// `_Chunk.read(n)`.
+    fn read(&mut self, n: u64) -> Result<Vec<u8>> {
+        if self.size_read >= self.size {
+            return Ok(Vec::new());
+        }
+        let n = n.min(self.size - self.size_read);
+        let data = self.raw_read(n)?;
+        self.size_read += data.len() as u64;
+        if self.size_read == self.size && self.size & 1 == 1 {
+            let dummy = self.raw_read(1)?;
+            self.size_read += dummy.len() as u64;
+        }
+        Ok(data)
+    }
+
+    /// `_Chunk.seek(n, 1)`.
+    fn seek_relative(&mut self, n: u64) -> Result<()> {
+        let pos = self.size_read + n;
+        if pos > self.size {
+            return Err(wave_error(""));
+        }
+        self.size_read = pos;
+        Ok(())
+    }
+}
+
+/// Python `wave._Chunk` nested in the RIFF chunk (every read goes through the RIFF chunk).
+struct SubChunk {
+    size: u64,
+    size_read: u64,
+}
+
+impl SubChunk {
+    /// `_Chunk(riff)`: `None` at the end of the chunks (EOFError: short name or size).
+    fn open(riff: &mut RiffChunk<'_>) -> Result<Option<([u8; 4], SubChunk)>> {
+        let name = riff.read(4)?;
+        if name.len() < 4 {
+            return Ok(None);
+        }
+        let size = riff.read(4)?;
+        if size.len() < 4 {
+            return Ok(None);
+        }
+        let size = u32::from_le_bytes(size[..4].try_into().expect("4 bytes")) as u64;
+        Ok(Some((name[..4].try_into().expect("4 bytes"), SubChunk { size, size_read: 0 })))
+    }
+
+    /// `_Chunk.read(n)`.
+    fn read(&mut self, riff: &mut RiffChunk<'_>, n: u64) -> Result<Vec<u8>> {
+        if self.size_read >= self.size {
+            return Ok(Vec::new());
+        }
+        let n = n.min(self.size - self.size_read);
+        let data = riff.read(n)?;
+        self.size_read += data.len() as u64;
+        if self.size_read == self.size && self.size & 1 == 1 {
+            let dummy = riff.read(1)?;
+            self.size_read += dummy.len() as u64;
+        }
+        Ok(data)
+    }
+
+    /// `_Chunk.skip()` on a seekable file: `riff.seek(rest + pad, 1)` (past the RIFF end → `RuntimeError`).
+    fn skip(&mut self, riff: &mut RiffChunk<'_>) -> Result<()> {
+        // n = chunksize - size_read (+1 for an odd size); never negative (size_read exceeds the size only
+        // by an already consumed pad byte, which makes n 0).
+        let n = (self.size + (self.size & 1)).saturating_sub(self.size_read);
+        riff.seek_relative(n)?;
+        self.size_read += n;
+        Ok(())
     }
 }
 
 /// `read_wav(path)`: a 16 kHz mono 16-bit WAV as `f32` in `[-1, 1)`; other formats → localized `ModelError`
 /// `diarize_wav_format`. Parsing follows Python 3.11 `wave` (PCM only: other format tags give
-/// `unknown format: N`, a missing chunk `fmt chunk and/or data chunk missing`, ...).
+/// `unknown format: N`, a missing chunk `fmt chunk and/or data chunk missing`, a truncated header an empty
+/// `EOFError`, a chunk running past the RIFF end an empty `RuntimeError`, ...).
 pub fn read_wav(path: &Path) -> Result<Vec<f32>> {
     let mut file = File::open(path).map_err(|e| EngineError::os(&e, Some(path)))?;
-    let file_len = file.metadata().map(|m| m.len()).unwrap_or(u64::MAX);
 
-    // RIFF header (`Chunk(file)`): a short header is an EOFError (empty message).
+    // `_Chunk(file)`: a short header is an EOFError (empty message), raised before the RIFF id check.
     let mut header = Vec::new();
     (&mut file).take(8).read_to_end(&mut header)?;
-    if header.len() < 4 {
-        return Err(wave_error(""));
-    }
-    if &header[..4] != b"RIFF" {
-        if header.len() < 8 {
-            return Err(wave_error(""));
-        }
-        return Err(wave_error("file does not start with RIFF id"));
-    }
     if header.len() < 8 {
         return Err(wave_error(""));
     }
+    if &header[..4] != b"RIFF" {
+        return Err(wave_error("file does not start with RIFF id"));
+    }
     let riff_size = u32::from_le_bytes(header[4..8].try_into().expect("4 bytes")) as u64;
-    let mut riff = ChunkReader { file: &mut file, offset: 8, size: riff_size, read: 0 };
+    let mut riff = RiffChunk { file: &mut file, size: riff_size, size_read: 0 };
     if riff.read(4)? != b"WAVE" {
         return Err(wave_error("not a WAVE file"));
     }
 
     let mut format: Option<(u32, u16, u16)> = None; // (framerate, channels, sampwidth)
-    let mut data: Option<(u64, u64)> = None; // (absolute offset, size)
-    loop {
-        let head = riff.read(8)?;
-        if head.len() < 8 {
-            break; // EOFError → end of chunks
-        }
-        let name: [u8; 4] = head[..4].try_into().expect("4 bytes");
-        let size = u32::from_le_bytes(head[4..8].try_into().expect("4 bytes")) as u64;
-        let start = riff.read;
-        let mut chunk = ChunkReader { file: &mut *riff.file, offset: riff.offset + start, size, read: 0 };
+    let mut data: Option<SubChunk> = None;
+    while let Some((name, mut chunk)) = SubChunk::open(&mut riff)? {
         if &name == b"fmt " {
-            let fmt = chunk.read(14)?;
+            let fmt = chunk.read(&mut riff, 14)?;
             if fmt.len() < 14 {
                 return Err(wave_error(""));
             }
@@ -527,7 +600,7 @@ pub fn read_wav(path: &Path) -> Result<Vec<f32>> {
             if tag != 1 {
                 return Err(wave_error(format!("unknown format: {tag}")));
             }
-            let width = chunk.read(2)?;
+            let width = chunk.read(&mut riff, 2)?;
             if width.len() < 2 {
                 return Err(wave_error(""));
             }
@@ -543,27 +616,20 @@ pub fn read_wav(path: &Path) -> Result<Vec<f32>> {
             if format.is_none() {
                 return Err(wave_error("data chunk before fmt chunk"));
             }
-            data = Some((chunk.offset, size));
+            data = Some(chunk);
             break;
         }
-        // chunk.skip(): to the end of the chunk plus the pad byte of an odd size.
-        let skip = size + (size & 1);
-        riff.read = (start + skip).min(riff.size.max(start));
-        if riff.offset + riff.read > file_len {
-            break;
-        }
+        chunk.skip(&mut riff)?;
     }
-    let (Some((framerate, channels, sampwidth)), Some((data_offset, data_size))) = (format, data) else {
+    let (Some((framerate, channels, sampwidth)), Some(mut data)) = (format, data) else {
         return Err(wave_error("fmt chunk and/or data chunk missing"));
     };
     if framerate != SAMPLE_RATE || channels != 1 || sampwidth != 2 {
         return Err(EngineError::model(se_core::t!("diarize_wav_format")));
     }
-    // readframes(nframes): nframes = chunksize // framesize, bounded by the RIFF chunk and the file.
-    let frames = data_size / 2;
-    let riff_left = (riff.offset + riff.size).saturating_sub(data_offset);
-    let mut data_chunk = ChunkReader { file: &mut *riff.file, offset: data_offset, size: data_size.min(riff_left), read: 0 };
-    let bytes = data_chunk.read(frames * 2)?;
+    // readframes(nframes): nframes = chunksize // framesize (framesize = 2 here).
+    let nframes = data.size / 2;
+    let bytes = if nframes == 0 { Vec::new() } else { data.read(&mut riff, nframes * 2)? };
     if bytes.len() % 2 != 0 {
         return Err(EngineError::value("buffer size must be a multiple of element size"));
     }
