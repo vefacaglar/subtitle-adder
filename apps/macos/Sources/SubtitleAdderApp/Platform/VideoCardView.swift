@@ -6,11 +6,13 @@ import SwiftUI
 struct VideoCardView: View, Equatable {
     let card: VideoCard
     let model: VideoPlatformModel
+    /// Whether a profile is logged in. Without one the card shows no watch state at all (views, progress, badges).
+    let showsHistory: Bool
     let play: (URL) -> Void
     @State private var isHovering = false
 
     nonisolated static func == (lhs: VideoCardView, rhs: VideoCardView) -> Bool {
-        lhs.card == rhs.card
+        lhs.card == rhs.card && lhs.showsHistory == rhs.showsHistory
     }
 
     private static let thumbnailSize = CGSize(width: 192, height: 108)
@@ -18,7 +20,7 @@ struct VideoCardView: View, Equatable {
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             Button { play(card.url) } label: {
-                CardThumbnail(card: card, service: model.thumbnails, size: Self.thumbnailSize)
+                CardThumbnail(card: card, service: model.thumbnails, size: Self.thumbnailSize, showsHistory: showsHistory)
             }
             .buttonStyle(.plain)
             .help(L("Oynat"))
@@ -58,14 +60,16 @@ struct VideoCardView: View, Equatable {
                     .truncationMode(.middle)
                     .help(card.directoryPath)
             }
-            HStack(spacing: 6) {
-                ForEach(card.watchBadges, id: \.self) { text in
-                    Text(text)
-                    if text != card.watchBadges.last { Text("·") }
+            if showsHistory {
+                HStack(spacing: 6) {
+                    ForEach(card.watchBadges, id: \.self) { text in
+                        Text(text)
+                        if text != card.watchBadges.last { Text("·") }
+                    }
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
             FlowLayout(spacing: 6) { chips }
             Spacer(minLength: 0)
             actions
@@ -99,7 +103,7 @@ struct VideoCardView: View, Equatable {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            if model.isLoggedIn {
+            if showsHistory {
                 Button { model.setLiked(!card.isLiked, for: card.url) } label: {
                     Label(
                         card.isLiked ? L("Favorilerde") : L("Favorilere ekle"),
@@ -142,6 +146,7 @@ private struct CardThumbnail: View {
     let card: VideoCard
     let service: ThumbnailService
     let size: CGSize
+    let showsHistory: Bool
     @State private var image: NSImage?
 
     var body: some View {
@@ -159,14 +164,16 @@ private struct CardThumbnail: View {
         }
         .frame(width: size.width, height: size.height)
         .overlay(alignment: .topLeading) { subtitlePill.padding(6) }
-        .overlay(alignment: .topTrailing) { viewsPill.padding(6) }
+        .overlay(alignment: .topTrailing) {
+            if showsHistory { viewsPill.padding(6) }
+        }
         .overlay(alignment: .bottomTrailing) {
             if !card.durationText.isEmpty {
                 Pill(text: card.durationText, symbol: nil, dimmed: false).padding(6)
             }
         }
         .overlay(alignment: .bottomLeading) {
-            if card.hasProgress {
+            if showsHistory, card.hasProgress {
                 Rectangle()
                     .fill(.red)
                     .frame(width: size.width * card.progress, height: 3)

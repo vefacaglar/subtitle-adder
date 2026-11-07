@@ -53,7 +53,14 @@ struct ContentView: View {
         .task { await explorer.start() }
         .task { await platform.start() }
         // The sidebar highlights the open video and keeps its folder's listing (and subtitle badge) current.
-        .onChange(of: vm.video, initial: true) { _, url in Task { await explorer.sync(toVideo: url) } }
+        .onChange(of: vm.video, initial: true) { _, url in
+            let tracks = platform.isLoggedIn
+            Task { await explorer.sync(toVideo: url, tracksFolders: tracks) }
+        }
+        // A profile that leaves takes the folders it browsed along: back history, followed folder, search.
+        .onChange(of: platform.username) { old, _ in
+            if old != nil { Task { await explorer.resetForSessionChange() } }
+        }
         // The toolbar's model picker lists what the active provider offers; the list is filled ahead of time (launch,
         // switching provider), after the window has had a moment to settle, so it is there when the popover opens.
         .task(id: vm.providerPrefetchKey) {

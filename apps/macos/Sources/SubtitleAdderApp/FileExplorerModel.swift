@@ -175,6 +175,9 @@ final class FileExplorerModel {
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let services: ExplorerServices
+    /// Whether the last folder is written to `defaults`. Off in the app: a plaintext plist would be a record of where
+    /// the user browses that anyone can read without a profile's key.
+    @ObservationIgnored private let remembersLastFolder: Bool
     /// The folder stored by the last session, as stored; `start()` checks that it is still there.
     @ObservationIgnored private let savedFolderPath: String?
     /// No folder was ever chosen (nothing saved, nothing navigated to), so the folder shown is only a default and the
@@ -196,16 +199,19 @@ final class FileExplorerModel {
 
     init(
         index: MediaLibraryIndex = MediaLibraryIndex(), defaults: UserDefaults = .standard,
-        services: ExplorerServices = .system
+        services: ExplorerServices = .system, remembersLastFolder: Bool = false
     ) {
         self.index = index
         self.defaults = defaults
         self.services = services
+        self.remembersLastFolder = remembersLastFolder
+        // A folder stored by an older version is plaintext history: it goes, once.
+        if !remembersLastFolder { defaults.removeObject(forKey: Self.lastFolderKey) }
         isSidebarVisible = defaults.object(forKey: Self.showSidebarKey) as? Bool ?? true
         // Nothing here touches the file system: the saved folder may be on a network mount that no longer answers, and
         // the app's launch must not wait for it. The folder shown until `start()` has looked at it is the saved one as it
         // was stored, or the home folder.
-        let saved = defaults.string(forKey: Self.lastFolderKey).flatMap { $0.isEmpty ? nil : $0 }
+        let saved = remembersLastFolder ? defaults.string(forKey: Self.lastFolderKey).flatMap { $0.isEmpty ? nil : $0 } : nil
         savedFolderPath = saved
         followsVideo = saved == nil
         currentFolder = saved ?? services.homeFolder()
@@ -321,7 +327,7 @@ final class FileExplorerModel {
         // A query belongs to the folder it was typed in.
         if !searchQuery.isEmpty { searchQuery = "" }
         currentFolder = folder
-        defaults.set(folder, forKey: Self.lastFolderKey)
+        if remembersLastFolder { defaults.set(folder, forKey: Self.lastFolderKey) }
         await runScan(folder, showCached: true, crawl: crawl)
     }
 
@@ -334,7 +340,11 @@ final class FileExplorerModel {
     /// - Its folder is current otherwise: the folder is rescanned, so that a new file or subtitle shows.
     /// - No folder was ever chosen (only the default one is shown): the explorer goes there.
     /// - Another folder is current: that folder is scanned into the index and the explorer stays where it is.
-    func sync(toVideo url: URL?) async {
+    ///
+    /// `tracksFolders` is false while no profile is logged in: the folder of a video that was opened is then neither
+    /// followed nor scanned into the persistent index (that would write where the user watches, in plaintext, with no
+    /// profile to own it). Only the highlight and the folder that is being browsed anyway are kept current.
+    func sync(toVideo url: URL?, tracksFolders: Bool = true) async {
         await start()
         guard let url else {
             activeVideoKey = nil
@@ -343,6 +353,7 @@ final class FileExplorerModel {
         let path = MediaPath.normalized(url)
         activeVideoKey = path.lowercased()
         guard let folder = ExplorerPaths.parent(of: path), isMounted(folder) else { return }
+        if !tracksFolders, ExplorerPaths.key(currentFolder) != ExplorerPaths.key(folder) { return }
         if followsVideo, ExplorerPaths.key(currentFolder) != ExplorerPaths.key(folder) {
             await go(to: folder, push: false, crawl: true)
             return
@@ -362,14 +373,27 @@ final class FileExplorerModel {
     }
 
     /// A subtitle was written next to a video: rescan that folder so the badge appears.
-    func subtitleSaved(at url: URL) async {
+    func subtitleSaved(at url: URL, tracksFolders: Bool = true) async {
         await start()
         guard let folder = ExplorerPaths.parent(of: MediaPath.normalized(url)), isMounted(folder) else { return }
         if ExplorerPaths.key(currentFolder) == ExplorerPaths.key(folder) {
             await rescanCurrent()
-        } else {
+        } else if tracksFolders {
             await scanOther(folder)
         }
+    }
+
+    /// A profile logged out, was deleted or replaced: the folders it browsed (back stack, the folder that followed its
+    /// video, the open search) are forgotten, and the explorer starts again from the launch folder. The persistent index
+    /// is not touched.
+    func resetForSessionChange() async {
+        await start()
+        backStack.removeAll()
+        if !searchQuery.isEmpty { searchQuery = "" }
+        let services = services
+        let start = await Task.detached { Self.defaultFolder(services: services) }.value
+        await go(to: start, push: false, crawl: false)
+        followsVideo = true
     }
 
     /// Disks came or went: refresh the shortcuts, and follow the current folder's volume.

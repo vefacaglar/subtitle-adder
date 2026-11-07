@@ -126,10 +126,12 @@ extension ProfileStore {
     public func clearWatchHistory() throws(ProfileError) -> Bool {
         var forgotten: [String] = []
         var profile: String?
+        var vaultKey: SymmetricKey?
         let cleared = try transact(fallback: false) { state in
             let now = clock()
             var contents = state.session!.contents
             profile = state.session!.usernameKey
+            vaultKey = state.session!.vaultKey
             let listed = Set(contents.customLists.flatMap(\.videoPaths).map { $0.lowercased() })
             for (key, video) in contents.videos {
                 if !video.isLiked, video.rating <= 0, !listed.contains(video.videoPath.lowercased()) {
@@ -150,7 +152,9 @@ extension ProfileStore {
             return (true, .vault)
         }
         // The pictures of the forgotten videos go too, once the history is really cleared.
-        if cleared, let profile, !forgotten.isEmpty { thumbnailCache.remove(profile: profile, keys: forgotten) }
+        if cleared, let profile, let vaultKey, !forgotten.isEmpty {
+            thumbnailCache.remove(profile: profile, keys: forgotten, vaultKey: vaultKey)
+        }
         return cleared
     }
 

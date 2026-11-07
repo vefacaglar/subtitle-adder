@@ -235,7 +235,7 @@ struct PlatformView: View {
             ScrollView {
                 LazyVStack(spacing: 10) {
                     ForEach(model.cards) { card in
-                        VideoCardView(card: card, model: model, play: play).equatable()
+                        VideoCardView(card: card, model: model, showsHistory: model.isLoggedIn, play: play).equatable()
                     }
                 }
                 .padding(16)
@@ -245,7 +245,8 @@ struct PlatformView: View {
 
     private var emptyState: some View {
         let state = EmptyFeedText(
-            filter: model.filter, search: model.searchQuery, listName: model.selectedList?.name)
+            filter: model.filter, search: model.searchQuery, listName: model.selectedList?.name,
+            loggedIn: model.isLoggedIn)
         return ContentUnavailableView {
             Label(state.title, systemImage: state.symbol)
         } description: {
@@ -261,14 +262,18 @@ struct EmptyFeedText: Equatable {
     let hint: String
     let symbol: String
 
-    init(filter: VideoFeedFilter, search: String, listName: String?) {
+    init(filter: VideoFeedFilter, search: String, listName: String?, loggedIn: Bool = true) {
         if !search.isEmpty {
             title = L("\"%@\" için eşleşen video bulunamadı", search)
             hint = L("Farklı bir anahtar kelime deneyin veya klasör gezgininden yeni bir video klasörü açın.")
             symbol = "magnifyingglass"
             return
         }
-        let general = L("Bir video açıp izlediğinizde, favorilere eklediğinizde veya puanladığınızda burada YouTube tarzı kartlar halinde listelenir.")
+        // Without a profile there is no history to describe.
+        let general =
+            loggedIn
+            ? L("Bir video açıp izlediğinizde, favorilere eklediğinizde veya puanladığınızda burada YouTube tarzı kartlar halinde listelenir.")
+            : L("Klasör gezgininden bir video klasörü açın. Giriş yaptığınızda izleme geçmişiniz de burada görünür.")
         switch filter {
         case .history:
             (title, hint, symbol) = (L("Henüz izleme geçmişi yok"), general, "clock")

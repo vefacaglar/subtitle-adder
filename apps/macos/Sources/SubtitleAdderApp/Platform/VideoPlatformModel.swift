@@ -182,6 +182,13 @@ final class VideoPlatformModel {
     @ObservationIgnored private weak var playbackOwner: PlayerWindowToken?
     /// A video opened before `start()` has restored the remembered login; counted once it is known whether there is one.
     @ObservationIgnored private var pendingOpen: URL?
+    /// The store session under which playback of `playerVideo` may be recorded: the one that was open when the video
+    /// was opened. `nil` when nobody was logged in then, or after that session ended. Its progress belongs to the
+    /// profile that opened it, never to one that logs in (or is deleted and replaced) while the video plays on.
+    @ObservationIgnored private var recordingGeneration: Int?
+    /// The session generation of a logout that is under way: a snapshot of that session is not shown any more, even
+    /// though the store has not ended it yet (it may wait for a file lock).
+    @ObservationIgnored private var closingGeneration: Int?
     @ObservationIgnored private var hasRestoredLogin = false
     @ObservationIgnored private var progressTask: Task<Void, Never>?
     @ObservationIgnored private var seekFlushTask: Task<Void, Never>?
@@ -370,12 +377,22 @@ final class VideoPlatformModel {
             refreshPending = true
             return false
         }
+        // A profile that is being logged out must not come back on screen from a snapshot read before the store has
+        // ended its session. The refresh queued behind the logout shows the result.
+        if built.username != nil, built.sessionGeneration == closingGeneration { return false }
         let snapshot = withPendingEdits(built)
         if appliedSessionGeneration != snapshot.sessionGeneration {
             // Another profile's pictures must not show for this one, and a closed profile's must not stay in memory.
             if appliedSessionGeneration != nil {
                 thumbnails.reset()
                 CardImageCache.removeAll()
+                // The cards of the session that ended (a logout, a deleted profile, a login ended elsewhere) go even
+                // when the hub is off screen and no new ones are built.
+                if !wantsFeed {
+                    cards = []
+                    hasLoadedFeed = false
+                    appliedFeedKey = nil
+                }
             }
             appliedSessionGeneration = snapshot.sessionGeneration
         }
@@ -389,7 +406,12 @@ final class VideoPlatformModel {
         if counts != snapshot.counts { counts = snapshot.counts }
         if lists != snapshot.lists { lists = snapshot.lists }
         if listCounts != snapshot.listCounts { listCounts = snapshot.listCounts }
-        engagement.apply(snapshot.engagement)
+        if snapshot.username == nil {
+            // No profile: nothing of the last video's views, stars or lists may linger.
+            if engagement.url != playerVideo || engagement.isLoaded { engagement.reset(url: playerVideo) }
+        } else {
+            engagement.apply(snapshot.engagement)
+        }
         // Off screen no cards were built; what is there stays until the hub opens and a refresh replaces it.
         if wantsFeed {
             appliedFeedKey = FeedKey(filter: key.filter, search: key.search, loggedIn: snapshot.username != nil)
@@ -532,11 +554,41 @@ final class VideoPlatformModel {
         requestedSignIn = false
         authFailure = nil
         if case .customList = filter { filter = .all }
+        // Where the video is now goes to the profile that is closing, before anything else can tell otherwise.
+        if let position = playbackSampler?() { report(position, flush: false) }
+        // Nothing else of the playing video is recorded for whoever logs in next.
+        recordingGeneration = nil
+        closingGeneration = store.sessionGeneration
+        stopProgressClock()
+        seekFlushTask?.cancel()
+        seekFlushTask = nil
+        pendingOpen = nil
+        forgetProfileState()
         // Progress still held in memory goes to disk first: the session it belongs to ends here.
         perform { (store) throws(ProfileError) in
             _ = try? store.flushPlaybackProgress()
             try store.logout()
         }
+    }
+
+    /// Drops everything the screen and memory hold for the profile that is closing, at once: the store may wait for a
+    /// file lock before it reports the logout, and that must not leave the profile's history on show.
+    private func forgetProfileState() {
+        username = nil
+        // The closing profile's search is not run again over the logged-out feed. Query first: emptying the field
+        // would otherwise ask `clearSearch()` for a refresh of its own.
+        searchQuery = ""
+        if !searchText.isEmpty { searchText = "" }
+        counts = ProfileCounts()
+        lists = []
+        listCounts = [:]
+        cards = []
+        hasLoadedFeed = false
+        appliedFeedKey = nil
+        engagement.reset(url: playerVideo)
+        pendingEdits.removeAll()
+        thumbnails.reset()
+        CardImageCache.removeAll()
     }
 
     // MARK: Lists
@@ -763,9 +815,18 @@ final class VideoPlatformModel {
     /// work in sessions of their own and never change the video in the player.
     func playerVideoChanged(to url: URL?, countsAsOpen: Bool) {
         let same = url.map(Self.pathKey) == playerVideo.map(Self.pathKey)
-        guard !same else { return }
+        guard !same else {
+            // The same video opened again under a login that began after it was opened: the new session records it.
+            if let url, countsAsOpen, hasRestoredLogin, isLoggedIn, recordingGeneration != store.sessionGeneration {
+                recordingGeneration = store.sessionGeneration
+                countOpen(url)
+            }
+            return
+        }
         playerVideo = url
         pendingOpen = nil
+        // Recorded only for the session that is open now; nobody logged in means nothing is recorded for this video.
+        recordingGeneration = hasRestoredLogin && isLoggedIn ? store.sessionGeneration : nil
         engagement.reset(url: url)
         guard let url else { return }
         guard countsAsOpen else {
@@ -791,6 +852,7 @@ final class VideoPlatformModel {
         guard let url = pendingOpen else { return }
         pendingOpen = nil
         guard isLoggedIn, playerVideo.map(Self.pathKey) == Self.pathKey(url) else { return }
+        recordingGeneration = store.sessionGeneration
         countOpen(url)
     }
 
@@ -849,11 +911,13 @@ final class VideoPlatformModel {
     /// progress in memory and writes it at most every 15 s otherwise). Background bookkeeping: a failure is not shown,
     /// the next report tries again. Never raises a refresh.
     private func report(_ position: PlaybackPosition, flush: Bool) {
-        guard isLoggedIn, let url = playerVideo, position.seconds.isFinite, position.duration.isFinite,
-            position.duration > 0
+        guard isLoggedIn, let generation = recordingGeneration, generation == store.sessionGeneration,
+            let url = playerVideo, position.seconds.isFinite, position.duration.isFinite, position.duration > 0
         else { return }
         enqueue { [self] in
             _ = await runStore { (store) throws(ProfileError) in
+                // The session this was read under is over: the position belongs to nobody who is logged in now.
+                guard store.sessionGeneration == generation else { return }
                 _ = try store.updatePlaybackProgress(url, position: position.seconds, duration: position.duration)
                 if flush { _ = try store.flushPlaybackProgress() }
             }
@@ -876,17 +940,17 @@ final class VideoPlatformModel {
     func prepareForQuit(timeout: Duration = .seconds(2)) -> Bool {
         stopProgressClock()
         seekFlushTask?.cancel()
-        var final: (url: URL, position: PlaybackPosition)?
-        if let url = playerVideo, let position = playbackSampler?(), position.duration > 0, position.duration.isFinite,
-            position.seconds.isFinite
+        var final: (url: URL, position: PlaybackPosition, generation: Int)?
+        if isLoggedIn, let generation = recordingGeneration, generation == store.sessionGeneration, let url = playerVideo,
+            let position = playbackSampler?(), position.duration > 0, position.duration.isFinite, position.seconds.isFinite
         {
-            final = (url, position)
+            final = (url, position, generation)
         }
         let store = store
         let finished = DispatchSemaphore(value: 0)
         let work = final
         DispatchQueue.global(qos: .userInitiated).async {
-            if let work {
+            if let work, store.sessionGeneration == work.generation {
                 _ = try? store.updatePlaybackProgress(work.url, position: work.position.seconds, duration: work.position.duration)
             }
             _ = try? store.flushPlaybackProgress()

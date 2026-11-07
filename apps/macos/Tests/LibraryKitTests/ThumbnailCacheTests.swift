@@ -59,7 +59,10 @@ import Testing
         let cache = store.thumbnailCache
         let wrongKey = SymmetricKey(size: .bits256)
         #expect(cache.data(profile: "emre gizli", keys: [VaultContents.key(for: normalized(video))], vaultKey: wrongKey) == nil)
-        #expect(try folder.cacheFiles().isEmpty)
+        // File names are keyed with the vault key: another key does not even find the file.
+        #expect(
+            ThumbnailCache.fileName(forKey: "k", vaultKey: wrongKey)
+                != ThumbnailCache.fileName(forKey: "k", vaultKey: SymmetricKey(size: .bits256)))
     }
 
     @Test func loggedOutNothingIsStoredOrRead() throws {
@@ -172,7 +175,7 @@ import Testing
             #expect(cache.store(picture, profile: profile, key: "k\(index)", vaultKey: key))
             // k0 is the oldest, k9 the newest.
             let date = Date(timeIntervalSinceNow: Double(index - 100) * 60)
-            let file = directory.appending(path: ThumbnailCache.fileName(forKey: "k\(index)"))
+            let file = directory.appending(path: ThumbnailCache.fileName(forKey: "k\(index)", vaultKey: key))
             try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
         }
         #expect(cache.fileCount(profile: profile) == 10)
@@ -205,7 +208,7 @@ import Testing
         let directory = root.appending(path: ThumbnailCache.folderName(forProfile: "ali"))
         for index in 0..<5 {
             #expect(cache.store(picture, profile: "ali", key: "k\(index)", vaultKey: key))
-            let file = directory.appending(path: ThumbnailCache.fileName(forKey: "k\(index)"))
+            let file = directory.appending(path: ThumbnailCache.fileName(forKey: "k\(index)", vaultKey: key))
             let date = Date(timeIntervalSinceNow: -Double(10 - index) * 7_200)
             try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
         }

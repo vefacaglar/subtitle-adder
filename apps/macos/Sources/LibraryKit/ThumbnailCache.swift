@@ -16,8 +16,9 @@ public struct ThumbnailCacheLimits: Sendable, Equatable {
 /// picture in a folder per profile, so storing a picture never rewrites (or re-encrypts) the vault, and browsing videos
 /// never creates records.
 ///
-/// Layout: `<root>/<hash of the username>/<hash of the picture key>.bin`. Neither the user's name nor a video's path
-/// appears in a file name. Each file is AES-256-GCM under the profile's vault key, in the vault's own
+/// Layout: `<root>/<hash of the username>/<HMAC of the picture key>.bin`. Neither the user's name nor a video's path
+/// appears in a file name, and the file name is keyed with the profile's vault key: whoever holds a candidate path
+/// cannot tell from the folder whether the profile has a picture for it. Each file is AES-256-GCM under the profile's vault key, in the vault's own
 /// `nonce | tag | ciphertext` layout, and is written atomically. A file that does not open (another profile's key, a
 /// damaged file) is removed and counts as missing.
 ///
@@ -47,8 +48,8 @@ final class ThumbnailCache: @unchecked Sendable {
         hex(SHA256.hash(data: Data(usernameKey.lowercased().utf8)).prefix(16))
     }
 
-    static func fileName(forKey key: String) -> String {
-        hex(SHA256.hash(data: Data(key.lowercased().utf8)).prefix(16)) + ".bin"
+    static func fileName(forKey key: String, vaultKey: SymmetricKey) -> String {
+        hex(HMAC<SHA256>.authenticationCode(for: Data(key.lowercased().utf8), using: vaultKey).prefix(16)) + ".bin"
     }
 
     private static func hex<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
@@ -65,7 +66,7 @@ final class ThumbnailCache: @unchecked Sendable {
     func data(profile: String, keys: [String], vaultKey: SymmetricKey) -> Data? {
         let folder = folder(forProfile: profile)
         for key in keys {
-            let file = folder.appending(path: Self.fileName(forKey: key), directoryHint: .notDirectory)
+            let file = folder.appending(path: Self.fileName(forKey: key, vaultKey: vaultKey), directoryHint: .notDirectory)
             guard let blob = try? Data(contentsOf: file) else { continue }
             guard let plain = ProfileCrypto.open(blob, key: vaultKey) else {
                 lock.withLock { discard(file, folderName: folder.lastPathComponent) }
@@ -92,7 +93,7 @@ final class ThumbnailCache: @unchecked Sendable {
         guard let blob = try? ProfileCrypto.seal(data, key: vaultKey) else { return false }
         let folder = folder(forProfile: profile)
         let name = folder.lastPathComponent
-        let file = folder.appending(path: Self.fileName(forKey: key), directoryHint: .notDirectory)
+        let file = folder.appending(path: Self.fileName(forKey: key, vaultKey: vaultKey), directoryHint: .notDirectory)
         return lock.withLock {
             guard ensureFolder(folder) else { return false }
             ensureUsage(folder: folder, name: name)
@@ -111,11 +112,13 @@ final class ThumbnailCache: @unchecked Sendable {
 
     // MARK: Removing
 
-    func remove(profile: String, keys: [String]) {
+    func remove(profile: String, keys: [String], vaultKey: SymmetricKey) {
         let folder = folder(forProfile: profile)
         lock.withLock {
             for key in keys {
-                discard(folder.appending(path: Self.fileName(forKey: key), directoryHint: .notDirectory), folderName: folder.lastPathComponent)
+                discard(
+                    folder.appending(path: Self.fileName(forKey: key, vaultKey: vaultKey), directoryHint: .notDirectory),
+                    folderName: folder.lastPathComponent)
             }
         }
     }

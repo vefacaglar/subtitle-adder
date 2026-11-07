@@ -42,7 +42,9 @@ struct SubtitleAdderApp: App {
             store: ProfileStore(readsFileImmediately: false), index: explorer.index, allowsRememberedLogin: false)
         _platform = State(initialValue: platform)
         // A subtitle written next to a video gets its badge in the sidebar.
-        model.onSubtitleSaved = { url in Task { await explorer.subtitleSaved(at: url) } }
+        model.onSubtitleSaved = { url in
+            Task { @MainActor in await explorer.subtitleSaved(at: url, tracksFolders: platform.isLoggedIn) }
+        }
         // On quit, clear the scratch folder again unless a job is still running (the next launch gets it then).
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main

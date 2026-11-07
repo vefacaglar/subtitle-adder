@@ -104,6 +104,8 @@ final class ThumbnailService: Sendable {
     func reset() {
         state.withLock { state in
             state.pictures.removeAll()
+            // Paths of a closed profile's videos must not stay behind as failure memory.
+            state.failures.removeAll()
             state.epoch += 1
         }
     }
@@ -167,7 +169,8 @@ final class ThumbnailService: Sendable {
                 if await gate.acquire() {
                     picture = Task.isCancelled ? nil : await generate(url)
                     await gate.release()
-                    if let picture, !Task.isCancelled { await write(picture, url) }
+                    // A reset (the profile changed) while this was made: the picture belongs to the profile that asked.
+                    if let picture, !Task.isCancelled, state.withLock({ $0.epoch }) == started { await write(picture, url) }
                     failed = picture == nil && !Task.isCancelled
                 }
             }

@@ -155,9 +155,13 @@ enum PlatformFeedBuilder {
         seedThumbnail: (@Sendable (String, Data) -> Void)? = nil, shouldContinue: (@Sendable () -> Bool)? = nil
     ) -> PlatformSnapshot {
         var availability = StorageAvailability(services: services)
+        // The first read restores a remembered login. The generation is read before the name: if a session starts or
+        // ends in between, the snapshot carries the older generation and is dropped, never a name of one session
+        // under the generation of another.
+        _ = store.currentUsername
+        let generation = store.sessionGeneration
         var snapshot = PlatformSnapshot(username: store.currentUsername)
-        // After the first read, which is the one that restores a remembered login.
-        snapshot.sessionGeneration = store.sessionGeneration
+        snapshot.sessionGeneration = generation
         snapshot.registeredUsernames = store.registeredUsernames
         snapshot.lastUsername = store.lastUsername
         snapshot.rememberMe = store.rememberMe

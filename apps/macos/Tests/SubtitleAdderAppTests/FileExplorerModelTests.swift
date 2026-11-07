@@ -76,8 +76,12 @@ private final class ExplorerSandbox {
         MediaLibraryIndex(fileURL: indexFile)
     }
 
-    func model(index: MediaLibraryIndex? = nil, defaults: UserDefaults? = nil) -> FileExplorerModel {
-        FileExplorerModel(index: index ?? self.index(), defaults: defaults ?? self.defaults, services: services())
+    func model(
+        index: MediaLibraryIndex? = nil, defaults: UserDefaults? = nil, remembersLastFolder: Bool = true
+    ) -> FileExplorerModel {
+        FileExplorerModel(
+            index: index ?? self.index(), defaults: defaults ?? self.defaults, services: services(),
+            remembersLastFolder: remembersLastFolder)
     }
 }
 
@@ -85,6 +89,57 @@ private func names(_ files: [IndexedMediaFile]) -> [String] { files.map(\.fileNa
 
 @MainActor
 @Suite struct FileExplorerModelTests {
+    // MARK: - No history without a profile
+
+    @Test func theAppDoesNotWriteTheLastFolderToThePlainPreferences() async throws {
+        let box = try ExplorerSandbox()
+        try box.file("Docs/talk.mp4")
+        let model = box.model(remembersLastFolder: false)
+        await model.start()
+        await model.sync(toVideo: box.url("Docs/talk.mp4"))
+        await model.navigate(to: box.url("Docs"))
+        #expect(box.defaults.string(forKey: FileExplorerModel.lastFolderKey) == nil)
+    }
+
+    @Test func aFolderStoredByAnOlderVersionIsRemovedAndNotRestored() async throws {
+        let box = try ExplorerSandbox()
+        try box.folder("Movies")
+        try box.folder("Private")
+        box.defaults.set(box.path("Private"), forKey: FileExplorerModel.lastFolderKey)
+        let model = box.model(remembersLastFolder: false)
+        #expect(box.defaults.string(forKey: FileExplorerModel.lastFolderKey) == nil)
+        await model.start()
+        #expect(model.currentFolder == box.moviesFolder)
+    }
+
+    @Test func aVideoOpenedWithoutAProfileDoesNotWriteItsFolderToTheIndex() async throws {
+        let box = try ExplorerSandbox()
+        try box.folder("Movies")
+        try box.file("Private/clip.mp4")
+        let model = box.model()
+        await model.start()
+        await model.sync(toVideo: box.url("Private/clip.mp4"), tracksFolders: false)
+        #expect(model.currentFolder == box.moviesFolder)
+        #expect(await model.index.cachedSnapshot(box.url("Private")) == nil)
+        #expect(model.activeVideoKey == box.path("Private/clip.mp4").lowercased())
+    }
+
+    @Test func aSessionChangeForgetsTheBrowsedFolders() async throws {
+        let box = try ExplorerSandbox()
+        try box.folder("Movies")
+        try box.file("A/a.mp4")
+        try box.file("B/b.mp4")
+        let model = box.model()
+        await model.start()
+        await model.navigate(to: box.url("A"))
+        await model.navigate(to: box.url("B"))
+        #expect(model.canGoBack)
+        await model.resetForSessionChange()
+        #expect(!model.canGoBack)
+        #expect(model.currentFolder == box.moviesFolder)
+        #expect(model.searchQuery.isEmpty)
+    }
+
     // MARK: - Where it starts
 
     @Test func startsInMoviesWhenNothingIsSaved() async throws {
@@ -137,7 +192,7 @@ private func names(_ files: [IndexedMediaFile]) -> [String] { files.map(\.fileNa
             return true
         }
         let started = ContinuousClock.now
-        let model = FileExplorerModel(index: box.index(), defaults: box.defaults, services: services)
+        let model = FileExplorerModel(index: box.index(), defaults: box.defaults, services: services, remembersLastFolder: true)
         #expect(ContinuousClock.now - started < .milliseconds(200), "the slow check was not waited for")
         #expect(asked.withLock { $0 }.isEmpty)
         // Until start() has looked, the folder is the saved one as it was stored.

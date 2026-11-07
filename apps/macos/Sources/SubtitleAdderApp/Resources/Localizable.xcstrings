@@ -4065,6 +4065,22 @@
         }
       }
     },
+    "Klasör gezgininden bir video klasörü açın. Giriş yaptığınızda izleme geçmişiniz de burada görünür.": {
+      "localizations": {
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klasör gezgininden bir video klasörü açın. Giriş yaptığınızda izleme geçmişiniz de burada görünür."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open a video folder in the file explorer. Once you sign in, your watch history shows up here too."
+          }
+        }
+      }
+    },
     "Farklı bir anahtar kelime deneyin veya klasör gezgininden yeni bir video klasörü açın.": {
       "localizations": {
         "tr": {
