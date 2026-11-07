@@ -48,6 +48,7 @@ pub fn main_with(argv: &[OsString], services: &dyn Services, io: &mut Io<'_>) ->
         }
     };
     se_core::i18n::set_language(args.effective_lang());
+    se_core::cancel::reset();
     if args.offline {
         se_core::offline::request_offline();
     }
@@ -88,6 +89,9 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 ///
 /// The handles are not held locked: worker threads of other crates may log to stderr meanwhile.
 pub fn main() -> i32 {
+    // Before any child process exists: a running llama-server must not outlive the engine (signals, Ctrl-C,
+    // TerminateProcess) nor hold the app's stdio pipes open.
+    se_translate::server::install_process_guards();
     se_models::cuda::set_gpu_probe(se_asr::whisper::cuda_device_count);
     let argv: Vec<OsString> = std::env::args_os().skip(1).collect();
     let mut stdin = std::io::stdin();

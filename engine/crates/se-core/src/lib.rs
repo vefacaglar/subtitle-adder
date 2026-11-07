@@ -11,11 +11,13 @@
 //! * [`types`]: [`types::Word`], [`types::Sentence`], [`types::Transcript`] and [`types::Num`]
 //!   (`models.py` dataclasses, including the raw-JSON-tolerant `Sentence.from_dict`).
 //! * [`events`]: the stdout JSON event lines of the engine protocol (version 1).
+//! * [`cancel`]: process-wide cancellation once stdout is gone (checked by long loops).
 //! * [`error`]: [`error::EngineError`], whose `Display` equals Python `str(exc)`.
 //! * [`offline`]: strict offline mode and the process-wide network lock (`models.go_offline`).
 //! * [`paths`]: Python `Path.resolve()`/`stem`/`str(path)` parity, the WAV naming helpers of `pipeline.py`.
 //! * [`fsutil`]: atomic write / replace helpers, `tempfile.gettempdir()` parity, the process id.
 
+pub mod cancel;
 pub mod error;
 pub mod events;
 pub mod fsutil;

@@ -223,6 +223,8 @@ impl Translator for Ct2Translator {
         let batch_size = self.batch_size.max(1);
         let mut processed = 0usize;
         for batch in pending.chunks(batch_size) {
+            // The reader of the translation events is gone: stop instead of translating the rest.
+            se_core::cancel::check()?;
             let sources = batch
                 .iter()
                 .map(|(_, s)| self.source_tokens(strip(&s.text), source, target))

@@ -437,9 +437,10 @@ private struct RunningEngine: @unchecked Sendable {
 
     /// Reads stdout on a thread of its own until the pipe reaches EOF, which is when the thread ends. EOF comes when every
     /// holder of the write end has closed it: the engine, and any child process of it that inherited stdout. Such a child
-    /// that outlives the engine would keep this thread (and `lines()`) alive after the engine has exited; the engine
-    /// starts none today, and a future one that daemonizes must redirect stdout. Terminating the process does not stop the
-    /// thread by itself either; only EOF does.
+    /// that outlives the engine would keep this thread (and `lines()`) alive after the engine has exited. The engine's one
+    /// child, the local `llama-server` of `translate`, gets its stdout from `/dev/null` and its stderr from a temp file, so
+    /// it never holds this pipe, and the engine kills it on SIGTERM/SIGINT/SIGHUP before exiting; any future child must
+    /// redirect stdout too. Terminating the process does not stop the thread by itself either; only EOF does.
     private func readInBackground(chunk: @escaping @Sendable (Data) -> Void, finish: @escaping @Sendable () -> Void) {
         let handle = stdout
         Thread.detachNewThread {

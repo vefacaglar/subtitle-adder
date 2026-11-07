@@ -285,3 +285,63 @@ fn test_cli_completes_with_review_metadata_for_unrecoverable_line() {
     assert_eq!(first.get("needs_review").and_then(Value::as_bool), Some(true));
     assert!(!evs.iter().any(|e| ev_str(e, "event") == Some("error")));
 }
+
+/// stdout that accepts writes until the first `translation` event, then fails like a closed pipe.
+struct ClosingStdout {
+    written: Vec<u8>,
+    closed: bool,
+}
+
+impl std::io::Write for ClosingStdout {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.closed || String::from_utf8_lossy(buf).contains(r#""event": "translation""#) {
+            self.closed = true;
+            return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        }
+        self.written.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+#[serial]
+fn test_closed_stdout_stops_the_translation_after_the_current_batch() {
+    let _g = Guard::new();
+    let calls = Arc::new(Mutex::new(0usize));
+    let counter = Arc::clone(&calls);
+    let payload = r#"[{"id": 1, "start": 0, "end": 1, "text": "One."}, {"id": 2, "start": 1, "end": 2, "text": "Two."},
+        {"id": 3, "start": 2, "end": 3, "text": "Three."}, {"id": 4, "start": 3, "end": 4, "text": "Four."}]"#;
+    let fake = Fake {
+        require: Some(Box::new(|_| Ok(false))),
+        translator: Some(Box::new(move |_| {
+            let counter = Arc::clone(&counter);
+            let options = LlmOptions {
+                completion_fn: Some(Box::new(move |_| {
+                    *counter.lock().unwrap() += 1;
+                    Ok("[1] Merhaba.".to_string())
+                })),
+                batch_size: 1,
+                ..LlmOptions::default()
+            };
+            Ok(Box::new(LlamaTranslator::new("gemma-4-e4b", options)?) as Box<dyn Translator>)
+        })),
+        ..Fake::default()
+    };
+    let argv: Vec<std::ffi::OsString> =
+        ["translate", "--to", "tr", "--from", "en", "--json"].iter().map(std::ffi::OsString::from).collect();
+    let mut stdin: &[u8] = payload.as_bytes();
+    let mut stdout = ClosingStdout { written: Vec::new(), closed: false };
+    let mut stderr = Vec::new();
+    let code = {
+        let mut io = se_cli::Io { stdin: &mut stdin, stdout: &mut stdout, stderr: &mut stderr };
+        se_cli::main_with(&argv, &fake, &mut io)
+    };
+    assert_eq!(code, 1);
+    // The first batch's `translation` event hit the closed pipe: no request for the other three lines.
+    assert_eq!(*calls.lock().unwrap(), 1);
+    assert!(se_core::cancel::requested());
+    se_core::cancel::reset();
+}

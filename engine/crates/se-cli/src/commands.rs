@@ -61,10 +61,12 @@ pub fn stage_line(json: bool, stage: &str, fraction: Option<f64>, io: &mut Io<'_
 }
 
 /// The streams shared by the callbacks of one command. Callback signatures return `()`, so the first write
-/// error is kept and reported once the callee returns (Python would raise from inside the callback).
+/// error is kept and reported once the callee returns (Python would raise from inside the callback). It also
+/// requests process-wide cancellation, so translation batches and downloads stop at their next check instead
+/// of running to the end for a reader that is gone.
 struct Shared<'i, 'a> {
     io: RefCell<&'i mut Io<'a>>,
-    error: RefCell<Option<io::Error>>,
+    error: RefCell<Option<EngineError>>,
 }
 
 impl<'i, 'a> Shared<'i, 'a> {
@@ -78,6 +80,8 @@ impl<'i, 'a> Shared<'i, 'a> {
         }
         let mut io = self.io.borrow_mut();
         if let Err(e) = f(&mut io) {
+            let e = EngineError::from(e);
+            se_core::cancel::request(e.to_string());
             *self.error.borrow_mut() = Some(e);
         }
     }
@@ -93,7 +97,7 @@ impl<'i, 'a> Shared<'i, 'a> {
     /// The first callback write error, if any.
     fn check(&self) -> Result<()> {
         match self.error.borrow_mut().take() {
-            Some(e) => Err(EngineError::from(e)),
+            Some(e) => Err(e),
             None => Ok(()),
         }
     }
