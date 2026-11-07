@@ -2892,7 +2892,7 @@ public sealed class LocalProfileManager : IDisposable
             if (string.IsNullOrWhiteSpace(evt.VideoPath)) return;
             lock (_sync)
             {
-                if (_activeProfile is null) return;
+                if (!IsEventForActiveProfileLocked(evt)) return;
                 var normalized = NormalizeVideoPath(evt.VideoPath);
                 if (normalized.Length == 0) return;
                 var (key, existing) = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
@@ -2915,7 +2915,7 @@ public sealed class LocalProfileManager : IDisposable
             if (TryDecodeBase64(evt.PayloadBase64) is not { Length: > 0 } thumbBytes) return;
             lock (_sync)
             {
-                if (_activeProfile is null) return;
+                if (!IsEventForActiveProfileLocked(evt)) return;
                 var normalized = NormalizeVideoPath(evt.VideoPath);
                 if (normalized.Length == 0) return;
                 var (key, _) = GetOrCreateStatsLocked(_activeProfile, normalized, DateTimeOffset.UtcNow);
@@ -2946,6 +2946,14 @@ public sealed class LocalProfileManager : IDisposable
             }
         }
     }
+
+    // Watch-progress and thumbnail events carry the sender's username; another profile's events (or
+    // events without a username) must never touch, or create rows in, the active profile.
+    [System.Diagnostics.CodeAnalysis.MemberNotNullWhen(true, nameof(_activeProfile))]
+    private bool IsEventForActiveProfileLocked(StateSyncEvent evt) =>
+        _activeProfile is not null &&
+        !string.IsNullOrWhiteSpace(evt.Username) &&
+        string.Equals(evt.Username.Trim(), _activeProfile.Username, StringComparison.OrdinalIgnoreCase);
 
     private CrossProcessMutexScope AcquireCrossProcessMutex() => new(_mutexName);
 
