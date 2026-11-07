@@ -213,11 +213,11 @@ public class EngineKitTests
     public async Task NonzeroExitInRenderReportsLogTail()
     {
         var engine = Fake.Engine("""
-            err Traceback: boom
+            err panicked: boom
             exit 2
             """, UILanguage.Tr);
         var error = await Assert.ThrowsAsync<EngineException>(() => engine.RenderAsync([new Sentence(1, 0, 1, "A")], SubtitleFormat.Srt));
-        Assert.Equal("Motor hata koduyla çıktı (2). Traceback: boom", error.Message);
+        Assert.Equal("Motor hata koduyla çıktı (2). panicked: boom", error.Message);
     }
 
     [Fact]
@@ -429,9 +429,17 @@ public class EngineKitTests
     {
         var env = EngineCommand.ProcessEnvironment();
         env.Remove("SUBTITLE_ENGINE");
+        // The tests run from inside the repo, so the walk up reaches its Rust engine workspace.
+        var repoEngine = EngineCommand.FindRepoEngine(AppContext.BaseDirectory);
+        Assert.NotNull(repoEngine);
+        Assert.True(File.Exists(Path.Combine(repoEngine, "Cargo.toml")));
+        // engine\dist is gitignored, so it is only there after cargo build + stage-runtime.ps1.
+        var dist = Path.Combine(repoEngine, "dist", "subtitle-engine.exe");
         var command = EngineCommand.Locate(env);
-        Assert.NotNull(command);
-        Assert.Contains("subtitle-engine", command.Arguments);
+        if (File.Exists(dist))
+            Assert.Equal(new EngineCommand(dist), command);
+        else
+            Assert.Null(command);
     }
 
     [Fact]
@@ -459,36 +467,50 @@ public class EngineKitTests
     }
 
     [Fact]
-    public void DevEngineUsesUvFromKnownLocationsInOrder()
+    public void DevEngineUsesStagedDistOfNearestCargoRepo()
     {
         var root = MakeDir(Fake.TempPath("repo"));
         try
         {
-            Touch(Path.Combine(root, "engine", "pyproject.toml"));
             var baseDir = MakeDir(root, "apps", "windows", "bin", "Debug");
-            var home = MakeDir(root, "home");
-            var appData = MakeDir(root, "appdata");
-            var pathDir = MakeDir(root, "pathdir");
-            var env = new Dictionary<string, string?>
-            {
-                ["PATH"] = pathDir + ";" + Path.Combine(root, "missing"),
-                ["USERPROFILE"] = home,
-                ["APPDATA"] = appData,
-            };
+            var env = new Dictionary<string, string?>();
+            // A leftover Python engine (pyproject.toml) is not a Rust engine.
+            Touch(Path.Combine(root, "engine", "pyproject.toml"));
+            Touch(Path.Combine(root, "engine", "dist", "subtitle-engine.exe"));
+            Assert.Null(EngineCommand.FindRepoEngine(baseDir));
             Assert.Null(EngineCommand.Locate(env, baseDir));
 
-            var py39 = Touch(Path.Combine(appData, "Python", "Python39", "Scripts", "uv.exe"));
-            Assert.Equal(py39, EngineCommand.Locate(env, baseDir)!.Executable);
-            var py312 = Touch(Path.Combine(appData, "Python", "Python312", "Scripts", "uv.exe"));
-            Assert.Equal(py312, EngineCommand.Locate(env, baseDir)!.Executable);
-            var cargo = Touch(Path.Combine(home, ".cargo", "bin", "uv.exe"));
-            Assert.Equal(cargo, EngineCommand.Locate(env, baseDir)!.Executable);
-            var local = Touch(Path.Combine(home, ".local", "bin", "uv.exe"));
-            Assert.Equal(local, EngineCommand.Locate(env, baseDir)!.Executable);
-            var onPath = Touch(Path.Combine(pathDir, "uv.exe"));
-            var command = EngineCommand.Locate(env, baseDir)!;
-            Assert.Equal(onPath, command.Executable);
-            Assert.Equal(["run", "--quiet", "--project", Path.Combine(root, "engine"), "subtitle-engine"], command.Arguments);
+            // A Cargo workspace without a staged dist is not runnable.
+            File.Delete(Path.Combine(root, "engine", "dist", "subtitle-engine.exe"));
+            Touch(Path.Combine(root, "engine", "Cargo.toml"));
+            Assert.Equal(Path.Combine(root, "engine"), EngineCommand.FindRepoEngine(baseDir));
+            Assert.Null(EngineCommand.Locate(env, baseDir));
+
+            var exe = Touch(Path.Combine(root, "engine", "dist", "subtitle-engine.exe"));
+            Assert.Equal(new EngineCommand(exe), EngineCommand.Locate(env, baseDir));
+
+            // The nearest ancestor wins, even when its dist is not staged (no fallback to an outer repo).
+            Touch(Path.Combine(root, "apps", "engine", "Cargo.toml"));
+            Assert.Equal(Path.Combine(root, "apps", "engine"), EngineCommand.FindRepoEngine(baseDir));
+            Assert.Null(EngineCommand.Locate(env, baseDir));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void BundledEngineWinsOverDevDist()
+    {
+        var root = MakeDir(Fake.TempPath("repo"));
+        try
+        {
+            Touch(Path.Combine(root, "engine", "Cargo.toml"));
+            Touch(Path.Combine(root, "engine", "dist", "subtitle-engine.exe"));
+            var app = MakeDir(root, "build", "Subtitle Adder");
+            var bundled = Touch(Path.Combine(app, "subtitle-engine", "subtitle-engine.exe"));
+            Assert.Equal(new EngineCommand(bundled), EngineCommand.Locate(new Dictionary<string, string?>(), app));
         }
         finally
         {
@@ -502,7 +524,7 @@ public class EngineKitTests
         var dir = MakeDir(Fake.TempPath("norepo"));
         try
         {
-            // Temp is not inside a repo, so the walk up finds no engine\pyproject.toml.
+            // Temp is not inside a repo, so the walk up finds no engine\Cargo.toml.
             Assert.Null(EngineCommand.FindRepoEngine(dir));
             Assert.Null(EngineCommand.Locate(new Dictionary<string, string?>(), dir));
         }
@@ -516,7 +538,7 @@ public class EngineKitTests
     public void NotFoundErrorIsLocalized()
     {
         Assert.Equal(EngineError.NotFound, EngineException.NotFound(UILanguage.En).Error);
-        Assert.Equal("Subtitle engine not found (is uv installed, or is SUBTITLE_ENGINE set?).", EngineException.NotFound(UILanguage.En).Message);
+        Assert.Equal("Subtitle engine not found (is engine/dist built, or is SUBTITLE_ENGINE set?).", EngineException.NotFound(UILanguage.En).Message);
     }
 
     [Fact]

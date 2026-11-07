@@ -1,7 +1,8 @@
 namespace SubtitleAdder.EngineKit.Tests;
 
 /// <summary>
-/// End to end with the real dev engine via uv: <c>set ENGINE_E2E=1 &amp;&amp; dotnet test</c>. Needs no downloaded models:
+/// End to end with the real dev engine (the staged <c>engine/dist/subtitle-engine.exe</c>; <c>SUBTITLE_ENGINE</c> is ignored):
+/// <c>set ENGINE_E2E=1 &amp;&amp; dotnet test</c>. Needs no downloaded models:
 /// models / render / errors run without speech recognition.
 /// </summary>
 public class RealEngineTests

@@ -420,7 +420,7 @@ public sealed class EngineClient : IEngineClient
         }
 
         /// <summary>
-        /// Kills the engine and all its descendants (<c>uv run</c> spawns a Python child; Windows has no SIGTERM to forward).
+        /// Kills the engine and all its descendants (Windows has no SIGTERM to forward; the tree kill also covers any helper the engine spawns, such as <c>llama-server</c>).
         /// </summary>
         public void Terminate()
         {

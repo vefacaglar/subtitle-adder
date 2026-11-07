@@ -1,7 +1,8 @@
 namespace SubtitleAdder.EngineKit;
 
 /// <summary>
-/// Command that launches the engine. <c>uv run</c> in development, the PyInstaller onedir next to the app when packaged.
+/// Command that launches the engine: the Rust engine folder (<c>subtitle-engine.exe</c> plus its runtime DLLs) next to
+/// the app when packaged, or the repo's staged <c>engine\dist</c> in development.
 /// </summary>
 public sealed record EngineCommand(string Executable, IReadOnlyList<string> Arguments)
 {
@@ -13,8 +14,8 @@ public sealed record EngineCommand(string Executable, IReadOnlyList<string> Argu
     public override int GetHashCode() => HashCode.Combine(Executable, Arguments.Count);
 
     /// <summary>
-    /// Location of the packaged engine: <c>&lt;base&gt;\subtitle-engine\subtitle-engine.exe</c> (PyInstaller onedir next
-    /// to SubtitleAdder.exe). <c>null</c> if not found.
+    /// Location of the packaged engine: <c>&lt;base&gt;\subtitle-engine\subtitle-engine.exe</c> (the staged Rust engine
+    /// folder, with its DLLs, next to SubtitleAdder.exe). <c>null</c> if not found.
     /// </summary>
     public static string? BundledEngine(string? baseDirectory = null)
     {
@@ -24,9 +25,10 @@ public sealed record EngineCommand(string Executable, IReadOnlyList<string> Argu
 
     /// <summary>
     /// In order: the <c>SUBTITLE_ENGINE</c> environment variable (engine exe), the packaged engine next to the app, and in
-    /// development the <c>engine\</c> project of the repo found by walking up from <paramref name="baseDirectory"/>
-    /// (<c>uv run</c>). <paramref name="environment"/> defaults to the process environment and is also where PATH,
-    /// USERPROFILE and APPDATA are read from. <c>null</c> when nothing is found.
+    /// development <c>engine\dist\subtitle-engine.exe</c> of the repo found by walking up from
+    /// <paramref name="baseDirectory"/> (built with <c>cargo build --release -p se-cli</c> and staged with
+    /// <c>engine\scripts\stage-runtime.ps1</c>). <paramref name="environment"/> defaults to the process environment.
+    /// <c>null</c> when nothing is found.
     /// </summary>
     public static EngineCommand? Locate(IReadOnlyDictionary<string, string?>? environment = null, string? baseDirectory = null)
     {
@@ -37,61 +39,20 @@ public sealed record EngineCommand(string Executable, IReadOnlyList<string> Argu
         if (BundledEngine(baseDirectory) is { } bundled)
             return new EngineCommand(bundled);
         if (FindRepoEngine(baseDirectory) is not { } repoEngine) return null;
-        if (UvCandidates(environment).FirstOrDefault(File.Exists) is not { } uv) return null;
-        return new EngineCommand(uv, ["run", "--quiet", "--project", repoEngine, "subtitle-engine"]);
+        var dev = Path.Combine(repoEngine, "dist", "subtitle-engine.exe");
+        return File.Exists(dev) ? new EngineCommand(dev) : null;
     }
 
-    /// <summary>The nearest ancestor of <paramref name="start"/> (inclusive) that has <c>engine\pyproject.toml</c>; returns that engine directory.</summary>
+    /// <summary>The nearest ancestor of <paramref name="start"/> (inclusive) that has <c>engine\Cargo.toml</c>; returns that engine directory.</summary>
     internal static string? FindRepoEngine(string start)
     {
         for (var dir = new DirectoryInfo(Path.GetFullPath(start)); dir is not null; dir = dir.Parent)
         {
             var engine = Path.Combine(dir.FullName, "engine");
-            if (File.Exists(Path.Combine(engine, "pyproject.toml"))) return engine;
+            if (File.Exists(Path.Combine(engine, "Cargo.toml"))) return engine;
         }
         return null;
     }
-
-    /// <summary>
-    /// Where uv may live, in lookup order: PATH entries, <c>%USERPROFILE%\.local\bin</c> (the official installer),
-    /// <c>%USERPROFILE%\.cargo\bin</c>, then <c>%APPDATA%\Python\Python3*\Scripts</c> (<c>pip install --user uv</c>, newest first).
-    /// </summary>
-    internal static IEnumerable<string> UvCandidates(IReadOnlyDictionary<string, string?> environment)
-    {
-        foreach (var dir in (Get(environment, "PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var trimmed = dir.Trim().Trim('"');
-            if (trimmed.Length > 0) yield return Path.Combine(trimmed, "uv.exe");
-        }
-        if (Get(environment, "USERPROFILE") is { Length: > 0 } home)
-        {
-            yield return Path.Combine(home, ".local", "bin", "uv.exe");
-            yield return Path.Combine(home, ".cargo", "bin", "uv.exe");
-        }
-        if (Get(environment, "APPDATA") is { Length: > 0 } appData)
-        {
-            var python = Path.Combine(appData, "Python");
-            string[] versions;
-            try
-            {
-                versions = Directory.Exists(python) ? Directory.GetDirectories(python, "Python3*") : [];
-            }
-            catch (IOException)
-            {
-                versions = [];
-            }
-            catch (UnauthorizedAccessException)
-            {
-                versions = [];
-            }
-            // Python313 before Python312; numeric so that Python310 sorts after Python39.
-            foreach (var version in versions.OrderByDescending(VersionKey))
-                yield return Path.Combine(version, "Scripts", "uv.exe");
-        }
-    }
-
-    private static int VersionKey(string directory) =>
-        int.TryParse(Path.GetFileName(directory).AsSpan("Python".Length), out var n) ? n : 0;
 
     /// <summary>Case-insensitive lookup, as Windows environment variable names are.</summary>
     private static string? Get(IReadOnlyDictionary<string, string?> environment, string name)
@@ -133,7 +94,7 @@ public sealed class EngineException : Exception
 
     /// <summary>The engine could not be located (message in <paramref name="language"/>, default the current UI language).</summary>
     public static EngineException NotFound(UILanguage? language = null) =>
-        new(EngineError.NotFound, EngineStrings.Get("Altyazı motoru bulunamadı (uv kurulu mu, ya da SUBTITLE_ENGINE ayarlı mı?).", language));
+        new(EngineError.NotFound, EngineStrings.Get("Altyazı motoru bulunamadı (engine/dist derlendi mi, ya da SUBTITLE_ENGINE ayarlı mı?).", language));
 
     public static EngineException Failed(string message) => new(EngineError.Failed, message);
 }

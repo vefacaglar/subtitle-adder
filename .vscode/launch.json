@@ -13,8 +13,7 @@
             "type": "node-terminal",
             "request": "launch",
             "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\" -Zip",
-            "cwd": "${workspaceFolder}",
-            "preLaunchTask": "engine: uv sync"
+            "cwd": "${workspaceFolder}"
         },
         {
             "name": "Subtitle Adder (Windows)",
@@ -35,50 +34,6 @@
             "cwd": "${workspaceFolder}/apps/macos",
             "args": [],
             "preLaunchTask": "Prepare (engine + app)"
-        },
-        {
-            "name": "Engine: process demo video (Python)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "subtitle_engine.cli",
-            "args": [
-                "transcribe",
-                "${workspaceFolder}/samples/demo.mp4",
-                "-m",
-                "base",
-                "-l",
-                "tr",
-                "-o",
-                "${workspaceFolder}/output",
-                "-f",
-                "srt",
-                "vtt",
-                "json"
-            ],
-            "cwd": "${workspaceFolder}/engine",
-            "python": "${workspaceFolder}/engine/.venv/bin/python",
-            "justMyCode": true,
-            "console": "integratedTerminal",
-            "preLaunchTask": "engine: uv sync",
-            "windows": {
-                "python": "${workspaceFolder}/engine/.venv/Scripts/python.exe"
-            }
-        },
-        {
-            "name": "Engine: tests (pytest)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "args": [
-                "-q"
-            ],
-            "cwd": "${workspaceFolder}/engine",
-            "python": "${workspaceFolder}/engine/.venv/bin/python",
-            "console": "integratedTerminal",
-            "preLaunchTask": "engine: uv sync",
-            "windows": {
-                "python": "${workspaceFolder}/engine/.venv/Scripts/python.exe"
-            }
         },
         {
             "name": "Subtitle Adder (macOS, release)",

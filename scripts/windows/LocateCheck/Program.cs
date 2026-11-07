@@ -1,6 +1,6 @@
 // Usage: LocateCheck <assembled app dir>
 // Runs EngineCommand.Locate as SubtitleAdder.exe would from that directory (SUBTITLE_ENGINE unset) and exits 0
-// only when it resolves to <dir>\subtitle-engine\subtitle-engine.exe, not to the repo's `uv run` fallback.
+// only when it resolves to <dir>\subtitle-engine\subtitle-engine.exe, not to the repo's engine\dist dev fallback.
 using SubtitleAdder.EngineKit;
 
 if (args.Length != 1)

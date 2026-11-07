@@ -1,15 +1,18 @@
 #Requires -Version 7
 <#
 .SYNOPSIS
-Packages Subtitle Adder for Windows: the WinUI 3 app (self-contained) + the PyInstaller (onedir) engine.
+Packages Subtitle Adder for Windows: the WinUI 3 app (self-contained) + the Rust engine folder.
 
 .DESCRIPTION
     pwsh scripts/package-windows.ps1 [-SkipEngineBuild] [-SmokeTest] [-Zip] [-Version 0.2.0]
 
 Output: build\Subtitle Adder\SubtitleAdder.exe with build\Subtitle Adder\subtitle-engine\subtitle-engine.exe next to
-it (EngineCommand.Locate's packaged path). Builds for win-x64 only.
+it (EngineCommand.Locate's packaged path), plus the engine's runtime DLLs (FFmpeg, OpenMP, ONNX Runtime, sherpa-onnx)
+staged by engine\scripts\stage-runtime.ps1. Builds for win-x64 only. Needs cargo (PATH or %USERPROFILE%\.cargo\bin)
+unless the engine build is skipped.
 
 Environment variables:
+  SKIP_ENGINE_BUILD     1 = same as -SkipEngineBuild.
   VERSION               Version (default: <Version> of SubtitleAdder.csproj); -Version wins.
   SIGN_CERT_THUMBPRINT  SHA-1 thumbprint of a code-signing certificate in the certificate store. If set and signtool
                         is found (PATH or the Windows SDK), the app's and the engine's own binaries are Authenticode
@@ -17,7 +20,8 @@ Environment variables:
   SIGN_TIMESTAMP_URL    RFC 3161 timestamp server (default: http://timestamp.digicert.com).
 
 .PARAMETER SkipEngineBuild
-Reuses build\engine-dist\subtitle-engine if it is already built (like SKIP_ENGINE_BUILD=1 on macOS).
+Skips fetch-runtime / cargo build / stage-runtime and reuses an already staged engine: build\engine-dist\subtitle-engine
+if present, else engine\dist (like SKIP_ENGINE_BUILD=1 on macOS).
 
 .PARAMETER SmokeTest
 Launches SubtitleAdder.exe briefly to verify startup.
@@ -47,21 +51,14 @@ $LocateCheck = Join-Path $Root 'scripts\windows\LocateCheck\LocateCheck.csproj'
 
 function Log([string]$Message) { Write-Host "`n==> $Message" }
 
-# Same places EngineCommand.UvCandidates looks, so a machine that runs the dev app can also package it.
-function Find-Uv {
-    $onPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+function Find-Cargo {
+    $onPath = Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($onPath) { return $onPath.Source }
-    $candidates = @()
     if ($env:USERPROFILE) {
-        $candidates += Join-Path $env:USERPROFILE '.local\bin\uv.exe'
-        $candidates += Join-Path $env:USERPROFILE '.cargo\bin\uv.exe'
+        $rustup = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
+        if (Test-Path $rustup) { return $rustup }
     }
-    if ($env:APPDATA -and (Test-Path (Join-Path $env:APPDATA 'Python'))) {
-        $candidates += Get-ChildItem (Join-Path $env:APPDATA 'Python') -Directory -Filter 'Python3*' |
-            Sort-Object { [int]($_.Name.Substring('Python'.Length) -replace '\D', '') } -Descending |
-            ForEach-Object { Join-Path $_.FullName 'Scripts\uv.exe' }
-    }
-    return $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    return $null
 }
 
 function Find-SignTool {
@@ -100,48 +97,38 @@ Get-ChildItem $outDir -Recurse -File -Include *.pri, *.xbf | ForEach-Object {
 }
 if (-not (Test-Path (Join-Path $Publish 'SubtitleAdder.pri'))) { throw "SubtitleAdder.pri is missing from $Publish." }
 
-if (-not $SkipEngineBuild -or -not (Test-Path $EngineExe)) {
-    Log '2/5 Building engine (PyInstaller onedir — takes ~30-45s)'
-    $uv = Find-Uv
-    if (-not $uv) { throw 'uv not found; install it (https://docs.astral.sh/uv/) or add it to PATH.' }
-    # A separate environment with only the runtime deps + PyInstaller: the dev engine\.venv (pytest, cuda group)
-    # is left untouched and nothing from it leaks into the package.
-    $oldVirtualEnv = $env:VIRTUAL_ENV
-    Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
-    $env:UV_PROJECT_ENVIRONMENT = Join-Path $Build 'engine-venv'
-    Push-Location (Join-Path $Root 'engine')
+if ($env:SKIP_ENGINE_BUILD -eq '1') { $SkipEngineBuild = $true }
+$EngineDir = Join-Path $Root 'engine'
+if ($SkipEngineBuild) {
+    if (-not (Test-Path $EngineExe)) {
+        # No previous package build: reuse the dev engine staged by stage-runtime.ps1.
+        $EngineDist = Join-Path $EngineDir 'dist'
+        $EngineExe = Join-Path $EngineDist 'subtitle-engine.exe'
+    }
+    if (-not (Test-Path $EngineExe)) { throw "-SkipEngineBuild: no staged engine in build\engine-dist\subtitle-engine or engine\dist." }
+    Log "2/5 Engine build skipped (reusing $EngineDist)"
+}
+else {
+    Log '2/5 Building engine (fetch-runtime, cargo build --release, stage-runtime)'
+    $cargo = Find-Cargo
+    if (-not $cargo) { throw 'cargo not found; install Rust (https://rustup.rs/) or add cargo to PATH.' }
+    # Downloads the sherpa-onnx / FFmpeg runtimes into engine\.runtime for the cargo build and stage-runtime.ps1.
+    & (Join-Path $EngineDir 'scripts\fetch-runtime.ps1')
+    # The FFmpeg bindings link against FFMPEG_DIR at build time; default to the fetched SDK.
+    $fetchedFFmpeg = Join-Path $EngineDir '.runtime\ffmpeg'
+    if (-not $env:FFMPEG_DIR -and (Test-Path (Join-Path $fetchedFFmpeg 'bin'))) { $env:FFMPEG_DIR = $fetchedFFmpeg }
+    Push-Location $EngineDir
     try {
-        & $uv sync --locked --no-default-groups --group build --quiet
-        & $uv run --no-sync pyinstaller subtitle-engine.spec --noconfirm --log-level ERROR `
-            --distpath (Join-Path $Build 'engine-dist') --workpath (Join-Path $Build 'engine-work')
+        & $cargo build --release -p se-cli -j 2
     }
     finally {
         Pop-Location
-        Remove-Item Env:UV_PROJECT_ENVIRONMENT -ErrorAction SilentlyContinue
-        if ($oldVirtualEnv) { $env:VIRTUAL_ENV = $oldVirtualEnv }
     }
-    if (-not (Test-Path $EngineExe)) { throw "PyInstaller produced no $EngineExe." }
-}
-else {
-    Log '2/5 Engine build skipped'
-}
-
-# Seed the local CUDA runtime cache from engine\.venv if available so the packaged app uses the GPU immediately
-# without having to re-download the wheels on this machine.
-$devNvidia = Join-Path $Root 'engine\.venv\Lib\site-packages\nvidia'
-if ($env:LOCALAPPDATA -and (Test-Path $devNvidia)) {
-    $cudaCacheNvidia = Join-Path $env:LOCALAPPDATA 'SubtitleAdder\cuda\nvidia'
-    Get-ChildItem $devNvidia -Directory | ForEach-Object {
-        $srcBin = Join-Path $_.FullName 'bin'
-        if (Test-Path $srcBin) {
-            $dstBin = Join-Path $cudaCacheNvidia "$($_.Name)\bin"
-            New-Item -ItemType Directory -Force $dstBin | Out-Null
-            Get-ChildItem $srcBin -Filter *.dll -File | ForEach-Object {
-                $dstFile = Join-Path $dstBin $_.Name
-                if (-not (Test-Path $dstFile)) { Copy-Item $_.FullName $dstFile }
-            }
-        }
-    }
+    # A fresh folder so DLLs from an older runtime never linger in the package.
+    if (Test-Path $EngineDist) { Remove-Item $EngineDist -Recurse -Force }
+    # stage-runtime.ps1 also smoke-tests `models --json` from the staged folder with a clean PATH.
+    & (Join-Path $EngineDir 'scripts\stage-runtime.ps1') -Dist $EngineDist
+    if (-not (Test-Path $EngineExe)) { throw "stage-runtime.ps1 produced no $EngineExe." }
 }
 
 Log '3/5 Assembling folder'
@@ -157,7 +144,7 @@ if ($thumbprint -and $signtool) {
     Log "4/5 Signing (certificate $thumbprint)"
     $timestamp = if ($env:SIGN_TIMESTAMP_URL) { $env:SIGN_TIMESTAMP_URL } else { 'http://timestamp.digicert.com' }
     # Only our own binaries: the two launchers and the app's managed assemblies. Third-party DLLs (WinAppSDK,
-    # onnxruntime, Python) keep their vendors' signatures.
+    # FFmpeg, OpenMP, onnxruntime, sherpa-onnx) keep their vendors' signatures.
     $files = @(
         (Join-Path $AppDir 'SubtitleAdder.exe'),
         (Join-Path $AppDir 'SubtitleAdder.dll'),
@@ -177,12 +164,12 @@ else {
 
 Log 'Verifying'
 $bundledEngine = Join-Path $AppDir 'subtitle-engine\subtitle-engine.exe'
-# The packaged engine runs on its own (no uv, no repo) and speaks protocol v1; `models` needs no network.
+# The packaged engine runs on its own (no cargo, no repo) and speaks protocol v1; `models` needs no network.
 $line = @(& $bundledEngine models --json)[0]
 $listing = $line | ConvertFrom-Json
 if ($listing.event -ne 'models' -or $listing.models.Count -lt 1) { throw "Unexpected output from the bundled engine: $line" }
 Write-Host "Bundled engine lists $($listing.models.Count) models."
-# The app must pick the bundled engine, not the repo's `uv run` fallback (build\ is inside the repo).
+# The app must pick the bundled engine, not the repo's engine\dist dev fallback (build\ is inside the repo).
 $locateOut = Join-Path $Build 'locate-check'
 dotnet build $LocateCheck -c Release -o $locateOut -nologo -v quiet
 & (Join-Path $locateOut 'LocateCheck.exe') $AppDir

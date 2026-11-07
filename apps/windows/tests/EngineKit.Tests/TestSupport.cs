@@ -82,7 +82,7 @@ internal static class Fake
     }
 }
 
-/// <summary>A fact that runs only with <c>ENGINE_E2E=1</c> (real engine via uv).</summary>
+/// <summary>A fact that runs only with <c>ENGINE_E2E=1</c> (real engine from <c>engine/dist</c>).</summary>
 public sealed class E2EFactAttribute : FactAttribute
 {
     public E2EFactAttribute()

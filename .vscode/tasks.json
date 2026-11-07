@@ -2,27 +2,27 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "engine: uv sync",
+            "label": "engine: build",
+            "detail": "Builds the Rust engine and stages it with its runtime libraries into engine/dist (the app's dev engine).",
             "type": "shell",
-            "command": "uv sync",
+            "command": "bash scripts/fetch-runtime.sh && cargo build --release -p se-cli && bash scripts/stage-runtime.sh",
             "options": {
                 "cwd": "${workspaceFolder}/engine",
                 "env": {
-                    "PATH": "${env:HOME}/.local/bin:/opt/homebrew/bin:${env:PATH}"
+                    "PATH": "${env:HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}"
                 }
             },
-            "problemMatcher": [],
+            "problemMatcher": [
+                "$rustc"
+            ],
             "presentation": {
                 "reveal": "silent"
             },
             "windows": {
-                "options": {
-                    "cwd": "${workspaceFolder}/engine",
-                    "env": {
-                        "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}"
-                    }
-                },
-                "command": "uv sync --group cuda"
+                "dependsOn": [
+                    "windows: engine build"
+                ],
+                "command": "echo engine staged"
             }
         },
         {
@@ -46,7 +46,7 @@
         {
             "label": "Prepare (engine + app)",
             "dependsOn": [
-                "engine: uv sync",
+                "engine: build",
                 "app: build"
             ],
             "group": {
@@ -76,7 +76,7 @@
         {
             "label": "Prepare release (engine + app)",
             "dependsOn": [
-                "engine: uv sync",
+                "engine: build",
                 "app: build release"
             ],
             "group": "build",
@@ -84,13 +84,13 @@
         },
         {
             "label": "macOS: release (.app)",
-            "detail": "Full macOS release: Swift release build + PyInstaller engine, assembled and signed as build/Subtitle Adder.app (scripts/package-macos.sh).",
+            "detail": "Full macOS release: Swift release build + Rust engine (cargo + engine/scripts/stage-runtime.sh), assembled and signed as build/Subtitle Adder.app (scripts/package-macos.sh).",
             "type": "shell",
             "command": "\"${workspaceFolder}/scripts/package-macos.sh\"",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "env": {
-                    "PATH": "${env:HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}"
+                    "PATH": "${env:HOME}/.cargo/bin:${env:HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}"
                 }
             },
             "problemMatcher": [],
@@ -103,13 +103,13 @@
         },
         {
             "label": "macOS: release (.app, quick)",
-            "detail": "Same as 'macOS: release (.app)' but reuses the already built engine (build/engine-dist); use when only Swift code changed.",
+            "detail": "Same as 'macOS: release (.app)' but reuses the already staged engine (engine/dist); use when only Swift code changed.",
             "type": "shell",
             "command": "\"${workspaceFolder}/scripts/package-macos.sh\"",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "env": {
-                    "PATH": "${env:HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}",
+                    "PATH": "${env:HOME}/.cargo/bin:${env:HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}",
                     "SKIP_ENGINE_BUILD": "1"
                 }
             },
@@ -129,7 +129,7 @@
             "options": {
                 "cwd": "${workspaceFolder}",
                 "env": {
-                    "PATH": "${env:HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}"
+                    "PATH": "${env:HOME}/.cargo/bin:${env:HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${env:PATH}"
                 }
             },
             "problemMatcher": [],
@@ -151,7 +151,7 @@
                 }
             },
             "dependsOn": [
-                "engine: uv sync"
+                "engine: build"
             ],
             "problemMatcher": [
                 "$swiftc"
@@ -161,7 +161,7 @@
         {
             "label": "Tests (engine + app)",
             "type": "shell",
-            "command": "(cd engine && uv run pytest) && (cd apps/macos && swift test)",
+            "command": "(cd engine && cargo test --workspace) && (cd apps/macos && swift test)",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "env": {
@@ -192,6 +192,46 @@
             ]
         },
         {
+            "label": "windows: engine build",
+            "detail": "Builds the Rust engine (cargo build --release -p se-cli) and stages it with its runtime DLLs into engine/dist, where the dev app finds it.",
+            "type": "process",
+            "command": "pwsh.exe",
+            "args": [
+                "-NoProfile",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; $PSNativeCommandUseErrorActionPreference = $true; & '${workspaceFolder}/engine/scripts/fetch-runtime.ps1'; if (-not $env:FFMPEG_DIR) { $env:FFMPEG_DIR = '${workspaceFolder}/engine/.runtime/ffmpeg' }; cargo build --release -p se-cli -j 2; & '${workspaceFolder}/engine/scripts/stage-runtime.ps1'"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/engine",
+                "env": {
+                    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:Path}"
+                }
+            },
+            "problemMatcher": "$rustc",
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "windows: engine test",
+            "type": "process",
+            "command": "pwsh.exe",
+            "args": [
+                "-NoProfile",
+                "-Command",
+                "$PSNativeCommandUseErrorActionPreference = $true; $ErrorActionPreference = 'Stop'; if (-not $env:FFMPEG_DIR) { $env:FFMPEG_DIR = '${workspaceFolder}/engine/.runtime/ffmpeg' }; cargo test --workspace -j 2"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/engine",
+                "env": {
+                    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:Path}"
+                }
+            },
+            "problemMatcher": "$rustc",
+            "group": "test"
+        },
+        {
             "label": "windows: build",
             "type": "process",
             "command": "dotnet",
@@ -203,7 +243,7 @@
                 "-consoleloggerparameters:NoSummary"
             ],
             "dependsOn": [
-                "engine: uv sync"
+                "windows: engine build"
             ],
             "problemMatcher": "$msCompile",
             "group": "build",
@@ -220,11 +260,6 @@
                 "${workspaceFolder}/apps/windows/SubtitleAdder.slnx",
                 "-p:Platform=x64"
             ],
-            "options": {
-                "env": {
-                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}"
-                }
-            },
             "problemMatcher": "$msCompile",
             "group": "test"
         },
@@ -237,9 +272,11 @@
                 "${workspaceFolder}/apps/windows/SubtitleAdder.slnx",
                 "-p:Platform=x64"
             ],
+            "dependsOn": [
+                "windows: engine build"
+            ],
             "options": {
                 "env": {
-                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}",
                     "ENGINE_E2E": "1"
                 }
             },
@@ -253,7 +290,7 @@
             "options": {
                 "cwd": "${workspaceFolder}",
                 "env": {
-                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}"
+                    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:Path}"
                 }
             },
             "problemMatcher": []
@@ -262,13 +299,10 @@
             "label": "windows: publish",
             "type": "shell",
             "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\" -Zip",
-            "dependsOn": [
-                "engine: uv sync"
-            ],
             "options": {
                 "cwd": "${workspaceFolder}",
                 "env": {
-                    "PATH": "${env:USERPROFILE}\\.local\\bin;${env:APPDATA}\\Python\\Python312\\Scripts;${env:LOCALAPPDATA}\\Microsoft\\WindowsApps;${env:Path}"
+                    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:Path}"
                 }
             },
             "problemMatcher": [],
