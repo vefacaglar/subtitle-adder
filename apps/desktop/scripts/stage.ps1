@@ -3,8 +3,9 @@
 Builds the Rust desktop app (release) and stages a runnable Windows app into apps\desktop\dist:
 
     dist\SubtitleAdder.exe
-    dist\*.dll                      FFmpeg 8.1 shared libraries (avcodec, avformat, ... from FFMPEG_DIR\bin)
-    dist\subtitle-engine\           the engine (copied from engine\dist: subtitle-engine.exe + its runtime DLLs)
+    dist\*.dll                      FFmpeg 8.1 LGPL shared libraries (avcodec, avformat, ... from FFMPEG_LGPL_DIR\bin)
+    dist\subtitle-engine\           the engine (copied from engine\dist: subtitle-engine.exe + its runtime DLLs,
+                                    including its own GPL FFmpeg build)
 
     powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/stage.ps1 [-Force] [-SkipEngine]
 
@@ -16,6 +17,13 @@ engine\dist only produces a warning; the app then reports that the engine was no
 Toolchain: MSVC (cl/link), libclang and FFmpeg 8.1 dev files. When cl.exe is not on PATH, a machine-local setup script
 is dot-sourced first ($env:SUBTITLE_ENGINE_DEVENV, else %USERPROFILE%\.devtools\devenv.ps1; not part of the repo).
 FFMPEG_DIR defaults to engine\.runtime\ffmpeg (fetched by engine\scripts\fetch-runtime.ps1 -Only ffmpeg when missing).
+
+FFmpeg licensing: the app compiles against the GPL SDK in FFMPEG_DIR (the engine's; same API and DLL names), but
+the DLLs staged next to SubtitleAdder.exe are the LGPL shared build of the same BtbN autobuild (FFMPEG_LGPL_DIR,
+default engine\.runtime\ffmpeg-lgpl, fetched by fetch-runtime.ps1 -Only ffmpeg-lgpl when missing): the
+player only decodes. The engine folder keeps its GPL DLLs (libx264 for `preview`). Windows resolves each process's
+import DLLs from its own executable's folder first, so neither process loads the other's copies; the staged app is
+checked with `SubtitleAdder.exe --probe` on a PATH without any FFmpeg (it must load and report an LGPL avcodec).
 CARGO_TARGET_DIR defaults to %USERPROFILE%\.subtitle-adder-desktop-target because long paths break cl.exe.
 Windows PowerShell 5.1 compatible.
 #>
@@ -31,6 +39,7 @@ $exe = Join-Path $dist 'SubtitleAdder.exe'
 # Long target paths break cl.exe, so default to a short one outside the repo (before devenv.ps1 picks its own).
 if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE '.subtitle-adder-desktop-target' }
 if (-not $env:FFMPEG_DIR) { $env:FFMPEG_DIR = Join-Path $engine '.runtime\ffmpeg' }
+$ffmpegLgpl = if ($env:FFMPEG_LGPL_DIR) { $env:FFMPEG_LGPL_DIR } else { Join-Path $engine '.runtime\ffmpeg-lgpl' }
 $built = Join-Path $env:CARGO_TARGET_DIR 'release\SubtitleAdder.exe'
 
 function Get-NewestSource {
@@ -103,13 +112,39 @@ if ($needBuild -or -not (Test-Path $exe)) {
     Copy-Item -LiteralPath $built -Destination $exe -Force
 }
 
-# FFmpeg runtime next to the exe (the player links it dynamically; LGPL/GPL shared DLLs, ARCHITECTURE.md section 11).
-$ffbin = Join-Path $env:FFMPEG_DIR 'bin'
-if (Test-Path $ffbin) {
-    Get-ChildItem $ffbin -Filter *.dll | ForEach-Object { Copy-IfNewer $_.FullName (Join-Path $dist $_.Name) }
-} else {
-    Write-Warning "FFmpeg DLLs not found in $ffbin; the app will not start without them."
+# The player's FFmpeg runtime next to the exe: the LGPL shared build (ARCHITECTURE.md section 11), never the GPL DLLs
+# of FFMPEG_DIR (those stay the engine's). Copied by content: both builds use the same file names.
+$ffbin = Join-Path $ffmpegLgpl 'bin'
+if (-not (Test-Path (Join-Path $ffbin 'avcodec-62.dll')) -and -not $env:FFMPEG_LGPL_DIR) {
+    try {
+        & (Join-Path $engine 'scripts\fetch-runtime.ps1') -Only ffmpeg-lgpl
+    } catch {
+        Write-Warning "Fetching the LGPL FFmpeg failed: $($_.Exception.Message)"
+    }
 }
+$requireLgpl = $true
+if (-not (Test-Path (Join-Path $ffbin 'avcodec-62.dll'))) {
+    if ($env:FFMPEG_LGPL_DIR) { throw "LGPL FFmpeg DLLs not found in $ffbin (FFMPEG_LGPL_DIR)." }
+    # A local run must still start; never what a package ships (package-desktop-windows.ps1 has no fallback).
+    Write-Warning "LGPL FFmpeg DLLs not found in $ffbin; staging the GPL DLLs of FFMPEG_DIR for this local run only."
+    $ffbin = Join-Path $env:FFMPEG_DIR 'bin'
+    $requireLgpl = $false
+}
+$lgplDlls = @(Get-ChildItem $ffbin -Filter *.dll -File)
+foreach ($dll in $lgplDlls) {
+    $to = Join-Path $dist $dll.Name
+    if (-not (Test-Path $to) -or (Get-FileHash -LiteralPath $to).Hash -ne (Get-FileHash -LiteralPath $dll.FullName).Hash) {
+        Copy-Item -LiteralPath $dll.FullName -Destination $to -Force
+    }
+}
+# The license text and notice of whichever build was staged (LGPL; GPL only in the local fallback above).
+. (Join-Path $engine 'scripts\ffmpeg-notice.ps1')
+Write-FFmpegNotice -FFmpegDir (Split-Path $ffbin -Parent) -To $dist -Kind $(if ($requireLgpl) { 'LGPL' } else { 'GPL' })
+# FFmpeg DLLs an earlier (GPL) staging left behind that the LGPL build does not have.
+$ffmpegNames = '^(avcodec|avdevice|avfilter|avformat|avutil|postproc|swresample|swscale)-\d+\.dll$'
+Get-ChildItem $dist -Filter *.dll -File | Where-Object {
+    $_.Name -match $ffmpegNames -and -not ($lgplDlls.Name -contains $_.Name)
+} | Remove-Item -Force
 
 # The engine: <exe dir>\subtitle-engine\subtitle-engine.exe (ARCHITECTURE.md section 8.4).
 if (-not $SkipEngine) {
@@ -123,5 +158,21 @@ if (-not $SkipEngine) {
         Write-Warning "engine\dist\subtitle-engine.exe not found; run engine\scripts\build-dev.ps1 first."
     }
 }
+
+# The staged app must start from its own folder alone and load the LGPL FFmpeg (no FFmpeg on PATH, so a missing DLL
+# or symbol cannot be filled in from the GPL SDK).
+$savedPath = $env:Path
+$probeOut = Join-Path ([IO.Path]::GetTempPath()) "SubtitleAdder-probe-$PID.txt"
+try {
+    $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+    $probe = Start-Process -FilePath $exe -ArgumentList '--probe' -NoNewWindow -Wait -PassThru -RedirectStandardOutput $probeOut
+    $probeText = if (Test-Path $probeOut) { (Get-Content -Raw $probeOut) } else { '' }
+} finally {
+    $env:Path = $savedPath
+    Remove-Item $probeOut -ErrorAction SilentlyContinue
+}
+if ($probe.ExitCode -ne 0) { throw "dist\SubtitleAdder.exe --probe failed (exit code $($probe.ExitCode)); a runtime DLL is missing." }
+if ($requireLgpl -and $probeText -notmatch '(?m)^ffmpeg license: LGPL') { throw "dist\SubtitleAdder.exe did not load an LGPL FFmpeg:`n$probeText" }
+Write-Host ($probeText.Trim() -split "`r?`n" | Where-Object { $_ -match '^ffmpeg' }) -Separator "`n"
 
 Write-Host "Staged $exe"

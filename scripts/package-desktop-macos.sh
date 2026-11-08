@@ -12,7 +12,11 @@
 #   BUNDLE_ID       default: app.subtitleadder.mac (the UserDefaults domain and Application Support identity: keep it)
 #   MAKE_DMG=1      Also builds build/desktop/Subtitle Adder.dmg.
 #   SKIP_ENGINE_BUILD=1  Reuses an already staged engine/dist (skips fetch/cargo/stage).
-#   FFMPEG_DIR      FFmpeg 8.x shared install for the player (lib/*.dylib); default: `brew --prefix ffmpeg`.
+#   FFMPEG_DIR      FFmpeg 8.x shared install the app builds against and the engine ships (lib/*.dylib; the
+#                   engine's `preview` needs a GPL build with libx264); default: `brew --prefix ffmpeg`.
+#   FFMPEG_LGPL_DIR FFmpeg 8.x LGPL shared install (same library versions) whose dylibs the player ships in
+#                   Contents/Frameworks instead of FFMPEG_DIR's (ARCHITECTURE.md §11). Unset: FFMPEG_DIR's are
+#                   bundled and the script warns, since Homebrew's ffmpeg is a GPL build.
 #
 # Bundle: Contents/MacOS/SubtitleAdderApp (CFBundleExecutable, the Rust `SubtitleAdder` binary renamed),
 # Contents/Frameworks/*.dylib (the player's FFmpeg, install names rewritten to @executable_path/../Frameworks),
@@ -59,6 +63,12 @@ fi
 FFMPEG_DIR="${FFMPEG_DIR:-$(brew --prefix ffmpeg 2>/dev/null || true)}"
 [ -d "$FFMPEG_DIR/lib" ] || { echo "FFmpeg not found: set FFMPEG_DIR (brew install ffmpeg)." >&2; exit 1; }
 export FFMPEG_DIR
+# Only the app's copy step reads it: the engine (stage-runtime.sh) keeps FFMPEG_DIR's GPL build.
+PLAYER_FFMPEG_LGPL="${FFMPEG_LGPL_DIR:-}"
+if [ -n "$PLAYER_FFMPEG_LGPL" ] && [ ! -d "$PLAYER_FFMPEG_LGPL/lib" ]; then
+    echo "FFMPEG_LGPL_DIR=$PLAYER_FFMPEG_LGPL has no lib folder." >&2
+    exit 1
+fi
 TARGET="${CARGO_TARGET_DIR:-$DESKTOP/target}"
 
 log "1/5 Building app (cargo build --release -p sa-app)"
@@ -93,14 +103,25 @@ chmod u+w "$CONTENTS/MacOS/$EXE_NAME"
 # The player's FFmpeg: copy every dylib the app (transitively) references from FFmpeg/Homebrew into Frameworks and
 # rewrite the install names (same rule as engine/scripts/stage-runtime.sh, relative to Contents/MacOS).
 FRAMEWORKS="$CONTENTS/Frameworks"
+# The file bundled for a library the binaries reference: FFMPEG_LGPL_DIR's library of that name when one is set
+# (same names and versions, LGPL build), else the referenced file itself.
+player_lib() {
+    local dep="$1" name
+    name="$(basename "$dep")"
+    if [ -n "$PLAYER_FFMPEG_LGPL" ] && [ -f "$PLAYER_FFMPEG_LGPL/lib/$name" ]; then
+        echo "$PLAYER_FFMPEG_LGPL/lib/$name"
+    else
+        echo "$dep"
+    fi
+}
 copy_deps() {
     local file="$1" dep name
     while read -r dep; do
         case "$dep" in
-            "$FFMPEG_DIR"/*|/opt/homebrew/*|/usr/local/*)
+            "$FFMPEG_DIR"/*|"${PLAYER_FFMPEG_LGPL:-/nonexistent}"/*|/opt/homebrew/*|/usr/local/*)
                 name="$(basename "$dep")"
                 if [[ ! -f "$FRAMEWORKS/$name" ]]; then
-                    cp -fL "$dep" "$FRAMEWORKS/$name"; chmod u+w "$FRAMEWORKS/$name"
+                    cp -fL "$(player_lib "$dep")" "$FRAMEWORKS/$name"; chmod u+w "$FRAMEWORKS/$name"
                     install_name_tool -id "@executable_path/../Frameworks/$name" "$FRAMEWORKS/$name"
                     echo "  $name"
                     copy_deps "$FRAMEWORKS/$name"
@@ -116,13 +137,26 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$CONTENTS/MacOS/$
 while read -r dep; do
     name="$(basename "$dep")"
     if [[ ! -f "$FRAMEWORKS/$name" && -f "$FFMPEG_DIR/lib/$name" ]]; then
-        cp -fL "$FFMPEG_DIR/lib/$name" "$FRAMEWORKS/$name"; chmod u+w "$FRAMEWORKS/$name"
+        cp -fL "$(player_lib "$FFMPEG_DIR/lib/$name")" "$FRAMEWORKS/$name"; chmod u+w "$FRAMEWORKS/$name"
         install_name_tool -id "@rpath/$name" "$FRAMEWORKS/$name"
         copy_deps "$FRAMEWORKS/$name"
         echo "  $name (rpath)"
     fi
 done < <(otool -L "$CONTENTS/MacOS/$EXE_NAME" | tail -n +2 | awk '{print $1}' | grep '^@rpath/' || true)
 rmdir "$FRAMEWORKS" 2>/dev/null || true
+# (L)GPL redistribution: the license files of the FFmpeg build the player ships (Homebrew: LICENSE.md, COPYING.*).
+PLAYER_FFMPEG_ROOT="${PLAYER_FFMPEG_LGPL:-$FFMPEG_DIR}"
+mkdir -p "$CONTENTS/Resources/FFmpeg"
+found_license=0
+for f in "$PLAYER_FFMPEG_ROOT"/LICENSE* "$PLAYER_FFMPEG_ROOT"/COPYING*; do
+    [ -f "$f" ] || continue
+    cp -fL "$f" "$CONTENTS/Resources/FFmpeg/"
+    found_license=1
+done
+if [ "$found_license" = 0 ]; then
+    echo "No LICENSE/COPYING files in $PLAYER_FFMPEG_ROOT: the bundled FFmpeg must ship with its license text." >&2
+    exit 1
+fi
 
 # The engine lives under Contents/Resources/subtitle-engine: codesign rejects any non-Mach-O file
 # in places like Frameworks/MacOS/Helpers ("code object is not signed at all"),
@@ -177,8 +211,12 @@ while IFS= read -r -d '' f; do
     esac
 done < <(find "${VERIFY_DIRS[@]}" -type f -print0)
 # The player's native stack loads from the bundle alone (no DYLD variables).
-env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$CONTENTS/MacOS/$EXE_NAME" --probe \
+probe="$(env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$CONTENTS/MacOS/$EXE_NAME" --probe)" \
     || { echo "The app could not load its runtime libraries (--probe failed)." >&2; exit 1; }
+echo "$probe"
+# A release ships an LGPL FFmpeg with the player (ARCHITECTURE.md §11); Homebrew's ffmpeg is a GPL build.
+grep -q '^ffmpeg license: LGPL' <<<"$probe" \
+    || echo "warning: the bundled FFmpeg is not an LGPL build (set FFMPEG_LGPL_DIR to an LGPL shared FFmpeg 8; FFMPEG_DIR stays the engine's GPL build)." >&2
 echo
 out="$(env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$ENGINE_BIN" models --json)"
 [[ "$out" == *'"event": "models"'* ]] || { echo "Bundled engine smoke test failed: $out" >&2; exit 1; }

@@ -64,6 +64,9 @@ Copy-Required (Join-Path $Bin 'libiomp5md.dll')
 $ffmpegDlls = Get-ChildItem (Join-Path $FFmpegDir 'bin') -Filter '*.dll'
 if (-not $ffmpegDlls) { throw "No FFmpeg DLLs in $FFmpegDir\bin" }
 foreach ($dll in $ffmpegDlls) { Copy-Required $dll.FullName }
+# GPL redistribution: the build's license text and a notice of what the DLLs are and where their source is.
+. (Join-Path $PSScriptRoot 'ffmpeg-notice.ps1')
+Write-FFmpegNotice -FFmpegDir $FFmpegDir -To $Dist -Kind GPL
 Copy-Required (Join-Path $SherpaDir 'onnxruntime.dll')
 Copy-Required (Join-Path $SherpaDir 'sherpa-onnx-c-api.dll')
 

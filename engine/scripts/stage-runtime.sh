@@ -36,6 +36,14 @@ exe="$target/$profile/subtitle-engine"
 mkdir -p "$dist"
 echo "Staging into $dist"
 cp -f "$exe" "$dist/"
+# GPL redistribution: the FFmpeg build's license files next to its dylibs (Homebrew: LICENSE.md, COPYING.*).
+found_license=0
+for f in "$ffmpeg"/LICENSE* "$ffmpeg"/COPYING*; do
+  [[ -f "$f" ]] || continue
+  cp -fL "$f" "$dist/FFmpeg-$(basename "$f")"
+  found_license=1
+done
+[[ "$found_license" == 1 ]] || { echo "No LICENSE/COPYING files in $ffmpeg: FFmpeg must ship with its license text" >&2; exit 1; }
 shopt -s nullglob
 for lib in "$sherpa"/libsherpa-onnx-c-api.dylib "$sherpa"/libonnxruntime*.dylib; do
   cp -fL "$lib" "$dist/"; echo "  $(basename "$lib")"

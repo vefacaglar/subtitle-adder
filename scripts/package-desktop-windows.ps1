@@ -7,9 +7,12 @@ Packages the Rust desktop app (apps/desktop, Slint) for Windows: SubtitleAdder.e
     pwsh scripts/package-desktop-windows.ps1 [-SkipEngineBuild] [-SmokeTest] [-Zip] [-Version 0.2.0]
 
 Output: build\desktop\Subtitle Adder\SubtitleAdder.exe with the FFmpeg runtime DLLs next to it (the player links
-FFmpeg 8 dynamically), Assets\AppIcon.ico / AppIcon.png (window icon and file-association icon, win-ui-main §3/§4),
+FFmpeg 8 dynamically; the LGPL shared build, see FFMPEG_LGPL_DIR), Assets\AppIcon.ico / AppIcon.png (window icon and file-association icon, win-ui-main §3/§4),
 and build\desktop\Subtitle Adder\subtitle-engine\subtitle-engine.exe (the packaged engine path of
-EngineCommand::locate, ARCHITECTURE.md §8.4) plus the engine's runtime DLLs. The binary must stay SubtitleAdder.exe:
+EngineCommand::locate, ARCHITECTURE.md §8.4) plus the engine's runtime DLLs (its own GPL FFmpeg build: `preview`
+encodes with libx264). Both folders hold DLLs of the same names; Windows resolves each process's imports from its own
+executable's folder first, so the app never loads the engine's copies (checked below with --probe on a PATH without
+FFmpeg, which must report an LGPL avcodec) and the engine never loads the app's. The binary must stay SubtitleAdder.exe:
 the file-association registrar and the single-instance contract key on that name. The exe is built with the static
 CRT (no VC++ redistributable needed) and carries its icon and manifest (PerMonitorV2, UTF-8, Common Controls v6)
 from crates\sa-platform\build.rs. Builds for win-x64 only.
@@ -17,7 +20,10 @@ from crates\sa-platform\build.rs. Builds for win-x64 only.
 Environment variables:
   SKIP_ENGINE_BUILD     1 = same as -SkipEngineBuild.
   VERSION               Version (default: the workspace version in apps\desktop\Cargo.toml); -Version wins.
-  FFMPEG_DIR            FFmpeg 8 SDK (headers, import libs, bin\*.dll); default engine\.runtime\ffmpeg.
+  FFMPEG_DIR            FFmpeg 8 SDK (headers, import libs, bin\*.dll); default engine\.runtime\ffmpeg. The GPL
+                        build: the app compiles against it (same API and DLL names) and the engine ships its DLLs.
+  FFMPEG_LGPL_DIR       FFmpeg 8 LGPL shared build whose bin\*.dll ship next to SubtitleAdder.exe; default
+                        engine\.runtime\ffmpeg-lgpl (fetch-runtime.ps1 -Only ffmpeg-lgpl, run when missing).
   CARGO_TARGET_DIR      Default %USERPROFILE%\.subtitle-adder-desktop-target (long target paths break cl.exe).
   SUBTITLE_ENGINE_DEVENV  Toolchain setup script dot-sourced when cl.exe/link.exe are not on PATH
                         (default %USERPROFILE%\.devtools\devenv.ps1).
@@ -98,12 +104,18 @@ if (-not $env:FFMPEG_DIR -or -not (Test-Path (Join-Path $env:FFMPEG_DIR 'bin')))
     throw 'FFmpeg 8 SDK not found: set FFMPEG_DIR or run engine\scripts\fetch-runtime.ps1 first.'
 }
 if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE '.subtitle-adder-desktop-target' }
+$FFmpegLgpl = if ($env:FFMPEG_LGPL_DIR) { $env:FFMPEG_LGPL_DIR } else { Join-Path $Root 'engine\.runtime\ffmpeg-lgpl' }
+if (-not (Test-Path (Join-Path $FFmpegLgpl 'bin\avcodec-62.dll')) -and -not $env:FFMPEG_LGPL_DIR) {
+    & (Join-Path $Root 'engine\scripts\fetch-runtime.ps1') -Only ffmpeg-lgpl
+}
+if (-not (Test-Path (Join-Path $FFmpegLgpl 'bin\avcodec-62.dll'))) {
+    throw "LGPL FFmpeg not found in $FFmpegLgpl (set FFMPEG_LGPL_DIR or run engine\scripts\fetch-runtime.ps1 -Only ffmpeg-lgpl)."
+}
 
 Log "1/5 Building app (cargo build --release -p sa-app, $Version)"
-# Static CRT: the package must not depend on VCRUNTIME140.dll (the VC++ redistributable is not on every PC; the
-# WinUI app was self-contained). The exe's icon and manifest are embedded by crates/sa-platform/build.rs.
-$savedRustFlags = $env:RUSTFLAGS
-$env:RUSTFLAGS = ((@($env:RUSTFLAGS, '-C target-feature=+crt-static') | Where-Object { $_ }) -join ' ')
+# Static CRT (no VCRUNTIME140.dll dependency) comes from apps/desktop/.cargo/config.toml, so this build shares the
+# cache of the run mode (apps/desktop/scripts/stage.ps1). The exe's icon and manifest are embedded by
+# crates/sa-platform/build.rs.
 Push-Location $Desktop
 try {
     & $cargo build --release -p sa-app --bin SubtitleAdder -j 3
@@ -111,7 +123,6 @@ try {
 }
 finally {
     Pop-Location
-    $env:RUSTFLAGS = $savedRustFlags
 }
 $AppExe = Join-Path $env:CARGO_TARGET_DIR 'release\SubtitleAdder.exe'
 $MakeIcon = Join-Path $env:CARGO_TARGET_DIR 'release\sa-make-icon.exe'
@@ -146,10 +157,15 @@ Log '3/5 Assembling folder'
 if (Test-Path $AppDir) { Remove-Item $AppDir -Recurse -Force }
 New-Item -ItemType Directory -Force $AppDir | Out-Null
 Copy-Item $AppExe $AppDir
-# The player's FFmpeg runtime (same SDK as the engine's, so the DLL names match the import libraries).
-$ffmpegDlls = Get-ChildItem (Join-Path $env:FFMPEG_DIR 'bin') -Filter *.dll -File
-if ($ffmpegDlls.Count -eq 0) { throw "No FFmpeg DLLs in $(Join-Path $env:FFMPEG_DIR 'bin')." }
+# The player's FFmpeg runtime: the LGPL shared build of the engine SDK's autobuild (same DLL names as the import
+# libraries the app links against). The player only decodes; the GPL DLLs stay in the engine folder.
+$ffmpegDlls = Get-ChildItem (Join-Path $FFmpegLgpl 'bin') -Filter *.dll -File
+if ($ffmpegDlls.Count -eq 0) { throw "No FFmpeg DLLs in $(Join-Path $FFmpegLgpl 'bin')." }
 $ffmpegDlls | Copy-Item -Destination $AppDir
+# LGPL redistribution: the build's license text and a notice next to the DLLs (the engine folder carries its GPL
+# ones, written by stage-runtime.ps1).
+. (Join-Path $Root 'engine\scripts\ffmpeg-notice.ps1')
+Write-FFmpegNotice -FFmpegDir $FFmpegLgpl -To $AppDir -Kind LGPL
 # Window / registered icon: the Windows app's committed assets, else rendered by sa-make-icon.
 $assets = Join-Path $AppDir 'Assets'
 New-Item -ItemType Directory -Force $assets | Out-Null
@@ -160,6 +176,10 @@ foreach ($name in 'AppIcon.ico', 'AppIcon.png') {
 if (-not (Test-Path (Join-Path $assets 'AppIcon.ico'))) { & $MakeIcon --ico (Join-Path $assets 'AppIcon.ico') }
 if (-not (Test-Path (Join-Path $assets 'AppIcon.png'))) { & $MakeIcon (Join-Path $assets 'AppIcon.png') 64 }
 Copy-Item $EngineDist (Join-Path $AppDir 'subtitle-engine') -Recurse
+# The engine's GPL FFmpeg DLLs carry their own license text and notice (stage-runtime.ps1 writes them).
+foreach ($name in 'FFmpeg-LICENSE.txt', 'FFmpeg-NOTICE.txt') {
+    if (-not (Test-Path (Join-Path $AppDir "subtitle-engine\$name"))) { throw "subtitle-engine\$name missing: restage the engine (stage-runtime.ps1)." }
+}
 Get-ChildItem $AppDir -Recurse -Filter *.pdb -File | Remove-Item
 
 $thumbprint = $env:SIGN_CERT_THUMBPRINT
@@ -193,6 +213,12 @@ $line = @(& $bundledEngine models --json)[0]
 $listing = $line | ConvertFrom-Json
 if ($listing.event -ne 'models' -or $listing.models.Count -lt 1) { throw "Unexpected output from the bundled engine: $line" }
 Write-Host "Bundled engine lists $($listing.models.Count) models."
+# The engine keeps its own (GPL, libx264) FFmpeg: its avcodec must not be the app's LGPL one.
+$engineAvcodec = Join-Path $AppDir 'subtitle-engine\avcodec-62.dll'
+if ((Test-Path $engineAvcodec) -and
+    (Get-FileHash -LiteralPath $engineAvcodec).Hash -eq (Get-FileHash -LiteralPath (Join-Path $AppDir 'avcodec-62.dll')).Hash) {
+    throw 'subtitle-engine\avcodec-62.dll is the LGPL build; the engine needs its GPL FFmpeg (libx264 for preview).'
+}
 # The app's native stack must load from the package alone (no FFmpeg on PATH).
 $savedPath = $env:PATH
 try {
@@ -201,7 +227,9 @@ try {
     $probe = Start-Process (Join-Path $AppDir 'SubtitleAdder.exe') -ArgumentList '--probe' -NoNewWindow -Wait -PassThru `
         -RedirectStandardOutput $probeOut
     if ($probe.ExitCode -ne 0) { throw "SubtitleAdder.exe --probe failed (exit code $($probe.ExitCode)); a runtime DLL is missing." }
-    Write-Host (Get-Content $probeOut -Raw).Trim()
+    $probeText = (Get-Content $probeOut -Raw).Trim()
+    Write-Host $probeText
+    if ($probeText -notmatch '(?m)^ffmpeg license: LGPL') { throw 'SubtitleAdder.exe did not load an LGPL FFmpeg build.' }
     Remove-Item $probeOut -ErrorAction SilentlyContinue
 }
 finally {
