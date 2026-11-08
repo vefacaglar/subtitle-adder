@@ -78,8 +78,11 @@ jobs:
 
   desktop:
     # The pure-Rust desktop app (apps/desktop): Slint UI (fluent tree on Windows, cupertino tree on macOS), the stores
-    # and view models, the FFmpeg + cpal player. Tests use temp folders only; the C# fixture comparisons are opt-in
-    # (SA_DOTNET_FIXTURES=1) and the real-engine tests need ENGINE_E2E=1, so neither runs here.
+    # and view models, the FFmpeg + cpal player. The comparisons with the former C# app read frozen C# outputs
+    # (crates/*/tests/fixtures/csharp) and run here without .NET; only the real-engine tests (ENGINE_E2E=1) are opt-in
+    # and do not. Two parts are bound to the Windows account that recorded the C# data and print SKIPPED on any other
+    # account, so on these runners: the DPAPI remembered-session restore in sa-profiles' win_fixtures (the rest of
+    # each dump is still compared) and sa-sync's .NET default-scope check.
     name: Desktop app (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -164,37 +167,3 @@ jobs:
             grep -E "✘|error:" test.log | head -20 | while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }
-
-  windows-app:
-    name: Windows app
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
-        working-directory: apps/windows
-    steps:
-      - uses: actions/checkout@v4
-      # The dev-engine lookup tests only launch engine\dist when it is staged, so no engine build is needed here.
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-      - uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('apps/windows/**/*.csproj', 'apps/windows/**/*.props') }}
-      - run: dotnet build SubtitleAdder.slnx -c Debug -nologo
-      - name: dotnet test
-        run: |
-          dotnet test SubtitleAdder.slnx -c Debug --no-build -nologo --logger "trx;LogFilePrefix=results" --results-directory TestResults
-          $code = $LASTEXITCODE
-          if ($code -ne 0) {
-            # Surface failing tests as annotations on the run summary.
-            Get-ChildItem TestResults -Filter *.trx | ForEach-Object {
-              $trx = [xml](Get-Content $_.FullName)
-              $trx.TestRun.Results.UnitTestResult | Where-Object outcome -eq 'Failed' | Select-Object -First 20 | ForEach-Object {
-                $msg = ($_.Output.ErrorInfo.Message -replace '\r?\n', ' ')
-                Write-Output "::error::$($_.testName): $msg"
-              }
-            }
-          }
-          exit $code

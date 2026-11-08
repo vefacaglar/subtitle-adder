@@ -57,7 +57,7 @@ $Build = Join-Path $Root 'build\desktop'
 $AppDir = Join-Path $Build 'Subtitle Adder'
 $EngineDist = Join-Path $Root 'build\engine-dist\subtitle-engine'
 $EngineExe = Join-Path $EngineDist 'subtitle-engine.exe'
-$WinAssets = Join-Path $Root 'apps\windows\src\SubtitleAdder\Assets'
+$WinAssets = Join-Path $Desktop 'crates\sa-platform\windows'
 
 function Log([string]$Message) { Write-Host "`n==> $Message" }
 
@@ -169,7 +169,7 @@ $ffmpegDlls | Copy-Item -Destination $AppDir
 # ones, written by stage-runtime.ps1).
 . (Join-Path $Root 'engine\scripts\ffmpeg-notice.ps1')
 Write-FFmpegNotice -FFmpegDir $FFmpegLgpl -To $AppDir -Kind LGPL
-# Window / registered icon: the Windows app's committed assets, else rendered by sa-make-icon.
+# Window / registered icon: the committed crates\sa-platform\windows\AppIcon.ico / .png, else rendered by sa-make-icon.
 $assets = Join-Path $AppDir 'Assets'
 New-Item -ItemType Directory -Force $assets | Out-Null
 foreach ($name in 'AppIcon.ico', 'AppIcon.png') {

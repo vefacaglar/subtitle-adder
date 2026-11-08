@@ -45,36 +45,42 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
-      # The Rust engine: package-windows.ps1 runs fetch-runtime.ps1 (sherpa-onnx 2.0.1, FFmpeg 8.1 SDK),
-      # cargo build --release -p se-cli and stage-runtime.ps1. Build tools: MSVC + CMake + Ninja from the preinstalled
-      # Visual Studio (msvc-dev-cmd), libclang from the preinstalled LLVM, nuget.exe for intel-onemkl-prebuild.
+      # scripts/package-desktop-windows.ps1 builds the Rust desktop app (apps/desktop, against the FFmpeg 8.1 SDK) and
+      # the Rust engine (fetch-runtime.ps1: sherpa-onnx 2.0.1, FFmpeg 8.1 SDK; cargo build --release -p se-cli;
+      # stage-runtime.ps1), ships the LGPL FFmpeg DLLs next to SubtitleAdder.exe (fetched when missing) and zips the
+      # folder. Build tools: MSVC + CMake + Ninja from the preinstalled Visual Studio (msvc-dev-cmd), libclang from the
+      # preinstalled LLVM, nuget.exe for intel-onemkl-prebuild.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: engine -> ../../t
+          workspaces: |
+            engine -> ../../t
+            apps/desktop -> ../../../t
       - uses: ilammy/msvc-dev-cmd@v1
       - uses: nuget/setup-nuget@v2
-      - name: Engine build environment
+      - name: Build environment
         run: |
-          # Short target dir outside the checkout (MAX_PATH in the CMake-built oneDNN/CTranslate2); matches rust-cache.
+          # Short target dir outside the checkout (MAX_PATH in the CMake-built oneDNN/CTranslate2 and in cl.exe builds of
+          # the app's C dependencies); shared by both workspaces and matching rust-cache.
           "CARGO_TARGET_DIR=$(Split-Path -Parent $env:GITHUB_WORKSPACE)\t" >> $env:GITHUB_ENV
           "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
           "CC=cl" >> $env:GITHUB_ENV
           "CXX=cl" >> $env:GITHUB_ENV
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
+      # The app is built before the engine and needs the FFmpeg SDK first (fetch-runtime exports FFMPEG_DIR).
+      - name: Runtimes
+        working-directory: engine
+        run: scripts/fetch-runtime.ps1
       - name: Version from tag
         run: |
           $v = if ($env:GITHUB_REF -like 'refs/tags/v*') { $env:GITHUB_REF_NAME.Substring(1) } else { '0.0.0-dev' }
           "VERSION=$v" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Package
-        run: scripts/package-windows.ps1 -Zip
+        run: scripts/package-desktop-windows.ps1 -Zip
       - uses: actions/upload-artifact@v4
         with:
           name: SubtitleAdder-${{ env.VERSION }}-win-x64
-          path: build/SubtitleAdder-*-win-x64.zip
+          path: build/desktop/SubtitleAdder-*-win-x64.zip
 
   # One job creates the draft so the two builds cannot race into two releases. Whichever build succeeded is attached.
   release:

@@ -9,24 +9,6 @@
             "cwd": "${workspaceFolder}"
         },
         {
-            "name": "Publish (Windows)",
-            "type": "node-terminal",
-            "request": "launch",
-            "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\" -Zip",
-            "cwd": "${workspaceFolder}"
-        },
-        {
-            "name": "Subtitle Adder (Windows)",
-            "type": "coreclr",
-            "request": "launch",
-            "program": "${workspaceFolder}/apps/windows/src/SubtitleAdder/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/SubtitleAdder.exe",
-            "args": [],
-            "cwd": "${workspaceFolder}/apps/windows/src/SubtitleAdder",
-            "console": "internalConsole",
-            "stopAtEntry": false,
-            "preLaunchTask": "windows: build"
-        },
-        {
             "name": "Rust: Run (Windows)",
             "type": "node-terminal",
             "request": "launch",

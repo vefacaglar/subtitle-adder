@@ -234,26 +234,6 @@
             "group": "test"
         },
         {
-            "label": "windows: build",
-            "type": "process",
-            "command": "dotnet",
-            "args": [
-                "build",
-                "${workspaceFolder}/apps/windows/src/SubtitleAdder/SubtitleAdder.csproj",
-                "-p:Platform=x64",
-                "-p:GenerateFullPaths=true",
-                "-consoleloggerparameters:NoSummary"
-            ],
-            "dependsOn": [
-                "windows: engine build"
-            ],
-            "problemMatcher": "$msCompile",
-            "group": "build",
-            "presentation": {
-                "reveal": "silent"
-            }
-        },
-        {
             "label": "desktop: run (Windows)",
             "detail": "Builds and stages the Rust desktop app when its sources changed (apps/desktop/dist) and starts it.",
             "type": "process",
@@ -351,61 +331,49 @@
             }
         },
         {
-            "label": "windows: test",
+            "label": "desktop: test (Windows)",
+            "detail": "cargo test --workspace for the Rust desktop app (apps/desktop), in the shared target dir with line-tables-only debug info.",
             "type": "process",
-            "command": "dotnet",
+            "command": "pwsh.exe",
             "args": [
-                "test",
-                "${workspaceFolder}/apps/windows/SubtitleAdder.slnx",
-                "-p:Platform=x64"
+                "-NoProfile",
+                "-Command",
+                "$PSNativeCommandUseErrorActionPreference = $true; $ErrorActionPreference = 'Stop'; if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE '.subtitle-adder-desktop-target' }; if (-not $env:FFMPEG_DIR) { $env:FFMPEG_DIR = '${workspaceFolder}/engine/.runtime/ffmpeg' }; $env:Path = (Join-Path $env:FFMPEG_DIR 'bin') + ';' + $env:Path; $env:CARGO_INCREMENTAL = '0'; $env:CARGO_PROFILE_DEV_DEBUG = 'line-tables-only'; cargo test --workspace -j 3"
             ],
-            "problemMatcher": "$msCompile",
+            "options": {
+                "cwd": "${workspaceFolder}/apps/desktop",
+                "env": {
+                    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:Path}"
+                }
+            },
+            "problemMatcher": "$rustc",
             "group": "test"
         },
         {
-            "label": "windows: end-to-end test (real engine)",
+            "label": "desktop: end-to-end test (Windows)",
+            "detail": "Stages the Rust desktop app and drives it through UI Automation on a copy of the frozen C# data (apps/desktop/scripts/e2e-windows.ps1, root C:\\SubtitleAdderE2E; whisper base and madlad-3b must be cached).",
             "type": "process",
-            "command": "dotnet",
+            "command": "${env:SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
             "args": [
-                "test",
-                "${workspaceFolder}/apps/windows/SubtitleAdder.slnx",
-                "-p:Platform=x64"
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/apps/desktop/scripts/e2e-windows.ps1",
+                "-Root",
+                "C:\\SubtitleAdderE2E"
             ],
+            "options": {
+                "cwd": "${workspaceFolder}/apps/desktop",
+                "env": {
+                    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:Path}"
+                }
+            },
             "dependsOn": [
-                "windows: engine build"
+                "desktop (Rust): stage"
             ],
-            "options": {
-                "env": {
-                    "ENGINE_E2E": "1"
-                }
-            },
-            "problemMatcher": "$msCompile",
-            "group": "test"
-        },
-        {
-            "label": "windows: package",
-            "type": "shell",
-            "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\"",
-            "options": {
-                "cwd": "${workspaceFolder}",
-                "env": {
-                    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:Path}"
-                }
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "windows: publish",
-            "type": "shell",
-            "command": "pwsh.exe -NoProfile -File \"${workspaceFolder}/scripts/package-windows.ps1\" -Zip",
-            "options": {
-                "cwd": "${workspaceFolder}",
-                "env": {
-                    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:Path}"
-                }
-            },
             "problemMatcher": [],
-            "group": "build",
+            "group": "test",
             "presentation": {
                 "reveal": "always",
                 "panel": "shared"

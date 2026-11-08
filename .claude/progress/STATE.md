@@ -1,6 +1,14 @@
 # State
 
-## Latest update — 2026-11-07: Engine ported to Rust (branch `rust-engine`, not pushed)
+## Latest update — 2026-11-08: C# WinUI app removed; the Rust/Slint app (`apps/desktop`) is the Windows app (branch `rust-engine`, not pushed)
+
+- Deleted `apps/windows` (WinUI 3 / .NET 10: SubtitleAdder, SubtitleAdder.Core, EngineKit, tests, `SubtitleAdder.slnx`), `scripts/package-windows.ps1` and `scripts/windows/LocateCheck`. Last C# sources: commit 2f4bc96 (identical at a39f020). The SwiftUI app in `apps/macos` stays.
+- Moved into the Rust app: `Windows.xcstrings` → `apps/desktop/crates/sa-core/catalogs/Windows.xcstrings` (same content and keys; `CatalogId::Windows`, still embedded on Windows / with `all-catalogs`), `AppIcon.ico`/`AppIcon.png` → `apps/desktop/crates/sa-platform/windows/` (exe resource in `build.rs`, `Assets\` of the Windows package). `apps/desktop/scripts/stage.ps1` no longer watches `apps/windows`.
+- The C# comparisons were frozen first (per crate: `apps/desktop/crates/*/tests/fixtures/csharp` with a README naming 2f4bc96; every `tools/fixtures/*` C# tool is deleted, PlatformCompat included — single-instance pipe bytes and SDDL, registry tree, font sort rules, path rules are frozen in `crates/sa-platform/tests/fixtures/csharp`). No `.cs`/`.csproj`/`.slnx` file is left in the repo. What can no longer be checked live: C# reading data the Rust app writes, the DPAPI remember-me restore on another Windows account (skipped with a note), .NET behavior for inputs outside the frozen sets.
+- CI: the `windows-app` (.NET) job is gone (engine, desktop, macOS Swift jobs remain); `release.yml` packages Windows with `scripts/package-desktop-windows.ps1 -Zip` (artifact `build/desktop/SubtitleAdder-<version>-win-x64.zip`). VS Code: C# launch/tasks removed (`Rust: Release (Windows)` replaces `Publish (Windows)`). `.gitignore`: the .NET rules are gone (Cargo `src/bin` targets are no longer ignored; PlatformCompat has its own bin/obj ignore). CLAUDE.md describes the Rust app.
+- Not verified here: the release workflow on GitHub (the Windows job now builds app + engine in one shared target dir), the e2e UI run.
+
+## Previous update — 2026-11-07: Engine ported to Rust (branch `rust-engine`, not pushed)
 
 - `engine/` is now a Rust Cargo workspace (se-core, se-text, se-audio, se-models, se-asr, se-diarize, se-translate, se-cli → `subtitle-engine`); the Python engine and PyInstaller spec are removed (history: `git show e76635f^:engine/...`). Protocol unchanged (version 1). Native: ct2rs 0.10.4 (CTranslate2 4.8.5, MKL/oneDNN, static CRT), ort 2.0 rc (load-dynamic, onnxruntime from sherpa-onnx), sherpa-onnx 2.0.1 C API via libloading, ffmpeg-next 8.1. CUDA only behind the `cuda` feature (not built/tested).
 - Parity with the Python engine: 65 end-to-end cases in `engine/PARITY.md` — byte-identical CLI/usage/errors/models/delete/extract/render/diarized speakers; Whisper word times ±0.06 s and a few Turkish punctuation flips, 3/13 MADLAD tr→en lines differ (CTranslate2/oneDNN numerics); preview bytes differ only by FFmpeg build.

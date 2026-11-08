@@ -25,14 +25,6 @@ samples/
 # Local Claude settings
 .claude/settings.local.json
 
-# .NET
-bin/
-# ...but not Cargo's src/bin targets of the Rust desktop app
-!apps/desktop/crates/*/src/bin/
-obj/
-*.user
-TestResults/
-
 # Rust engine build output and staged runtime
 engine/target/
 engine/dist/
