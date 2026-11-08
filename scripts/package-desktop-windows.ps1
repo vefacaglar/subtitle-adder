@@ -10,7 +10,9 @@ Output: build\desktop\Subtitle Adder\SubtitleAdder.exe with the FFmpeg runtime D
 FFmpeg 8 dynamically), Assets\AppIcon.ico / AppIcon.png (window icon and file-association icon, win-ui-main §3/§4),
 and build\desktop\Subtitle Adder\subtitle-engine\subtitle-engine.exe (the packaged engine path of
 EngineCommand::locate, ARCHITECTURE.md §8.4) plus the engine's runtime DLLs. The binary must stay SubtitleAdder.exe:
-the file-association registrar and the single-instance contract key on that name. Builds for win-x64 only.
+the file-association registrar and the single-instance contract key on that name. The exe is built with the static
+CRT (no VC++ redistributable needed) and carries its icon and manifest (PerMonitorV2, UTF-8, Common Controls v6)
+from crates\sa-platform\build.rs. Builds for win-x64 only.
 
 Environment variables:
   SKIP_ENGINE_BUILD     1 = same as -SkipEngineBuild.
@@ -98,6 +100,10 @@ if (-not $env:FFMPEG_DIR -or -not (Test-Path (Join-Path $env:FFMPEG_DIR 'bin')))
 if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE '.subtitle-adder-desktop-target' }
 
 Log "1/5 Building app (cargo build --release -p sa-app, $Version)"
+# Static CRT: the package must not depend on VCRUNTIME140.dll (the VC++ redistributable is not on every PC; the
+# WinUI app was self-contained). The exe's icon and manifest are embedded by crates/sa-platform/build.rs.
+$savedRustFlags = $env:RUSTFLAGS
+$env:RUSTFLAGS = ((@($env:RUSTFLAGS, '-C target-feature=+crt-static') | Where-Object { $_ }) -join ' ')
 Push-Location $Desktop
 try {
     & $cargo build --release -p sa-app --bin SubtitleAdder -j 3
@@ -105,6 +111,7 @@ try {
 }
 finally {
     Pop-Location
+    $env:RUSTFLAGS = $savedRustFlags
 }
 $AppExe = Join-Path $env:CARGO_TARGET_DIR 'release\SubtitleAdder.exe'
 $MakeIcon = Join-Path $env:CARGO_TARGET_DIR 'release\sa-make-icon.exe'
@@ -176,6 +183,11 @@ else {
 }
 
 Log 'Verifying'
+# Import names are plain ASCII in the PE import table.
+$exeText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes((Join-Path $AppDir 'SubtitleAdder.exe')))
+if ($exeText -match '(?i)vcruntime140(_1)?\.dll') {
+    throw 'SubtitleAdder.exe imports the VC++ runtime (VCRUNTIME140.dll); it must be built with the static CRT.'
+}
 $bundledEngine = Join-Path $AppDir 'subtitle-engine\subtitle-engine.exe'
 $line = @(& $bundledEngine models --json)[0]
 $listing = $line | ConvertFrom-Json

@@ -62,7 +62,15 @@ export FFMPEG_DIR
 TARGET="${CARGO_TARGET_DIR:-$DESKTOP/target}"
 
 log "1/5 Building app (cargo build --release -p sa-app)"
-(cd "$DESKTOP" && cargo build --release -p sa-app --bin SubtitleAdder && cargo build --release -p sa-platform --bin sa-make-icon)
+# Room in the Mach-O header for the install-name rewrites below (@executable_path/../Frameworks/… and the extra
+# rpath can be longer than the Homebrew paths the linker recorded); without it install_name_tool can fail with
+# "larger updated load commands do not fit".
+(
+    cd "$DESKTOP"
+    export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-headerpad_max_install_names"
+    cargo build --release -p sa-app --bin SubtitleAdder
+    cargo build --release -p sa-platform --bin sa-make-icon
+)
 APP_BIN="$TARGET/release/SubtitleAdder"
 MAKE_ICON="$TARGET/release/sa-make-icon"
 [ -x "$APP_BIN" ] || { echo "cargo produced no $APP_BIN." >&2; exit 1; }
