@@ -76,6 +76,71 @@ jobs:
         shell: pwsh
         run: cargo test --workspace -j 2
 
+  desktop:
+    # The pure-Rust desktop app (apps/desktop): Slint UI (fluent tree on Windows, cupertino tree on macOS), the stores
+    # and view models, the FFmpeg + cpal player. Tests use temp folders only; the C# fixture comparisons are opt-in
+    # (SA_DOTNET_FIXTURES=1) and the real-engine tests need ENGINE_E2E=1, so neither runs here.
+    name: Desktop app (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-26]
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/desktop
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      # Short and outside the checkout: long paths break cl.exe (ring, rusqlite's bundled SQLite) on Windows.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../td
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop -> ../../../td
+      # FFmpeg 8.1: the pinned BtbN SDK on Windows (fetch-runtime exports FFMPEG_DIR and puts its bin on PATH),
+      # Homebrew's ffmpeg 8 on macOS (found through pkg-config).
+      - name: FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: engine
+        run: scripts/fetch-runtime.ps1 -Only ffmpeg
+      - name: FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg pkgconf
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Windows build environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+      # pwsh on Windows: in bash, Git's /usr/bin/link would shadow MSVC's link.exe from msvc-dev-cmd.
+      - name: cargo build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo build --workspace --all-targets -j 3
+      - name: cargo test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cargo test --workspace -j 3
+      - name: cargo build (macOS)
+        if: runner.os == 'macOS'
+        run: cargo build --workspace --all-targets -j 3
+      - name: cargo test (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --workspace -j 3
+      # The other tree as a look check: the cupertino tree also compiles on Windows and the fluent one on macOS.
+      - name: Other UI tree builds
+        shell: pwsh
+        run: |
+          $env:SA_UI_PLATFORM = if ($IsWindows) { 'mac' } else { 'win' }
+          $env:CARGO_TARGET_DIR = "$env:CARGO_TARGET_DIR-other"
+          cargo build -p sa-app --features all-catalogs --bin sa-shot -j 3
+
   macos-app:
     name: macOS app
     runs-on: macos-26

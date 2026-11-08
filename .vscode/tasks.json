@@ -254,6 +254,33 @@
             }
         },
         {
+            "label": "desktop (Rust): stage",
+            "detail": "Builds the Rust desktop app (release) and stages apps/desktop/dist: SubtitleAdder.exe, the FFmpeg DLLs and the engine from engine/dist; skipped when dist is newer than the desktop sources (apps/desktop/scripts/stage.ps1).",
+            "type": "process",
+            "command": "${env:SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/apps/desktop/scripts/stage.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/apps/desktop",
+                "env": {
+                    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:Path}"
+                }
+            },
+            "dependsOn": [
+                "windows: engine build"
+            ],
+            "problemMatcher": "$rustc",
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
             "label": "windows: test",
             "type": "process",
             "command": "dotnet",

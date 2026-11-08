@@ -27,6 +27,17 @@
             "preLaunchTask": "windows: build"
         },
         {
+            "name": "Subtitle Adder (Rust)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/apps/desktop/dist/SubtitleAdder.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}/apps/desktop/dist",
+            "console": "internalConsole",
+            "stopAtEntry": false,
+            "preLaunchTask": "desktop (Rust): stage"
+        },
+        {
             "name": "Subtitle Adder (macOS)",
             "type": "swift",
             "request": "launch",
