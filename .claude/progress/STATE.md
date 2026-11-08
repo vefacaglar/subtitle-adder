@@ -1,6 +1,23 @@
 # State
 
-## Latest update — 2026-11-08: C# WinUI app removed; the Rust/Slint app (`apps/desktop`) is the Windows app (branch `rust-engine`, not pushed)
+## Latest update — 2026-11-08: WIP desktop player GPU video path, D3D11VA/VideoToolbox hardware decoding & Slint frame-throttle fix (branch `rust-engine`, commit `76dec69`)
+
+- Partial work from the player performance pass, interrupted before measurement and review; builds cleanly and `sa-player` / `sa-app` unit & playback tests pass.
+- **`sa-player` hardware decoding & planar output** (`crates/sa-player/src/ffmpeg_backend/{hw,video,session,sync,audio}.rs`, `lib.rs`):
+  - Hardware decoding via D3D11VA on Windows and VideoToolbox on macOS for 8/10-bit 4:2:0 streams (`hw.rs`), with automatic software fallback and `SUBTITLE_ADDER_HWDEC=0` override; background device warm-up (`player-hw-init`).
+  - Decoded GPU surfaces are downloaded once into reusable system-memory frames (`NV12` / `P010`); `set_planar_output(true)` hands frames over as zero-copy YUV planes (`PlanarImage`: 3-plane planar or 2-plane semi-planar, 8–16-bit LE, `msb_aligned`, `YuvMatrix` BT.601/BT.709/BT.2020, full/limited range, `quarter_turns` rotation) instead of CPU `swscale` RGBA conversion.
+- **`sa-app` OpenGL YUV shader & borrowed texture path** (`crates/sa-app/src/main_window/video_gl.rs`, `controller.rs`):
+  - Installs a `BeforeRendering` notifier (`VideoSurface` via `glow`) on the femtovg OpenGL renderer: uploads only the latest pending frame into persistent `R8`/`RG8`/`R16`/`RG16` plane textures at render time, converts YUV→RGB (matrix, range, bit depth, rotation) in a fragment shader into a persistent RGBA FBO texture, and exposes it to `MainBridge.video-frame` as a `BorrowedOpenGLTexture`.
+  - Requests winit redraws directly per new video frame; falls back automatically to double-buffered `SharedPixelBuffer<Rgba8Pixel>` (`frame` + `spare_frame`) when OpenGL/notifier is unavailable (software renderer, headless tests).
+  - Diagnostics: `SUBTITLE_ADDER_PLAYER_STATS=1` logs player decode/presentation counters once per second; `SUBTITLE_ADDER_FRAME_TRACE=<file>` records per-render timestamps, frame PTS, new-frame flag, and player clock.
+- **Slint winit backend frame-throttle patch** (`apps/desktop/vendor/i-slint-backend-winit/frame_throttle.rs`, wired via `[patch.crates-io]` in `apps/desktop/Cargo.toml` and tracked in `scripts/stage.ps1`):
+  - Fixed Slint 1.18.1's `TimerBasedFrameThrottle`, which drew every requested frame twice (unconditionally redrawing on the next timer tick before checking `pending_redraw`) and truncated the refresh interval to whole milliseconds (`1000 / refresh`, e.g. 3 ms at 280 Hz). Now draws immediately when idle, paces subsequent frames in microseconds (`1_000_000_000 / refresh_millihertz`), and stops the timer on ticks without a pending redraw.
+- **Remaining / not yet verified (resume point)**:
+  - Run real-time dropped-frame & jitter benchmarks (`cargo test -p sa-player --release --test measure -- --ignored --nocapture --test-threads=1`) and live window trace (`SUBTITLE_ADDER_FRAME_TRACE` / `SUBTITLE_ADDER_PLAYER_STATS`) across 1080p60/10-bit clips.
+  - Verify seek/resize/fullscreen transitions, GL context loss/recreation, software renderer fallback, memory stability over long playback, and `scripts/check-macos.sh` macOS target type-check.
+  - Run pre-commit module review once measurements pass.
+
+## Previous update — 2026-11-08: C# WinUI app removed; the Rust/Slint app (`apps/desktop`) is the Windows app (branch `rust-engine`)
 
 - Deleted `apps/windows` (WinUI 3 / .NET 10: SubtitleAdder, SubtitleAdder.Core, EngineKit, tests, `SubtitleAdder.slnx`), `scripts/package-windows.ps1` and `scripts/windows/LocateCheck`. Last C# sources: commit 2f4bc96 (identical at a39f020). The SwiftUI app in `apps/macos` stays.
 - Moved into the Rust app: `Windows.xcstrings` → `apps/desktop/crates/sa-core/catalogs/Windows.xcstrings` (same content and keys; `CatalogId::Windows`, still embedded on Windows / with `all-catalogs`), `AppIcon.ico`/`AppIcon.png` → `apps/desktop/crates/sa-platform/windows/` (exe resource in `build.rs`, `Assets\` of the Windows package). `apps/desktop/scripts/stage.ps1` no longer watches `apps/windows`.

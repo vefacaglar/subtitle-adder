@@ -91,7 +91,8 @@ icon tabs; the SF Symbols are drawn by the SVG stand-ins off macOS (`shots/mac/s
 | Subtitle overlay (compose, style, margins) | done | done | `07-translated.png` |
 | Transport HUD, display picker, theater, side-by-side, hide panel, full screen | done | done | `shots/main/*` |
 | macOS preview fallback (engine `preview`) | n/a | done in code (`PreviewMaker` → engine `preview`), only when FFmpeg fails | — |
-| HDR tone mapping, deinterlacing, hardware decoding, audio-only fallback | **missing** (MF did these) | **missing** (AVFoundation did these) | — |
+| Hardware decoding + GPU YUV→RGB presentation | done (WIP `76dec69`: D3D11VA + OpenGL `BeforeRendering` YUV shader & borrowed texture in `main_window::video_gl`, software fallback; real-time frame-drop/seek/fullscreen measurements pending) | done in code (WIP `76dec69`: VideoToolbox in `sa_player::ffmpeg_backend::hw` + OpenGL YUV shader; unverified on macOS) | `sa-player` planar/hw tests, `sa-app` `main_window` tests |
+| HDR tone mapping, deinterlacing, audio-only fallback | **missing** (MF did these) | **missing** (AVFoundation did these) | — |
 
 ### Jobs, translation, export
 
