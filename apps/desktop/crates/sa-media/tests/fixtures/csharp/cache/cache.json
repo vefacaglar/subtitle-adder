@@ -1,0 +1,15 @@
+{
+  "user": "alice",
+  "vault_key_hex": "a5340c30e6371c561c2f9571d443224a88327512ace56f97e217c82957335567",
+  "video_path": "C:\\Users\\User\\AppData\\Local\\Temp\\sa-media-cache-yjLwfm\\video.bin",
+  "identity": "C:\\USERS\\USER\\APPDATA\\LOCAL\\TEMP\\SA-MEDIA-CACHE-YJLWFM\\VIDEO.BIN|len:197842|cs:65536",
+  "chunk_size": 65536,
+  "length": 197842,
+  "pattern_seed": 19,
+  "files": [
+    "5d267c6e88b428ff25c1a7686035cbeb.vcache",
+    "6af90ae87b617c841430720eed846dac.vcache",
+    "82774ecbb848997d6ee605b3e3201379.vcache",
+    "e5b113f60a1364050d335c6e74d0fbd1.vcache"
+  ]
+}

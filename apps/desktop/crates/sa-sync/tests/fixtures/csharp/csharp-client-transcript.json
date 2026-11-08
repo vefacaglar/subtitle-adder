@@ -1,0 +1,92 @@
+{
+  "csharp_slot": "instances/instance-9418f40eeb9b4b90a5488acf09b9c969.slot",
+  "spy": {
+    "ready": "true leader=false",
+    "files": [
+      {
+        "name": "instances/instance-9418f40eeb9b4b90a5488acf09b9c969.slot",
+        "size": 0,
+        "delete_error": 32,
+        "open_share_none_error": 32
+      }
+    ],
+    "connect": {
+      "received": []
+    },
+    "steps": [
+      {
+        "step": "host_sends_event",
+        "sent": [
+          "{\"eventId\":\"golden-rust-event\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\Şule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"şule+'<&>\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\bölüm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}\n"
+        ],
+        "received": [],
+        "csharp_stdout": [
+          "CS-RECV {\"eventId\":\"golden-rust-event\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}"
+        ]
+      },
+      {
+        "step": "csharp_publishes",
+        "sent": [],
+        "received": [
+          "{\"eventId\":\"golden-from-csharp\",\"topic\":\"Thumbnail\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}\n"
+        ],
+        "csharp_stdout": [
+          "CS-OK"
+        ]
+      }
+    ],
+    "bye": "closed=true",
+    "after_quit": []
+  },
+  "rust_host": {
+    "ready": "true leader=false",
+    "pipe_sddl": "O:{owner}D:P(A;;FA;;;{owner})(A;;FA;;;SY)",
+    "status": "leader=false ready=true count=2 clients=0",
+    "steps": [
+      {
+        "step": "rust_publishes",
+        "sent": [],
+        "relayed": [
+          "{\"eventId\":\"golden-rust-event\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\Şule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"şule+'<&>\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\bölüm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}\n"
+        ],
+        "csharp_stdout": [
+          "CS-RECV {\"eventId\":\"golden-rust-event\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}"
+        ]
+      },
+      {
+        "step": "csharp_publishes",
+        "sent": [],
+        "relayed": [
+          "{\"eventId\":\"golden-from-csharp\",\"topic\":\"Thumbnail\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}\n"
+        ],
+        "csharp_stdout": [
+          "CS-OK"
+        ]
+      },
+      {
+        "step": "csharp_writes",
+        "sent": [
+          "W:{\"requestId\":\"golden-rich-request\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\profiles.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"emre\",\"key\":\"hk:key\",\"secondaryKey\":\"hk:second\",\"ord\":7,\"blob\":\"AAEC\",\"secondaryBlob\":\"AwQF\",\"updatedTicks\":639000000000000000,\"viewCount\":2,\"viewCountDelta\":1,\"saltBase64\":\"c2FsdA==\",\"passwordHashBase64\":\"aGFzaA==\",\"iterations\":600000,\"createdAtUtc\":\"2026-11-07T19:22:33.5+00:00\",\"batchVideos\":[{\"key\":\"v1\",\"encryptedBlob\":\"AQ==\",\"updatedTicks\":1}],\"batchProgress\":[{\"key\":\"p1\",\"encryptedBlob\":\"Ag==\",\"updatedTicks\":2}],\"batchListItems\":[{\"listId\":\"l\",\"itemHash\":\"h\",\"ord\":3,\"encryptedPathBlob\":\"Aw==\"}],\"postCommitEvents\":[{\"eventId\":\"golden-post-commit\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}]}\n"
+        ],
+        "relayed": [
+          "{\"eventId\":\"golden-post-commit\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\Şule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"şule+'<&>\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\bölüm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}\n"
+        ],
+        "csharp_stdout": [
+          "CS-ACK {\"requestId\":\"golden-rich-request\",\"committed\":true,\"isDuplicate\":false}",
+          "CS-RECV {\"eventId\":\"golden-post-commit\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}"
+        ]
+      },
+      {
+        "step": "csharp_writes_flush_barrier",
+        "sent": [
+          "W:{\"requestId\":\"fb-cs\",\"senderInstanceId\":\"cs\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\profiles.db\",\"kind\":\"FlushBarrier\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n"
+        ],
+        "relayed": [],
+        "csharp_stdout": [
+          "CS-ACK {\"requestId\":\"fb-cs\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind \\u0027FlushBarrier\\u0027.\"}"
+        ]
+      }
+    ],
+    "bye": "closed=false"
+  }
+}

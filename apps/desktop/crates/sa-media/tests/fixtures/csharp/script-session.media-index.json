@@ -1,0 +1,157 @@
+{
+  "version": 2,
+  "directories": [
+    {
+      "directoryPath": "{ROOT}\\tree",
+      "subdirectories": [
+        "{ROOT}\\tree\\A",
+        "{ROOT}\\tree\\B",
+        "{ROOT}\\tree\\C",
+        "{ROOT}\\tree\\Vid\u00E9o \u015Fark\u0131",
+        "{ROOT}\\tree\\\u017Fub"
+      ],
+      "mediaFiles": []
+    },
+    {
+      "directoryPath": "{ROOT}\\tree\\A",
+      "subdirectories": [],
+      "mediaFiles": [
+        {
+          "fullPath": "{ROOT}\\tree\\A\\a\u0026b\u0060\u0027\u002B(1) ;=.mkv",
+          "fileName": "a\u0026b\u0060\u0027\u002B(1) ;=.mkv",
+          "directoryPath": "{ROOT}\\tree\\A",
+          "sizeBytes": 2,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        },
+        {
+          "fullPath": "{ROOT}\\tree\\A\\I\u015F\u0131k \u015Fark\u0131.mp3",
+          "fileName": "I\u015F\u0131k \u015Fark\u0131.mp3",
+          "directoryPath": "{ROOT}\\tree\\A",
+          "sizeBytes": 2,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        },
+        {
+          "fullPath": "{ROOT}\\tree\\A\\new.mp4",
+          "fileName": "new.mp4",
+          "directoryPath": "{ROOT}\\tree\\A",
+          "sizeBytes": 5,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        },
+        {
+          "fullPath": "{ROOT}\\tree\\A\\video.mp4",
+          "fileName": "video.mp4",
+          "directoryPath": "{ROOT}\\tree\\A",
+          "sizeBytes": 10,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "directoryPath": "{ROOT}\\tree\\B",
+      "subdirectories": [],
+      "mediaFiles": [
+        {
+          "fullPath": "{ROOT}\\tree\\B\\video.mp4",
+          "fileName": "video.mp4",
+          "directoryPath": "{ROOT}\\tree\\B",
+          "sizeBytes": 10,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        },
+        {
+          "fullPath": "{ROOT}\\tree\\B\\zz.mp4",
+          "fileName": "zz.mp4",
+          "directoryPath": "{ROOT}\\tree\\B",
+          "sizeBytes": 1,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "directoryPath": "{ROOT}\\tree\\Vid\u00E9o \u015Fark\u0131",
+      "subdirectories": [
+        "{ROOT}\\tree\\Vid\u00E9o \u015Fark\u0131\\\u0130\u00E7"
+      ],
+      "mediaFiles": []
+    },
+    {
+      "directoryPath": "{ROOT}\\tree\\Vid\u00E9o \u015Fark\u0131\\\u0130\u00E7",
+      "subdirectories": [],
+      "mediaFiles": [
+        {
+          "fullPath": "{ROOT}\\tree\\Vid\u00E9o \u015Fark\u0131\\\u0130\u00E7\\klip.webm",
+          "fileName": "klip.webm",
+          "directoryPath": "{ROOT}\\tree\\Vid\u00E9o \u015Fark\u0131\\\u0130\u00E7",
+          "sizeBytes": 5,
+          "lastWriteTimeUtc": "2024-04-29T15:06:40.0000001+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "directoryPath": "{ROOT}\\tree\\\u017Fub",
+      "subdirectories": [],
+      "mediaFiles": [
+        {
+          "fullPath": "{ROOT}\\tree\\\u017Fub\\sample.mp4",
+          "fileName": "sample.mp4",
+          "directoryPath": "{ROOT}\\tree\\\u017Fub",
+          "sizeBytes": 4,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        },
+        {
+          "fullPath": "{ROOT}\\tree\\\u017Fub\\t.mp4",
+          "fileName": "t.mp4",
+          "directoryPath": "{ROOT}\\tree\\\u017Fub",
+          "sizeBytes": 4,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        },
+        {
+          "fullPath": "{ROOT}\\tree\\\u017Fub\\\u017Fa.mp4",
+          "fileName": "\u017Fa.mp4",
+          "directoryPath": "{ROOT}\\tree\\\u017Fub",
+          "sizeBytes": 4,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        },
+        {
+          "fullPath": "{ROOT}\\tree\\\u017Fub\\\u017Fon.mp4",
+          "fileName": "\u017Fon.mp4",
+          "directoryPath": "{ROOT}\\tree\\\u017Fub",
+          "sizeBytes": 3,
+          "lastWriteTimeUtc": "2022-09-28T22:13:20+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  ]
+}

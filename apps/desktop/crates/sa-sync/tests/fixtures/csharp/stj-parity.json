@@ -1,0 +1,1082 @@
+{
+  "cases": [
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\"}",
+      "csharp": "{\"eventId\":\"fc975b47292845388a57670def32c904\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8777059+00:00\"}",
+      "rust": "{\"eventId\":\"948f9d97752e4168b837ce71c9185d3f\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8779849+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"948f9d97752e4168b837ce71c9185d3f\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8779849+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"senderInstanceId\":\"s\",\"scopePath\":\"p\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"scopePath\":\"p\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":null,\"scopePath\":null,\"eventId\":\"e\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"timestampUtc\":\"2026-11-08T14:09:42.8808625+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"\",\"scopePath\":\"\",\"timestampUtc\":\"2026-11-08T14:09:42.8809363+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"\",\"scopePath\":\"\",\"timestampUtc\":\"2026-11-08T14:09:42.8809363+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1.0,\"senderInstanceId\":\"s\",\"scopePath\":\"p\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":\"1\",\"senderInstanceId\":\"s\",\"scopePath\":\"p\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":\"ProfileLogout\",\"senderInstanceId\":\"s\",\"scopePath\":\"p\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":99,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":99,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8818994+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":99,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8819573+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":99,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8819573+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":-5,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":-5,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8821701+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":-5,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8822307+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":-5,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8822307+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":2147483648,\"senderInstanceId\":\"s\",\"scopePath\":\"p\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":null,\"senderInstanceId\":\"s\",\"scopePath\":\"p\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"Kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"kind\":2,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":2,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8828717+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":2,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8829633+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":2,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8829633+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":null}",
+      "csharp": "{\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8830772+00:00\"}",
+      "rust": "{\"eventId\":\"\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8831316+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8831316+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"topic\":null}",
+      "csharp": "{\"eventId\":\"e\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8832265+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.88342+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.88342+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"topic\":\"\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8835432+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8836197+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8836197+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"topic\":\"Watch-Progress\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"Watch-Progress\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.883718+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"Watch-Progress\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8837764+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"Watch-Progress\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8837764+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"positionSeconds\":77}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"positionSeconds\":77,\"timestampUtc\":\"2026-11-08T14:09:42.883889+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"positionSeconds\":77,\"timestampUtc\":\"2026-11-08T14:09:42.883966+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"positionSeconds\":77,\"timestampUtc\":\"2026-11-08T14:09:42.883966+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"positionSeconds\":77.5,\"durationSeconds\":-0.0}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"positionSeconds\":77.5,\"durationSeconds\":-0,\"timestampUtc\":\"2026-11-08T14:09:42.8840813+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"positionSeconds\":77.5,\"durationSeconds\":-0.0,\"timestampUtc\":\"2026-11-08T14:09:42.8841404+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"positionSeconds\":77.5,\"durationSeconds\":-0,\"timestampUtc\":\"2026-11-08T14:09:42.8841404+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"positionSeconds\":1e400}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"positionSeconds\":1e20}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"positionSeconds\":1E+20,\"timestampUtc\":\"2026-11-08T14:09:42.8847793+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"positionSeconds\":1e+20,\"timestampUtc\":\"2026-11-08T14:09:42.8848781+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"positionSeconds\":1E+20,\"timestampUtc\":\"2026-11-08T14:09:42.8848781+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"positionSeconds\":\"77\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"positionSeconds\":null}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8860441+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8861053+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8861053+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"viewCount\":1.0}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"viewCount\":2147483648}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"viewCount\":-3}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"viewCount\":-3,\"timestampUtc\":\"2026-11-08T14:09:42.8865679+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"viewCount\":-3,\"timestampUtc\":\"2026-11-08T14:09:42.8866425+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"viewCount\":-3,\"timestampUtc\":\"2026-11-08T14:09:42.8866425+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"isLiked\":1}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"isLiked\":\"true\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"rating\":5,\"listId\":\"l\",\"videoKey\":\"k\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"videoKey\":\"k\",\"rating\":5,\"listId\":\"l\",\"timestampUtc\":\"2026-11-08T14:09:42.8871141+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"videoKey\":\"k\",\"rating\":5,\"listId\":\"l\",\"timestampUtc\":\"2026-11-08T14:09:42.8871757+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"videoKey\":\"k\",\"rating\":5,\"listId\":\"l\",\"timestampUtc\":\"2026-11-08T14:09:42.8871757+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"username\":\"\\u015Fule\\u002B\\u0027\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"username\":\"\\u015Fule\\u002B\\u0027\",\"timestampUtc\":\"2026-11-08T14:09:42.8872786+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"username\":\"şule+'\",\"timestampUtc\":\"2026-11-08T14:09:42.8873909+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"username\":\"\\u015Fule\\u002B\\u0027\",\"timestampUtc\":\"2026-11-08T14:09:42.8873909+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"username\":\"\\uD800\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"payloadBase64\":\"not base64!\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"payloadBase64\":\"not base64!\",\"timestampUtc\":\"2026-11-08T14:09:42.8877688+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"payloadBase64\":\"not base64!\",\"timestampUtc\":\"2026-11-08T14:09:42.8878197+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"payloadBase64\":\"not base64!\",\"timestampUtc\":\"2026-11-08T14:09:42.8878197+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"sealedPayloadBase64\":\"c2VhbGVk\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-08T14:09:42.8879511+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-08T14:09:42.8880081+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-08T14:09:42.8880081+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"unknown\":{\"a\":[1,2]}}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8881172+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8882202+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8882202+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\"}   ",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.888386+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8885816+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8885816+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\"} x",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "null",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "[]",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "42",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"unknown\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8895513+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8897341+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8897341+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"unknown\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8898573+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8900992+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-08T14:09:42.8900992+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"unknown\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"unknown\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33Z\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33Z\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.123456789+03:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+03:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.123456789+03:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+03:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567890123456789Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33-00:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33-00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33+14:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+14:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+14:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+14:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33+15:00\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33+0300\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33+03\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+03:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+03\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+03:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33+03:60\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T00:00:00+03:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T00:00:00+03:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:00+03:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:00+03:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22Z\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:00+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22Z\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:00+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+03:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+03:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07 19:22:33Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07t19:22:33Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.Z\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.Z\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33,5Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T24:00:00Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:60Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-02-30T00:00:00Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"0001-01-01T00:00:00+01:00\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"9999-12-31T23:59:59.9999999+00:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"9999-12-31T23:59:59.9999999+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"9999-12-31T23:59:59.9999999+00:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"9999-12-31T23:59:59.9999999+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"9999-12-31T23:59:59-01:00\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-1-07T19:22:33Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\" 2026-11-07T19:22:33Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33Z \"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567890123456Z\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567890123456Z\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.12345678901234567Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567890123456+14:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+14:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567890123456+14:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+14:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.+03:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+03:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.+03:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+03:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22.5Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33.5\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.5+03:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.5\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33.5+03:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33+14:30\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33-14:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33-14:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33-14:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33-14:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33+3:00\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33-03\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33-03:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33-03\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33-03:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33+03:\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33+03:0\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22+03\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:00+03:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22+03\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:00+03:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07+03:00\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"0000-01-01T00:00:00Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"0001-01-01T00:59:59+01:00\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"0001-01-01T01:00:00+01:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"0001-01-01T01:00:00+01:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"0001-01-01T01:00:00+01:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"0001-01-01T01:00:00+01:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"9999-12-31T22:59:59-01:00\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"9999-12-31T22:59:59-01:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"9999-12-31T22:59:59-01:00\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"9999-12-31T22:59:59-01:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"2026-11-07T19:22:33Z\"}",
+      "csharp": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}",
+      "rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33Z\"}",
+      "csharp_of_rust": "{\"eventId\":\"e\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}"
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"２026-11-07T19:22:33Z\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":\"\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":null}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-event",
+      "input": "{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"e\",\"timestampUtc\":5}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\"}",
+      "csharp": "{\"requestId\":\"b2e03cea741845bd8430a74e610dcf99\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"416bf0b971344c75aefb716d6b4d7bdd\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"416bf0b971344c75aefb716d6b4d7bdd\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"dbPath\":\"d\",\"kind\":\"UpsertVideo\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"kind\":\"UpsertVideo\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"d\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"d\",\"kind\":2}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQID\",\"secondaryBlob\":\"\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"secondaryBlob\":\"\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"secondaryBlob\":\"\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"secondaryBlob\":\"\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQI\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQJ=\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQID AA==\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQIDAA==\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQIDAA==\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQIDAA==\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQ\\nID\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQ\\tID\\r\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\" AQID\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQ ID\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQID\\f\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQID \"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQID\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQ=  =\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQ==\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQ==\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"AQ==\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"   \"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"blob\":\"\",\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"AQ-_\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":\"====\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":5}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"blob\":null}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"viewCount\":null}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"viewCount\":7,\"viewCountDelta\":-1,\"ord\":3,\"iterations\":600000}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":3,\"updatedTicks\":0,\"viewCount\":7,\"viewCountDelta\":-1,\"iterations\":600000,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":3,\"updatedTicks\":0,\"viewCount\":7,\"viewCountDelta\":-1,\"iterations\":600000,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":3,\"updatedTicks\":0,\"viewCount\":7,\"viewCountDelta\":-1,\"iterations\":600000,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"updatedTicks\":1.0}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"updatedTicks\":9223372036854775807}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":9223372036854775807,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":9223372036854775807,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":9223372036854775807,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"updatedTicks\":9223372036854775808}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"createdAtUtc\":null}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"createdAtUtc\":\"2026-11-07T19:22:33.5+00:00\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"2026-11-07T19:22:33.5+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"2026-11-07T19:22:33.5+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"2026-11-07T19:22:33.5+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"createdAtUtc\":\"2026-11-07T19:22:33+03:00\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"2026-11-07T19:22:33+03:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"2026-11-07T19:22:33+03:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"2026-11-07T19:22:33+03:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"saltBase64\":null,\"passwordHashBase64\":\"x\"}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"passwordHashBase64\":\"x\",\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"passwordHashBase64\":\"x\",\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"passwordHashBase64\":\"x\",\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"batchVideos\":[]}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[]}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[]}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[]}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"batchVideos\":[{\"key\":\"v\",\"encryptedBlob\":\"AQ==\",\"updatedTicks\":5}]}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"key\":\"v\",\"encryptedBlob\":\"AQ==\",\"updatedTicks\":5}]}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"key\":\"v\",\"encryptedBlob\":\"AQ==\",\"updatedTicks\":5}]}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"key\":\"v\",\"encryptedBlob\":\"AQ==\",\"updatedTicks\":5}]}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"batchVideos\":[{\"key\":\"v\"}]}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"key\":\"v\",\"updatedTicks\":0}]}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"key\":\"v\",\"updatedTicks\":0}]}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"key\":\"v\",\"updatedTicks\":0}]}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"batchVideos\":[{}]}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"updatedTicks\":0}]}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"updatedTicks\":0}]}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"updatedTicks\":0}]}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"batchVideos\":[{\"Key\":\"v\",\"EncryptedBlob\":\"AQ==\",\"UpdatedTicks\":5}]}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"updatedTicks\":0}]}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"updatedTicks\":0}]}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchVideos\":[{\"updatedTicks\":0}]}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"batchVideos\":[{\"key\":\"v\",\"encryptedBlob\":\"bad\",\"updatedTicks\":5}]}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"batchVideos\":null,\"batchProgress\":[{\"key\":\"p\",\"encryptedBlob\":\"Ag==\",\"updatedTicks\":1}]}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchProgress\":[{\"key\":\"p\",\"encryptedBlob\":\"Ag==\",\"updatedTicks\":1}]}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchProgress\":[{\"key\":\"p\",\"encryptedBlob\":\"Ag==\",\"updatedTicks\":1}]}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchProgress\":[{\"key\":\"p\",\"encryptedBlob\":\"Ag==\",\"updatedTicks\":1}]}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"batchListItems\":[{\"listId\":\"l\",\"itemHash\":\"h\",\"ord\":2,\"encryptedPathBlob\":\"Aw==\"}]}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchListItems\":[{\"listId\":\"l\",\"itemHash\":\"h\",\"ord\":2,\"encryptedPathBlob\":\"Aw==\"}]}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchListItems\":[{\"listId\":\"l\",\"itemHash\":\"h\",\"ord\":2,\"encryptedPathBlob\":\"Aw==\"}]}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"batchListItems\":[{\"listId\":\"l\",\"itemHash\":\"h\",\"ord\":2,\"encryptedPathBlob\":\"Aw==\"}]}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"batchListItems\":[{\"listId\":\"l\",\"ord\":2.5}]}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"postCommitEvents\":[{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"pc\",\"timestampUtc\":\"2026-11-07T19:22:33Z\"}]}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"postCommitEvents\":[{\"eventId\":\"pc\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}]}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"postCommitEvents\":[{\"eventId\":\"pc\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33Z\"}]}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"postCommitEvents\":[{\"eventId\":\"pc\",\"topic\":\"profiles\",\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"timestampUtc\":\"2026-11-07T19:22:33+00:00\"}]}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"postCommitEvents\":[{\"kind\":1,\"senderInstanceId\":\"s\",\"scopePath\":\"p\",\"eventId\":\"pc\",\"timestampUtc\":\"2026-11-07T19:22:33z\"}]}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"postCommitEvents\":[{\"senderInstanceId\":\"s\",\"scopePath\":\"p\"}]}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"postCommitEvents\":[]}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"postCommitEvents\":[]}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"postCommitEvents\":[]}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\",\"postCommitEvents\":[]}"
+    },
+    {
+      "cmd": "try-request",
+      "input": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"postCommitEvents\":null}",
+      "csharp": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"senderInstanceId\":\"s\",\"dbPath\":\"C:\\\\d\\\\profiles.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+    },
+    {
+      "cmd": "try-ack",
+      "input": "{\"requestId\":\"r\",\"committed\":true,\"isDuplicate\":false}",
+      "csharp": "{\"requestId\":\"r\",\"committed\":true,\"isDuplicate\":false}",
+      "rust": "{\"requestId\":\"r\",\"committed\":true,\"isDuplicate\":false}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"committed\":true,\"isDuplicate\":false}"
+    },
+    {
+      "cmd": "try-ack",
+      "input": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind \\u0027x\\u0027.\"}",
+      "csharp": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind \\u0027x\\u0027.\"}",
+      "rust": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind 'x'.\"}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind \\u0027x\\u0027.\"}"
+    },
+    {
+      "cmd": "try-ack",
+      "input": "{\"requestId\":\"r\"}",
+      "csharp": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false}",
+      "rust": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false}"
+    },
+    {
+      "cmd": "try-ack",
+      "input": "{\"committed\":true}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-ack",
+      "input": "{\"requestId\":\"r\",\"committed\":\"true\"}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-ack",
+      "input": "{\"requestId\":\"r\",\"committed\":1}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-ack",
+      "input": "{\"requestId\":\"r\",\"committed\":null}",
+      "csharp": null,
+      "rust": null,
+      "csharp_of_rust": null
+    },
+    {
+      "cmd": "try-ack",
+      "input": "{\"requestId\":\"r\",\"error\":null}",
+      "csharp": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false}",
+      "rust": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false}",
+      "csharp_of_rust": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false}"
+    }
+  ]
+}

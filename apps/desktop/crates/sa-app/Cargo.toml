@@ -51,6 +51,9 @@ zeroize.workspace = true
 tempfile.workspace = true
 crossbeam-channel.workspace = true
 sa-core = { workspace = true, features = ["all-catalogs"] }
+# e2e-data: the frozen C#-written data folder (`tests/csharp_e2e_data.rs`): JSON shapes, thumbnail hashes.
+serde_json.workspace = true
+sha2.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true

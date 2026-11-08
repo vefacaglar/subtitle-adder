@@ -1,100 +1,56 @@
-//! Data compatibility with the C# app (win-profiles §17 "format compatibility"): the C# `LocalProfileManager` /
-//! `SqliteProfileStore` (compiled from apps/windows by `tools/fixtures/ProfileFixtures`) and the Rust
-//! `WinProfileStore` write the same scenarios, and each side reads the other's `profiles.json` + `profiles.db`:
+//! Data compatibility with the C# app (win-profiles §17 "format compatibility"), checked against golden data the C#
+//! `LocalProfileManager` / `SqliteProfileStore` / `StateSyncBroker` wrote before the C# app was removed (frozen under
+//! `tests/fixtures/csharp/`, see the README there):
 //!
-//! * C# writes → Rust reads (passwords, DPAPI remember-me, history, likes, ratings, progress, lists, thumbnails);
-//! * Rust writes on top of C# data → C# reads it (and the reverse: C# writes on top of Rust data);
-//! * Rust writes from scratch → C# reads it (DPAPI remember-me written by Rust restores in C#);
-//! * a version-2 header with legacy monolithic vaults migrates to the same data on both sides.
+//! * C# writes → Rust reads: `profiles.json` + `profiles.db` written by C# (passwords, DPAPI remember-me, history,
+//!   likes, ratings, progress, lists, thumbnails), also after a second C# step on top, read by Rust exactly as C# read
+//!   them (the frozen C# "dump");
+//! * Rust writes on top of C# data, and Rust writes from scratch: Rust reads its own result back exactly as C# read
+//!   the data C# wrote for the same scenario (only times and new list ids may differ), and the written files have the
+//!   C# structure (header JSON text, SQLite schema, row counts, blob sizes);
+//! * a version-2 header with legacy monolithic vaults migrates to the data C# migrated it to;
+//! * fingerprints, crypto primitives and sealed broker events match the C# values.
 //!
-//! Both sides describe what they read in the same canonical JSON ("dump"); the dumps must be equal. The fixture is
-//! built with `dotnet build -c Release` on first use; without a .NET SDK the tests print SKIPPED and pass, unless
-//! `SA_PROFILES_REQUIRE_CSHARP=1` is set.
+//! The C# data refers to media files at a fixed absolute path ([`FIXTURE_ROOT`]); the tests recreate them there
+//! (deterministic contents written atomically, then only read). The sealed-event test also needs the C# data at a
+//! fixed folder there (`event-data`, its scope path is part of the event's AAD): it holds a cross-process lock on it
+//! while it runs and removes it afterwards. The remembered sessions in the C# data are DPAPI-protected for the
+//! Windows account that produced them; on any other account the restore part is skipped with a message.
 #![cfg(windows)]
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use base64::Engine as _;
 use sa_profiles::win::WinProfileStore;
 use sa_profiles::{ProfileStore, VideoFeedFilter, VideoUserStats};
 use sa_sync::{InProcessBus, ProfileWriteBroker};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/fixtures/ProfileFixtures")
+/// Where the C# fixtures kept their media (and the folder of the sealed event's scope path).
+const FIXTURE_ROOT: &str = r"C:\ProgramData\SubtitleAdderTestFixtures\profiles";
+
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/csharp")
 }
 
-/// Path of the built fixture DLL, building it once; `None` = skip.
-fn fixture() -> Option<PathBuf> {
-    static F: OnceLock<Option<PathBuf>> = OnceLock::new();
-    F.get_or_init(|| {
-        let dll = fixture_dir().join("bin/Release/net10.0/ProfileFixtures.dll");
-        let built = Command::new("dotnet")
-            .args(["build", "-c", "Release", "--nologo", "-v", "q"])
-            .current_dir(fixture_dir())
-            .env("TMP", scratch_temp())
-            .env("TEMP", scratch_temp())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if built && dll.exists() {
-            Some(dll)
-        } else {
-            assert!(std::env::var("SA_PROFILES_REQUIRE_CSHARP").is_err(), "C# profile fixture could not be built");
-            eprintln!("SKIPPED: C# profile fixture not available (no .NET SDK?)");
-            None
-        }
-    })
-    .clone()
-}
-
-/// A private temp folder for the C# processes (broker files, diagnostic log), never the real `%TEMP%\SubtitleAdder`.
-fn scratch_temp() -> PathBuf {
-    static T: OnceLock<tempfile::TempDir> = OnceLock::new();
-    T.get_or_init(|| tempfile::tempdir().expect("temp")).path().to_path_buf()
-}
-
-fn csharp(dll: &Path, args: &[&str]) -> String {
-    let out = Command::new("dotnet")
-        .arg(dll)
-        .args(args)
-        .env("TMP", scratch_temp())
-        .env("TEMP", scratch_temp())
-        .output()
-        .expect("run dotnet");
-    assert!(
-        out.status.success(),
-        "C# fixture {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout).expect("utf-8 stdout")
-}
-
-fn csharp_dump(dll: &Path, data: &Path, creds: &[(&str, &str)]) -> Value {
-    let mut args: Vec<String> = vec!["dump".into(), data.to_string_lossy().into_owned()];
-    for (u, p) in creds {
-        args.push((*u).into());
-        args.push((*p).into());
-    }
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    serde_json::from_str(&csharp(dll, &refs)).expect("dump json")
+fn frozen_json(rel: &str) -> Value {
+    let text = std::fs::read_to_string(fixtures().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Shared scenario (mirrors Program.cs)
+// Shared scenario (mirrors the C# fixture tool's generate / mutate steps)
 
 const A: &str = "Yaz Tatili Ç.mp4";
 const B: &str = "missing_episode.mkv";
 const C: &str = "belgesel-uzay.mp4";
 const D: &str = "zeynep_klip.mp4";
 
-/// Program.cs `Bytes`: xorshift32.
+/// The fixture tool's `Bytes`: xorshift32.
 fn bytes(len: usize, seed: u32) -> Vec<u8> {
     let mut x: u32 = if seed == 0 { 0x9E37_79B9 } else { seed.wrapping_mul(0x9E37_79B9) };
     (0..len)
@@ -114,18 +70,49 @@ struct Media {
     d: String,
 }
 
-/// `<data>\..\media`, so a copied data folder keeps pointing at the same files.
-fn media(data: &Path, create: bool) -> Media {
-    let dir = data.parent().expect("parent").join("media");
+/// Writes `content` to `path` unless it is already there (atomically, so parallel test processes never see a
+/// partial file).
+fn ensure_file(path: &Path, content: &[u8]) {
+    if std::fs::read(path).ok().as_deref() == Some(content) {
+        return;
+    }
+    let name = path.file_name().expect("name").to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, content).expect("media temp file");
+    if std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(std::fs::read(path).ok().as_deref(), Some(content), "media file {path:?}");
+    }
+}
+
+/// The media the C# data refers to, at the fixed root: `a`, `c`, `d` exist, `b` never does.
+fn media() -> Media {
+    static M: OnceLock<()> = OnceLock::new();
+    let dir = Path::new(FIXTURE_ROOT).join("media");
     let p = |n: &str| dir.join(n).to_string_lossy().into_owned();
     let m = Media { a: p(A), b: p(B), c: p(C), d: p(D) };
-    if create {
-        std::fs::create_dir_all(&dir).expect("media dir");
-        std::fs::write(&m.a, bytes(5000, 1)).expect("a");
-        std::fs::write(&m.c, bytes(70000, 2)).expect("c");
-        std::fs::write(&m.d, bytes(1234, 3)).expect("d");
-    }
+    M.get_or_init(|| {
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("media folder {dir:?}: {e}"));
+        ensure_file(Path::new(&m.a), &bytes(5000, 1));
+        ensure_file(Path::new(&m.c), &bytes(70000, 2));
+        ensure_file(Path::new(&m.d), &bytes(1234, 3));
+        assert!(!Path::new(&m.b).exists(), "{} must not exist", m.b);
+    });
     m
+}
+
+/// A private copy of a frozen C# data folder (`<scenario>/data` or another folder of it) at `dst`.
+fn frozen_data(rel: &str, dst: &Path) -> PathBuf {
+    media();
+    let _ = std::fs::remove_dir_all(dst);
+    std::fs::create_dir_all(dst).expect("data dir");
+    for e in std::fs::read_dir(fixtures().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}")) {
+        let e = e.expect("entry");
+        if e.file_type().expect("type").is_file() {
+            std::fs::copy(e.path(), dst.join(e.file_name())).expect("copy");
+        }
+    }
+    dst.to_path_buf()
 }
 
 fn open(data: &Path) -> Arc<WinProfileStore> {
@@ -136,7 +123,7 @@ fn open(data: &Path) -> Arc<WinProfileStore> {
 
 fn rust_generate(data: &Path) {
     std::fs::create_dir_all(data).expect("data dir");
-    let m = media(data, true);
+    let m = media();
     let s = open(data);
     s.register_user("Emre", "pässwörd-1", false).expect("register Emre");
     s.record_watch_with(&m.a, 10.0, 100.0, None, None);
@@ -163,7 +150,7 @@ fn rust_generate(data: &Path) {
 }
 
 fn rust_mutate(data: &Path) {
-    let m = media(data, false);
+    let m = media();
     let s = open(data);
     s.login_user("emre", "pässwörd-1", false).expect("login emre");
     s.record_watch_with(&m.a, 70.0, 100.0, None, None);
@@ -188,7 +175,7 @@ fn rust_mutate(data: &Path) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Rust dump (mirrors Program.cs `Dump`)
+// Rust dump (mirrors the fixture tool's `Dump`, the canonical JSON of what an app reads)
 
 fn paths_of(items: &[VideoUserStats]) -> Value {
     Value::Array(items.iter().map(|v| json!(v.video_path)).collect())
@@ -275,6 +262,20 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// Copies a data folder (a dump writes: it logs in, which clears a remembered session).
+fn copy_data(data: &Path, name: &str) -> PathBuf {
+    let dst = data.parent().expect("parent").join(name);
+    let _ = std::fs::remove_dir_all(&dst);
+    std::fs::create_dir_all(&dst).expect("copy dir");
+    for e in std::fs::read_dir(data).expect("read data") {
+        let e = e.expect("entry");
+        if e.file_type().expect("type").is_file() {
+            std::fs::copy(e.path(), dst.join(e.file_name())).expect("copy");
+        }
+    }
+    dst
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Comparison
 
@@ -338,66 +339,274 @@ fn assert_same(what: &str, expected: &Value, actual: &Value, fp_upgrade: bool) {
     }
 }
 
-/// Copies `profiles.json`, `profiles.db` (+ WAL files) and the backup into a fresh folder next to `data`.
-fn copy_data(data: &Path, name: &str) -> PathBuf {
-    let dst = data.parent().expect("parent").join(name);
-    let _ = std::fs::remove_dir_all(&dst);
-    std::fs::create_dir_all(&dst).expect("copy dir");
-    for e in std::fs::read_dir(data).expect("read data") {
-        let e = e.expect("entry");
-        if e.file_type().expect("type").is_file() {
-            std::fs::copy(e.path(), dst.join(e.file_name())).expect("copy");
-        }
-    }
-    dst
-}
-
-/// Dumps a copy with each side (a dump writes: it logs in, which clears a remembered session).
-fn compare_both(dll: &Path, data: &Path, creds: &[(&str, &str)], what: &str, fp_upgrade: bool) -> (Value, Value) {
-    let cs = csharp_dump(dll, &copy_data(data, "dump-cs"), creds);
-    let rs = rust_dump(&copy_data(data, "dump-rs"), creds);
-    assert_same(what, &cs, &rs, fp_upgrade);
-    (cs, rs)
-}
-
-const CREDS: [(&str, &str); 2] = [("Emre", "pässwörd-1"), ("zeynep", "z-pass")];
-
 fn header(data: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(data.join("profiles.json")).expect("header")).expect("header json")
 }
+
+/// Whether the remembered session of `data` must restore on this Windows account: true when none is stored, or when
+/// the tests run as the account that recorded the C# data (SHA-256 of its user SID in `recording-account.json`;
+/// DPAPI user scope binds the blob to that account). Deliberately independent of the Rust DPAPI code under test, so
+/// a broken unprotect fails on the recording account instead of looking like another account.
+fn remembered_session_opens_here(data: &Path) -> bool {
+    let h = header(data);
+    if h["rememberedProtectedKeyBase64"].as_str().is_none() {
+        return true;
+    }
+    let recorded = frozen_json("recording-account.json")["user_sid_sha256"].as_str().expect("user_sid_sha256").to_owned();
+    let sid = sa_sync::win_testing::current_user_sid().expect("current user SID");
+    let here: String = Sha256::digest(sid.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+    here == recorded
+}
+
+/// Dumps a copy of `data` with Rust and compares it with the frozen C# dump of the same data. When the remembered
+/// session in the C# data was protected for another Windows account, the restore is not compared (Rust must then
+/// restore nothing) and the rest still is.
+fn assert_rust_reads_like_csharp(what: &str, data: &Path, creds: &[(&str, &str)], expected: &Value, fp_upgrade: bool) -> Value {
+    let restorable = remembered_session_opens_here(data);
+    let actual = rust_dump(&copy_data(data, "dump-rs"), creds);
+    if restorable {
+        assert_same(what, expected, &actual, fp_upgrade);
+    } else {
+        eprintln!("SKIPPED ({what}): the C# remembered session is DPAPI-protected for another Windows account");
+        assert_eq!(actual["restoredUser"], Value::Null, "{what}: nothing to restore on this account");
+        let strip = |v: &Value| {
+            let mut v = v.clone();
+            let o = v.as_object_mut().expect("dump object");
+            for k in ["restoredUser", "restored", "rememberMe"] {
+                o.shift_remove(k);
+            }
+            v
+        };
+        assert_same(what, &strip(expected), &strip(&actual), fp_upgrade);
+    }
+    actual
+}
+
+/// The largest `*Ticks` value of a dump.
+fn max_ticks(v: &Value) -> i64 {
+    match v {
+        Value::Object(o) => o
+            .iter()
+            .map(|(k, v)| if k.ends_with("Ticks") { v.as_i64().unwrap_or(i64::MIN) } else { max_ticks(v) })
+            .max()
+            .unwrap_or(i64::MIN),
+        Value::Array(a) => a.iter().map(max_ticks).max().unwrap_or(i64::MIN),
+        _ => i64::MIN,
+    }
+}
+
+/// Replaces the values two independent runs of one scenario cannot share: `*Ticks` later than `after` (written by
+/// the run itself, not read from older data) and list ids outside `known_ids`; lists are then ordered by name (their
+/// order follows the random ids).
+fn mask_new(v: &Value, after: i64, known_ids: &HashSet<String>) -> Value {
+    fn walk(v: &Value, after: i64, known: &HashSet<String>) -> Value {
+        match v {
+            Value::Object(o) => {
+                let mut out = Map::new();
+                for (k, x) in o {
+                    let masked = if k.ends_with("Ticks") && x.as_i64().is_some_and(|t| t > after) {
+                        json!("<new tick>")
+                    } else if k == "id" && x.as_str().is_some_and(|id| !known.contains(id)) {
+                        json!("<new id>")
+                    } else {
+                        walk(x, after, known)
+                    };
+                    out.insert(k.clone(), masked);
+                }
+                if let Some(Value::Array(lists)) = out.get_mut("lists") {
+                    lists.sort_by_key(|l| l["name"].as_str().unwrap_or("").to_owned());
+                }
+                Value::Object(out)
+            }
+            Value::Array(a) => Value::Array(a.iter().map(|x| walk(x, after, known)).collect()),
+            other => other.clone(),
+        }
+    }
+    walk(&canon(v), after, known_ids)
+}
+
+fn list_ids(dump: &Value) -> HashSet<String> {
+    fn walk(v: &Value, out: &mut HashSet<String>) {
+        match v {
+            Value::Object(o) => {
+                if let Some(Value::Array(lists)) = o.get("lists") {
+                    out.extend(lists.iter().filter_map(|l| l["id"].as_str().map(str::to_owned)));
+                }
+                o.values().for_each(|x| walk(x, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut out = HashSet::new();
+    walk(dump, &mut out);
+    out
+}
+
+fn assert_masked_same(what: &str, expected: &Value, actual: &Value) {
+    if expected != actual {
+        panic!(
+            "{what}: dumps differ\n--- C#\n{}\n--- Rust\n{}",
+            serde_json::to_string_pretty(expected).unwrap(),
+            serde_json::to_string_pretty(actual).unwrap()
+        );
+    }
+}
+
+/// `profiles.json` text with the values that are random per run (salts, hashes, sealed vaults, DPAPI blobs, creation
+/// times) replaced; everything else (keys, their order, indentation, CRLF line breaks, escaping, fixed values) stays
+/// byte for byte.
+fn masked_header_text(data: &Path) -> String {
+    masked_json_text(&std::fs::read_to_string(data.join("profiles.json")).expect("header"))
+}
+
+/// [`masked_header_text`] of a header text. The masked values are base64 / `DateTimeOffset` text, where C# escapes
+/// `+` as `+` and Rust does not (both read either form).
+fn masked_json_text(text: &str) -> String {
+    const RANDOM: [&str; 5] = ["saltBase64", "passwordHashBase64", "createdAtUtc", "encryptedVaultBase64", "rememberedProtectedKeyBase64"];
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        match RANDOM.iter().find(|k| trimmed.starts_with(&format!("\"{k}\": \""))) {
+            Some(k) => {
+                let indent = &line[..line.len() - trimmed.len()];
+                let value_start = indent.len() + k.len() + 5;
+                let value_end = line.rfind('"').expect("closing quote");
+                let value = &line[value_start..value_end];
+                let kept = if *k == "rememberedProtectedKeyBase64" { value.split_once(':').map_or("", |(p, _)| p) } else { "" };
+                out.push_str(&format!("{indent}\"{k}\": \"<{kept}>{}", &line[value_end..]));
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
+/// What a C# reader depends on in `profiles.db`, independent of random keys and times: the schema, the journal mode
+/// and user version, the `meta` rows, the row count of every table (except the request-id journal) and the sorted
+/// sizes of the encrypted blobs.
+fn db_structure(data: &Path) -> Value {
+    // Read a copy: opening a WAL database leaves -shm/-wal files next to it.
+    let tmp = tempfile::tempdir().expect("temp");
+    for e in std::fs::read_dir(data).expect("read data") {
+        let e = e.expect("entry");
+        if e.file_name().to_string_lossy().starts_with("profiles.db") {
+            std::fs::copy(e.path(), tmp.path().join(e.file_name())).expect("copy db");
+        }
+    }
+    let db = rusqlite::Connection::open(tmp.path().join("profiles.db")).expect("open db");
+    let schema: Vec<Value> = db
+        .prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")
+        .unwrap()
+        .query_map([], |r| {
+            Ok(json!([r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?]))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let meta: Vec<Value> = db
+        .prepare("SELECT key, value FROM meta ORDER BY key")
+        .unwrap()
+        .query_map([], |r| Ok(json!([r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?])))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let mut tables = Map::new();
+    for t in ["profiles", "videos", "watch_progress", "thumbnails", "custom_lists", "custom_list_items"] {
+        let count: i64 = db.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0)).unwrap();
+        let mut blob_sizes: Vec<i64> = Vec::new();
+        let has_blob: bool = db
+            .query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{t}') WHERE name = 'encrypted_blob'"), [], |r| r.get::<_, i64>(0))
+            .unwrap()
+            > 0;
+        if has_blob {
+            blob_sizes = db
+                .prepare(&format!("SELECT length(encrypted_blob) FROM {t}"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            blob_sizes.sort_unstable();
+        }
+        tables.insert(t.into(), json!({ "rows": count, "blobSizes": blob_sizes }));
+    }
+    let journal: String = db.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+    let user_version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    json!({ "schema": schema, "journalMode": journal, "userVersion": user_version, "meta": meta, "tables": tables })
+}
+
+fn assert_same_db_structure(what: &str, csharp: &Path, rust: &Path) {
+    let (e, a) = (db_structure(csharp), db_structure(rust));
+    if e != a {
+        panic!(
+            "{what}: profiles.db differs\n--- C#\n{}\n--- Rust\n{}",
+            serde_json::to_string_pretty(&e).unwrap(),
+            serde_json::to_string_pretty(&a).unwrap()
+        );
+    }
+}
+
+const CREDS: [(&str, &str); 2] = [("Emre", "pässwörd-1"), ("zeynep", "z-pass")];
 
 // ---------------------------------------------------------------------------------------------------------------
 // Tests
 
 #[test]
-fn csharp_written_profiles_read_identically_in_rust_and_rust_writes_on_top_read_back_in_csharp() {
-    let Some(dll) = fixture() else { return };
+fn csharp_written_profiles_read_identically_in_rust() {
     let root = tempfile::tempdir().expect("temp");
-    let data = root.path().join("data");
-    csharp(&dll, &["generate", &data.to_string_lossy()]);
+    let data = frozen_data("generate/data", &root.path().join("data"));
+    let cs = frozen_json("generate/dump.json");
 
     // C# → Rust: the remembered session (DPAPI, written by C#) restores in Rust too.
-    let (cs, _) = compare_both(&dll, &data, &CREDS, "C# generate", false);
+    assert_rust_reads_like_csharp("C# generate", &data, &CREDS, &cs, false);
     assert_eq!(cs["restoredUser"], json!("zeynep"));
     assert_eq!(cs["profiles"]["Emre"]["lists"].as_array().map(Vec::len), Some(2));
     assert_eq!(cs["profiles"]["Emre"]["videos"][2]["viewCount"], json!(2));
+}
 
-    // Rust writes on the C# data → C# reads it (view-count deltas, HMAC list-item removal, renames, thumbnails).
+#[test]
+fn csharp_writes_on_top_of_csharp_data_read_identically_in_rust() {
+    // The second C# step (view-count deltas, HMAC list-item removal, renames, thumbnails, history clearing) on top
+    // of the first, read by Rust.
+    let root = tempfile::tempdir().expect("temp");
+    let data = frozen_data("generate-mutate/data", &root.path().join("data"));
+    let cs = frozen_json("generate-mutate/dump.json");
+    assert_rust_reads_like_csharp("C# generate + C# mutate", &data, &CREDS, &cs, false);
+    assert_eq!(cs["restoredUser"], json!("zeynep"));
+    assert_eq!(cs["restored"]["totals"]["watched"], json!(0));
+}
+
+#[test]
+fn rust_writes_on_top_of_csharp_data_like_csharp_does() {
+    // Rust runs the second step on the C# data; reading the result must give what C# read after running the same
+    // step itself (only the times the step wrote and the new list's id differ), and the files keep the C# structure.
+    let root = tempfile::tempdir().expect("temp");
+    let data = frozen_data("generate/data", &root.path().join("data"));
     rust_mutate(&data);
-    let (cs, _) = compare_both(&dll, &data, &CREDS, "C# generate + Rust mutate", false);
-    let emre = &cs["profiles"]["Emre"];
+    let rs = rust_dump(&copy_data(&data, "dump-rs"), &CREDS);
+
+    let base = frozen_json("generate/dump.json");
+    let cs = frozen_json("generate-mutate/dump.json");
+    let (after, known) = (max_ticks(&base), list_ids(&base));
+    assert_masked_same("C# generate + Rust mutate", &mask_new(&cs, after, &known), &mask_new(&rs, after, &known));
+
+    let emre = &rs["profiles"]["Emre"];
     let a = emre["videos"].as_array().unwrap().iter().find(|v| v["fileName"] == json!(A)).expect("a");
     assert_eq!(a["viewCount"], json!(3));
     assert_eq!(a["isLiked"], json!(false));
     let names: Vec<&str> = emre["lists"].as_array().unwrap().iter().map(|l| l["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"Uzay Belgeselleri") && names.contains(&"Yeni Liste"), "{names:?}");
-    assert_eq!(cs["restoredUser"], json!("zeynep"), "Rust re-wrote the remembered session C# can unwrap");
-    assert_eq!(cs["restored"]["totals"]["watched"], json!(0), "history cleared by Rust");
+    assert_eq!(rs["restoredUser"], json!("zeynep"), "Rust re-wrote the remembered session");
+    assert_eq!(rs["restored"]["totals"]["watched"], json!(0), "history cleared by Rust");
+
+    let cs_data = frozen_data("generate-mutate/data", &root.path().join("cs-data"));
+    assert_eq!(masked_header_text(&data), masked_header_text(&cs_data), "profiles.json as C# writes it");
+    assert_same_db_structure("C# generate + Rust mutate", &cs_data, &data);
 }
 
 #[test]
-fn rust_written_profiles_read_identically_in_csharp_and_csharp_writes_on_top_read_back_in_rust() {
-    let Some(dll) = fixture() else { return };
+fn rust_written_profiles_match_the_csharp_written_data_for_the_same_scenario() {
     let root = tempfile::tempdir().expect("temp");
     let data = root.path().join("data");
     rust_generate(&data);
@@ -406,64 +615,28 @@ fn rust_written_profiles_read_identically_in_csharp_and_csharp_writes_on_top_rea
     assert_eq!(h["version"], json!(3));
     assert_eq!(h["rememberMeOptIn"], json!(true));
     assert!(h["rememberedProtectedKeyBase64"].as_str().unwrap().starts_with("dpapi1:"));
+    let cs_data = frozen_data("generate/data", &root.path().join("cs-data"));
+    assert_eq!(masked_header_text(&data), masked_header_text(&cs_data), "profiles.json as C# writes it");
+    assert_same_db_structure("Rust generate", &cs_data, &data);
 
-    // Rust → C#: the DPAPI remember-me written by Rust restores in C#.
-    let (cs, _) = compare_both(&dll, &data, &CREDS, "Rust generate", false);
-    assert_eq!(cs["restoredUser"], json!("zeynep"));
-    assert_eq!(cs["restored"]["totals"], json!({"watched": 1, "views": 1, "liked": 0, "rated": 1}));
-
-    // C# writes on the Rust data → Rust reads it.
-    csharp(&dll, &["mutate", &data.to_string_lossy()]);
-    compare_both(&dll, &data, &CREDS, "Rust generate + C# mutate", false);
-}
-
-#[test]
-fn both_apps_write_equivalent_data_for_the_same_scenario() {
-    let Some(dll) = fixture() else { return };
-    let root_cs = tempfile::tempdir().expect("temp");
-    let root_rs = tempfile::tempdir().expect("temp");
-    let data_cs = root_cs.path().join("data");
-    let data_rs = root_rs.path().join("data");
-    csharp(&dll, &["generate", &data_cs.to_string_lossy()]);
-    rust_generate(&data_rs);
-    let cs = csharp_dump(&dll, &copy_data(&data_cs, "dump"), &CREDS);
-    let rs = csharp_dump(&dll, &copy_data(&data_rs, "dump"), &CREDS);
-    // Everything except paths (different roots), times and list ids must match.
-    fn strip(v: &Value, root: &str) -> Value {
-        match v {
-            Value::String(s) => Value::String(s.replace(root, "<root>")),
-            Value::Array(a) => Value::Array(a.iter().map(|x| strip(x, root)).collect()),
-            Value::Object(o) => Value::Object(
-                o.iter()
-                    .filter(|(k, _)| !k.ends_with("Ticks") && k.as_str() != "id")
-                    .map(|(k, v)| (k.clone(), strip(v, root)))
-                    .collect(),
-            ),
-            other => other.clone(),
-        }
-    }
-    let mut a = strip(&canon(&cs), &root_cs.path().to_string_lossy());
-    let mut b = strip(&canon(&rs), &root_rs.path().to_string_lossy());
-    // List order follows the random list ids.
-    for v in [&mut a, &mut b] {
-        if let Some(l) = v["profiles"]["Emre"]["lists"].as_array_mut() {
-            l.sort_by_key(|x| x["name"].as_str().unwrap_or("").to_owned());
-        }
-    }
-    assert_eq!(a, b);
+    // Rust reads its own data (the DPAPI remember-me written by Rust restores) as C# read the C# data: everything
+    // but times and list ids is equal.
+    let rs = rust_dump(&copy_data(&data, "dump-rs"), &CREDS);
+    assert_eq!(rs["restoredUser"], json!("zeynep"));
+    assert_eq!(rs["restored"]["totals"], json!({"watched": 1, "views": 1, "liked": 0, "rated": 1}));
+    let cs = frozen_json("generate/dump.json");
+    let none = HashSet::new();
+    assert_masked_same("Rust generate", &mask_new(&cs, i64::MIN, &none), &mask_new(&rs, i64::MIN, &none));
 }
 
 #[test]
 fn legacy_version_2_vaults_migrate_to_the_same_data_on_both_sides() {
-    let Some(dll) = fixture() else { return };
     let root = tempfile::tempdir().expect("temp");
-    let data = root.path().join("data");
-    csharp(&dll, &["legacy", &data.to_string_lossy()]);
+    let data = frozen_data("legacy/data", &root.path().join("data"));
     let creds = [("eski", "eski-şifre"), ("bos", "bos-pw")];
 
-    let cs_dir = copy_data(&data, "legacy-cs");
     let rs_dir = copy_data(&data, "legacy-rs");
-    let cs = csharp_dump(&dll, &cs_dir, &creds);
+    let cs = frozen_json("legacy/dump.json");
     let rs = rust_dump(&rs_dir, &creds);
     assert_same("legacy migration", &cs, &rs, true);
     assert_eq!(rs["restoredUser"], Value::Null, "a pre-opt-in remembered session is dropped");
@@ -472,7 +645,8 @@ fn legacy_version_2_vaults_migrate_to_the_same_data_on_both_sides() {
     assert_eq!(eski["lists"][0]["name"], json!("Eski Liste"));
     assert_eq!(eski["lists"][0]["videoPaths"].as_array().map(Vec::len), Some(2), "deduplicated, blank dropped");
 
-    // Rust migrated: the header carries markers, a backup exists without a remembered key, and C# reads the result.
+    // Rust migrated: the header carries markers, a backup exists without a remembered key, and all of it has the
+    // shape of the C# migration of the same file.
     let h = header(&rs_dir);
     assert_eq!(h["version"], json!(3));
     for p in h["profiles"].as_array().unwrap() {
@@ -481,31 +655,44 @@ fn legacy_version_2_vaults_migrate_to_the_same_data_on_both_sides() {
     assert!(h.get("rememberedProtectedKeyBase64").is_none() && h["rememberMe"] == json!(false));
     let bak = std::fs::read_to_string(rs_dir.join("profiles.json.bak")).expect("backup");
     assert!(!bak.contains("rememberedProtectedKeyBase64"));
-    let (again, _) = compare_both(&dll, &rs_dir, &creds, "C# reading the Rust migration", false);
-    assert_eq!(again["lastUsername"], json!("bos"), "the Rust dump logged in eski, then bos");
-    assert_same("the migrated profiles", &again["profiles"], &rs["profiles"], false);
+    let cs_migrated = frozen_data("legacy/migrated", &root.path().join("legacy-cs"));
+    let cs_bak = std::fs::read_to_string(cs_migrated.join("profiles.json.bak")).expect("C# backup");
+    // The backup keeps the original values: the same members and values as the C# backup, laid out the same way.
+    let parse = |t: &str| serde_json::from_str::<Value>(t).expect("backup json");
+    assert_eq!(parse(&bak), parse(&cs_bak), "backup contents");
+    assert_eq!(json_keys(&parse(&bak)), json_keys(&parse(&cs_bak)), "backup member order");
+    assert_eq!(masked_json_text(&bak), masked_json_text(&cs_bak), "backup as C# writes it");
+    assert_eq!(masked_header_text(&rs_dir), masked_header_text(&cs_migrated), "migrated profiles.json as C# writes it");
+    assert_same_db_structure("legacy migration", &cs_migrated, &rs_dir);
+
+    // The migrated folders read back the same: Rust's own migration, and the C# migration read by Rust.
+    let again = rust_dump(&copy_data(&rs_dir, "legacy-rs-again"), &creds);
+    assert_eq!(again["lastUsername"], json!("bos"));
+    assert_same("Rust reading the Rust migration", &rs["profiles"], &again["profiles"], false);
+    let cs_again = rust_dump(&cs_migrated, &creds);
+    assert_same("Rust reading the C# migration", &cs["profiles"], &cs_again["profiles"], true);
 }
 
 #[test]
 fn csharp_fingerprints_match_rust_for_overlapping_slices() {
-    let Some(dll) = fixture() else { return };
     let root = tempfile::tempdir().expect("temp");
-    for (len, seed) in [(5usize, 7u32), (65_536, 8), (70_000, 9), (131_073, 10), (200_000, 11)] {
+    let cases = frozen_json("fingerprints.json");
+    let cases = cases.as_array().expect("cases");
+    assert_eq!(cases.len(), 5);
+    for case in cases {
+        let (len, seed) = (case["length"].as_u64().unwrap() as usize, case["seed"].as_u64().unwrap() as u32);
         let p = root.path().join(format!("f{len}.bin"));
         std::fs::write(&p, bytes(len, seed)).expect("write");
-        let cs = csharp(&dll, &["fingerprint", &p.to_string_lossy()]);
-        assert_eq!(sa_profiles::fingerprint::compute(&p).as_deref(), Some(cs.as_str()), "len {len}");
+        assert_eq!(sa_profiles::fingerprint::compute(&p).as_deref(), case["fingerprint"].as_str(), "len {len}");
     }
 }
 
 #[test]
 fn csharp_crypto_vectors_match_rust() {
-    let Some(dll) = fixture() else { return };
-    let v: Value = serde_json::from_str(&csharp(&dll, &["vectors"])).expect("vectors json");
+    let v = frozen_json("vectors.json");
     let s = |k: &str| v[k].as_str().unwrap_or_else(|| panic!("{k}")).to_owned();
     let unhex = |h: &str| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
     let b64 = base64::engine::general_purpose::STANDARD;
-    use base64::Engine as _;
 
     let salt = unhex(&s("saltHex"));
     let (hash, key) = sa_profiles::crypto::derive(&s("password"), &salt, 100_000);
@@ -519,23 +706,59 @@ fn csharp_crypto_vectors_match_rust() {
     assert_eq!(sa_profiles::win::netcompat::upper_invariant("ıiİß ǅ ﬃ ΐ ſ µ ẞ ǰ"), s("upperInvariant"));
     let blob = b64.decode(s("csharpBlobBase64")).expect("blob");
     assert_eq!(sa_profiles::crypto::open(&blob, &key).as_deref(), Some(sa_profiles::crypto::VAULT_MARKER.as_bytes()));
+    assert_eq!(sa_profiles::win::vault_marker(&key).len(), s("csharpBlobBase64").len(), "a Rust marker has the C# size");
     assert_eq!(v["vaultMarkerPlainLength"], json!(sa_profiles::crypto::VAULT_MARKER.len()));
     assert_eq!(v["pad300"], json!(sa_profiles::win::pad_to_bucket(vec![0; 300], 256, b' ').len()));
     assert_eq!(v["pad1025"], json!(sa_profiles::win::pad_to_bucket(vec![0; 1025], 1024, b' ').len()));
 }
 
+/// Exclusive use of `<FIXTURE_ROOT>\<name>` across test processes (concurrent `cargo test` runs on one machine would
+/// otherwise delete each other's data mid-test): an open handle with no sharing on `<name>.lock`, retried for up to
+/// two minutes. Dropping it removes the folder and releases the lock.
+struct FixedRootLock {
+    dir: PathBuf,
+    _file: std::fs::File,
+}
+
+impl FixedRootLock {
+    fn acquire(name: &str) -> FixedRootLock {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = Path::new(FIXTURE_ROOT);
+        std::fs::create_dir_all(root).unwrap_or_else(|e| panic!("{root:?}: {e}"));
+        let lock = root.join(format!("{name}.lock"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            match std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).share_mode(0).open(&lock) {
+                Ok(file) => return FixedRootLock { dir: root.join(name), _file: file },
+                Err(e) if std::time::Instant::now() >= deadline => panic!("{lock:?} stays locked by another test run: {e}"),
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+    }
+}
+
+impl Drop for FixedRootLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn json_keys(v: &Value) -> Vec<String> {
+    v.as_object().expect("object").keys().cloned().collect()
+}
+
 #[test]
 fn sealed_broker_events_cross_between_the_csharp_and_rust_apps() {
     // A C# window and a Rust window on one broker channel: watch-progress events sealed by either side open on the
-    // other (same IPC key derivation and AAD), so live sync keeps working while both apps run.
-    let Some(dll) = fixture() else { return };
-    let root = tempfile::tempdir().expect("temp");
-    let data = root.path().join("data");
-    rust_generate(&data);
-    let m = media(&data, false);
+    // other (same IPC key derivation and AAD), so live sync keeps working while both apps run. The C# event's scope
+    // (part of its AAD) is the profiles.json it was sealed for, so the C# data is opened at that fixed path.
+    let _lock = FixedRootLock::acquire("event-data");
+    let data = frozen_data("generate/data", &Path::new(FIXTURE_ROOT).join("event-data"));
+    let m = media();
 
-    let evt_json = csharp(&dll, &["seal-event", &data.to_string_lossy(), "Emre", "pässwörd-1", &m.a]);
+    let evt_json = std::fs::read_to_string(fixtures().join("generate/watch-progress-event.json")).expect("C# event");
     let evt = sa_sync::wire::parse_event(&evt_json).expect("C# event parses");
+    assert_eq!(evt.scope_path, data.join("profiles.json").to_string_lossy());
     assert!(evt.video_path.is_none() && evt.position_seconds.is_none() && evt.sealed_payload_base64.is_some());
     let bus = InProcessBus::new();
     let broker: Arc<dyn ProfileWriteBroker> = bus.clone();
@@ -545,6 +768,46 @@ fn sealed_broker_events_cross_between_the_csharp_and_rust_apps() {
     sa_sync::SyncBus::publish(bus.as_ref(), sa_sync::Topic::WatchProgress, evt);
     assert_eq!(s.get_stats_fast_in_memory(&m.a).map(|v| v.last_position_seconds), Some(61.5), "C# event applied in Rust");
 
+    // Rust → C#: the event a Rust window publishes has the C# wire shape (the same fields in the same order, the same
+    // topic, kind and scope, and for the same values a sealed payload with the same members and values; C# escapes
+    // the non-ASCII path in it, Rust does not) ...
+    let csharp: Value = serde_json::from_str(&evt_json).expect("C# event json");
+    let same_values = s.create_broker_event_for_tests(
+        sa_sync::Topic::WatchProgress,
+        sa_sync::EventKind::ProgressUpdated,
+        Some(&m.a),
+        Some(61.5),
+        Some(300.0),
+        None,
+    );
+    let same_values: Value = serde_json::from_str(&sa_sync::wire::event_line(&same_values).expect("line")).expect("json");
+    assert_eq!(json_keys(&same_values), json_keys(&csharp));
+    for k in ["topic", "kind", "scopePath"] {
+        assert_eq!(same_values[k], csharp[k], "{k}");
+    }
+    let (_, vault_key) = s.try_get_active_profile_vault_key().expect("vault key");
+    let ipc_key = sa_profiles::crypto::hmac_sha256(vault_key.expose(), b"SubtitleAdder.StateSync.SealedEvent.v1");
+    let open_payload = |e: &Value| -> Value {
+        let aad = format!(
+            "{}|{}|ProgressUpdated|{}",
+            e["eventId"].as_str().unwrap(),
+            e["topic"].as_str().unwrap(),
+            sa_profiles::win::netcompat::upper_invariant(e["scopePath"].as_str().unwrap())
+        );
+        let sealed = base64::engine::general_purpose::STANDARD.decode(e["sealedPayloadBase64"].as_str().unwrap()).expect("b64");
+        let plain = sa_profiles::crypto::open_raw(&sealed, &ipc_key, aad.as_bytes()).expect("payload opens");
+        serde_json::from_slice(&plain).expect("payload json")
+    };
+    let (rust_payload, csharp_payload) = (open_payload(&same_values), open_payload(&csharp));
+    assert_eq!(json_keys(&rust_payload), json_keys(&csharp_payload));
+    assert_eq!(canon(&rust_payload), canon(&csharp_payload));
+    assert_eq!(csharp_payload["videoPath"], json!(m.a));
+    for e in [&same_values, &csharp] {
+        let t = e["timestampUtc"].as_str().expect("timestamp");
+        assert!(t.ends_with("+00:00") && sa_sync::wire::parse_timestamp(t).is_some(), "{t}");
+    }
+
+    // ... and another window (the C# app's stand-in) applies it after the wire round trip.
     let mine = s.create_broker_event_for_tests(
         sa_sync::Topic::WatchProgress,
         sa_sync::EventKind::ProgressUpdated,
@@ -553,9 +816,14 @@ fn sealed_broker_events_cross_between_the_csharp_and_rust_apps() {
         Some(100.0),
         None,
     );
-    let file = root.path().join("event.json");
-    std::fs::write(&file, sa_sync::wire::event_line(&mine).expect("line")).expect("event file");
+    let line = sa_sync::wire::event_line(&mine).expect("line");
     s.dispose();
-    let applied = csharp(&dll, &["apply-event", &data.to_string_lossy(), "Emre", "pässwörd-1", &file.to_string_lossy(), &m.a]);
-    assert_eq!(applied, "42.25", "Rust event applied in C#");
+    let bus2 = InProcessBus::new();
+    let broker2: Arc<dyn ProfileWriteBroker> = bus2.clone();
+    let other = WinProfileStore::open(data.join("profiles.json"), broker2);
+    other.login_user("Emre", "pässwörd-1", false).expect("login other");
+    let received = sa_sync::wire::parse_event(&line).expect("Rust event parses");
+    sa_sync::SyncBus::publish(bus2.as_ref(), sa_sync::Topic::WatchProgress, received);
+    assert_eq!(other.get_stats_fast_in_memory(&m.a).map(|v| v.last_position_seconds), Some(42.25), "Rust event applied");
+    other.dispose();
 }

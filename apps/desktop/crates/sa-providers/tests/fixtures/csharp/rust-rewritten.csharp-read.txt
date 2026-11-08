@@ -1,0 +1,3 @@
+active=adf244d7-d14a-4a40-abf1-2da9a43ba655
+1bed0ce2-2d54-4a5d-a9fa-52fd7ad76929|Yerel Ağ (Ollama / LM Studio)|lan|http://192.168.68.58:11434||gemma4:12b|True|gemma4:e2b,qwen3.5:4b
+adf244d7-d14a-4a40-abf1-2da9a43ba655|Şirket <test> & 'quote' + `tick` "dq" \ 😀|opencode-go|https://opencode.ai/inference/go/openai/v1||glm-5.3-flash|False|

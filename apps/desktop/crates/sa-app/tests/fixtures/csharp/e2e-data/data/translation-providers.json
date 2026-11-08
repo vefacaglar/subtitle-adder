@@ -1,0 +1,15 @@
+{
+  "activeProviderId": null,
+  "providers": [
+    {
+      "id": "6ec19e0a-ac2e-4dba-b586-43f5d274c60d",
+      "name": "C# anahtarl\u0131 sa\u011Flay\u0131c\u0131",
+      "presetId": "custom",
+      "baseUrl": "https://127.0.0.1:9/v1",
+      "apiKey": "sk-e2e-csharp-0123456789abcdef",
+      "model": "e2e-model",
+      "asyncTranslation": false,
+      "discoveredModels": []
+    }
+  ]
+}

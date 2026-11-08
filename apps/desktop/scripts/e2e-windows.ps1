@@ -1,28 +1,56 @@
 ﻿<#
 .SYNOPSIS
 End-to-end run of the staged Windows app (apps\desktop\dist\SubtitleAdder.exe, or -Exe) against a COPY of realistic
-data written by the C# app's own code. Never touches %LOCALAPPDATA%\SubtitleAdder: the app runs with
-SUBTITLE_ADDER_DATA_DIR pointing at <Root>\run\data and TMP/TEMP at <Root>\run\tmp.
+data written by the C# app's own classes (frozen, see scripts\e2e-data.ps1). Never touches
+%LOCALAPPDATA%\SubtitleAdder: the app runs with SUBTITLE_ADDER_DATA_DIR pointing at <Root>\run\data and TMP/TEMP at
+<Root>\run\tmp.
 
     powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/e2e-windows.ps1 -Root <scratch folder> [-Exe <path>]
+
+-Root C:\SubtitleAdderE2E puts the clips where the C# app recorded them (C:\SubtitleAdderE2E\template\media).
 
 Steps (each one screenshotted into <Root>\shots, the app window only, through PrintWindow):
   start → Platform tab logged out (sign-in card) → log in (C# profile "Emre": history, likes, ratings, thumbnails,
   list) → history tab → log out (sign-in card on every tab) → open the TTS clip from the command line → "Komple
   çevir" (whisper base + madlad-3b, both must be in the Hugging Face cache) → edit a line → undo → export SRT through
   the save dialog → add an API-key provider in Settings → restart → the provider keys still decrypt.
-Checks: no API key in plaintext under <Root>\run, logged-out playback recorded nothing (C# reader), the export exists.
+Checks: no API key in plaintext under <Root>\run, logged-out playback recorded nothing (profile
+reader: the sa-profiles example win_profile_dump, or -ProfileDump <exe>), the export exists.
+
+The profile reader is built (release) before the UI run, with the same defaults as scripts\stage.ps1: the shared
+CARGO_TARGET_DIR (%USERPROFILE%\.subtitle-adder-desktop-target), the machine-local devenv.ps1 when cl.exe is not on
+PATH (rusqlite's bundled SQLite needs it); it lands at <target>\release\examples\win_profile_dump.exe.
 
 The app is driven through UI Automation (Slint exposes its widgets via AccessKit) and posted window messages (wheel),
 so the real mouse and keyboard are never used and no other window is affected. Uses the software renderer
 (SLINT_BACKEND=winit-software) so PrintWindow can capture the client area. Windows PowerShell 5.1 compatible.
 #>
-param([Parameter(Mandatory = $true)][string]$Root, [string]$Exe = '')
+param([Parameter(Mandatory = $true)][string]$Root, [string]$Exe = '', [string]$ProfileDump = '')
 $ErrorActionPreference = 'Stop'
 $desktop = Split-Path $PSScriptRoot -Parent
 if (-not $Exe) { $Exe = Join-Path $desktop 'dist\SubtitleAdder.exe' }
 if (-not (Test-Path $Exe)) { throw "missing $Exe (run scripts\stage.ps1)" }
 $Root = [IO.Path]::GetFullPath($Root)
+
+# The profile reader for the final check, built up front so a build problem fails before the UI run (stage.ps1's
+# defaults: the one shared target dir, release profile, MSVC from devenv.ps1 when cl.exe is missing).
+if (-not $ProfileDump) {
+    if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE '.subtitle-adder-desktop-target' }
+    $devenv = if ($env:SUBTITLE_ENGINE_DEVENV) { $env:SUBTITLE_ENGINE_DEVENV } else { Join-Path $env:USERPROFILE '.devtools\devenv.ps1' }
+    if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue) -and (Test-Path $devenv)) {
+        $keepTarget = $env:CARGO_TARGET_DIR
+        . $devenv
+        $env:CARGO_TARGET_DIR = $keepTarget
+    }
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        $env:Path = (Join-Path $env:USERPROFILE '.cargo\bin') + ';' + $env:Path
+    }
+    Push-Location $desktop
+    try { & cargo build --release --quiet -j 3 -p sa-profiles --example win_profile_dump } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw "building the profile reader failed (exit $LASTEXITCODE)" }
+    $ProfileDump = Join-Path $env:CARGO_TARGET_DIR 'release\examples\win_profile_dump.exe'
+}
+if (-not (Test-Path $ProfileDump)) { throw "missing profile reader $ProfileDump" }
 
 & (Join-Path $PSScriptRoot 'e2e-data.ps1') -Root (Join-Path $Root 'template')
 $template = Join-Path $Root 'template'
@@ -226,8 +254,9 @@ Stop-App $app
 # Checks on disk.
 $leaks = Get-ChildItem -Recurse -File $run | Select-String -Pattern 'sk-e2e-rust-ABCDEF', 'sk-e2e-csharp-0123' -SimpleMatch
 if ($leaks) { throw "API key in plaintext: $($leaks | Select-Object -ExpandProperty Path -Unique)" }
-$env:TMP = Join-Path $template 'tmp'; $env:TEMP = $env:TMP
-$dump = & dotnet run --project (Join-Path $desktop 'tools\fixtures\E2EData') -c Release -- dump (Join-Path $run 'data') Emre e2e-parola-1
+# The profile reader prints the lines the former C# dump tool printed (crates/sa-profiles/examples/win_profile_dump.rs).
+$dump = & $ProfileDump (Join-Path $run 'data') Emre e2e-parola-1
+if ($LASTEXITCODE -ne 0) { throw "profile dump failed (exit $LASTEXITCODE)" }
 $dump | ForEach-Object { Write-Host "  $_" }
 if (-not ($dump -match 'history\|altyazi-testi\.mp4\|views=2\|')) { throw 'logged-out use changed the history' }
 Write-Host "E2E passed; screenshots in $shots"

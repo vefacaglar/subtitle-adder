@@ -1,0 +1,326 @@
+{
+  "files": [
+    "film ü.mp4",
+    "film.tr.srt",
+    "Ğ film.mkv",
+    "a.mp4"
+  ],
+  "directories": [
+    "sub"
+  ],
+  "names": [
+    {
+      "user": "User",
+      "token": "User",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.User",
+      "pipe": "SubtitleAdder.SingleInstance.User"
+    },
+    {
+      "user": "Vefa Çağlar",
+      "token": "Vefa_Çağlar",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.Vefa_Çağlar",
+      "pipe": "SubtitleAdder.SingleInstance.Vefa_Çağlar"
+    },
+    {
+      "user": "first.last@corp",
+      "token": "first_last_corp",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.first_last_corp",
+      "pipe": "SubtitleAdder.SingleInstance.first_last_corp"
+    },
+    {
+      "user": "名前",
+      "token": "名前",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.名前",
+      "pipe": "SubtitleAdder.SingleInstance.名前"
+    },
+    {
+      "user": "a-b_c",
+      "token": "a_b_c",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.a_b_c",
+      "pipe": "SubtitleAdder.SingleInstance.a_b_c"
+    },
+    {
+      "user": "   ",
+      "token": "default",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.default",
+      "pipe": "SubtitleAdder.SingleInstance.default"
+    },
+    {
+      "user": "",
+      "token": "default",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.default",
+      "pipe": "SubtitleAdder.SingleInstance.default"
+    },
+    {
+      "user": "x²y",
+      "token": "x_y",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.x_y",
+      "pipe": "SubtitleAdder.SingleInstance.x_y"
+    },
+    {
+      "user": "हिन्दी",
+      "token": "ह_न_द_",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.ह_न_द_",
+      "pipe": "SubtitleAdder.SingleInstance.ह_न_द_"
+    },
+    {
+      "user": "Ⅻ٣",
+      "token": "_٣",
+      "mutex": "Local\\SubtitleAdder.SingleInstance._٣",
+      "pipe": "SubtitleAdder.SingleInstance._٣"
+    },
+    {
+      "user": "a😀b",
+      "token": "a__b",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.a__b",
+      "pipe": "SubtitleAdder.SingleInstance.a__b"
+    },
+    {
+      "user": "DOMAIN\\user",
+      "token": "DOMAIN_user",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.DOMAIN_user",
+      "pipe": "SubtitleAdder.SingleInstance.DOMAIN_user"
+    },
+    {
+      "user": "José María",
+      "token": "José_María",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.José_María",
+      "pipe": "SubtitleAdder.SingleInstance.José_María"
+    },
+    {
+      "user": "ǅungla",
+      "token": "ǅungla",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.ǅungla",
+      "pipe": "SubtitleAdder.SingleInstance.ǅungla"
+    },
+    {
+      "user": "user\t1",
+      "token": "user_1",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.user_1",
+      "pipe": "SubtitleAdder.SingleInstance.user_1"
+    },
+    {
+      "user": "ⅰⅱ",
+      "token": "__",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.__",
+      "pipe": "SubtitleAdder.SingleInstance.__"
+    },
+    {
+      "user": "١٢٣",
+      "token": "١٢٣",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.١٢٣",
+      "pipe": "SubtitleAdder.SingleInstance.١٢٣"
+    },
+    {
+      "user": "ß",
+      "token": "ß",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.ß",
+      "pipe": "SubtitleAdder.SingleInstance.ß"
+    },
+    {
+      "user": "İstanbul",
+      "token": "İstanbul",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.İstanbul",
+      "pipe": "SubtitleAdder.SingleInstance.İstanbul"
+    },
+    {
+      "user": "x́y",
+      "token": "x_y",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.x_y",
+      "pipe": "SubtitleAdder.SingleInstance.x_y"
+    },
+    {
+      "user": "_-.~",
+      "token": "____",
+      "mutex": "Local\\SubtitleAdder.SingleInstance.____",
+      "pipe": "SubtitleAdder.SingleInstance.____"
+    }
+  ],
+  "csharp_client": [
+    {
+      "name": "client-files-quoted-missing",
+      "args": [
+        "{dir}\\film ü.mp4",
+        "\"{dir}\\film.tr.srt\"",
+        "C:\\missing\\x.mp4"
+      ],
+      "bytes": [
+        "{dir}\\film ü.mp4\r\n\"{dir}\\film.tr.srt\"\r\nC:\\missing\\x.mp4\r\n"
+      ]
+    },
+    {
+      "name": "client-no-files",
+      "args": [],
+      "bytes": [
+        ""
+      ]
+    },
+    {
+      "name": "client-existing-and-missing",
+      "args": [
+        "{dir}\\Ğ film.mkv",
+        "{dir}\\missing.srt"
+      ],
+      "bytes": [
+        "{dir}\\Ğ film.mkv\r\n{dir}\\missing.srt\r\n"
+      ]
+    },
+    {
+      "name": "client-padded-folder-and-slashes",
+      "args": [
+        "  {dir}\\a.mp4  ",
+        "{dir}\\sub",
+        "{dir}/a.mp4"
+      ],
+      "bytes": [
+        "  {dir}\\a.mp4  \r\n{dir}\\sub\r\n{dir}/a.mp4\r\n"
+      ]
+    }
+  ],
+  "csharp_client_without_server": "fail",
+  "csharp_server": [
+    {
+      "name": "client-files-quoted-missing",
+      "bytes": [
+        "{dir}\\film ü.mp4\r\n\"{dir}\\film.tr.srt\"\r\nC:\\missing\\x.mp4\r\n"
+      ],
+      "batch": [
+        "{dir}\\film ü.mp4",
+        "{dir}\\film.tr.srt"
+      ]
+    },
+    {
+      "name": "client-no-files",
+      "bytes": [
+        ""
+      ],
+      "batch": []
+    },
+    {
+      "name": "client-existing-and-missing",
+      "bytes": [
+        "{dir}\\Ğ film.mkv\r\n{dir}\\missing.srt\r\n"
+      ],
+      "batch": [
+        "{dir}\\Ğ film.mkv"
+      ]
+    },
+    {
+      "name": "client-padded-folder-and-slashes",
+      "bytes": [
+        "  {dir}\\a.mp4  \r\n{dir}\\sub\r\n{dir}/a.mp4\r\n"
+      ],
+      "batch": [
+        "{dir}\\a.mp4",
+        "{dir}\\a.mp4"
+      ]
+    },
+    {
+      "name": "bom-quotes-and-line-ends",
+      "bytes": [
+        "﻿  \"{dir}\\film ü.mp4\"  \r\n{dir}\\film.tr.srt\n\r\n\r{dir}/a.mp4\r{dir}\\sub\\..\\a.mp4"
+      ],
+      "batch": [
+        "{dir}\\film ü.mp4",
+        "{dir}\\film.tr.srt",
+        "{dir}\\a.mp4",
+        "{dir}\\a.mp4"
+      ]
+    },
+    {
+      "name": "folders-blanks-and-tabs",
+      "bytes": [
+        "{dir}\\sub\r\n   \r\n\"\"\r\n\t{dir}\\a.mp4\t\r\n{dir}\\sub\\\r\n"
+      ],
+      "batch": [
+        "{dir}\\a.mp4"
+      ]
+    },
+    {
+      "name": "unicode-whitespace",
+      "bytes": [
+        " {dir}\\a.mp4 \r\n　{dir}\\film.tr.srt\r\n"
+      ],
+      "batch": [
+        "{dir}\\a.mp4",
+        "{dir}\\film.tr.srt"
+      ]
+    },
+    {
+      "name": "nested-quotes",
+      "bytes": [
+        "\"\"{dir}\\a.mp4\"\"\r\n\" {dir}\\film.tr.srt\"\r\n'{dir}\\a.mp4'\r\n"
+      ],
+      "batch": [
+        "{dir}\\a.mp4"
+      ]
+    },
+    {
+      "name": "invalid-utf8",
+      "bytes": [
+        {
+          "hex": "ff"
+        },
+        "\r\n{dir}\\a.mp4",
+        {
+          "hex": "c3"
+        },
+        "\r\n{dir}\\film.tr.srt\r\n"
+      ],
+      "batch": [
+        "{dir}\\film.tr.srt"
+      ]
+    },
+    {
+      "name": "case-and-duplicates",
+      "bytes": [
+        "{dir}\\a.mp4\r\n{dir}\\A.MP4\r\n{dir}\\a.mp4\r\n"
+      ],
+      "batch": [
+        "{dir}\\a.mp4",
+        "{dir}\\A.MP4",
+        "{dir}\\a.mp4"
+      ]
+    },
+    {
+      "name": "dot-segments",
+      "bytes": [
+        "{dir}\\.\\a.mp4\r\n{dir}\\sub\\..\\film.tr.srt\r\n{dir}\\\\a.mp4\r\n"
+      ],
+      "batch": [
+        "{dir}\\a.mp4",
+        "{dir}\\film.tr.srt",
+        "{dir}\\a.mp4"
+      ]
+    },
+    {
+      "name": "trailing-dots-and-spaces",
+      "bytes": [
+        "{dir}\\a.mp4.\r\n{dir}\\a.mp4 .\r\n"
+      ],
+      "batch": [
+        "{dir}\\a.mp4",
+        "{dir}\\a.mp4"
+      ]
+    },
+    {
+      "name": "long-line",
+      "bytes": [
+        "{dir}\\a.mp4                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        \r\n{dir}\\film.tr.srt\r"
+      ],
+      "batch": [
+        "{dir}\\a.mp4",
+        "{dir}\\film.tr.srt"
+      ]
+    },
+    {
+      "name": "only-line-breaks",
+      "bytes": [
+        "\r\n\n\r\r\n"
+      ],
+      "batch": []
+    }
+  ],
+  "rust_server_sddl": "O:{owner}D:P(A;;FA;;;{user})",
+  "csharp_server_sddl": "O:{owner}D:(A;;0x1f019f;;;{user})"
+}

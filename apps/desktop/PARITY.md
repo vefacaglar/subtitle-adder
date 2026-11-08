@@ -5,23 +5,29 @@ ARCHITECTURE.md`, `API.md`, `UNIFIED.md`). UNIFIED.md decides wherever the two e
 
 **Legend.** **done**: behaves like the reference app (or like the UNIFIED.md decision); **differs**: works, but
 visibly or behaviorally different from the reference; **missing**: not available in the Rust app yet.
-"W" = compared with the C# WinUI app, "M" = compared with the SwiftUI app.
+"W" = compared with the former C# WinUI app (removed from the repo; its behavior is pinned by frozen C# outputs in
+`crates/*/tests/fixtures/csharp`, C# sources as of commit 2f4bc96), "M" = compared with the SwiftUI app.
 
 ## How this was checked
 
-* Final gate (2026-11-08): `cargo build --workspace --release` and `cargo test --workspace -j 4 --no-fail-fast` on Windows
-  (77 test binaries: 1413 passed, 0 failed, 8 ignored; no fixes were needed), including the
-  integration tests `crates/sa-app/tests/app_shell.rs` (the production composition on a temp data folder) and
-  `app::win_parts` (temp cleanup). The C# behavior comparisons (`SA_DOTNET_FIXTURES=1`) and real-engine tests
-  (`ENGINE_E2E=1`) are opt-in; the area agents ran them.
-* **Windows end to end**, real app (`dist\SubtitleAdder.exe`, restaged by `scripts/stage.ps1` for the final gate; the LGPL
-  FFmpeg is not pinned yet, so the stage used its GPL-DLL fallback for this local run) on a copy of data written by the C#
-  app's own classes (`tools/fixtures/E2EData`, driven by `scripts/e2e-data.ps1`), with `SUBTITLE_ADDER_DATA_DIR`
+* Final gate (2026-11-08, after the C# app was removed): `cargo build --workspace --release` and
+  `cargo test --workspace -j 4 --no-fail-fast` on Windows (78 test binaries: 1422 passed, 0 failed, 8 ignored),
+  including the integration tests `crates/sa-app/tests/app_shell.rs` (the production composition on a temp data
+  folder) and `app::win_parts` (temp cleanup). The C# behavior comparisons read frozen C# outputs and run by default
+  on Windows (none needs .NET any more); only the real-engine tests (`ENGINE_E2E=1`) are opt-in; the area agents ran
+  them. Two parts are bound to the Windows account that recorded
+  the C# data and print `SKIPPED` on any other account (CI runners included): the DPAPI remembered-session restore
+  in `sa-profiles`' `win_fixtures` (recognized by the SHA-256 of the user SID in `recording-account.json`; the rest
+  of each dump is still compared) and `sa-sync`'s .NET default-scope check.
+* **Windows end to end**, real app (`dist\SubtitleAdder.exe`, restaged by `scripts/stage.ps1` for the final gate, with
+  the LGPL FFmpeg DLLs next to the app) on a copy of data written by the C#
+  app's own classes (frozen in `crates/sa-app/tests/fixtures/csharp/e2e-data`, restored by `scripts/e2e-data.ps1`), with `SUBTITLE_ADDER_DATA_DIR`
   pointing at the copy. Driven through UI Automation (`scripts/e2e-windows.ps1`): start, Platform tab logged out,
   log in with the C# profile, history, log out, open a Windows-SAPI Turkish TTS clip (file dialog and command line),
   transcribe (whisper `base`), translate (`madlad-3b`), edit a line, undo, export SRT through the save dialog, add an
   API-key provider, restart, keys still decrypt. Screenshots: `shots/e2e/*.png` (app window only, PrintWindow). The final
-  rerun passed every step and check (no plaintext key, C# reader: logged-out use left the history at `views=2`); all 13
+  rerun (no .NET on PATH) passed every step and check (no plaintext key, profile reader `win_profile_dump`, which
+  prints the C# reader's lines: logged-out use left the history at `views=2`); all 13
   screenshots were looked at and compared with the C# layout (e.g. the card's `+ Listeye ekle` keeps C#'s plus glyph
   *and* the `+` in the catalog string).
 * **macOS look** on Windows: the cupertino tree rendered with `sa-shot` (software renderer, `SA_UI_PLATFORM=mac`):
@@ -105,7 +111,7 @@ icon tabs; the SF Symbols are drawn by the SVG stand-ins off macOS (`shots/mac/s
 | Feature | Windows (W) | macOS (M) | Evidence |
 |---|---|---|---|
 | Logged out: sign-in card on every tab, search disabled, no feed/index query, nothing in memory | done (checked on all 5 tabs in the real app) | done in code (FIX-M per UNIFIED §3.9) | `02-hub-logged-out.png`, `05-hub-after-logout.png`, `tests/app_shell.rs` |
-| Logged-out playback records nothing | done (C# reader: history unchanged after logged-out opens) | done in code | E2E `dump` check |
+| Logged-out playback records nothing | done (profile reader `win_profile_dump`, C# line format: history unchanged after logged-out opens) | done in code | E2E `dump` check |
 | Login with a C# profile: history, views, likes, ratings, PNG thumbnails, lists | done | n/a (LibraryKit format, `sa-profiles::mac` tests) | `03-hub-history.png`, `04-hub-favorites.png` |
 | Remember-me opt-in, logout wins, other profiles' events ignored | done (`sa-profiles` tests) | done in code (encrypted `profile-remember-keys.json`, no Keychain) | tests |
 | Lists, add-to-list menu, delete, rename (macOS) | done | done; **differs**: list counts include files missing on disk | `shots/hub-*` |

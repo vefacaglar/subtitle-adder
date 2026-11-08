@@ -1,0 +1,252 @@
+{
+  "rows": [
+    {
+      "input": "C:\\Users\\x\\film.tr.srt",
+      "root": "C:\\",
+      "hasExtension": true,
+      "withoutExtension": "film.tr",
+      "normalizedDirectory": "C:\\Users\\x\\film.tr.srt",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\Users\\x\\film",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": "film",
+      "normalizedDirectory": "C:\\Users\\x\\film",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\Users\\x\\film.",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": "film",
+      "normalizedDirectory": "C:\\Users\\x\\film",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\Users\\x\\.srt",
+      "root": "C:\\",
+      "hasExtension": true,
+      "withoutExtension": "",
+      "normalizedDirectory": "C:\\Users\\x\\.srt",
+      "storageAvailable": true
+    },
+    {
+      "input": "film.tr.srt",
+      "root": "",
+      "hasExtension": true,
+      "withoutExtension": "film.tr",
+      "normalizedDirectory": "{cwd}\\film.tr.srt",
+      "storageAvailable": true
+    },
+    {
+      "input": "film",
+      "root": "",
+      "hasExtension": false,
+      "withoutExtension": "film",
+      "normalizedDirectory": "{cwd}\\film",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\Windows\\",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": "",
+      "normalizedDirectory": "C:\\Windows",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\Windows\\System32//",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": "",
+      "normalizedDirectory": "C:\\Windows\\System32",
+      "storageAvailable": true
+    },
+    {
+      "input": "  C:/Windows/System32/  ",
+      "root": "",
+      "hasExtension": false,
+      "withoutExtension": "  ",
+      "normalizedDirectory": "C:\\Windows\\System32",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": "",
+      "normalizedDirectory": "C:\\",
+      "storageAvailable": true
+    },
+    {
+      "input": "{drive}",
+      "root": "{drive}",
+      "hasExtension": false,
+      "withoutExtension": "",
+      "normalizedDirectory": "{cwd}",
+      "storageAvailable": true
+    },
+    {
+      "input": "{drive}relative.mp4",
+      "root": "{drive}",
+      "hasExtension": true,
+      "withoutExtension": "relative",
+      "normalizedDirectory": "{cwd}\\relative.mp4",
+      "storageAvailable": true
+    },
+    {
+      "input": "\\Films\\a.mp4",
+      "root": "\\",
+      "hasExtension": true,
+      "withoutExtension": "a",
+      "normalizedDirectory": "{drive}\\Films\\a.mp4",
+      "storageAvailable": false
+    },
+    {
+      "input": "relative\\a.mp4",
+      "root": "",
+      "hasExtension": true,
+      "withoutExtension": "a",
+      "normalizedDirectory": "{cwd}\\relative\\a.mp4",
+      "storageAvailable": true
+    },
+    {
+      "input": "\\?\\C:\\Windows",
+      "root": "\\",
+      "hasExtension": false,
+      "withoutExtension": "Windows",
+      "normalizedDirectory": "{drive}\\?\\C:\\Windows",
+      "storageAvailable": false
+    },
+    {
+      "input": "{missing}/x//y/",
+      "root": "{missing}\\",
+      "hasExtension": false,
+      "withoutExtension": "",
+      "normalizedDirectory": "{missing}\\x\\y",
+      "storageAvailable": false
+    },
+    {
+      "input": "   ",
+      "root": "",
+      "hasExtension": false,
+      "withoutExtension": "   ",
+      "normalizedDirectory": "",
+      "storageAvailable": false
+    },
+    {
+      "input": "{missing}\\film.mp4",
+      "root": "{missing}\\",
+      "hasExtension": true,
+      "withoutExtension": "film",
+      "normalizedDirectory": "{missing}\\film.mp4",
+      "storageAvailable": false
+    },
+    {
+      "input": "{tmp}\\a.mkv",
+      "root": "{tmp_root}",
+      "hasExtension": true,
+      "withoutExtension": "a",
+      "normalizedDirectory": "{tmp}\\a.mkv",
+      "storageAvailable": true
+    },
+    {
+      "input": "\\\\?\\C:\\Windows\\",
+      "root": "\\\\?\\C:\\",
+      "hasExtension": false,
+      "withoutExtension": "",
+      "normalizedDirectory": "\\\\?\\C:\\Windows",
+      "storageAvailable": true
+    },
+    {
+      "input": "\\\\.\\C:\\x\\",
+      "root": "\\\\.\\C:\\",
+      "hasExtension": false,
+      "withoutExtension": "",
+      "normalizedDirectory": "\\\\.\\C:\\x",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\a\\b\\..\\c\\",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": "",
+      "normalizedDirectory": "C:\\a\\c",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\a\\.\\b",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": "b",
+      "normalizedDirectory": "C:\\a\\b",
+      "storageAvailable": true
+    },
+    {
+      "input": "archive.tar.gz",
+      "root": "",
+      "hasExtension": true,
+      "withoutExtension": "archive.tar",
+      "normalizedDirectory": "{cwd}\\archive.tar.gz",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\x\\.hidden",
+      "root": "C:\\",
+      "hasExtension": true,
+      "withoutExtension": "",
+      "normalizedDirectory": "C:\\x\\.hidden",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\dir.d\\file",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": "file",
+      "normalizedDirectory": "C:\\dir.d\\file",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:/Users/x/film.tr.srt",
+      "root": "C:\\",
+      "hasExtension": true,
+      "withoutExtension": "film.tr",
+      "normalizedDirectory": "C:\\Users\\x\\film.tr.srt",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\Users\\x\\film .srt",
+      "root": "C:\\",
+      "hasExtension": true,
+      "withoutExtension": "film ",
+      "normalizedDirectory": "C:\\Users\\x\\film .srt",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\a\\..\\..\\b",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": "b",
+      "normalizedDirectory": "C:\\b",
+      "storageAvailable": true
+    },
+    {
+      "input": "..\\up\\a.mp4",
+      "root": "",
+      "hasExtension": true,
+      "withoutExtension": "a",
+      "normalizedDirectory": "{parent}\\up\\a.mp4",
+      "storageAvailable": true
+    },
+    {
+      "input": "C:\\Windows\\System32\\..",
+      "root": "C:\\",
+      "hasExtension": false,
+      "withoutExtension": ".",
+      "normalizedDirectory": "C:\\Windows",
+      "storageAvailable": true
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+g-begin
+g-activate L 1
+g-capture
+g-begin
+g-clear
+g-activate L 2
+g-accept L-1 1 2
+g-accept L-1 1 1
+g-open L-1 1 0 -
+g-open L-1 1 1 -
+g-failed L-1 1 2 0
+g-opened L-1 1 2 1
+g-capture
+g-failed L 2 2 0
+g-opened L 2 2 0
+g-open L 2 1 -
+g-opened L 2 2 1

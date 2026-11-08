@@ -4763,6 +4763,8 @@ dependencies = [
  "sa-providers",
  "sa-sync",
  "sa-viewmodels",
+ "serde_json",
+ "sha2",
  "slint",
  "slint-build",
  "tempfile",
@@ -4793,6 +4795,7 @@ name = "sa-enginekit"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "flate2",
  "libc",
  "parking_lot",
  "sa-core",
@@ -4929,6 +4932,7 @@ dependencies = [
  "crossbeam-channel",
  "parking_lot",
  "sa-core",
+ "sa-sync",
  "serde",
  "serde_json",
  "sha2",

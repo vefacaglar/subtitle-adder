@@ -1,0 +1,15 @@
+{
+  "activeProviderId": "85bd7b4b-8a01-42a0-83ca-588fe228a784",
+  "providers": [
+    {
+      "id": "85bd7b4b-8a01-42a0-83ca-588fe228a784",
+      "name": "Groq \u011F\u00FC\u015Fi\u00F6\u00E7",
+      "presetId": "groq",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "apiKey": "",
+      "model": "llama-3.3-70b-versatile",
+      "asyncTranslation": true,
+      "discoveredModels": []
+    }
+  ]
+}

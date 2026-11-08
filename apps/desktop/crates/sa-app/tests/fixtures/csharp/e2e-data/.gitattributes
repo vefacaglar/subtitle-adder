@@ -1,0 +1,2 @@
+# Frozen C#-written data and C# output: keep every byte as written (no EOL conversion).
+* -text

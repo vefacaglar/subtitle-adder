@@ -1,0 +1,96 @@
+[
+  {
+    "query": "",
+    "lines": [
+      "total|7",
+      "dir|C:\\rooted\\dir",
+      "file|\\rooted\\dir\\rooted.mp4|rooted.mp4|\\rooted\\dir|7|639291132000000000|False|null|0",
+      "dir|C:\\SaMediaFixture\\odd\\Movies",
+      "file|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4|same.mp4|C:\\SaMediaFixture\\odd\\MOVIES|5|639291132001234567|False|null|0",
+      "dir|Q:\\Films",
+      "file|Q:\\Films\\away.mp4|away.mp4|Q:\\Films|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\v",
+      "file|\\\\nohost-sa-test\\share\\v\\unc.mp4|unc.mp4|\\\\nohost-sa-test\\share\\v|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\w",
+      "file|//nohost-sa-test/share/w\\fwd.mp4|fwd.mp4|//nohost-sa-test/share/w|7|639291132000000000|False|null|0",
+      "search|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4",
+      "search|C:\\SaMediaFixture\\odd\\Movies\\Alpha.mkv",
+      "search|C:\\SaMediaFixture\\odd\\Movies\\zeta.mp4"
+    ]
+  },
+  {
+    "query": "same",
+    "lines": [
+      "total|7",
+      "dir|C:\\rooted\\dir",
+      "file|\\rooted\\dir\\rooted.mp4|rooted.mp4|\\rooted\\dir|7|639291132000000000|False|null|0",
+      "dir|C:\\SaMediaFixture\\odd\\Movies",
+      "file|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4|same.mp4|C:\\SaMediaFixture\\odd\\MOVIES|5|639291132001234567|False|null|0",
+      "dir|Q:\\Films",
+      "file|Q:\\Films\\away.mp4|away.mp4|Q:\\Films|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\v",
+      "file|\\\\nohost-sa-test\\share\\v\\unc.mp4|unc.mp4|\\\\nohost-sa-test\\share\\v|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\w",
+      "file|//nohost-sa-test/share/w\\fwd.mp4|fwd.mp4|//nohost-sa-test/share/w|7|639291132000000000|False|null|0",
+      "search|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4",
+      "search|C:\\SaMediaFixture\\odd\\Movies\\Alpha.mkv",
+      "search|C:\\SaMediaFixture\\odd\\Movies\\zeta.mp4"
+    ]
+  },
+  {
+    "query": "A",
+    "lines": [
+      "total|7",
+      "dir|C:\\rooted\\dir",
+      "file|\\rooted\\dir\\rooted.mp4|rooted.mp4|\\rooted\\dir|7|639291132000000000|False|null|0",
+      "dir|C:\\SaMediaFixture\\odd\\Movies",
+      "file|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4|same.mp4|C:\\SaMediaFixture\\odd\\MOVIES|5|639291132001234567|False|null|0",
+      "dir|Q:\\Films",
+      "file|Q:\\Films\\away.mp4|away.mp4|Q:\\Films|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\v",
+      "file|\\\\nohost-sa-test\\share\\v\\unc.mp4|unc.mp4|\\\\nohost-sa-test\\share\\v|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\w",
+      "file|//nohost-sa-test/share/w\\fwd.mp4|fwd.mp4|//nohost-sa-test/share/w|7|639291132000000000|False|null|0",
+      "search|C:\\SaMediaFixture\\odd\\Movies\\Alpha.mkv",
+      "search|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4",
+      "search|C:\\SaMediaFixture\\odd\\Movies\\zeta.mp4"
+    ]
+  },
+  {
+    "query": "movies",
+    "lines": [
+      "total|7",
+      "dir|C:\\rooted\\dir",
+      "file|\\rooted\\dir\\rooted.mp4|rooted.mp4|\\rooted\\dir|7|639291132000000000|False|null|0",
+      "dir|C:\\SaMediaFixture\\odd\\Movies",
+      "file|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4|same.mp4|C:\\SaMediaFixture\\odd\\MOVIES|5|639291132001234567|False|null|0",
+      "dir|Q:\\Films",
+      "file|Q:\\Films\\away.mp4|away.mp4|Q:\\Films|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\v",
+      "file|\\\\nohost-sa-test\\share\\v\\unc.mp4|unc.mp4|\\\\nohost-sa-test\\share\\v|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\w",
+      "file|//nohost-sa-test/share/w\\fwd.mp4|fwd.mp4|//nohost-sa-test/share/w|7|639291132000000000|False|null|0",
+      "search|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4",
+      "search|C:\\SaMediaFixture\\odd\\Movies\\Alpha.mkv",
+      "search|C:\\SaMediaFixture\\odd\\Movies\\zeta.mp4"
+    ]
+  },
+  {
+    "query": "mp4",
+    "lines": [
+      "total|7",
+      "dir|C:\\rooted\\dir",
+      "file|\\rooted\\dir\\rooted.mp4|rooted.mp4|\\rooted\\dir|7|639291132000000000|False|null|0",
+      "dir|C:\\SaMediaFixture\\odd\\Movies",
+      "file|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4|same.mp4|C:\\SaMediaFixture\\odd\\MOVIES|5|639291132001234567|False|null|0",
+      "dir|Q:\\Films",
+      "file|Q:\\Films\\away.mp4|away.mp4|Q:\\Films|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\v",
+      "file|\\\\nohost-sa-test\\share\\v\\unc.mp4|unc.mp4|\\\\nohost-sa-test\\share\\v|7|639291132000000000|False|null|0",
+      "dir|\\\\nohost-sa-test\\share\\w",
+      "file|//nohost-sa-test/share/w\\fwd.mp4|fwd.mp4|//nohost-sa-test/share/w|7|639291132000000000|False|null|0",
+      "search|C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4",
+      "search|C:\\SaMediaFixture\\odd\\Movies\\zeta.mp4"
+    ]
+  }
+]

@@ -1,0 +1,2 @@
+# Golden C# outputs: byte-exact (the media-index.json files use CRLF, the cache chunks are binary).
+* -text

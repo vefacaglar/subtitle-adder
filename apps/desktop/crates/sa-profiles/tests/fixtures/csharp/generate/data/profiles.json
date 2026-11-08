@@ -1,0 +1,26 @@
+{
+  "version": 3,
+  "rememberMe": true,
+  "rememberMeOptIn": true,
+  "lastUsername": "zeynep",
+  "rememberedUsername": "zeynep",
+  "rememberedProtectedKeyBase64": "dpapi1:AQAAANCMnd8BFdERjHoAwE/Cl\u002BsBAAAA60v4buv5hkyb52BGershAAAAAAACAAAAAAAQZgAAAAEAACAAAADsL6TUnQTtDb51oRWwBYlHTozwm6egWCbY3AaiEUQk9gAAAAAOgAAAAAIAACAAAABqCuDhmKA6wu1rsNG9fRho44XGC/vBgc1/mfrg1N9iPDAAAAD\u002BE/3iGt0uC8rQ5OOWo/IiNX/OIPyuMSfMPXAVOQEWiiTtD8MgK2A6Bz2y7x5hmydAAAAA1Ww1cQDb3yxjkwr2ELhNk\u002BZ5lQd8AmYUgwoMgqQzXpnT/hvhS4gKwV\u002B9e5/QtsSY0Xm6piWorh9CgtgihUvy\u002BQ==",
+  "profiles": [
+    {
+      "username": "Emre",
+      "saltBase64": "Srv\u002BroqfssElPAF2AycPfA==",
+      "passwordHashBase64": "JPNA80Z0W9a7fxBfoW0CpM3ud/R9MVtZb1RrMzesGvA=",
+      "iterations": 100000,
+      "createdAtUtc": "2026-11-08T14:00:35.3546795+00:00",
+      "encryptedVaultBase64": "pBlUEVuBI6NMAM4\u002BEBOF7bWVuI/viME8u4Egd1EXdk94AC4QDBMRcy5mnc15ecJNUuBt"
+    },
+    {
+      "username": "zeynep",
+      "saltBase64": "bHfhYw8MExVZSSdeKuEjWA==",
+      "passwordHashBase64": "06en3Asg1kESWBeibwpP0URYgmf6UhKE354rATKVKxQ=",
+      "iterations": 100000,
+      "createdAtUtc": "2026-11-08T14:00:35.5017997+00:00",
+      "encryptedVaultBase64": "SxX3ylLcnAmC8D8FlhWux6sx30gCg82HKv2pjGHNWdIiXLGjaUZtNnDVVQIq6IiWb9Dv"
+    }
+  ]
+}

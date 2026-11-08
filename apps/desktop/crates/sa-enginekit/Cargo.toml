@@ -36,6 +36,8 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Gunzips the frozen C# sentence-editing fixture (tests/fixtures/csharp/edit.jsonl.gz); already in the lockfile.
+flate2 = { version = "=1.1.11", default-features = false, features = ["rust_backend"] }
 
 # Test-only scripted stand-in for `subtitle-engine` (win-enginekit §11). Integration tests find it through
 # `CARGO_BIN_EXE_sa-fake-engine`; it is never packaged.

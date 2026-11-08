@@ -1,15 +1,15 @@
 //! Cross-implementation check of the shared version-2 format (no Swift toolchain here, so the C# app stands in for a
-//! second, independent implementation of it): the C# fixture (`tools/fixtures/ProfileFixtures legacy`) writes a
-//! `profiles.json` v2 with monolithic encrypted vaults through .NET's own PBKDF2, AES-GCM, `System.Text.Json` and
-//! `DateTimeOffset.ToString("O")`; the macOS backend must log in, repair and serve it exactly as LibraryKit would
-//! (mac-librarykit §5, §6, §8.1, §11), and the C# reader must read back what the macOS backend writes.
+//! second, independent implementation of it): a `profiles.json` v2 with monolithic encrypted vaults that the C# app
+//! wrote through .NET's own PBKDF2, AES-GCM, `System.Text.Json` and `DateTimeOffset.ToString("O")` (frozen in
+//! `tests/fixtures/csharp/legacy/data`, see the README there); the macOS backend must log in, repair and serve it
+//! exactly as LibraryKit would (mac-librarykit §5, §6, §8.1, §11), and what the macOS backend writes back must read
+//! the same through the Windows backend (the Rust port of the C# reader, whose reading of C# files is pinned by
+//! `tests/win_fixtures.rs`).
 //!
-//! Windows only (the fixture is .NET on this machine); without a .NET SDK the test prints SKIPPED and passes unless
-//! `SA_PROFILES_REQUIRE_CSHARP=1` is set.
+//! Windows only: the C# file names its media by absolute Windows paths under [`FIXTURE_ROOT`], recreated here.
 #![cfg(windows)]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -19,57 +19,83 @@ use super::*;
 use crate::mac::{fingerprints, thumbnails};
 use crate::{FingerprintMode, ProfileStore, VideoFeedFilter};
 
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/fixtures/ProfileFixtures")
+/// Where the C# fixture kept its media (the same root as `tests/win_fixtures.rs`).
+const FIXTURE_ROOT: &str = r"C:\ProgramData\SubtitleAdderTestFixtures\profiles";
+
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/csharp")
 }
 
-/// A private temp folder for the C# processes (broker files, diagnostic log), never the real `%TEMP%\SubtitleAdder`.
-fn scratch_temp() -> PathBuf {
-    static T: OnceLock<tempfile::TempDir> = OnceLock::new();
-    T.get_or_init(|| tempfile::tempdir().expect("temp")).path().to_path_buf()
+/// Writes `content` to `path` unless it is already there (atomically: parallel test processes share the folder).
+fn ensure_file(path: &Path, content: &[u8]) {
+    if std::fs::read(path).ok().as_deref() == Some(content) {
+        return;
+    }
+    let name = path.file_name().expect("name").to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, content).expect("media temp file");
+    if std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(std::fs::read(path).ok().as_deref(), Some(content), "media file {path:?}");
+    }
 }
 
-/// The built fixture DLL (built once); `None` = skip.
-fn fixture() -> Option<PathBuf> {
-    static F: OnceLock<Option<PathBuf>> = OnceLock::new();
-    F.get_or_init(|| {
-        let dll = fixture_dir().join("bin/Release/net10.0/ProfileFixtures.dll");
-        let built = Command::new("dotnet")
-            .args(["build", "-c", "Release", "--nologo", "-v", "q"])
-            .current_dir(fixture_dir())
-            .env("TMP", scratch_temp())
-            .env("TEMP", scratch_temp())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if built && dll.exists() {
-            Some(dll)
-        } else {
-            assert!(std::env::var("SA_PROFILES_REQUIRE_CSHARP").is_err(), "C# profile fixture could not be built");
-            eprintln!("SKIPPED: C# profile fixture not available (no .NET SDK?)");
-            None
-        }
-    })
-    .clone()
+/// The media folder the C# file refers to (`Yaz Tatili Ç.mp4` and `belgesel-uzay.mp4` exist,
+/// `missing_episode.mkv` never does).
+fn media() -> PathBuf {
+    static M: OnceLock<()> = OnceLock::new();
+    let dir = Path::new(FIXTURE_ROOT).join("media");
+    M.get_or_init(|| {
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("media folder {dir:?}: {e}"));
+        ensure_file(&dir.join("Yaz Tatili Ç.mp4"), &bytes(5000, 1));
+        ensure_file(&dir.join("belgesel-uzay.mp4"), &bytes(70000, 2));
+        ensure_file(&dir.join("zeynep_klip.mp4"), &bytes(1234, 3));
+        assert!(!dir.join("missing_episode.mkv").exists());
+    });
+    dir
 }
 
-fn csharp(dll: &Path, args: &[&str]) -> String {
-    let out = Command::new("dotnet")
-        .arg(dll)
-        .args(args)
-        .env("TMP", scratch_temp())
-        .env("TEMP", scratch_temp())
-        .output()
-        .expect("run dotnet");
-    assert!(
-        out.status.success(),
-        "C# fixture {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout).expect("utf-8 stdout")
+/// What the Windows backend reads from `data` for each login: `(registered, restored user, per-user videos, lists)`.
+fn windows_reader_dump(data: &Path, creds: &[(&str, &str)]) -> Value {
+    let bus = sa_sync::InProcessBus::new();
+    let broker: Arc<dyn sa_sync::ProfileWriteBroker> = bus;
+    let s = crate::win::WinProfileStore::open(data.join("profiles.json"), broker);
+    let mut profiles = serde_json::Map::new();
+    let restored = s.current_username();
+    for (u, p) in creds {
+        s.login_user(u, p, false).unwrap_or_else(|e| panic!("login {u}: {e:?}"));
+        let never = || true;
+        let videos: Vec<Value> = s
+            .get_feed(&VideoFeedFilter::All, None, None, &never)
+            .iter()
+            .map(|v| {
+                serde_json::json!({
+                    "fileName": v.file_name,
+                    "contentFingerprint": v.content_fingerprint,
+                    "viewCount": v.view_count,
+                    "isLiked": v.is_liked,
+                    "rating": v.rating,
+                    "lastPositionSeconds": v.last_position_seconds,
+                    "durationSeconds": v.duration_seconds,
+                    "lastWatchedTicks": v.last_watched_at.map(|t| t.0),
+                })
+            })
+            .collect();
+        let lists: Vec<Value> = s
+            .get_custom_lists()
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "id": l.id, "name": l.name, "videoPaths": l.video_paths, "createdTicks": l.created_at.0,
+                })
+            })
+            .collect();
+        profiles.insert((*u).into(), serde_json::json!({ "videos": videos, "lists": lists }));
+    }
+    assert!(s.flush_pending_writes(Duration::from_secs(10)), "flush");
+    let dump = serde_json::json!({ "registered": s.registered_usernames(), "restoredUser": restored, "profiles": profiles });
+    s.dispose();
+    dump
 }
 
 /// Program.cs `Bytes`: xorshift32.
@@ -115,11 +141,11 @@ const MINUTE: i64 = 600_000_000;
 
 #[test]
 fn a_version_2_file_written_by_dotnet_opens_repairs_and_round_trips() {
-    let Some(dll) = fixture() else { return };
     let folder = TestFolder::new();
     let data = folder.url.join("data");
-    csharp(&dll, &["legacy", &data.to_string_lossy()]);
-    let media = folder.url.join("media");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::copy(fixtures().join("legacy/data/profiles.json"), data.join("profiles.json")).expect("C# legacy file");
+    let media = media();
     let (a, c) = (media.join("Yaz Tatili Ç.mp4"), media.join("belgesel-uzay.mp4"));
     let t0 = dates::parse("2025-03-04T05:06:07.1234567Z").unwrap();
     let fp_a = crate::fingerprint::compute(&a).expect("fingerprint of a");
@@ -168,25 +194,24 @@ fn a_version_2_file_written_by_dotnet_opens_repairs_and_round_trips() {
     assert!(root.get("rememberedUsername").is_none() && root["rememberMe"] == false);
     store.logout_user().unwrap();
 
-    // C# reads what the macOS backend wrote (on a copy: the C# app migrates the folder to version 3).
+    // The C# reader (its Rust port) reads what the macOS backend wrote (on a copy: it migrates the folder to
+    // version 3).
     let cs_data = folder.url.join("cs-data");
     copy_dir(&data, &cs_data);
     std::fs::remove_dir_all(cs_data.join("thumbnails")).ok();
-    let dump: Value =
-        serde_json::from_str(&csharp(&dll, &["dump", &cs_data.to_string_lossy(), "eski", "eski-şifre", "bos", "bos-pw"]))
-            .expect("dump json");
+    let dump = windows_reader_dump(&cs_data, &[("eski", "eski-şifre"), ("bos", "bos-pw")]);
     assert_eq!(dump["registered"], serde_json::json!(["bos", "eski"]));
     assert_eq!(dump["restoredUser"], Value::Null);
     let eski = &dump["profiles"]["eski"];
     let videos = eski["videos"].as_array().unwrap();
-    let video_a = videos.iter().find(|v| v["contentFingerprint"] == fp_a.as_str()).expect("a read by C#");
+    let video_a = videos.iter().find(|v| v["contentFingerprint"] == fp_a.as_str()).expect("a read by the C# reader");
     assert_eq!(video_a["viewCount"], 3);
     assert_eq!(video_a["isLiked"], true);
     assert_eq!(video_a["rating"], 5);
     assert_eq!(video_a["lastPositionSeconds"], 33.25);
     assert_eq!(video_a["durationSeconds"], 100.0);
     assert_eq!(video_a["lastWatchedTicks"], t0.0 + 5 * MINUTE);
-    let video_c = videos.iter().find(|v| v["fileName"] == "belgesel-uzay.mp4").expect("c read by C#");
+    let video_c = videos.iter().find(|v| v["fileName"] == "belgesel-uzay.mp4").expect("c read by the C# reader");
     assert_eq!(video_c["viewCount"], 1);
     assert_eq!(video_c["lastWatchedTicks"], t0.0 + 2 * MINUTE);
     let cs_lists = eski["lists"].as_array().unwrap();

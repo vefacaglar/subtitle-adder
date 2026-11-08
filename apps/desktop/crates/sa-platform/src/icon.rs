@@ -1,4 +1,4 @@
-//! The app icon (mac-ui §13.5; port of `scripts/macos/make-icon.swift`, same design as the Windows `make-icon.ps1`):
+//! The app icon (mac-ui §13.5; port of `scripts/macos/make-icon.swift`, same design as the committed `windows/AppIcon.ico`):
 //! a white superellipse body with a light shadow, a purple speech bubble with a white sound wave, and two dark
 //! subtitle lines below. Drawn on the 1024 grid (origin top-left, y down) with an exact-coverage scanline
 //! rasterizer (4 sub-scanlines per pixel, analytic horizontal coverage), composited in premultiplied RGBA.
@@ -219,7 +219,7 @@ pub fn png(size: usize) -> Vec<u8> {
     out
 }
 
-/// A multi-size `.ico` with PNG entries (16 … 256), like the Windows `make-icon.ps1` output.
+/// A multi-size `.ico` with PNG entries (16 … 256), like the committed `windows/AppIcon.ico`.
 pub fn ico(sizes: &[usize]) -> Vec<u8> {
     let images: Vec<(usize, Vec<u8>)> = sizes.iter().map(|&s| (s, png(s))).collect();
     let mut out = Vec::new();

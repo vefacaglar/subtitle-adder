@@ -196,9 +196,14 @@ impl Pipe {
 
     /// Server: waits for a client (`ConnectNamedPipe`).
     pub(crate) fn accept(&self, cancels: &[&Event]) -> io::Result<()> {
+        self.accept_within(cancels, None)
+    }
+
+    /// [`Self::accept`] that gives up (`Interrupted`) after `timeout`.
+    pub(crate) fn accept_within(&self, cancels: &[&Event], timeout: Option<Duration>) -> io::Result<()> {
         let h = self.h;
         // A client may connect between CreateNamedPipeW and ConnectNamedPipe: ERROR_PIPE_CONNECTED, no I/O pending.
-        let r = self.run(&self.read_ev, cancels, None, |ov| match unsafe { ConnectNamedPipe(h, Some(ov)) } {
+        let r = self.run(&self.read_ev, cancels, timeout, |ov| match unsafe { ConnectNamedPipe(h, Some(ov)) } {
             Err(e) if is(&e, ERROR_PIPE_CONNECTED) => Ok(false),
             Ok(()) => Ok(false),
             Err(e) => Err(e),

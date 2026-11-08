@@ -1,5 +1,5 @@
-//! Windows (MSVC): compiles a resource script (the exe icon from the WinUI app's `Assets/AppIcon.ico` + the
-//! application manifest `windows/SubtitleAdder.exe.manifest`: PerMonitorV2, UTF-8 code page, Common Controls v6 for
+//! Windows (MSVC): compiles a resource script (the exe icon `windows/AppIcon.ico` + the application manifest
+//! `windows/SubtitleAdder.exe.manifest`: PerMonitorV2, UTF-8 code page, Common Controls v6 for
 //! rfd's TaskDialog) with `rc.exe` and hands the `.res` to the final link of every binary that uses this crate
 //! (`static:-bundle,+verbatim`: link.exe takes `.res` files as inputs). Only one crate of the graph may embed these
 //! resources, otherwise the link fails with duplicate resources: this is that crate.
@@ -24,7 +24,7 @@ fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
     let manifest = manifest_dir.join("windows").join("SubtitleAdder.exe.manifest");
-    let icon = manifest_dir.join("../../../windows/src/SubtitleAdder/Assets/AppIcon.ico");
+    let icon = manifest_dir.join("windows").join("AppIcon.ico");
     println!("cargo::rerun-if-changed={}", icon.display());
 
     let Some(rc) = find_rc() else {

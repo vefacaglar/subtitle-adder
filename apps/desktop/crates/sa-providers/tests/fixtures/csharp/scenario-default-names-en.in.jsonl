@@ -1,0 +1,9 @@
+{"op":"lang","value":"en"}
+{"op":"add","preset":"lan","name":null,"url":null,"key":null,"model":null,"async":true,"active":true}
+{"op":"add","preset":"custom","name":"","url":"https://x.test/v1","key":null,"model":null,"async":true,"active":false}
+{"op":"update","index":1,"name":"  ","url":"https://x.test/v2","key":"","model":"","async":true}
+{"op":"vm","enabled":true,"url":"http://h:9","model":"m","async":false,"models":[]}
+{"op":"sync"}
+{"op":"remove","index":0}
+{"op":"sync"}
+{"op":"file"}

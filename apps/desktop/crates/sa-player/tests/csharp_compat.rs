@@ -1,64 +1,36 @@
-//! Behavior parity with the C# app (Windows): long pseudo-random operation scripts run through the real C#
-//! `PlaybackTimeline` and `PlayerSessionGate` (fixture tool `apps/desktop/tools/fixtures/PlayerCompat`, which compiles
-//! the C# app's own `PlaybackTimeline.cs` read-only) and through the Rust port; every step's result and the full state
-//! after it must be identical (doubles compared by value, exactly).
+//! Behavior parity with the C# app (Windows): long pseudo-random operation scripts were run through the real C#
+//! `PlaybackTimeline` and `PlayerSessionGate` (the C# app's own `PlaybackTimeline.cs` at commit 2f4bc96, before the
+//! C# app was removed) and their output is frozen in `tests/fixtures/csharp/` (see the README there). The same scripts
+//! go through the Rust port; every step's result and the full state after it must be identical to the frozen C#
+//! output (doubles compared by value, exactly). Each frozen `.script` must still equal the script this file generates,
+//! so a change to a generator fails loudly instead of comparing against output for different operations.
 //!
 //! The one deliberate difference is excluded from the scripts: a non-finite *reported position* in
 //! `PlaybackTimeline::observe` keeps the shown position (Swift) instead of jumping to 0 (C#). The FFmpeg backend never
 //! reports one (see `timeline.rs`); non-finite seek targets and durations are covered.
-//!
-//! Opt-in: `SA_DOTNET_FIXTURES=1 cargo test -p sa-player --test csharp_compat` (needs the .NET 10 SDK; the tool is
-//! built on first use with `dotnet build -c Release`). Without the variable every test returns early.
-#![cfg(windows)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use sa_player::{PlaybackTimeline, PlayerEventToken, PlayerSessionGate, SourceId};
 use serde_json::{Value, json};
 
-fn enabled() -> bool {
-    let on = std::env::var("SA_DOTNET_FIXTURES").is_ok_and(|v| v == "1");
-    if !on {
-        eprintln!("skipped: set SA_DOTNET_FIXTURES=1 to run the C# compatibility tests");
-    }
-    on
+fn fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/csharp")
 }
 
-fn tool_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fixtures/PlayerCompat")
-}
-
-static BUILD: Mutex<()> = Mutex::new(());
-
-fn tool_exe() -> PathBuf {
-    let _guard = BUILD.lock().unwrap_or_else(|e| e.into_inner());
-    let exe = tool_dir().join("bin/Release/net10.0/PlayerCompat.exe");
-    let program = tool_dir().join("Program.cs");
-    let stale = match (std::fs::metadata(&exe).and_then(|m| m.modified()), std::fs::metadata(&program).and_then(|m| m.modified())) {
-        (Ok(built), Ok(source)) => built < source,
-        _ => true,
-    };
-    if stale {
-        let status = Command::new("dotnet")
-            .args(["build", "-c", "Release", "-nologo", "-v", "q"])
-            .current_dir(tool_dir())
-            .status()
-            .expect("dotnet is on PATH");
-        assert!(status.success(), "building the PlayerCompat fixture tool failed");
-    }
-    exe
-}
-
-fn csharp(script: &str) -> Vec<Value> {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let file = dir.path().join("script.txt");
-    std::fs::write(&file, script).expect("script written");
-    let out = Command::new(tool_exe()).arg(&file).output().expect("PlayerCompat runs");
-    assert!(out.status.success(), "PlayerCompat failed: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8(out.stdout).expect("UTF-8").lines().map(|l| serde_json::from_str(l).expect("a JSON line")).collect()
+/// The frozen C# output (one JSON array per line) for `script`, stored as `<name>.script` / `<name>.out.jsonl`.
+fn csharp(name: &str, script: &str) -> Vec<Value> {
+    let dir = fixture_dir();
+    let script_file = dir.join(format!("{name}.script"));
+    let out_file = dir.join(format!("{name}.out.jsonl"));
+    let frozen = std::fs::read_to_string(&script_file).unwrap_or_else(|e| panic!("{}: {e}", script_file.display()));
+    assert!(frozen == script, "{} no longer matches the generated script; the frozen C# output does not apply to it", script_file.display());
+    std::fs::read_to_string(&out_file)
+        .unwrap_or_else(|e| panic!("{}: {e}", out_file.display()))
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a JSON line"))
+        .collect()
 }
 
 /// xorshift64*: a deterministic generator (no extra dependency).
@@ -209,13 +181,10 @@ fn compare(script: &str, rust: &[Value], cs: &[Value]) {
 
 #[test]
 fn playback_timeline_matches_the_csharp_timeline_step_by_step() {
-    if !enabled() {
-        return;
-    }
     for seed in [0x9E37_79B9_7F4A_7C15u64, 42, 7_777_777, 0xDEAD_BEEF] {
         let mut rng = Rng(seed);
         let script = timeline_script(&mut rng, 4000);
-        compare(&script, &rust_timeline(&script), &csharp(&script));
+        compare(&script, &rust_timeline(&script), &csharp(&format!("timeline-{seed:x}"), &script));
     }
 }
 
@@ -307,13 +276,10 @@ fn rust_gate(script: &str) -> Vec<Value> {
 
 #[test]
 fn player_session_gate_matches_the_csharp_gate_step_by_step() {
-    if !enabled() {
-        return;
-    }
     for seed in [1u64, 0x1234_5678_9ABC_DEF0, 99_991, 0xC0FF_EE00] {
         let mut rng = Rng(seed);
         let script = gate_script(&mut rng, 5000);
-        compare(&script, &rust_gate(&script), &csharp(&script));
+        compare(&script, &rust_gate(&script), &csharp(&format!("gate-{seed:x}"), &script));
     }
 }
 
@@ -321,11 +287,8 @@ fn player_session_gate_matches_the_csharp_gate_step_by_step() {
 /// (A = 1, B = 2) goes through the C# gate and the Rust gate with the same results.
 #[test]
 fn the_csharp_late_event_scenario_gives_the_same_answers() {
-    if !enabled() {
-        return;
-    }
     let script = "g-begin\ng-activate L 1\ng-capture\ng-begin\ng-clear\ng-activate L 2\ng-accept L-1 1 2\ng-accept L-1 1 1\n\
                   g-open L-1 1 0 -\ng-open L-1 1 1 -\ng-failed L-1 1 2 0\ng-opened L-1 1 2 1\ng-capture\ng-failed L 2 2 0\n\
                   g-opened L 2 2 0\ng-open L 2 1 -\ng-opened L 2 2 1\n";
-    compare(script, &rust_gate(script), &csharp(script));
+    compare(script, &rust_gate(script), &csharp("gate-late-event", script));
 }

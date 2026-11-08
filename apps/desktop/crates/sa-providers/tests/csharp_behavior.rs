@@ -1,8 +1,9 @@
-//! Behavior parity with the C# app's real provider code (win-providers §1–§7): the same inputs go through
-//! `tools/fixtures/ProvidersCompat` (which compiles `TranslationProviderManager.cs`, `SubtitleViewModel.cs` and
-//! `TranslationModelSelection.cs` from apps/windows) and through this crate, and the outputs must be identical.
-//!
-//! Skipped (with a note on stderr) when the fixture is not built: `dotnet build -c Release` in that folder.
+//! Behavior parity with the C# app's real provider code (win-providers §1–§7): the inputs this file builds were run
+//! through the C# app's own `TranslationProviderManager.cs`, `SubtitleViewModel.cs` and `TranslationModelSelection.cs`
+//! (commit 2f4bc96, before the C# app was removed) and the C# output is frozen in `tests/fixtures/csharp/` (see the
+//! README there). The same inputs go through this crate and the outputs must be identical to the frozen C# ones. Each
+//! frozen `<name>.in.jsonl` must still equal the input this file generates, so a changed input fails loudly instead of
+//! comparing against C# output for something else.
 
 #![cfg(windows)]
 
@@ -23,26 +24,29 @@ use uuid::Uuid;
 /// Tests in this file switch the process-wide UI language.
 static LANGUAGE: Mutex<()> = Mutex::new(());
 
-fn fixture() -> Option<PathBuf> {
-    let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tools/fixtures/ProvidersCompat/bin/Release/net10.0/ProvidersCompat.exe");
-    if exe.exists() {
-        Some(exe)
-    } else {
-        eprintln!("skipping C# behavior comparison: {} not built", exe.display());
-        None
-    }
+fn fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/csharp")
 }
 
-fn run_fixture(exe: &Path, args: &[&std::ffi::OsStr]) -> Vec<Value> {
-    let out = std::process::Command::new(exe).args(args).output().unwrap();
-    assert!(out.status.success(), "fixture failed: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8(out.stdout)
-        .unwrap()
+/// The frozen C# output (one JSON array per line) for `input`, stored as `<name>.in.jsonl` (the exact input the C#
+/// tool was given) and `<name>.out.jsonl` (its stdout). `pure` and `scenario-*` inputs are the tool's input files as
+/// they were; `load` lists the files of the folder it loaded, one `[name, hex bytes]` line each.
+fn csharp(name: &str, input: &str) -> Vec<Value> {
+    let dir = fixture_dir();
+    let in_file = dir.join(format!("{name}.in.jsonl"));
+    let out_file = dir.join(format!("{name}.out.jsonl"));
+    let frozen = std::fs::read_to_string(&in_file).unwrap_or_else(|e| panic!("{}: {e}", in_file.display()));
+    assert!(frozen == input, "{} no longer matches the generated input; the frozen C# output does not apply to it", in_file.display());
+    std::fs::read_to_string(&out_file)
+        .unwrap_or_else(|e| panic!("{}: {e}", out_file.display()))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
         .collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn strings(v: &Value) -> Vec<String> {
@@ -153,7 +157,6 @@ const URLS: &[&str] = &[
 
 #[test]
 fn pure_helpers_match_the_csharp_code() {
-    let Some(exe) = fixture() else { return };
     let _lock = LANGUAGE.lock();
     set_language(sa_core::UiLanguage::Tr);
 
@@ -255,10 +258,7 @@ fn pure_helpers_match_the_csharp_code() {
         inputs.push(json!(["preset", id]));
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let input = dir.path().join("pure.txt");
-    std::fs::write(&input, inputs.iter().map(|v| v.to_string() + "\n").collect::<String>()).unwrap();
-    let outputs = run_fixture(&exe, &["pure".as_ref(), input.as_os_str()]);
+    let outputs = csharp("pure", &inputs.iter().map(|v| v.to_string() + "\n").collect::<String>());
     assert_eq!(outputs.len(), inputs.len());
 
     let mut mismatches = Vec::new();
@@ -320,7 +320,7 @@ fn load_cases() -> Vec<(&'static str, Vec<u8>)> {
     }
     let s = |t: String| t.into_bytes();
     vec![
-        ("01-csharp", include_bytes!("../../../tools/fixtures/ProvidersFixture/csharp-translation-providers.json").to_vec()),
+        ("01-csharp", include_bytes!("fixtures/csharp/csharp-translation-providers.json").to_vec()),
         (
             "02-case-null",
             s(format!(
@@ -377,17 +377,13 @@ fn load_cases() -> Vec<(&'static str, Vec<u8>)> {
 
 #[test]
 fn files_load_like_the_csharp_reader() {
-    let Some(exe) = fixture() else { return };
     let _lock = LANGUAGE.lock();
     set_language(sa_core::UiLanguage::Tr);
     let cases = load_cases();
     let dir = tempfile::tempdir().unwrap();
-    let inputs = dir.path().join("files");
-    std::fs::create_dir(&inputs).unwrap();
-    for (name, bytes) in &cases {
-        std::fs::write(inputs.join(name), bytes).unwrap();
-    }
-    let outputs = run_fixture(&exe, &["load".as_ref(), inputs.as_os_str()]);
+    // The C# tool loaded every case as a file of a folder, in ordinal name order (the order of `load_cases`).
+    let manifest: String = cases.iter().map(|(name, bytes)| json!([name, hex(bytes)]).to_string() + "\n").collect();
+    let outputs = csharp("load", &manifest);
     assert_eq!(outputs.len(), cases.len());
 
     let mut mismatches = Vec::new();
@@ -786,11 +782,8 @@ impl RustScenario {
     }
 }
 
-fn run_scenario(exe: &Path, script: &[Value]) {
-    let dir = tempfile::tempdir().unwrap();
-    let input = dir.path().join("scenario.txt");
-    std::fs::write(&input, script.iter().map(|v| v.to_string() + "\n").collect::<String>()).unwrap();
-    let expected = run_fixture(exe, &["scenario".as_ref(), input.as_os_str()]);
+fn run_scenario(name: &str, script: &[Value]) {
+    let expected = csharp(name, &script.iter().map(|v| v.to_string() + "\n").collect::<String>());
     // The fixture and the port both start in Turkish.
     set_language(sa_core::UiLanguage::Tr);
     let mut rust = RustScenario::new();
@@ -829,9 +822,8 @@ fn vm_op(enabled: bool, url: &str, model: &str, asy: bool, models: &[&str]) -> V
 
 #[test]
 fn editing_scenarios_match_the_csharp_manager() {
-    let Some(exe) = fixture() else { return };
     let _lock = LANGUAGE.lock();
-    run_scenario(&exe, &[
+    run_scenario("scenario-editing", &[
         add_op("opencode-go", None, None, Some("sk-oc-1234567890"), Some("kimi-k2.5"), true, true),
         add_op("openrouter", Some("  My OpenRouter "), None, Some(" sk-or-abcdef9876 "), Some("google/gemma-3-27b-it"), true, false),
         add_op("lan", None, Some("http://192.168.1.50:11434"), Some(""), Some("gemma4:e4b"), false, false),
@@ -879,11 +871,10 @@ fn editing_scenarios_match_the_csharp_manager() {
 
 #[test]
 fn lan_bridge_scenarios_match_the_csharp_manager() {
-    let Some(exe) = fixture() else { return };
     let _lock = LANGUAGE.lock();
     // Startup with the legacy LAN settings on, then cloud providers added and switched (the C# test), then edits in
     // the Settings LAN section.
-    run_scenario(&exe, &[
+    run_scenario("scenario-lan-bridge", &[
         vm_op(true, "http://mac-studio.local:11434", "gemma4:e4b", true, &[]),
         json!({"op": "migrate"}),
         add_op("opencode-go", None, None, Some("oc_sk_test_123456"), Some("deepseek-v4.1-flash"), true, true),
@@ -920,7 +911,7 @@ fn lan_bridge_scenarios_match_the_csharp_manager() {
         json!({"op": "file"}),
     ]);
     // Startup variations of EnsureMigratedFromViewModel.
-    run_scenario(&exe, &[
+    run_scenario("scenario-lan-startup", &[
         vm_op(false, "http://h:1", "m", true, &["a"]),
         json!({"op": "migrate"}),
         vm_op(true, "http://h:1", "m", true, &["a"]),
@@ -933,7 +924,7 @@ fn lan_bridge_scenarios_match_the_csharp_manager() {
         json!({"op": "migrate"}),
         json!({"op": "file"}),
     ]);
-    run_scenario(&exe, &[
+    run_scenario("scenario-lan-startup-inactive", &[
         add_op("openai", None, None, Some("sk-1"), None, true, false),
         vm_op(false, "http://h:1", "m", true, &[]),
         json!({"op": "migrate"}),
@@ -946,7 +937,6 @@ fn lan_bridge_scenarios_match_the_csharp_manager() {
 
 #[test]
 fn connection_test_scenarios_match_the_csharp_manager() {
-    let Some(exe) = fixture() else { return };
     let _lock = LANGUAGE.lock();
     let ollama = r#"{"models":[{"name":"qwen3:14b"},{"name":"nomic-embed-text"}]}"#;
     let rejection = r#"{"error":{"message":"Global region required (sk-private)"}}"#;
@@ -976,8 +966,8 @@ fn connection_test_scenarios_match_the_csharp_manager() {
             json!({"op": "file"}),
         ]
     };
-    run_scenario(&exe, &script("tr"));
-    run_scenario(&exe, &script("en"));
+    run_scenario("scenario-test-tr", &script("tr"));
+    run_scenario("scenario-test-en", &script("en"));
     // Address validation of the draft test (.NET `Uri.TryCreate` + non-empty host) and the raw request URLs built
     // from what was typed. No key (a key over plain http to a public host is refused on purpose, UNIFIED.md §3.7) and
     // no `.local` names (they would resolve over the real network).
@@ -1005,9 +995,9 @@ fn connection_test_scenarios_match_the_csharp_manager() {
         script.push(json!({"op": "draft", "preset": "custom", "url": url, "key": "", "model": null,
             "http": [["GET", "/v1/models", 200, r#"{"data":[{"id":"ok"}]}"#]]}));
     }
-    run_scenario(&exe, &script);
+    run_scenario("scenario-test-addresses", &script);
     // Default names in English.
-    run_scenario(&exe, &[
+    run_scenario("scenario-default-names-en", &[
         json!({"op": "lang", "value": "en"}),
         add_op("lan", None, None, None, None, true, true),
         add_op("custom", Some(""), Some("https://x.test/v1"), None, None, true, false),

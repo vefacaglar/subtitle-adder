@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "directories": [
+    {
+      "directoryPath": "C:\\SubtitleAdderE2E\\template\\media",
+      "subdirectories": [
+        "C:\\SubtitleAdderE2E\\template\\media\\thumbs"
+      ],
+      "mediaFiles": [
+        {
+          "fullPath": "C:\\SubtitleAdderE2E\\template\\media\\altyazi-testi.mp4",
+          "fileName": "altyazi-testi.mp4",
+          "directoryPath": "C:\\SubtitleAdderE2E\\template\\media",
+          "sizeBytes": 68413,
+          "lastWriteTimeUtc": "2026-11-08T14:02:07.6019795+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        },
+        {
+          "fullPath": "C:\\SubtitleAdderE2E\\template\\media\\belgesel-uzay.mp4",
+          "fileName": "belgesel-uzay.mp4",
+          "directoryPath": "C:\\SubtitleAdderE2E\\template\\media",
+          "sizeBytes": 848910,
+          "lastWriteTimeUtc": "2026-11-08T14:02:08.0462806+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        },
+        {
+          "fullPath": "C:\\SubtitleAdderE2E\\template\\media\\yaz-tatili.mp4",
+          "fileName": "yaz-tatili.mp4",
+          "directoryPath": "C:\\SubtitleAdderE2E\\template\\media",
+          "sizeBytes": 63488,
+          "lastWriteTimeUtc": "2026-11-08T14:02:08.3116996+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00"
+        }
+      ]
+    }
+  ]
+}

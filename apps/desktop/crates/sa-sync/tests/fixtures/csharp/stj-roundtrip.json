@@ -1,0 +1,56 @@
+{
+  "event": {
+    "rust": "{\"eventId\":\"golden-rust-event\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\Şule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"şule+'<&>\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\bölüm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}",
+    "csharp": "{\"eventId\":\"golden-rust-event\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}"
+  },
+  "request": {
+    "rust": "{\"requestId\":\"golden-rich-request\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\profiles.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"emre\",\"key\":\"hk:key\",\"secondaryKey\":\"hk:second\",\"ord\":7,\"blob\":\"AAEC\",\"secondaryBlob\":\"AwQF\",\"updatedTicks\":639000000000000000,\"viewCount\":2,\"viewCountDelta\":1,\"saltBase64\":\"c2FsdA==\",\"passwordHashBase64\":\"aGFzaA==\",\"iterations\":600000,\"createdAtUtc\":\"2026-11-07T19:22:33.5+00:00\",\"batchVideos\":[{\"key\":\"v1\",\"encryptedBlob\":\"AQ==\",\"updatedTicks\":1}],\"batchProgress\":[{\"key\":\"p1\",\"encryptedBlob\":\"Ag==\",\"updatedTicks\":2}],\"batchListItems\":[{\"listId\":\"l\",\"itemHash\":\"h\",\"ord\":3,\"encryptedPathBlob\":\"Aw==\"}],\"postCommitEvents\":[{\"eventId\":\"golden-post-commit\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\Şule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"şule+'<&>\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\bölüm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}]}",
+    "csharp": "{\"requestId\":\"golden-rich-request\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\profiles.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"emre\",\"key\":\"hk:key\",\"secondaryKey\":\"hk:second\",\"ord\":7,\"blob\":\"AAEC\",\"secondaryBlob\":\"AwQF\",\"updatedTicks\":639000000000000000,\"viewCount\":2,\"viewCountDelta\":1,\"saltBase64\":\"c2FsdA==\",\"passwordHashBase64\":\"aGFzaA==\",\"iterations\":600000,\"createdAtUtc\":\"2026-11-07T19:22:33.5+00:00\",\"batchVideos\":[{\"key\":\"v1\",\"encryptedBlob\":\"AQ==\",\"updatedTicks\":1}],\"batchProgress\":[{\"key\":\"p1\",\"encryptedBlob\":\"Ag==\",\"updatedTicks\":2}],\"batchListItems\":[{\"listId\":\"l\",\"itemHash\":\"h\",\"ord\":3,\"encryptedPathBlob\":\"Aw==\"}],\"postCommitEvents\":[{\"eventId\":\"golden-post-commit\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}]}"
+  },
+  "minimal_request": {
+    "rust": "{\"requestId\":\"golden-minimal\",\"senderInstanceId\":\"s\",\"dbPath\":\"db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}",
+    "csharp": "{\"requestId\":\"golden-minimal\",\"senderInstanceId\":\"s\",\"dbPath\":\"db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}"
+  },
+  "acks": [
+    {
+      "requestId": "golden-rich-request",
+      "committed": true,
+      "isDuplicate": false,
+      "error": null,
+      "rust": "{\"requestId\":\"golden-rich-request\",\"committed\":true,\"isDuplicate\":false}",
+      "csharp": "{\"requestId\":\"golden-rich-request\",\"committed\":true,\"isDuplicate\":false}"
+    },
+    {
+      "requestId": "golden-rich-request",
+      "committed": true,
+      "isDuplicate": true,
+      "error": null,
+      "rust": "{\"requestId\":\"golden-rich-request\",\"committed\":true,\"isDuplicate\":true}",
+      "csharp": "{\"requestId\":\"golden-rich-request\",\"committed\":true,\"isDuplicate\":true}"
+    },
+    {
+      "requestId": "golden-bad-kind",
+      "committed": false,
+      "isDuplicate": false,
+      "error": "Unknown WriteKind 'Nope'.",
+      "rust": "{\"requestId\":\"golden-bad-kind\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind 'Nope'.\"}",
+      "csharp": "{\"requestId\":\"golden-bad-kind\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind \\u0027Nope\\u0027.\"}"
+    },
+    {
+      "requestId": "fb-cs",
+      "committed": false,
+      "isDuplicate": false,
+      "error": "Unknown WriteKind 'FlushBarrier'.",
+      "rust": "{\"requestId\":\"fb-cs\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind 'FlushBarrier'.\"}",
+      "csharp": "{\"requestId\":\"fb-cs\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind \\u0027FlushBarrier\\u0027.\"}"
+    },
+    {
+      "requestId": "r",
+      "committed": false,
+      "isDuplicate": false,
+      "error": "Store is disposed.",
+      "rust": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Store is disposed.\"}",
+      "csharp": "{\"requestId\":\"r\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Store is disposed.\"}"
+    }
+  ]
+}

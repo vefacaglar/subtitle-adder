@@ -252,6 +252,22 @@ fn create_default(norm_path: &str, now: Ticks, fp: Option<String>, compute_from_
     }
 }
 
+/// The logged-in user's profile in the line format of the former C# `E2EData dump` tool (`Console.WriteLine`, bools
+/// as `True`/`False`): `user=<name>`, then `history|<file name>|views=<n>|liked=<bool>|rating=<n>` in history order,
+/// then `list|<name>` per list. The `win_profile_dump` example prints it for `scripts/e2e-windows.ps1`; sa-app's
+/// `csharp_e2e_data` test pins it against the frozen C# output.
+#[doc(hidden)]
+pub fn e2e_dump_lines(store: &dyn ProfileStore) -> Vec<String> {
+    let b = |v: bool| if v { "True" } else { "False" };
+    let mut out = vec![format!("user={}", store.current_username().unwrap_or_default())];
+    let query = FeedQuery { filter: VideoFeedFilter::History, ..FeedQuery::default() };
+    for v in store.feed(&query, &|| true) {
+        out.push(format!("history|{}|views={}|liked={}|rating={}", v.file_name, v.view_count, b(v.is_liked), v.rating));
+    }
+    out.extend(store.lists().into_iter().map(|l| format!("list|{}", l.name)));
+    out
+}
+
 /// `MatchesSearchQuery`: whole query, then every token (`' '`, `\t`, `_`, `-`, `.`) in name, folder or path.
 pub fn matches_search_query(video: &VideoUserStats, query: &str) -> bool {
     let trimmed = query.trim_matches(char::is_whitespace);
@@ -2731,8 +2747,8 @@ mod tests {
         assert_eq!(pad_to_bucket(vec![1; 1025], 1024, b' ').len(), 2048);
     }
 
-    /// Golden vectors computed by the C# primitives (`ProfileFixtures vectors`; `tests/win_fixtures.rs` re-checks them
-    /// against a live C# run when a .NET SDK is present).
+    /// Golden vectors computed by the C# primitives (the same values as `tests/fixtures/csharp/vectors.json`, which
+    /// `tests/win_fixtures.rs` checks in full).
     pub(crate) mod golden {
         pub const PASSWORD: &str = "pässwörd-1 İı";
         pub const SALT_HEX: &str = "031425364758697a8b9cadbecfe0f102";

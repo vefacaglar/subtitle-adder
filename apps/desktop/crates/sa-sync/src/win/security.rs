@@ -116,7 +116,12 @@ unsafe impl Sync for ServerSecurity {}
 impl ServerSecurity {
     pub(crate) fn new() -> io::Result<Self> {
         let sids = token_sids().ok_or_else(|| io::Error::other("no token SIDs"))?;
-        let sddl: Vec<u16> = server_sddl(sids).encode_utf16().chain(Some(0)).collect();
+        Self::from_sddl(&server_sddl(sids))
+    }
+
+    /// A descriptor built from an SDDL string (tests replay another runtime's pipe security with it).
+    pub(crate) fn from_sddl(sddl: &str) -> io::Result<Self> {
+        let sddl: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut sd = PSECURITY_DESCRIPTOR::default();
         unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut sd, None) }
             .map_err(os_err)?;

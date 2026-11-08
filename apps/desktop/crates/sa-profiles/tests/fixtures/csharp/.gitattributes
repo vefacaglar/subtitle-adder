@@ -1,0 +1,2 @@
+# Frozen C# outputs: CRLF line ends and SQLite files compared as written, never normalized.
+* -text

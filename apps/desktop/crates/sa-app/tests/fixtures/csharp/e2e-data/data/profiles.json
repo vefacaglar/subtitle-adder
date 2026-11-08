@@ -1,0 +1,15 @@
+{
+  "version": 3,
+  "rememberMe": false,
+  "lastUsername": "Emre",
+  "profiles": [
+    {
+      "username": "Emre",
+      "saltBase64": "OOmDi\u002Bm1nLwf\u002BIjoJfOWKg==",
+      "passwordHashBase64": "CnHZq7LDRJ\u002BrKAt2l1fuR6jYDydkmVW0Vvf/eq8a08M=",
+      "iterations": 100000,
+      "createdAtUtc": "2026-11-08T14:02:10.7053137+00:00",
+      "encryptedVaultBase64": "ybgpZAFbkwPsYpO0DHyZVdB4VvdXDmlEQsGCF\u002BCAvO6Fd4J34/TBk8vgGlTY\u002Bz2ROKhH"
+    }
+  ]
+}

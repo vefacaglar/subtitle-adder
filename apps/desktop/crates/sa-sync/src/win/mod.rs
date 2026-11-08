@@ -904,24 +904,42 @@ pub mod testing {
         security::token_sids().map(|s| s.user_sddl.clone())
     }
 
+    /// The token owner SID (SDDL form; the owner of the broker's pipe instances).
+    pub fn current_owner_sid() -> Option<String> {
+        security::token_sids().map(|s| s.owner_sddl.clone())
+    }
+
     /// A raw client connection to the channel's pipe (verifies the server owner like the broker does). A background
     /// thread keeps reading (a peer that stops reading would stall a C# host, whose writes are synchronous).
     pub struct RawClient {
         conn: Arc<Connection>,
         lines: crossbeam_channel::Receiver<String>,
+        raw: crossbeam_channel::Receiver<Vec<u8>>,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ReadMode {
+        Lines,
+        Raw,
+        None,
     }
 
     impl RawClient {
         pub fn connect(scope: &str, timeout: Duration) -> std::io::Result<RawClient> {
-            Self::open(scope, timeout, true)
+            Self::open(scope, timeout, ReadMode::Lines)
         }
 
         /// A client that never reads (a stalled peer, F5 tests).
         pub fn connect_stalled(scope: &str, timeout: Duration) -> std::io::Result<RawClient> {
-            Self::open(scope, timeout, false)
+            Self::open(scope, timeout, ReadMode::None)
         }
 
-        fn open(scope: &str, timeout: Duration, read: bool) -> std::io::Result<RawClient> {
+        /// A client whose reads keep the exact bytes ([`Self::read_raw_line`]; golden transcripts).
+        pub fn connect_raw(scope: &str, timeout: Duration) -> std::io::Result<RawClient> {
+            Self::open(scope, timeout, ReadMode::Raw)
+        }
+
+        fn open(scope: &str, timeout: Duration, mode: ReadMode) -> std::io::Result<RawClient> {
             let cancel = Event::new()?;
             let path = pipe::pipe_path(&pipe_name(scope));
             let deadline = Instant::now() + timeout;
@@ -937,26 +955,30 @@ pub mod testing {
             }
             let conn = Connection::start(Arc::new(pipe))?;
             let (tx, rx) = crossbeam_channel::unbounded();
-            if !read {
-                return Ok(RawClient { conn, lines: rx });
-            }
-            let reader = conn.clone();
-            std::thread::spawn(move || {
-                let mut decoder = LineDecoder::new();
-                let mut buf = vec![0u8; READ_BUFFER];
-                let mut out = Vec::new();
-                while let Ok(n) = reader.read(&mut buf, &cancel) {
-                    if n == 0 || decoder.push(&buf[..n], &mut out).is_err() {
-                        break;
-                    }
-                    for l in out.drain(..) {
-                        if !is_blank(&l) && tx.send(l).is_err() {
-                            return;
+            let (raw_tx, raw_rx) = crossbeam_channel::unbounded();
+            match mode {
+                ReadMode::None => {}
+                ReadMode::Raw => spawn_raw_reader(conn.clone(), cancel, raw_tx),
+                ReadMode::Lines => {
+                    let reader = conn.clone();
+                    std::thread::spawn(move || {
+                        let mut decoder = LineDecoder::new();
+                        let mut buf = vec![0u8; READ_BUFFER];
+                        let mut out = Vec::new();
+                        while let Ok(n) = reader.read(&mut buf, &cancel) {
+                            if n == 0 || decoder.push(&buf[..n], &mut out).is_err() {
+                                break;
+                            }
+                            for l in out.drain(..) {
+                                if !is_blank(&l) && tx.send(l).is_err() {
+                                    return;
+                                }
+                            }
                         }
-                    }
+                    });
                 }
-            });
-            Ok(RawClient { conn, lines: rx })
+            }
+            Ok(RawClient { conn, lines: rx, raw: raw_rx })
         }
 
         pub fn send_line(&self, line: &str) -> bool {
@@ -973,8 +995,80 @@ pub mod testing {
             self.lines.recv_timeout(timeout).ok()
         }
 
+        /// [`Self::connect_raw`] only: the next received line as raw bytes, `\n` included (an unterminated tail at
+        /// end of stream comes without it), waiting up to `timeout`.
+        pub fn read_raw_line(&self, timeout: Duration) -> Option<Vec<u8>> {
+            self.raw.recv_timeout(timeout).ok()
+        }
+
         pub fn close(&self) {
             self.conn.close();
+        }
+    }
+
+    /// Splits everything read from `conn` at `\n` (kept) into raw lines.
+    fn spawn_raw_reader(conn: Arc<Connection>, cancel: Event, tx: crossbeam_channel::Sender<Vec<u8>>) {
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; READ_BUFFER];
+            let mut pending = Vec::new();
+            while let Ok(n) = conn.read(&mut buf, &cancel) {
+                if n == 0 {
+                    break;
+                }
+                pending.extend_from_slice(&buf[..n]);
+                while let Some(i) = pending.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=i).collect();
+                    if tx.send(line).is_err() {
+                        return;
+                    }
+                }
+            }
+            if !pending.is_empty() {
+                let _ = tx.send(pending);
+            }
+        });
+    }
+
+    /// One server instance of the channel's pipe that is not a broker: tests stand in for another runtime's host
+    /// with it (golden transcripts). Reads keep the exact bytes. It creates an instance on the real pipe name with any
+    /// security descriptor, so it exists only with the `testing` feature (sa-sync's own tests), never in the app.
+    #[cfg(feature = "testing")]
+    pub struct RawServer {
+        conn: Arc<Connection>,
+        raw: crossbeam_channel::Receiver<Vec<u8>>,
+    }
+
+    #[cfg(feature = "testing")]
+    impl RawServer {
+        /// Creates one instance of the channel's pipe with the security descriptor `sddl` (`None` = the broker's own
+        /// F6 descriptor) and waits up to `timeout` for a client to connect.
+        pub fn accept(scope: &str, sddl: Option<&str>, timeout: Duration) -> std::io::Result<RawServer> {
+            let sec = match sddl {
+                Some(s) => security::ServerSecurity::from_sddl(s)?,
+                None => security::ServerSecurity::new()?,
+            };
+            let p = pipe::create_server_instance(&pipe::pipe_path(&pipe_name(scope)), &sec)?;
+            let never = Event::new()?;
+            p.accept_within(&[&never], Some(timeout))?;
+            let conn = Connection::start(Arc::new(p))?;
+            let (tx, rx) = crossbeam_channel::unbounded();
+            spawn_raw_reader(conn.clone(), Event::new()?, tx);
+            Ok(RawServer { conn, raw: rx })
+        }
+
+        /// Sends `bytes` as they are.
+        pub fn send_raw(&self, bytes: &[u8]) -> bool {
+            self.conn.try_send(Arc::from(bytes))
+        }
+
+        /// The next received line as raw bytes, `\n` included, waiting up to `timeout`.
+        pub fn read_raw_line(&self, timeout: Duration) -> Option<Vec<u8>> {
+            self.raw.recv_timeout(timeout).ok()
+        }
+
+        /// Lets queued bytes reach the pipe (bounded), then disconnects the client.
+        pub fn close(&self) {
+            self.conn.close_after_drain(DISPOSE_DRAIN);
         }
     }
 }

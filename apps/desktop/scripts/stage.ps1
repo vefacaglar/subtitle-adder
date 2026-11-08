@@ -10,7 +10,7 @@ Builds the Rust desktop app (release) and stages a runnable Windows app into app
     powershell -NoProfile -ExecutionPolicy Bypass -File apps/desktop/scripts/stage.ps1 [-Force] [-SkipEngine]
 
 The build is skipped when dist\SubtitleAdder.exe is newer than every desktop source (crates\**\*.rs|*.slint|*.toml|
-*.xcstrings, Cargo.toml, Cargo.lock and the embedded catalogs of apps\windows / apps\macos); the copies are refreshed
+*.xcstrings|*.manifest|*.ico|*.png, Cargo.toml, Cargo.lock and the embedded catalogs of apps\macos); the copies are refreshed
 when their source is newer. The engine is not built here: run engine\scripts\build-dev.ps1 first (a missing
 engine\dist only produces a warning; the app then reports that the engine was not found).
 
@@ -56,7 +56,6 @@ $built = Join-Path $env:CARGO_TARGET_DIR 'release\SubtitleAdder.exe'
 function Get-NewestSource {
     $roots = @(
         (Join-Path $desktop 'crates'),
-        (Join-Path $repo 'apps\windows\src\SubtitleAdder.Core\Strings'),
         (Join-Path $repo 'apps\macos\Sources\SubtitleAdderApp\Resources'),
         (Join-Path $repo 'apps\macos\Sources\EngineKit\Resources')
     )

@@ -1,0 +1,7 @@
+{"op":"add","preset":"openai","name":null,"url":null,"key":"sk-1","model":null,"async":true,"active":false}
+{"op":"vm","enabled":false,"url":"http://h:1","model":"m","async":true,"models":[]}
+{"op":"migrate"}
+{"op":"vm","enabled":true,"url":"http://h:1","model":"m","async":true,"models":[]}
+{"op":"migrate"}
+{"op":"migrate"}
+{"op":"file"}

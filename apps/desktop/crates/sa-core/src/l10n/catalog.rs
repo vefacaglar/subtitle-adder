@@ -98,7 +98,8 @@ pub enum CatalogId {
     App,
     /// `apps/macos/Sources/EngineKit/Resources/Localizable.xcstrings` (always embedded).
     EngineKit,
-    /// `apps/windows/src/SubtitleAdder.Core/Strings/Windows.xcstrings` (Windows builds, or feature `all-catalogs`).
+    /// `crates/sa-core/catalogs/Windows.xcstrings`: the former C# app's Windows strings (Windows builds, or feature
+    /// `all-catalogs`).
     Windows,
     /// `crates/sa-core/catalogs/DesktopWindows.xcstrings`: strings the Rust app adds on Windows.
     DesktopWindows,
@@ -128,7 +129,7 @@ pub fn catalog(id: CatalogId) -> &'static StringCatalog {
         #[cfg(any(windows, feature = "all-catalogs"))]
         CatalogId::Windows => embedded!(
             WINDOWS,
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../../windows/src/SubtitleAdder.Core/Strings/Windows.xcstrings")
+            concat!(env!("CARGO_MANIFEST_DIR"), "/catalogs/Windows.xcstrings")
         ),
         #[cfg(any(windows, feature = "all-catalogs"))]
         CatalogId::DesktopWindows => embedded!(

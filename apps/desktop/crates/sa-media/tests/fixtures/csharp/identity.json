@@ -1,0 +1,62 @@
+[
+  {
+    "path": "C:\\Videolar\\ſon ışık İÇ Straße.mp4",
+    "length": 1234567,
+    "chunk_size": 8388608,
+    "identity": "C:\\VIDEOLAR\\SON ıŞıK İÇ STRAßE.MP4|len:1234567|cs:8388608"
+  },
+  {
+    "path": "C:\\Videolar\\ſon ışık İÇ Straße.mp4",
+    "length": 0,
+    "chunk_size": 65536,
+    "identity": "C:\\VIDEOLAR\\SON ıŞıK İÇ STRAßE.MP4|len:0|cs:65536"
+  },
+  {
+    "path": "c:/videolar/Şarkı ǅemal ǆ ǈ.MKV",
+    "length": 1234567,
+    "chunk_size": 8388608,
+    "identity": "C:\\VIDEOLAR\\ŞARKı ǄEMAL Ǆ Ǉ.MKV|len:1234567|cs:8388608"
+  },
+  {
+    "path": "c:/videolar/Şarkı ǅemal ǆ ǈ.MKV",
+    "length": 0,
+    "chunk_size": 65536,
+    "identity": "C:\\VIDEOLAR\\ŞARKı ǄEMAL Ǆ Ǉ.MKV|len:0|cs:65536"
+  },
+  {
+    "path": "C:\\a\\..\\b\\Ωmega ﬁlm ΐ.mp4\\",
+    "length": 1234567,
+    "chunk_size": 8388608,
+    "identity": "C:\\B\\ΩMEGA ﬁLM ΐ.MP4|len:1234567|cs:8388608"
+  },
+  {
+    "path": "C:\\a\\..\\b\\Ωmega ﬁlm ΐ.mp4\\",
+    "length": 0,
+    "chunk_size": 65536,
+    "identity": "C:\\B\\ΩMEGA ﬁLM ΐ.MP4|len:0|cs:65536"
+  },
+  {
+    "path": "\\\\server\\share\\Kelvin K Å µ ÿ.mp4",
+    "length": 1234567,
+    "chunk_size": 8388608,
+    "identity": "\\\\SERVER\\SHARE\\KELVIN K Å Μ Ÿ.MP4|len:1234567|cs:8388608"
+  },
+  {
+    "path": "\\\\server\\share\\Kelvin K Å µ ÿ.mp4",
+    "length": 0,
+    "chunk_size": 65536,
+    "identity": "\\\\SERVER\\SHARE\\KELVIN K Å Μ Ÿ.MP4|len:0|cs:65536"
+  },
+  {
+    "path": "  C:/x/Ⓐ ⓐ 𐐨 𞤢.mp4  ",
+    "length": 1234567,
+    "chunk_size": 8388608,
+    "identity": "C:\\X\\Ⓐ Ⓐ 𐐀 𞤀.MP4|len:1234567|cs:8388608"
+  },
+  {
+    "path": "  C:/x/Ⓐ ⓐ 𐐨 𞤢.mp4  ",
+    "length": 0,
+    "chunk_size": 65536,
+    "identity": "C:\\X\\Ⓐ Ⓐ 𐐀 𞤀.MP4|len:0|cs:65536"
+  }
+]

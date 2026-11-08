@@ -1,0 +1,164 @@
+{
+  "scope": "golden-cs-host-07f93d2dfc6d4c4aa95b4f556f555388",
+  "scope_hash": "6d0ce91788f55c25",
+  "ready": "true leader=true",
+  "files_while_hosting": [
+    {
+      "name": "engine-{hash}.lock",
+      "size": 0,
+      "delete_error": 32,
+      "open_share_none_error": 32
+    },
+    {
+      "name": "instances/instance-a6e06cd0c5764326baf1330396a8ef2e.slot",
+      "size": 0,
+      "delete_error": 32,
+      "open_share_none_error": 32
+    }
+  ],
+  "status_after_rust_joined": "leader=true ready=true count=2 clients=2",
+  "pipe_sddl": "O:{owner}D:(A;;0x1f019f;;;{owner})",
+  "connect": {
+    "received": []
+  },
+  "steps": [
+    {
+      "step": "rust_publishes",
+      "sent": [],
+      "received": [
+        "{\"eventId\":\"golden-rust-event\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\Şule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"şule+'<&>\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\bölüm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}\n"
+      ],
+      "csharp_stdout": [
+        "CS-RECV {\"eventId\":\"golden-rust-event\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}"
+      ]
+    },
+    {
+      "step": "csharp_publishes",
+      "sent": [],
+      "received": [
+        "{\"eventId\":\"golden-from-csharp\",\"topic\":\"Thumbnail\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}\n"
+      ],
+      "csharp_stdout": [
+        "CS-OK"
+      ]
+    },
+    {
+      "step": "rust_writes",
+      "sent": [
+        "W:{\"requestId\":\"golden-rich-request\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\profiles.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"emre\",\"key\":\"hk:key\",\"secondaryKey\":\"hk:second\",\"ord\":7,\"blob\":\"AAEC\",\"secondaryBlob\":\"AwQF\",\"updatedTicks\":639000000000000000,\"viewCount\":2,\"viewCountDelta\":1,\"saltBase64\":\"c2FsdA==\",\"passwordHashBase64\":\"aGFzaA==\",\"iterations\":600000,\"createdAtUtc\":\"2026-11-07T19:22:33.5+00:00\",\"batchVideos\":[{\"key\":\"v1\",\"encryptedBlob\":\"AQ==\",\"updatedTicks\":1}],\"batchProgress\":[{\"key\":\"p1\",\"encryptedBlob\":\"Ag==\",\"updatedTicks\":2}],\"batchListItems\":[{\"listId\":\"l\",\"itemHash\":\"h\",\"ord\":3,\"encryptedPathBlob\":\"Aw==\"}],\"postCommitEvents\":[{\"eventId\":\"golden-post-commit\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\Şule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"şule+'<&>\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\bölüm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}]}\n"
+      ],
+      "received": [
+        "A:{\"requestId\":\"golden-rich-request\",\"committed\":true,\"isDuplicate\":false}\n",
+        "{\"eventId\":\"golden-post-commit\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}\n"
+      ],
+      "csharp_stdout": [
+        "CS-EXEC ReplaceAllVideosAndProgress golden-rich-request dup=false blob=AAEC videos=1 items=1 created=2026-11-07T19:22:33.5000000+00:00",
+        "CS-RECV {\"eventId\":\"golden-post-commit\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\\\u015Eule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"\\u015Fule\\u002B\\u0027\\u003C\\u0026\\u003E\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\b\\u00F6l\\u00FCm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}"
+      ]
+    },
+    {
+      "step": "rust_writes_again",
+      "sent": [
+        "W:{\"requestId\":\"golden-rich-request\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\profiles.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"emre\",\"key\":\"hk:key\",\"secondaryKey\":\"hk:second\",\"ord\":7,\"blob\":\"AAEC\",\"secondaryBlob\":\"AwQF\",\"updatedTicks\":639000000000000000,\"viewCount\":2,\"viewCountDelta\":1,\"saltBase64\":\"c2FsdA==\",\"passwordHashBase64\":\"aGFzaA==\",\"iterations\":600000,\"createdAtUtc\":\"2026-11-07T19:22:33.5+00:00\",\"batchVideos\":[{\"key\":\"v1\",\"encryptedBlob\":\"AQ==\",\"updatedTicks\":1}],\"batchProgress\":[{\"key\":\"p1\",\"encryptedBlob\":\"Ag==\",\"updatedTicks\":2}],\"batchListItems\":[{\"listId\":\"l\",\"itemHash\":\"h\",\"ord\":3,\"encryptedPathBlob\":\"Aw==\"}],\"postCommitEvents\":[{\"eventId\":\"golden-post-commit\",\"topic\":\"watch-progress\",\"kind\":4,\"senderInstanceId\":\"rust-manager\",\"scopePath\":\"C:\\\\Users\\\\Şule\\\\AppData\\\\Local\\\\SubtitleAdder\\\\profiles.json\",\"username\":\"şule+'<&>\",\"videoKey\":\"hk:abc\",\"videoPath\":\"D:\\\\Videolar\\\\bölüm 1.mp4\",\"positionSeconds\":77.25,\"durationSeconds\":100,\"viewCount\":3,\"isLiked\":true,\"rating\":4,\"listId\":\"list-1\",\"payloadBase64\":\"AQIDBA==\",\"sealedPayloadBase64\":\"c2VhbGVk\",\"timestampUtc\":\"2026-11-07T19:22:33.1234567+00:00\"}]}\n"
+      ],
+      "received": [
+        "A:{\"requestId\":\"golden-rich-request\",\"committed\":true,\"isDuplicate\":true}\n"
+      ],
+      "csharp_stdout": [
+        "CS-EXEC ReplaceAllVideosAndProgress golden-rich-request dup=true blob=AAEC videos=1 items=1 created=2026-11-07T19:22:33.5000000+00:00"
+      ]
+    },
+    {
+      "step": "rust_writes_unknown_kind",
+      "sent": [
+        "W:{\"requestId\":\"golden-bad-kind\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\profiles.db\",\"kind\":\"Nope\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n"
+      ],
+      "received": [
+        "A:{\"requestId\":\"golden-bad-kind\",\"committed\":false,\"isDuplicate\":false,\"error\":\"Unknown WriteKind \\u0027Nope\\u0027.\"}\n"
+      ],
+      "csharp_stdout": []
+    },
+    {
+      "step": "rust_resends",
+      "sent": [
+        "W:{\"requestId\":\"0000000000\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"9e3779b101\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertWatchProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"3c6ef36202\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"daa66d1303\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"RetagOwner\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"78dde6c404\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"1715607505\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertWatchProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"b54cda2606\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"538453d707\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"RetagOwner\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"f1bbcd8808\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"8ff3473909\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertWatchProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"2e2ac0ea10\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"cc623a9b11\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"RetagOwner\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"6a99b44c12\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"08d12dfd13\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertWatchProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"a708a7ae14\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"4540215f15\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"RetagOwner\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"e3779b1016\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"81af14c117\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertWatchProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"1fe68e7218\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"be1e082319\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"RetagOwner\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"5c5581d420\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertVideo\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"fa8cfb8521\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"UpsertWatchProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"98c4753622\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"ReplaceAllVideosAndProgress\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n",
+        "W:{\"requestId\":\"36fbeee723\",\"senderInstanceId\":\"rust-manager\",\"dbPath\":\"C:\\\\sa-sync-golden\\\\resend.db\",\"kind\":\"RetagOwner\",\"username\":\"\",\"key\":\"\",\"secondaryKey\":\"\",\"ord\":0,\"updatedTicks\":0,\"viewCount\":-1,\"viewCountDelta\":0,\"iterations\":0,\"createdAtUtc\":\"0001-01-01T00:00:00+00:00\"}\n"
+      ],
+      "received": [
+        "A:{\"requestId\":\"0000000000\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"9e3779b101\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"3c6ef36202\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"daa66d1303\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"78dde6c404\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"1715607505\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"b54cda2606\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"538453d707\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"f1bbcd8808\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"8ff3473909\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"2e2ac0ea10\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"cc623a9b11\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"6a99b44c12\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"08d12dfd13\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"a708a7ae14\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"4540215f15\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"e3779b1016\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"81af14c117\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"1fe68e7218\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"be1e082319\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"5c5581d420\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"fa8cfb8521\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"98c4753622\",\"committed\":true,\"isDuplicate\":false}\n",
+        "A:{\"requestId\":\"36fbeee723\",\"committed\":true,\"isDuplicate\":false}\n"
+      ],
+      "csharp_stdout": [
+        "CS-EXEC UpsertVideo 0000000000 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertWatchProgress 9e3779b101 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC ReplaceAllVideosAndProgress 3c6ef36202 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC RetagOwner daa66d1303 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertVideo 78dde6c404 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertWatchProgress 1715607505 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC ReplaceAllVideosAndProgress b54cda2606 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC RetagOwner 538453d707 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertVideo f1bbcd8808 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertWatchProgress 8ff3473909 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC ReplaceAllVideosAndProgress 2e2ac0ea10 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC RetagOwner cc623a9b11 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertVideo 6a99b44c12 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertWatchProgress 08d12dfd13 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC ReplaceAllVideosAndProgress a708a7ae14 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC RetagOwner 4540215f15 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertVideo e3779b1016 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertWatchProgress 81af14c117 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC ReplaceAllVideosAndProgress 1fe68e7218 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC RetagOwner be1e082319 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertVideo 5c5581d420 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC UpsertWatchProgress fa8cfb8521 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC ReplaceAllVideosAndProgress 98c4753622 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00",
+        "CS-EXEC RetagOwner 36fbeee723 dup=false blob=- videos=0 items=0 created=0001-01-01T00:00:00.0000000+00:00"
+      ]
+    }
+  ],
+  "bye": "closed=false"
+}

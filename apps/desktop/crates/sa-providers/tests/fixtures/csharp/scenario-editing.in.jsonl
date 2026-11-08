@@ -1,0 +1,42 @@
+{"op":"add","preset":"opencode-go","name":null,"url":null,"key":"sk-oc-1234567890","model":"kimi-k2.5","async":true,"active":true}
+{"op":"add","preset":"openrouter","name":"  My OpenRouter ","url":null,"key":" sk-or-abcdef9876 ","model":"google/gemma-3-27b-it","async":true,"active":false}
+{"op":"add","preset":"lan","name":null,"url":"http://192.168.1.50:11434","key":"","model":"gemma4:e4b","async":false,"active":false}
+{"op":"add","preset":" openai","name":null,"url":null,"key":null,"model":null,"async":true,"active":false}
+{"op":"add","preset":"LAN","name":" ","url":" ","key":null,"model":"  ","async":true,"active":false}
+{"op":"active","index":1}
+{"op":"active","index":2}
+{"op":"active","index":null}
+{"op":"active","index":0}
+{"op":"active","index":-1}
+{"op":"active","index":0}
+{"op":"update","index":0,"name":" ","url":" https://opencode.ai/zen/go/v1 ","key":" sk-new ","model":" m ","async":false}
+{"op":"update","index":-1,"name":"x","url":"y","key":"z","model":"w","async":true}
+{"op":"model","index":0,"model":" m "}
+{"op":"model","index":0,"model":"x"}
+{"op":"model","index":-1,"model":"x"}
+{"op":"discovered","index":0,"models":["b"," a ","B",""],"selected":null}
+{"op":"discovered","index":2,"models":[],"selected":" sel "}
+{"op":"discovered","index":3,"models":["first","second"],"selected":"  "}
+{"op":"discovered","index":-1,"models":["q"],"selected":null}
+{"op":"picker","index":0}
+{"op":"picker","index":1}
+{"op":"picker","index":2}
+{"op":"picker","index":4}
+{"op":"picker","index":null}
+{"op":"picker","index":-1}
+{"op":"select_model","index":0,"model":"b"}
+{"op":"select_model","index":0,"model":"B"}
+{"op":"select_model","index":1,"model":"deepseek/deepseek-chat-v3-0324"}
+{"op":"select_model","index":null,"model":"madlad-3b"}
+{"op":"select_model","index":null,"model":"nope"}
+{"op":"select_model","index":-1,"model":"b"}
+{"op":"select_provider","index":-1}
+{"op":"select_provider","index":2}
+{"op":"select_provider","index":4}
+{"op":"apply"}
+{"op":"select_provider","index":null}
+{"op":"remove","index":1}
+{"op":"remove","index":-1}
+{"op":"active","index":3}
+{"op":"remove","index":3}
+{"op":"file"}

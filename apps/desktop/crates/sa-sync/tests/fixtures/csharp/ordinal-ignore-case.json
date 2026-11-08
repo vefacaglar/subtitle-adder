@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "a": "settings",
+      "b": "SETTINGS",
+      "csharp": true
+    },
+    {
+      "a": "settings",
+      "b": "ſettings",
+      "csharp": false
+    },
+    {
+      "a": "media-index",
+      "b": "MEDIA-İNDEX",
+      "csharp": false
+    },
+    {
+      "a": "media-index",
+      "b": "media-ındex",
+      "csharp": false
+    },
+    {
+      "a": "thumbnail",
+      "b": "THUMBNAİL",
+      "csharp": false
+    },
+    {
+      "a": "ok",
+      "b": "oK",
+      "csharp": false
+    },
+    {
+      "a": "straße",
+      "b": "STRASSE",
+      "csharp": false
+    },
+    {
+      "a": "straße",
+      "b": "STRAẞE",
+      "csharp": false
+    },
+    {
+      "a": "ǅ",
+      "b": "Ǆ",
+      "csharp": true
+    },
+    {
+      "a": "σ",
+      "b": "Σ",
+      "csharp": true
+    },
+    {
+      "a": "ς",
+      "b": "Σ",
+      "csharp": true
+    },
+    {
+      "a": "watch-progress",
+      "b": "watch-progress ",
+      "csharp": false
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+[
+  "\\\\server\\share\\dir|\\\\server\\share|\\\\server\\share\\dir",
+  "\\\\server\\share|\\\\server\\share|\\\\server\\share",
+  "\\\\?\\C:\\x|\\\\?\\C:\\|\\\\?\\C:\\x",
+  "\\\\?\\UNC\\srv\\sh\\x|\\\\?\\UNC\\srv\\sh|\\\\?\\UNC\\srv\\sh\\x",
+  "C:\\|C:\\|C:\\",
+  "C:|C:|{CWD}",
+  "C:\\a\\|C:\\|C:\\a"
+]

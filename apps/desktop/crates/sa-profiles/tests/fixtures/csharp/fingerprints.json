@@ -1,0 +1,7 @@
+[
+  {"length": 5, "seed": 7, "fingerprint": "fp:5:4663f9e9434e90785bb47ad9"},
+  {"length": 65536, "seed": 8, "fingerprint": "fp:65536:ea770a29975d41c62ef9ea87"},
+  {"length": 70000, "seed": 9, "fingerprint": "fp:70000:00fbd8258080e98af972a70f"},
+  {"length": 131073, "seed": 10, "fingerprint": "fp:131073:8ba2e4d92acade6354168787"},
+  {"length": 200000, "seed": 11, "fingerprint": "fp:200000:3245377bb50a70e3ae77bc23"}
+]

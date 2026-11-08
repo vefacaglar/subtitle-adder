@@ -1,0 +1,170 @@
+{
+  "version": 3,
+  "unknownTop": {
+    "a": 1
+  },
+  "directories": [
+    {
+      "directoryPath": "C:\\SaMediaFixture\\odd\\Movies",
+      "subdirectories": [
+        "C:\\SaMediaFixture\\odd\\Movies\\b\\",
+        "  ",
+        "C:\\SaMediaFixture\\odd\\Movies\\A"
+      ],
+      "mediaFiles": [
+        {
+          "fullPath": "C:\\SaMediaFixture\\odd\\Movies\\zeta.mp4",
+          "fileName": "zeta.mp4",
+          "directoryPath": "C:\\SaMediaFixture\\odd\\Movies",
+          "sizeBytes": 3,
+          "lastWriteTimeUtc": "2026-11-01T10:00:00+03:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00",
+          "extra": [
+            1
+          ]
+        },
+        {
+          "fullPath": "C:\\SaMediaFixture\\odd\\Movies\\Alpha.mkv",
+          "fileName": "Alpha.mkv",
+          "directoryPath": "C:\\SaMediaFixture\\odd\\Movies",
+          "sizeBytes": 4,
+          "lastWriteTimeUtc": "2026-11-01T07:00:00Z",
+          "hasSidecarSubtitle": true,
+          "sidecarExtension": ".srt",
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00",
+          "extra": [
+            1
+          ]
+        },
+        {
+          "fullPath": "C:\\SaMediaFixture\\odd\\Movies\\same.mp4",
+          "fileName": "same.mp4",
+          "directoryPath": "C:\\SaMediaFixture\\odd\\Movies",
+          "sizeBytes": 5,
+          "lastWriteTimeUtc": "2026-11-01T07:00:00.1234567+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00",
+          "extra": [
+            1
+          ]
+        },
+        {
+          "fullPath": "   ",
+          "fileName": "blank.mp4"
+        }
+      ]
+    },
+    {
+      "directoryPath": "C:\\SaMediaFixture\\odd\\MOVIES\\",
+      "subdirectories": [],
+      "mediaFiles": [
+        {
+          "fullPath": "C:\\SaMediaFixture\\odd\\MOVIES\\same.mp4",
+          "fileName": "same.mp4",
+          "directoryPath": "C:\\SaMediaFixture\\odd\\MOVIES",
+          "sizeBytes": 5,
+          "lastWriteTimeUtc": "2026-11-01T07:00:00.1234567+00:00",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00",
+          "extra": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "directoryPath": "   ",
+      "mediaFiles": [
+        {
+          "fullPath": "X:\\never.mp4",
+          "fileName": "never.mp4",
+          "directoryPath": "X:",
+          "sizeBytes": 1,
+          "lastWriteTimeUtc": "2026-01-01T00:00:00Z",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00",
+          "extra": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "directoryPath": "\\\\nohost-sa-test\\share\\v",
+      "mediaFiles": [
+        {
+          "fullPath": "\\\\nohost-sa-test\\share\\v\\unc.mp4",
+          "fileName": "unc.mp4",
+          "directoryPath": "\\\\nohost-sa-test\\share\\v",
+          "sizeBytes": 7,
+          "lastWriteTimeUtc": "2026-11-01T07:00:00Z",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00",
+          "extra": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "directoryPath": "\\rooted\\dir",
+      "mediaFiles": [
+        {
+          "fullPath": "\\rooted\\dir\\rooted.mp4",
+          "fileName": "rooted.mp4",
+          "directoryPath": "\\rooted\\dir",
+          "sizeBytes": 7,
+          "lastWriteTimeUtc": "2026-11-01T07:00:00Z",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00",
+          "extra": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "directoryPath": "//nohost-sa-test/share/w",
+      "mediaFiles": [
+        {
+          "fullPath": "//nohost-sa-test/share/w\\fwd.mp4",
+          "fileName": "fwd.mp4",
+          "directoryPath": "//nohost-sa-test/share/w",
+          "sizeBytes": 7,
+          "lastWriteTimeUtc": "2026-11-01T07:00:00Z",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00",
+          "extra": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "directoryPath": "Q:\\Films",
+      "mediaFiles": [
+        {
+          "fullPath": "Q:\\Films\\away.mp4",
+          "fileName": "away.mp4",
+          "directoryPath": "Q:\\Films",
+          "sizeBytes": 7,
+          "lastWriteTimeUtc": "2026-11-01T07:00:00Z",
+          "hasSidecarSubtitle": false,
+          "sidecarExtension": null,
+          "indexedAtUtc": "0001-01-01T00:00:00+00:00",
+          "extra": [
+            1
+          ]
+        }
+      ]
+    }
+  ]
+}

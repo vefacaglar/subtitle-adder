@@ -1,0 +1,146 @@
+{
+  "csharp_written": [
+    {
+      "query": "",
+      "lines": [
+        "total|5",
+        "dir|{ROOT}\\tree",
+        "sub|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\a+b'(c)é.mkv|a+b'(c)é.mkv|{ROOT}\\tree|10|639291175641234567|False|null|0",
+        "file|{ROOT}\\tree\\intro.mp4|intro.mp4|{ROOT}\\tree|2048|639291175641234567|True|.srt|0",
+        "dir|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Season 1\\Extras",
+        "file|{ROOT}\\tree\\Season 1\\s01e01.mkv|s01e01.mkv|{ROOT}\\tree\\Season 1|4096|639291175641234567|True|.vtt|0",
+        "dir|{ROOT}\\tree\\Season 1\\Extras",
+        "file|{ROOT}\\tree\\Season 1\\Extras\\behind.mov|behind.mov|{ROOT}\\tree\\Season 1\\Extras|7|639291175641234567|False|null|0",
+        "dir|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3|Işık.mp3|{ROOT}\\tree\\Vidéo şarkı|3|639291175641234567|False|null|0",
+        "search|{ROOT}\\tree\\a+b'(c)é.mkv",
+        "search|{ROOT}\\tree\\Season 1\\Extras\\behind.mov",
+        "search|{ROOT}\\tree\\intro.mp4",
+        "search|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3",
+        "search|{ROOT}\\tree\\Season 1\\s01e01.mkv"
+      ]
+    },
+    {
+      "query": "s01",
+      "lines": [
+        "total|5",
+        "dir|{ROOT}\\tree",
+        "sub|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\a+b'(c)é.mkv|a+b'(c)é.mkv|{ROOT}\\tree|10|639291175641234567|False|null|0",
+        "file|{ROOT}\\tree\\intro.mp4|intro.mp4|{ROOT}\\tree|2048|639291175641234567|True|.srt|0",
+        "dir|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Season 1\\Extras",
+        "file|{ROOT}\\tree\\Season 1\\s01e01.mkv|s01e01.mkv|{ROOT}\\tree\\Season 1|4096|639291175641234567|True|.vtt|0",
+        "dir|{ROOT}\\tree\\Season 1\\Extras",
+        "file|{ROOT}\\tree\\Season 1\\Extras\\behind.mov|behind.mov|{ROOT}\\tree\\Season 1\\Extras|7|639291175641234567|False|null|0",
+        "dir|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3|Işık.mp3|{ROOT}\\tree\\Vidéo şarkı|3|639291175641234567|False|null|0",
+        "search|{ROOT}\\tree\\Season 1\\s01e01.mkv"
+      ]
+    },
+    {
+      "query": "vidéo",
+      "lines": [
+        "total|5",
+        "dir|{ROOT}\\tree",
+        "sub|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\a+b'(c)é.mkv|a+b'(c)é.mkv|{ROOT}\\tree|10|639291175641234567|False|null|0",
+        "file|{ROOT}\\tree\\intro.mp4|intro.mp4|{ROOT}\\tree|2048|639291175641234567|True|.srt|0",
+        "dir|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Season 1\\Extras",
+        "file|{ROOT}\\tree\\Season 1\\s01e01.mkv|s01e01.mkv|{ROOT}\\tree\\Season 1|4096|639291175641234567|True|.vtt|0",
+        "dir|{ROOT}\\tree\\Season 1\\Extras",
+        "file|{ROOT}\\tree\\Season 1\\Extras\\behind.mov|behind.mov|{ROOT}\\tree\\Season 1\\Extras|7|639291175641234567|False|null|0",
+        "dir|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3|Işık.mp3|{ROOT}\\tree\\Vidéo şarkı|3|639291175641234567|False|null|0",
+        "search|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3"
+      ]
+    },
+    {
+      "query": "IşIK",
+      "lines": [
+        "total|5",
+        "dir|{ROOT}\\tree",
+        "sub|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\a+b'(c)é.mkv|a+b'(c)é.mkv|{ROOT}\\tree|10|639291175641234567|False|null|0",
+        "file|{ROOT}\\tree\\intro.mp4|intro.mp4|{ROOT}\\tree|2048|639291175641234567|True|.srt|0",
+        "dir|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Season 1\\Extras",
+        "file|{ROOT}\\tree\\Season 1\\s01e01.mkv|s01e01.mkv|{ROOT}\\tree\\Season 1|4096|639291175641234567|True|.vtt|0",
+        "dir|{ROOT}\\tree\\Season 1\\Extras",
+        "file|{ROOT}\\tree\\Season 1\\Extras\\behind.mov|behind.mov|{ROOT}\\tree\\Season 1\\Extras|7|639291175641234567|False|null|0",
+        "dir|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3|Işık.mp3|{ROOT}\\tree\\Vidéo şarkı|3|639291175641234567|False|null|0"
+      ]
+    }
+  ],
+  "rust_written": [
+    {
+      "query": "",
+      "lines": [
+        "total|6",
+        "dir|{ROOT}\\tree",
+        "sub|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\a+b'(c)é.mkv|a+b'(c)é.mkv|{ROOT}\\tree|10|639291175641234567|False|null|0",
+        "file|{ROOT}\\tree\\intro.mp4|intro.mp4|{ROOT}\\tree|2048|639291175641234567|False|null|0",
+        "dir|{ROOT}\\tree\\Season 1",
+        "file|{ROOT}\\tree\\Season 1\\s01e01.mkv|s01e01.mkv|{ROOT}\\tree\\Season 1|4096|639291175641234567|True|.vtt|0",
+        "file|{ROOT}\\tree\\Season 1\\s01e02.mp4|s01e02.mp4|{ROOT}\\tree\\Season 1|333|638000000000000000|True|.vtt|0",
+        "file|{ROOT}\\tree\\Season 1\\s01e03.mp4|s01e03.mp4|{ROOT}\\tree\\Season 1|44|638000000000000000|False|null|0",
+        "dir|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3|Işık.mp3|{ROOT}\\tree\\Vidéo şarkı|3|639291175641234567|False|null|0",
+        "search|{ROOT}\\tree\\a+b'(c)é.mkv",
+        "search|{ROOT}\\tree\\intro.mp4",
+        "search|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3",
+        "search|{ROOT}\\tree\\Season 1\\s01e01.mkv",
+        "search|{ROOT}\\tree\\Season 1\\s01e02.mp4",
+        "search|{ROOT}\\tree\\Season 1\\s01e03.mp4"
+      ]
+    },
+    {
+      "query": "s01e0",
+      "lines": [
+        "total|6",
+        "dir|{ROOT}\\tree",
+        "sub|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\a+b'(c)é.mkv|a+b'(c)é.mkv|{ROOT}\\tree|10|639291175641234567|False|null|0",
+        "file|{ROOT}\\tree\\intro.mp4|intro.mp4|{ROOT}\\tree|2048|639291175641234567|False|null|0",
+        "dir|{ROOT}\\tree\\Season 1",
+        "file|{ROOT}\\tree\\Season 1\\s01e01.mkv|s01e01.mkv|{ROOT}\\tree\\Season 1|4096|639291175641234567|True|.vtt|0",
+        "file|{ROOT}\\tree\\Season 1\\s01e02.mp4|s01e02.mp4|{ROOT}\\tree\\Season 1|333|638000000000000000|True|.vtt|0",
+        "file|{ROOT}\\tree\\Season 1\\s01e03.mp4|s01e03.mp4|{ROOT}\\tree\\Season 1|44|638000000000000000|False|null|0",
+        "dir|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3|Işık.mp3|{ROOT}\\tree\\Vidéo şarkı|3|639291175641234567|False|null|0",
+        "search|{ROOT}\\tree\\Season 1\\s01e01.mkv",
+        "search|{ROOT}\\tree\\Season 1\\s01e02.mp4",
+        "search|{ROOT}\\tree\\Season 1\\s01e03.mp4"
+      ]
+    },
+    {
+      "query": "intro",
+      "lines": [
+        "total|6",
+        "dir|{ROOT}\\tree",
+        "sub|{ROOT}\\tree\\Season 1",
+        "sub|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\a+b'(c)é.mkv|a+b'(c)é.mkv|{ROOT}\\tree|10|639291175641234567|False|null|0",
+        "file|{ROOT}\\tree\\intro.mp4|intro.mp4|{ROOT}\\tree|2048|639291175641234567|False|null|0",
+        "dir|{ROOT}\\tree\\Season 1",
+        "file|{ROOT}\\tree\\Season 1\\s01e01.mkv|s01e01.mkv|{ROOT}\\tree\\Season 1|4096|639291175641234567|True|.vtt|0",
+        "file|{ROOT}\\tree\\Season 1\\s01e02.mp4|s01e02.mp4|{ROOT}\\tree\\Season 1|333|638000000000000000|True|.vtt|0",
+        "file|{ROOT}\\tree\\Season 1\\s01e03.mp4|s01e03.mp4|{ROOT}\\tree\\Season 1|44|638000000000000000|False|null|0",
+        "dir|{ROOT}\\tree\\Vidéo şarkı",
+        "file|{ROOT}\\tree\\Vidéo şarkı\\Işık.mp3|Işık.mp3|{ROOT}\\tree\\Vidéo şarkı|3|639291175641234567|False|null|0",
+        "search|{ROOT}\\tree\\intro.mp4"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+total|11
+search|{ROOT}\tree\Vidéo şarkı\İç\klip.webm
+search|{ROOT}\tree\A\a&b`'+(1) ;=.mkv
+search|{ROOT}\tree\A\Işık şarkı.mp3
+search|{ROOT}\tree\ſub\sample.mp4
+search|{ROOT}\tree\ſub\t.mp4
+search|{ROOT}\tree\A\video.mp4
+search|{ROOT}\tree\B\video.mp4
+search|{ROOT}\tree\C\VIDEO.mp4
+search|{ROOT}\tree\A\x.mp4
+search|{ROOT}\tree\ſub\ſa.mp4
+search|{ROOT}\tree\ſub\ſon.mp4
+total|11
+search|{ROOT}\tree\A\video.mp4
+search|{ROOT}\tree\B\video.mp4
+search|{ROOT}\tree\C\VIDEO.mp4
+total|11
+search|{ROOT}\tree\ſub\ſa.mp4
+search|{ROOT}\tree\ſub\ſon.mp4
+search|{ROOT}\tree\ſub\sample.mp4
+search|{ROOT}\tree\ſub\t.mp4
+total|11
+search|{ROOT}\tree\ſub\sample.mp4
+search|{ROOT}\tree\Vidéo şarkı\İç\klip.webm
+search|{ROOT}\tree\A\a&b`'+(1) ;=.mkv
+search|{ROOT}\tree\A\Işık şarkı.mp3
+search|{ROOT}\tree\ſub\t.mp4
+search|{ROOT}\tree\A\video.mp4
+search|{ROOT}\tree\B\video.mp4
+search|{ROOT}\tree\C\VIDEO.mp4
+search|{ROOT}\tree\A\x.mp4
+search|{ROOT}\tree\ſub\ſa.mp4
+search|{ROOT}\tree\ſub\ſon.mp4
+total|11
+search|{ROOT}\tree\A\Işık şarkı.mp3
+search|{ROOT}\tree\Vidéo şarkı\İç\klip.webm
+total|11
+search|{ROOT}\tree\A\Işık şarkı.mp3
+search|{ROOT}\tree\Vidéo şarkı\İç\klip.webm
+search|{ROOT}\tree\A\video.mp4
+search|{ROOT}\tree\B\video.mp4
+search|{ROOT}\tree\C\VIDEO.mp4
+search|{ROOT}\tree\A\a&b`'+(1) ;=.mkv
+search|{ROOT}\tree\ſub\sample.mp4
+search|{ROOT}\tree\ſub\t.mp4
+search|{ROOT}\tree\A\x.mp4
+search|{ROOT}\tree\ſub\ſa.mp4
+search|{ROOT}\tree\ſub\ſon.mp4
+total|11
+search|{ROOT}\tree\Vidéo şarkı\İç\klip.webm
+total|11
+search|{ROOT}\tree\Vidéo şarkı\İç\klip.webm
+search|{ROOT}\tree\A\a&b`'+(1) ;=.mkv
+search|{ROOT}\tree\A\Işık şarkı.mp3
+search|{ROOT}\tree\A\new.mp4
+search|{ROOT}\tree\ſub\sample.mp4
+search|{ROOT}\tree\ſub\t.mp4
+search|{ROOT}\tree\A\video.mp4
+search|{ROOT}\tree\B\video.mp4
+search|{ROOT}\tree\C\VIDEO.mp4
+search|{ROOT}\tree\ſub\ſa.mp4
+search|{ROOT}\tree\ſub\ſon.mp4
+total|12
+search|{ROOT}\tree\Vidéo şarkı\İç\klip.webm
+search|{ROOT}\tree\A\a&b`'+(1) ;=.mkv
+search|{ROOT}\tree\A\Işık şarkı.mp3
+search|{ROOT}\tree\A\new.mp4
+search|{ROOT}\tree\ſub\sample.mp4
+search|{ROOT}\tree\ſub\t.mp4
+search|{ROOT}\tree\A\video.mp4
+search|{ROOT}\tree\B\video.mp4
+search|{ROOT}\tree\C\VIDEO.mp4
+search|{ROOT}\tree\B\zz.mp4
+search|{ROOT}\tree\ſub\ſa.mp4
+search|{ROOT}\tree\ſub\ſon.mp4
+total|12
+search|{ROOT}\tree\A\video.mp4
+search|{ROOT}\tree\B\video.mp4
+search|{ROOT}\tree\C\VIDEO.mp4
+total|11
+search|{ROOT}\tree\Vidéo şarkı\İç\klip.webm
+search|{ROOT}\tree\A\a&b`'+(1) ;=.mkv
+search|{ROOT}\tree\A\Işık şarkı.mp3
+search|{ROOT}\tree\A\new.mp4
+search|{ROOT}\tree\ſub\sample.mp4
+search|{ROOT}\tree\ſub\t.mp4
+search|{ROOT}\tree\A\video.mp4
+search|{ROOT}\tree\B\video.mp4
+search|{ROOT}\tree\B\zz.mp4
+search|{ROOT}\tree\ſub\ſa.mp4
+search|{ROOT}\tree\ſub\ſon.mp4
+dir|{ROOT}\tree
+dir|{ROOT}\tree\A
+dir|{ROOT}\tree\B
+dir|{ROOT}\tree\Vidéo şarkı
+dir|{ROOT}\tree\Vidéo şarkı\İç
+dir|{ROOT}\tree\ſub
+total|11
+search|{ROOT}\tree\Vidéo şarkı\İç\klip.webm
+search|{ROOT}\tree\A\a&b`'+(1) ;=.mkv
+search|{ROOT}\tree\A\Işık şarkı.mp3
+search|{ROOT}\tree\A\new.mp4
+search|{ROOT}\tree\ſub\sample.mp4
+search|{ROOT}\tree\ſub\t.mp4
+search|{ROOT}\tree\A\video.mp4
+search|{ROOT}\tree\B\video.mp4
+search|{ROOT}\tree\B\zz.mp4
+search|{ROOT}\tree\ſub\ſa.mp4
+search|{ROOT}\tree\ſub\ſon.mp4
+dir|{ROOT}\tree
+dir|{ROOT}\tree\A
+dir|{ROOT}\tree\B
+dir|{ROOT}\tree\Vidéo şarkı
+dir|{ROOT}\tree\Vidéo şarkı\İç
+dir|{ROOT}\tree\ſub

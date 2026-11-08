@@ -1,0 +1,2 @@
+active=85bd7b4b-8a01-42a0-83ca-588fe228a784
+85bd7b4b-8a01-42a0-83ca-588fe228a784|Groq ğüşiöç|groq|https://api.groq.com/openai/v1||llama-3.3-70b-versatile|True|

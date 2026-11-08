@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "rememberMe": false,
+  "lastUsername": "bos",
+  "profiles": [
+    {
+      "username": "bos",
+      "saltBase64": "IKtfebV\u002BoxjLEoJhorlVeQ==",
+      "passwordHashBase64": "DEPLc1yMRnpHe3/m1ZXgNZZLVtIlKPiK7s\u002B0Y\u002BPbYYM=",
+      "iterations": 100000,
+      "createdAtUtc": "2025-03-04T05:06:07.1234567+00:00",
+      "encryptedVaultBase64": "SnbxOPyQyNaerqT5Q8in2yLEjED4YhTOi4d3r\u002BvmR5YCpG/73Ib\u002BikwVv9XEs31cwtuW"
+    },
+    {
+      "username": "eski",
+      "saltBase64": "xjKX1GkRFRkjYPRT7hV1YQ==",
+      "passwordHashBase64": "xubz4HS9Inj5Iv/2xDkgNX0XxMGf9KQRY1/zTWdN2LA=",
+      "iterations": 100000,
+      "createdAtUtc": "2025-03-04T05:06:07.1234567+00:00",
+      "encryptedVaultBase64": "MZYZ081V2tDwOXMHBNyd80O1J8NUUZYHehxi4m1NAJ3bM2BykhVv3yk/lpie5njakzbX"
+    }
+  ]
+}

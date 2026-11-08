@@ -1,0 +1,54 @@
+{"line":"{\"event\": \"stage\", \"stage\": \"transcribing\", \"fraction\": 0.5}","csharp":"{\"stage\":\"transcribing\",\"fraction\":0.5}"}
+{"line":"{\"event\": \"stage\", \"stage\": \"yeni_asama\", \"fraction\": null}","csharp":"{\"stage\":\"unknown\",\"fraction\":null}"}
+{"line":"{\"event\": \"stage\", \"stage\": \"segmenting\"}","csharp":"{\"stage\":\"segmenting\",\"fraction\":null}"}
+{"line":"{\"event\": \"stage\", \"stage\": \"diarizing\", \"fraction\": 1}","csharp":"{\"stage\":\"diarizing\",\"fraction\":1}"}
+{"line":"{\"event\": \"stage\"}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"stage\", \"stage\": null}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"stage\", \"stage\": 3}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"stage\", \"stage\": \"x\", \"fraction\": \"0.5\"}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"stage\", \"stage\": \"x\", \"fraction\": true}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"error\", \"message\": \"olmadı\"}","csharp":"{\"error\":\"olmadı\"}"}
+{"line":"{\"event\": \"error\"}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"error\", \"message\": null}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"error\", \"message\": 7}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"?\", \"sentences\": []}","csharp":"{\"partial\":\"?\",\"sentences\":\"[]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\"}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"sentences\": []}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": null}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": {}}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"translation\", \"language\": \"es\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1, \"text\": \"Hola.\", \"words\": []}]}","csharp":"{\"translation\":\"es\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1,\\\"text\\\":\\\"Hola.\\\",\\\"words\\\":[]}]\"}"}
+{"line":"{\"event\": \"translation\", \"language\": null, \"sentences\": []}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"result\", \"language\": \"?\", \"duration\": 0, \"audio\": \"C:\\\\a b.wav\", \"outputs\": [], \"sentences\": []}","csharp":"{\"result\":\"?\",\"duration\":0,\"audio\":\"C:\\\\a b.wav\",\"outputs\":[],\"sentences\":\"[]\"}"}
+{"line":"{\"event\": \"result\", \"language\": \"tr\", \"duration\": 3.5, \"audio\": \"a\", \"outputs\": [\"a.srt\", \"a.vtt\"], \"sentences\": [], \"extra\": {}}","csharp":"{\"result\":\"tr\",\"duration\":3.5,\"audio\":\"a\",\"outputs\":[\"a.srt\",\"a.vtt\"],\"sentences\":\"[]\"}"}
+{"line":"{\"event\": \"result\", \"language\": \"tr\", \"duration\": 1, \"audio\": \"a\", \"outputs\": []}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"result\", \"language\": \"tr\", \"duration\": 1, \"audio\": \"a\", \"sentences\": []}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"result\", \"language\": \"tr\", \"audio\": \"a\", \"outputs\": [], \"sentences\": []}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"result\", \"language\": \"tr\", \"duration\": 1, \"audio\": \"a\", \"outputs\": [1], \"sentences\": []}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"result\", \"language\": \"tr\", \"duration\": \"1\", \"audio\": \"a\", \"outputs\": [], \"sentences\": []}","csharp":"{\"invalid\":true}"}
+{"line":"{\"stage\": \"transcribing\"}","csharp":"{\"invalid\":true}"}
+{"line":"[1]","csharp":"{\"invalid\":true}"}
+{"line":"42","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": 7}","csharp":"{\"invalid\":true}"}
+{"line":"not JSON","csharp":"{\"invalid\":true}"}
+{"line":"","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"stage\", \"stage\": \"transcribing\", \"fraction\": 0.5} trailing","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"models\", \"models\": []}","csharp":"{\"unknown\":true}"}
+{"line":"{\"event\": \"heartbeat\"}","csharp":"{\"unknown\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"speaker\": 1}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle\\\"}],\\\"speaker\\\":1}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"speaker\": null}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle\\\"}]}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}]}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle\\\"}]}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"speaker\": \"1\"}]}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"speaker\": 1.5}]}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"needs_review\": true}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle\\\"}],\\\"needs_review\\\":true}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"needs_review\": \"true\"}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle\\\"}]}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"needs_review\": 1}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle\\\"}]}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"needs_review\": null}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle\\\"}]}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"uid\": \"x\"}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle\\\"}]}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": null, \"speaker\": 1}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[],\\\"speaker\\\":1}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"speaker\": 1}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[],\\\"speaker\\\":1}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"text\": \"Şöyle\"}], \"speaker\": 1}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":0,\\\"text\\\":\\\"Şöyle\\\"}],\\\"speaker\\\":1}]\"}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1.0, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"speaker\": 1}]}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 2147483648, \"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"speaker\": 1}]}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"speaker\": 1}]}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0, \"end\": 1.5, \"text\": null, \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"speaker\": 1}]}","csharp":"{\"invalid\":true}"}
+{"line":"{\"event\": \"partial\", \"language\": \"tr\", \"sentences\": [{\"id\": 1, \"start\": 0.1, \"end\": 1E-7, \"text\": \"Şöyle <b>&</b>\", \"words\": [{\"start\": 0, \"end\": 1.5, \"text\": \"Şöyle\"}], \"speaker\": 1}]}","csharp":"{\"partial\":\"tr\",\"sentences\":\"[{\\\"id\\\":1,\\\"start\\\":0.1,\\\"end\\\":1E-07,\\\"text\\\":\\\"Şöyle <b>&</b>\\\",\\\"words\\\":[{\\\"start\\\":0,\\\"end\\\":1.5,\\\"text\\\":\\\"Şöyle\\\"}],\\\"speaker\\\":1}]\"}"}

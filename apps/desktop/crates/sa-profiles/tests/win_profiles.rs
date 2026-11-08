@@ -1,7 +1,8 @@
-//! Ports of the C# profile-store tests (apps/windows/tests/SubtitleAdder.Core.Tests: `LocalProfileTests.cs`,
-//! `ProfilePrivacyTests.cs`, the SQLite/memory/IPC parts of `WatchHistoryPrivacyTests.cs` and the profile part of
-//! `EditingAndCatalogTests.MultiInstanceConcurrentStoresAndCleanupNeverThrowOrCorrupt`), driven at the store level
-//! (view-model assertions live in sa-viewmodels), plus the Rust-side decisions of UNIFIED.md §3.11/§3.12/§4.
+//! Ports of the former C# app's profile-store tests (`SubtitleAdder.Core.Tests` at commit 2f4bc96:
+//! `LocalProfileTests.cs`, `ProfilePrivacyTests.cs`, the SQLite/memory/IPC parts of `WatchHistoryPrivacyTests.cs`
+//! and the profile part of `EditingAndCatalogTests.MultiInstanceConcurrentStoresAndCleanupNeverThrowOrCorrupt`),
+//! driven at the store level (view-model assertions live in sa-viewmodels), plus the Rust-side decisions of UNIFIED.md
+//! §3.11/§3.12/§4.
 #![cfg(windows)]
 
 use std::path::{Path, PathBuf};

@@ -22,7 +22,7 @@ pub fn rounded(v: f64) -> f64 {
 /// * macOS: extended grapheme clusters of current Unicode (Swift's `String.count`, which applies the Indic conjunct
 ///   rule GB9c);
 /// * Windows: .NET's `StringInfo.LengthInTextElements`, the same clusters **without** GB9c, so a virama does not join
-///   the next consonant (`"नमस्ते"` is 4 there, 3 on macOS). Checked against the C# code by `tests/csharp_compat.rs`.
+///   the next consonant (`"नमस्ते"` is 4 there, 3 on macOS). Checked against frozen C# outputs by `tests/csharp_compat.rs`.
 pub fn grapheme_len(text: &str) -> usize {
     let clusters = unicode_segmentation::UnicodeSegmentation::graphemes(text, true);
     if cfg!(target_os = "macos") { clusters.count() } else { clusters.map(clusters_without_conjunct_rule).sum() }

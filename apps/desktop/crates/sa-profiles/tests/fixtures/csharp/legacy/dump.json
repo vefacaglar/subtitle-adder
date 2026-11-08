@@ -1,0 +1,106 @@
+{
+  "restoredUser": null,
+  "rememberMe": false,
+  "registered": [
+    "bos",
+    "eski"
+  ],
+  "lastUsername": "eski",
+  "profiles": {
+    "eski": {
+      "username": "eski",
+      "videos": [
+        {
+          "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4",
+          "fileName": "belgesel-uzay.mp4",
+          "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+          "contentFingerprint": null,
+          "viewCount": 1,
+          "isLiked": false,
+          "rating": 0,
+          "lastPositionSeconds": 0,
+          "durationSeconds": 0,
+          "lastWatchedTicks": 638766616871234567,
+          "updatedTicks": 638766616871234567,
+          "thumbnailSha256": null
+        },
+        {
+          "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\missing_episode.mkv",
+          "fileName": "missing_episode.mkv",
+          "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+          "contentFingerprint": null,
+          "viewCount": 0,
+          "isLiked": false,
+          "rating": 2,
+          "lastPositionSeconds": 0,
+          "durationSeconds": 0,
+          "lastWatchedTicks": null,
+          "updatedTicks": 638766616271234567,
+          "thumbnailSha256": "2e104a11f11396f745e02b5f0aa33fda784fc5c21877b63ccc0d15152cc19e3a"
+        },
+        {
+          "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4",
+          "fileName": "Yaz Tatili \u00C7.mp4",
+          "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+          "contentFingerprint": "fp:5000:9f030afeff8d14245e7708c5",
+          "viewCount": 3,
+          "isLiked": true,
+          "rating": 5,
+          "lastPositionSeconds": 33.25,
+          "durationSeconds": 100,
+          "lastWatchedTicks": 638766618671234567,
+          "updatedTicks": 638766619271234567,
+          "thumbnailSha256": "2103b3459c96e6f996ae9bd38bdda97faa953b02c23d44d3020406178365968a"
+        }
+      ],
+      "history": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4",
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4"
+      ],
+      "liked": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4"
+      ],
+      "mostWatched": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4",
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4"
+      ],
+      "topRated": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4",
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\missing_episode.mkv"
+      ],
+      "lists": [
+        {
+          "id": "0123456789abcdef0123456789abcdef",
+          "name": "Eski Liste",
+          "videoPaths": [
+            "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4",
+            "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\missing_episode.mkv"
+          ],
+          "createdTicks": 638766615671234567,
+          "updatedTicks": 638766617471234567
+        }
+      ],
+      "totals": {
+        "watched": 2,
+        "views": 4,
+        "liked": 1,
+        "rated": 2
+      }
+    },
+    "bos": {
+      "username": "bos",
+      "videos": [],
+      "history": [],
+      "liked": [],
+      "mostWatched": [],
+      "topRated": [],
+      "lists": [],
+      "totals": {
+        "watched": 0,
+        "views": 0,
+        "liked": 0,
+        "rated": 0
+      }
+    }
+  }
+}

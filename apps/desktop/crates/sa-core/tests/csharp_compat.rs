@@ -1,15 +1,16 @@
-//! Behavior parity with the C# app (Windows): the same inputs go through the real C# `SubtitleAdder.Core` code
-//! (fixture tool `apps/desktop/tools/fixtures/CoreCompat`, which compiles the C# app's own sources read-only) and
-//! through the Rust port, and the outputs must be identical: model labels and rows, sizes, byte sizes, line times,
-//! hex colors and overlay styles, subtitle import and decoding, AtomicFileStore reads, diagnostic path redaction,
-//! settings.json typed reads and cross-writes, companion/sidecar lookups.
+//! Behavior parity with the C# app (Windows), checked against frozen outputs of the real C# `SubtitleAdder.Core` and
+//! `EngineKit` code (C# commit 2f4bc96, see `tests/fixtures/csharp/README.md`): the same inputs go through the Rust
+//! port and the outputs must be identical: model labels and rows, sizes, byte sizes, line times, hex colors and
+//! overlay styles, subtitle import and decoding, AtomicFileStore reads, diagnostic path redaction and the startup
+//! scrub, settings.json typed reads and cross-writes, companion/sidecar lookups, the undo stack.
 //!
-//! Opt-in: `SA_DOTNET_FIXTURES=1 cargo test -p sa-core --test csharp_compat` (needs the .NET 10 SDK; the tool is
-//! built on first use with `dotnet build -c Release`). Without the variable every test returns early.
+//! Every test regenerates its inputs exactly as they were handed to the C# code and first checks that they still
+//! match the inputs recorded in the fixture (echoed by C#, or a hash of the input bytes), so an input edited here
+//! without new C# outputs fails instead of silently comparing against nothing. The C# app is gone, so the fixtures
+//! cannot be regenerated: new inputs need hand-verified expectations in the regular unit tests instead.
 #![cfg(windows)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -26,51 +27,19 @@ use serde_json::Value;
 
 static LANGUAGE: Mutex<()> = Mutex::new(());
 
-fn enabled() -> bool {
-    let on = std::env::var("SA_DOTNET_FIXTURES").is_ok_and(|v| v == "1");
-    if !on {
-        eprintln!("skipped: set SA_DOTNET_FIXTURES=1 to run the C# compatibility tests");
-    }
-    on
+fn fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/csharp")
 }
 
-fn tool_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fixtures/CoreCompat")
+fn fixture_bytes(name: &str) -> Vec<u8> {
+    let path = fixture_dir().join(name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("fixture {}: {e}", path.display()))
 }
 
-static BUILD: Mutex<()> = Mutex::new(());
-
-fn tool_exe() -> PathBuf {
-    let _guard = BUILD.lock().unwrap_or_else(|e| e.into_inner());
-    let exe = tool_dir().join("bin/Release/net10.0/CoreCompat.exe");
-    let program = tool_dir().join("Program.cs");
-    let stale = match (std::fs::metadata(&exe).and_then(|m| m.modified()), std::fs::metadata(&program).and_then(|m| m.modified())) {
-        (Ok(built), Ok(source)) => built < source,
-        _ => true,
-    };
-    if stale {
-        let status = Command::new("dotnet")
-            .args(["build", "-c", "Release", "-nologo", "-v", "q"])
-            .current_dir(tool_dir())
-            .status()
-            .expect("dotnet is on PATH");
-        assert!(status.success(), "building the CoreCompat fixture tool failed");
-    }
-    exe
-}
-
-/// Runs the C# tool (TMP/TEMP point at `temp`, so a touched `DiagnosticLog` never scrubs the real temp folder) and
-/// returns one JSON array per output line.
-fn csharp(temp: &Path, args: &[&str]) -> Vec<Vec<Value>> {
-    let out = Command::new(tool_exe()).args(args).env("TMP", temp).env("TEMP", temp).output().expect("CoreCompat runs");
-    assert!(
-        out.status.success(),
-        "CoreCompat {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout)
-        .expect("UTF-8 output")
+/// The frozen C# output `<name>.jsonl`: one JSON array per line.
+fn golden(name: &str) -> Vec<Vec<Value>> {
+    String::from_utf8(fixture_bytes(&format!("{name}.jsonl")))
+        .expect("UTF-8 fixture")
         .lines()
         .map(|l| match serde_json::from_str::<Value>(l).expect("a JSON line") {
             Value::Array(a) => a,
@@ -96,12 +65,28 @@ fn units(text: &str) -> String {
     text.encode_utf16().map(|u| format!("{u:04X}")).collect::<Vec<_>>().join(" ")
 }
 
-fn write_lines(path: &Path, lines: &[String]) {
-    std::fs::write(path, lines.join("\n") + "\n").unwrap();
+/// FNV-1a 64 of an input file, as recorded next to the C# outputs for the files they were computed from.
+fn fnv(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
 }
 
-fn json_lines(values: &[&str]) -> Vec<String> {
-    values.iter().map(|v| serde_json::to_string(v).unwrap()).collect()
+/// Checks that the generated input files are byte for byte the ones the C# outputs were computed from.
+fn assert_inputs_match(manifest: &str, files: &[(&str, Vec<u8>)]) {
+    let recorded: Vec<(String, String)> = golden(manifest).iter().map(|r| (s(&r[0]), s(&r[1]))).collect();
+    let current: Vec<(String, String)> = files.iter().map(|(n, b)| ((*n).to_owned(), fnv(b))).collect();
+    assert_eq!(current, recorded, "the inputs differ from the ones the frozen C# outputs ({manifest}) were computed from");
+}
+
+/// C# lists a folder sorted by ordinal name.
+fn sorted_names(files: &[(&str, Vec<u8>)]) -> Vec<String> {
+    let mut names: Vec<String> = files.iter().map(|(n, _)| (*n).to_owned()).collect();
+    names.sort();
+    names
 }
 
 fn language(code: &str) -> UiLanguage {
@@ -121,11 +106,19 @@ fn model(id: &str, downloaded: bool, disk_mb: Option<i64>) -> EngineModel {
 
 #[test]
 fn labels_rows_and_titles_match_csharp() {
-    if !enabled() {
-        return;
+    let lines = golden("labels");
+    // C# iterated its own fallback catalog (plus one unknown id); the port's catalog must be the same list.
+    let mut cs_ids: Vec<String> = Vec::new();
+    for line in lines.iter().filter(|l| s(&l[0]) == "label" && s(&l[1]) == "tr") {
+        let id = s(&line[2]);
+        if cs_ids.last() != Some(&id) {
+            cs_ids.push(id);
+        }
     }
-    let temp = tempfile::tempdir().unwrap();
-    let lines = csharp(temp.path(), &["labels"]);
+    let mut rust_ids: Vec<String> = fallback_models().into_iter().map(|m| m.id).collect();
+    rust_ids.push("custom-x".to_owned());
+    assert_eq!(rust_ids, cs_ids, "fallback catalog differs from the one the C# labels were computed for");
+
     let _guard = LANGUAGE.lock().unwrap_or_else(|e| e.into_inner());
     let saved = LanguageState::shared().language();
     let mut checked = 0;
@@ -206,18 +199,13 @@ fn labels_rows_and_titles_match_csharp() {
 
 #[test]
 fn size_texts_match_csharp() {
-    if !enabled() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
-    for (from, to) in [(-5, 20_000), (99_900, 100_100), (999_900, 1_000_100)] {
-        let lines = csharp(temp.path(), &["sizes", &from.to_string(), &to.to_string()]);
-        assert_eq!(lines.len() as i64, to - from + 1);
-        for line in lines {
-            let mb = line[0].as_i64().unwrap();
-            assert_eq!(ModelLabel::size_text(mb, UiLanguage::Tr), s(&line[1]), "tr {mb}");
-            assert_eq!(ModelLabel::size_text(mb, UiLanguage::En), s(&line[2]), "en {mb}");
-        }
+    let lines = golden("sizes");
+    let expected: Vec<i64> = [(-5i64, 20_000i64), (99_900, 100_100), (999_900, 1_000_100)].iter().flat_map(|&(from, to)| from..=to).collect();
+    assert_eq!(lines.iter().map(|l| l[0].as_i64().unwrap()).collect::<Vec<_>>(), expected);
+    for line in lines {
+        let mb = line[0].as_i64().unwrap();
+        assert_eq!(ModelLabel::size_text(mb, UiLanguage::Tr), s(&line[1]), "tr {mb}");
+        assert_eq!(ModelLabel::size_text(mb, UiLanguage::En), s(&line[2]), "en {mb}");
     }
 }
 
@@ -233,10 +221,6 @@ impl Lcg {
 
 #[test]
 fn byte_sizes_match_csharp() {
-    if !enabled() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
     let mut values: Vec<i64> = vec![-1, 0, 1, 2, 5, 10, 100, 1000, 1023, 1024, 5000, 5243, 10_485, 10_486, 52_428, 52_429, 104_857, 1_048_575];
     const MIB: i64 = 1024 * 1024;
     for k in [1, 2, 3, 10, 100, 999, 1023, 1024, 1025, 2047, 2048, 5120, 20_480, 512_000] {
@@ -249,9 +233,9 @@ fn byte_sizes_match_csharp() {
         let scale = [1_000u64, 1_000_000, 100_000_000, 10_000_000_000, 2_000_000_000_000][(rng.next() % 5) as usize];
         values.push((rng.next() % scale) as i64 + 1);
     }
-    let input = temp.path().join("bytes.txt");
-    write_lines(&input, &values.iter().map(i64::to_string).collect::<Vec<_>>());
-    for line in csharp(temp.path(), &["bytes", input.to_str().unwrap()]) {
+    let lines = golden("bytes");
+    assert_eq!(lines.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), values.iter().map(i64::to_string).collect::<Vec<_>>());
+    for line in lines {
         let b: i64 = s(&line[0]).parse().unwrap();
         assert_eq!(format_byte_size_windows(b, UiLanguage::Tr), s(&line[1]), "tr {b}");
         assert_eq!(format_byte_size_windows(b, UiLanguage::En), s(&line[2]), "en {b}");
@@ -260,10 +244,6 @@ fn byte_sizes_match_csharp() {
 
 #[test]
 fn line_times_match_csharp() {
-    if !enabled() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
     let mut values: Vec<f64> = vec![
         0.0, -0.0, 0.004, 0.005, 0.0049999, 0.015, 0.025, 0.125, 1.005, 2.675, 59.994, 59.995, 59.999, 60.0, 65.25, 119.995,
         599.995, 3599.995, 3600.0, 5999.99, 6000.0, 359_999.995, -0.004, -0.005, -1.5, -59.995, -61.25, 1e6 + 0.125, 12.345, 0.1, 0.2,
@@ -275,9 +255,9 @@ fn line_times_match_csharp() {
         values.push(ms as f64 / 1000.0);
         values.push((rng.next() % 1_000_000_000) as f64 / 1_000_000.0);
     }
-    let input = temp.path().join("times.txt");
-    write_lines(&input, &values.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>());
-    for line in csharp(temp.path(), &["times", input.to_str().unwrap()]) {
+    let lines = golden("times");
+    assert_eq!(lines.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), values.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>());
+    for line in lines {
         let v: f64 = s(&line[0]).parse().unwrap();
         assert_eq!(subtitle_time_short(v), s(&line[1]), "{v:?}");
     }
@@ -285,18 +265,14 @@ fn line_times_match_csharp() {
 
 #[test]
 fn hex_colors_and_overlay_styles_match_csharp() {
-    if !enabled() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
     let inputs = [
         "#FFFFFF", "#ff8000", "ff8000", " #FF8000 ", "\t#00ff00\n", "##FF8000", "#FFF", "#FFFFFFF", "#GGGGGG", "", " ", "#", "+FFFFF",
         "-00000", "0x1234", "#12345", "#1234567", "#ＦＦＦＦＦＦ", "#ff80 0", "\u{00A0}#123456\u{2003}", "#aBcDeF", "#000000",
         "#7f7f7f", "ß12345",
     ];
-    let input = temp.path().join("hex.txt");
-    write_lines(&input, &json_lines(&inputs));
-    for line in csharp(temp.path(), &["hex", input.to_str().unwrap()]) {
+    let lines = golden("hex");
+    assert_eq!(lines.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), inputs.to_vec());
+    for line in lines {
         let text = s(&line[0]);
         let parsed = HexColor::parse(&text);
         let cs_parsed = line[1].as_array().map(|a| (d(&a[0]), d(&a[1]), d(&a[2])));
@@ -315,9 +291,9 @@ fn hex_colors_and_overlay_styles_match_csharp() {
     .map(|v: &f64| format!("{v:?}"))
     .chain(["NaN".to_owned(), "Infinity".to_owned(), "-Infinity".to_owned()])
     .collect();
-    let input = temp.path().join("style.txt");
-    write_lines(&input, &values);
-    for line in csharp(temp.path(), &["style", input.to_str().unwrap()]) {
+    let lines = golden("style");
+    assert_eq!(lines.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), values);
+    for line in lines {
         let raw = s(&line[0]);
         let v: f64 = match raw.as_str() {
             "Infinity" => f64::INFINITY,
@@ -442,24 +418,24 @@ fn csharp_sentence_rows(v: &Value) -> Vec<Value> {
 
 #[test]
 fn subtitle_import_matches_csharp() {
-    if !enabled() {
-        return;
-    }
+    let inputs = subtitle_inputs();
+    assert_inputs_match("subtitle-inputs", &inputs);
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("subs");
     std::fs::create_dir(&dir).unwrap();
-    for (name, bytes) in subtitle_inputs() {
+    for (name, bytes) in &inputs {
         std::fs::write(dir.join(name), bytes).unwrap();
     }
-    let lines = csharp(temp.path(), &["parse", dir.to_str().unwrap()]);
-    assert_eq!(lines.len(), subtitle_inputs().len());
+    let lines = golden("parse");
+    assert_eq!(lines.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), sorted_names(&inputs));
     for line in lines {
         let name = s(&line[0]);
         let rust = parse_file_with(&dir.join(&name), ImportFlavor::Windows).unwrap();
         assert_eq!(rust_sentence_rows(&rust), csharp_sentence_rows(&line[1]), "{name}");
     }
 
-    let decoded = csharp(temp.path(), &["decode", dir.to_str().unwrap()]);
+    let decoded = golden("decode-subtitles");
+    assert_eq!(decoded.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), sorted_names(&inputs));
     for line in decoded {
         let name = s(&line[0]);
         let bytes = std::fs::read(dir.join(&name)).unwrap();
@@ -469,9 +445,6 @@ fn subtitle_import_matches_csharp() {
 
 #[test]
 fn decoding_and_atomic_reads_match_csharp() {
-    if !enabled() {
-        return;
-    }
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("enc");
     std::fs::create_dir(&dir).unwrap();
@@ -497,15 +470,20 @@ fn decoding_and_atomic_reads_match_csharp() {
         ("p-cp-ff-fe-00-01", vec![0xFF, 0xFE, 0x00, 0x01]),
         ("q-ef-bb", vec![0xEF, 0xBB]),
     ];
+    assert_inputs_match("encoding-inputs", &files);
     for (name, bytes) in &files {
         std::fs::write(dir.join(name), bytes).unwrap();
     }
-    for line in csharp(temp.path(), &["atomic-read", dir.to_str().unwrap()]) {
+    let atomic = golden("atomic-read");
+    assert_eq!(atomic.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), sorted_names(&files));
+    for line in atomic {
         let name = s(&line[0]);
         let rust = sa_core::atomic_file::read_all_text_shared(&dir.join(&name), 5);
         assert_eq!(rust.as_deref().map(units), opt_s(&line[1]), "atomic {name}");
     }
-    for line in csharp(temp.path(), &["decode", dir.to_str().unwrap()]) {
+    let decoded = golden("decode-encodings");
+    assert_eq!(decoded.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), sorted_names(&files));
+    for line in decoded {
         let name = s(&line[0]);
         let bytes = std::fs::read(dir.join(&name)).unwrap();
         assert_eq!(units(&decode_with(&bytes, ImportFlavor::Windows)), s(&line[1]), "decode {name}");
@@ -514,10 +492,6 @@ fn decoding_and_atomic_reads_match_csharp() {
 
 #[test]
 fn diagnostic_path_redaction_matches_csharp() {
-    if !enabled() {
-        return;
-    }
-    let temp = tempfile::tempdir().unwrap();
     let inputs = [
         "",
         "plain message",
@@ -545,9 +519,8 @@ fn diagnostic_path_redaction_matches_csharp() {
         "(C:\\in parens)",
         "\\\\?\\C:\\long",
     ];
-    let input = temp.path().join("redact.txt");
-    write_lines(&input, &json_lines(&inputs));
-    let lines = csharp(temp.path(), &["redact", input.to_str().unwrap()]);
+    // C# printed only the redacted text, one line per input, in input order.
+    let lines = golden("redact");
     assert_eq!(lines.len(), inputs.len());
     for (raw, line) in inputs.iter().zip(lines) {
         assert_eq!(DiagnosticLog::redact_paths(raw), s(&line[0]), "{raw:?}");
@@ -556,9 +529,6 @@ fn diagnostic_path_redaction_matches_csharp() {
 
 #[test]
 fn sidecar_and_companion_lookups_match_csharp() {
-    if !enabled() {
-        return;
-    }
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("media");
     std::fs::create_dir(&dir).unwrap();
@@ -578,13 +548,13 @@ fn sidecar_and_companion_lookups_match_csharp() {
     .map(|n| format!("{base}\\{n}"))
     .chain(["".to_owned(), "   ".to_owned(), "film.srt".to_owned(), format!("{base}/Film.srt"), "C:\\".to_owned()])
     .collect();
-    let input = temp.path().join("paths.txt");
-    write_lines(&input, &paths.iter().map(|p| serde_json::to_string(p).unwrap()).collect::<Vec<_>>());
-    let lines = csharp(temp.path(), &["paths", input.to_str().unwrap()]);
-    assert_eq!(lines.len(), paths.len());
+    // The C# run used its own temp folder; the fixture spells that folder `<BASE>`.
+    let rebase = |v: &Value| opt_s(v).map(|p| p.replace("<BASE>", &base));
+    let lines = golden("paths");
+    assert_eq!(lines.iter().map(|l| rebase(&l[0]).unwrap()).collect::<Vec<_>>(), paths);
     // .NET normalizes `/` to `\` in GetDirectoryName; compare the found file, not the separator spelling.
     let norm = |p: Option<PathBuf>| p.map(|p| p.to_string_lossy().replace('/', "\\"));
-    let cs_norm = |v: &Value| opt_s(v).map(|p| p.replace('/', "\\"));
+    let cs_norm = |v: &Value| rebase(v).map(|p| p.replace('/', "\\"));
     for (path, line) in paths.iter().zip(lines) {
         let p = Path::new(path);
         assert_eq!(Value::from(is_subtitle_file(p)), line[1], "is_subtitle_file {path:?}");
@@ -613,9 +583,6 @@ fn normalize_double(mut row: Vec<Value>) -> Vec<Value> {
 
 #[test]
 fn settings_typed_reads_match_csharp() {
-    if !enabled() {
-        return;
-    }
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("settings.json");
     std::fs::write(
@@ -629,7 +596,16 @@ fn settings_typed_reads_match_csharp() {
     )
     .unwrap();
     let store = JsonFileSettingsStore::open(path.clone(), Duration::from_millis(50), None);
-    for line in csharp(temp.path(), &["settings-read", path.to_str().unwrap()]) {
+    let lines = golden("settings-read");
+    // C# read every key of the file, in file order.
+    assert_eq!(
+        lines.iter().map(|l| s(&l[0])).collect::<Vec<_>>(),
+        [
+            "s", "empty", "esc", "t", "f", "strTrue", "i", "neg", "f3", "f35", "e2", "big", "min", "max", "over", "under", "huge", "tiny",
+            "zero", "negzero", "nul", "arr", "obj", "num-str", "u64", "exp-int", "frac-int"
+        ]
+    );
+    for line in lines {
         let key = s(&line[0]);
         assert_eq!(normalize_double(typed_reads(store.as_ref(), &key)), normalize_double(line), "{key}");
     }
@@ -640,9 +616,6 @@ fn settings_typed_reads_match_csharp() {
 /// (`set_double(3.0)` after `set_int(3)`).
 #[test]
 fn in_memory_settings_ops_match_csharp() {
-    if !enabled() {
-        return;
-    }
     let ops = [
         "int a 3",
         "int a 3",
@@ -667,17 +640,14 @@ fn in_memory_settings_ops_match_csharp() {
         "double d -2147483648",
         "double e 1E+300",
     ];
-    let temp = tempfile::tempdir().unwrap();
-    let file = temp.path().join("ops.txt");
-    write_lines(&file, &ops.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
     let store = InMemorySettingsStore::new();
     let changed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = changed.clone();
     let _sub = store.subscribe(Box::new(move |_| {
         counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }));
-    let lines = csharp(temp.path(), &["settings-ops", file.to_str().unwrap()]);
-    assert_eq!(lines.len(), ops.len());
+    let lines = golden("settings-ops");
+    assert_eq!(lines.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), ops.to_vec());
     for (index, (op, line)) in ops.iter().zip(lines).enumerate() {
         let parts: Vec<&str> = op.splitn(3, ' ').collect();
         let key = parts[1];
@@ -704,16 +674,17 @@ fn in_memory_settings_ops_match_csharp() {
     }
 }
 
+/// C# → Rust: Rust reads the settings.json the C# `JsonFileSettingsStore` wrote (frozen). Rust → C#: Rust then writes
+/// on top of it (unknown keys kept); the C# store read that Rust-written file back, and both the file and the C#
+/// typed reads of it are frozen. Rust must still write exactly those bytes (the formats differ: C# escapes non-ASCII
+/// and writes `3` for `3.0`, so they cannot equal the C#-written file), and its own reads must equal the C# reads.
 #[test]
 fn settings_files_cross_read_between_csharp_and_rust() {
-    if !enabled() {
-        return;
-    }
-    // C# writes, Rust reads.
     let temp = tempfile::tempdir().unwrap();
     let cs_path = temp.path().join("cs").join("settings.json");
-    csharp(temp.path(), &["settings-write", cs_path.to_str().unwrap()]);
-    let raw = std::fs::read(&cs_path).unwrap();
+    std::fs::create_dir_all(cs_path.parent().unwrap()).unwrap();
+    let raw = fixture_bytes("settings-csharp-written.json");
+    std::fs::write(&cs_path, &raw).unwrap();
     assert!(!raw.starts_with(&[0xEF, 0xBB, 0xBF]), "no BOM");
     let store = JsonFileSettingsStore::open(cs_path.clone(), Duration::from_millis(50), None);
     assert_eq!(store.get_string("uiLanguage").as_deref(), Some("en"));
@@ -731,7 +702,6 @@ fn settings_files_cross_read_between_csharp_and_rust() {
     assert_eq!(keys, ["uiLanguage", "explorerLastFolder", "overlayFontSize", "tiny", "whole", "speakerCount", "negative", "offlineMode", "emoji"]);
     drop(store);
 
-    // Rust writes (on top of the C# file: unknown keys kept), C# reads back the same typed values.
     let store = JsonFileSettingsStore::open(cs_path.clone(), Duration::from_millis(10), None);
     store.set_string("appTheme", "dark");
     store.set_double("overlayBackgroundOpacity", 0.35);
@@ -741,9 +711,15 @@ fn settings_files_cross_read_between_csharp_and_rust() {
     store.set_string("emoji", "\u{2028}<script>&\"'\\");
     store.remove("tiny");
     store.flush();
+    let written = std::fs::read(&cs_path).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&written),
+        String::from_utf8_lossy(&fixture_bytes("settings-rust-written.json")),
+        "the Rust-written settings.json is no longer the one the C# store was verified to read"
+    );
     let rust_rows: Vec<Vec<Value>> = store.snapshot().keys().map(|k| normalize_double(typed_reads(store.as_ref(), k))).collect();
     drop(store);
-    let cs_rows: Vec<Vec<Value>> = csharp(temp.path(), &["settings-read", cs_path.to_str().unwrap()]).into_iter().map(normalize_double).collect();
+    let cs_rows: Vec<Vec<Value>> = golden("settings-rust-written.csharp-read").into_iter().map(normalize_double).collect();
     assert_eq!(rust_rows, cs_rows);
 }
 
@@ -764,12 +740,8 @@ fn set_cell(cells: &mut Cells, stack: &mut sa_core::undo::UndoStack<Cells>, i: u
 
 #[test]
 fn undo_stack_replays_like_csharp() {
-    if !enabled() {
-        return;
-    }
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let temp = tempfile::tempdir().unwrap();
     let mut rng = Lcg(2026);
     let mut script = Vec::new();
     for _ in 0..4000 {
@@ -783,10 +755,8 @@ fn undo_stack_replays_like_csharp() {
         };
         script.push(op);
     }
-    let input = temp.path().join("undo.txt");
-    write_lines(&input, &script);
-    let lines = csharp(temp.path(), &["undo", input.to_str().unwrap()]);
-    assert_eq!(lines.len(), script.len());
+    let lines = golden("undo");
+    assert_eq!(lines.iter().map(|l| s(&l[0])).collect::<Vec<_>>(), script);
 
     let mut stack = sa_core::undo::UndoStack::<Cells>::new();
     let mut cells: Cells = [0; 4];
@@ -830,30 +800,23 @@ fn undo_stack_replays_like_csharp() {
     }
 }
 
+/// The C# log started on a folder seeded like this one (its startup scrub ran first), wrote `[t] x C:\a\b.mp4` and
+/// the folder's files afterwards are frozen in `fixtures/csharp/scrub/`. Rust does the same on a fresh copy.
 #[test]
 fn startup_scrub_and_line_format_match_csharp() {
-    if !enabled() {
-        return;
-    }
     let temp = tempfile::tempdir().unwrap();
-    let seed = |dir: &Path| {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(
-            dir.join("SubtitleAdder-diagnostics.log"),
-            "2025-01-01T00:00:00.0000000+03:00 [T1] [open] C:\\Users\\Özcan\\film.mp4\r\nclean line\r\n'\\\\nas\\share\\x.mkv' done\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join("SubtitleAdder-diagnostics.log.old"), [&[0xEF, 0xBB, 0xBF][..], "old D:/a.srt\nno path\n".as_bytes()].concat())
-            .unwrap();
-        std::fs::write(dir.join("SubtitleAdder-crash.log"), "crash at file:///C:/x.mp4\n").unwrap();
-        std::fs::write(dir.join("SubtitleAdder-player.log"), "C:\\v.mp4 failed\n").unwrap();
-        std::fs::write(dir.join("unrelated.log"), "C:\\keep\n").unwrap();
-    };
-    let cs_dir = temp.path().join("cs");
     let rust_dir = temp.path().join("rust");
-    seed(&cs_dir);
-    seed(&rust_dir);
-    csharp(&cs_dir, &["scrub"]);
+    std::fs::create_dir_all(&rust_dir).unwrap();
+    std::fs::write(
+        rust_dir.join("SubtitleAdder-diagnostics.log"),
+        "2025-01-01T00:00:00.0000000+03:00 [T1] [open] C:\\Users\\Özcan\\film.mp4\r\nclean line\r\n'\\\\nas\\share\\x.mkv' done\n",
+    )
+    .unwrap();
+    std::fs::write(rust_dir.join("SubtitleAdder-diagnostics.log.old"), [&[0xEF, 0xBB, 0xBF][..], "old D:/a.srt\nno path\n".as_bytes()].concat())
+        .unwrap();
+    std::fs::write(rust_dir.join("SubtitleAdder-crash.log"), "crash at file:///C:/x.mp4\n").unwrap();
+    std::fs::write(rust_dir.join("SubtitleAdder-player.log"), "C:\\v.mp4 failed\n").unwrap();
+    std::fs::write(rust_dir.join("unrelated.log"), "C:\\keep\n").unwrap();
 
     let log = DiagnosticLog::new(rust_dir.join("SubtitleAdder-diagnostics.log"), sa_core::diagnostics::DiagnosticFormat::Windows, Box::new(Vec::new));
     log.wait_for_startup_scrub();
@@ -861,6 +824,16 @@ fn startup_scrub_and_line_format_match_csharp() {
     log.write("t", "x C:\\a\\b.mp4");
     log.flush();
     drop(log);
+
+    // The same files are left (the C# scrub deleted SubtitleAdder-player.log, so must the port).
+    let names = |dir: &Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    };
+    let cs_dir = fixture_dir().join("scrub");
+    assert_eq!(names(&rust_dir), names(&cs_dir));
+    assert!(!rust_dir.join("SubtitleAdder-player.log").exists());
 
     let line_shape = regex::Regex::new(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}[+-]\d\d:\d\d \[T\d+\] \[t\] x <path>\r\n$").unwrap();
     for name in ["SubtitleAdder-diagnostics.log", "SubtitleAdder-diagnostics.log.old", "SubtitleAdder-crash.log", "unrelated.log"] {
@@ -880,6 +853,4 @@ fn startup_scrub_and_line_format_match_csharp() {
         }
         assert_eq!(String::from_utf8_lossy(&rust), String::from_utf8_lossy(&cs), "{name}");
     }
-    assert!(!cs_dir.join("SubtitleAdder-player.log").exists());
-    assert!(!rust_dir.join("SubtitleAdder-player.log").exists());
 }

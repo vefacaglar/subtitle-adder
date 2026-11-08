@@ -1,0 +1,126 @@
+{
+  "names": [
+    "UpsertProfile",
+    "DeleteProfileCascade",
+    "UpsertVideo",
+    "DeleteVideo",
+    "ReplaceAllVideosAndProgress",
+    "UpsertWatchProgress",
+    "UpsertCustomList",
+    "DeleteCustomList",
+    "UpsertCustomListItem",
+    "DeleteCustomListItem",
+    "ReplaceCustomListItems",
+    "UpsertThumbnail",
+    "MigrateVideoKey",
+    "PurgeLegacyVideoKeys",
+    "RetagOwner",
+    "FlushBarrier"
+  ],
+  "cases": [
+    {
+      "input": "UpsertVideo",
+      "csharp": 2
+    },
+    {
+      "input": "upsertvideo",
+      "csharp": 2
+    },
+    {
+      "input": "UPSERTVIDEO",
+      "csharp": 2
+    },
+    {
+      "input": " UpsertVideo ",
+      "csharp": 2
+    },
+    {
+      "input": "RetagOwner",
+      "csharp": 14
+    },
+    {
+      "input": "PurgeLegacyVideoKeys",
+      "csharp": 13
+    },
+    {
+      "input": "0",
+      "csharp": 0
+    },
+    {
+      "input": "2",
+      "csharp": 2
+    },
+    {
+      "input": "14",
+      "csharp": 14
+    },
+    {
+      "input": "+3",
+      "csharp": 3
+    },
+    {
+      "input": " 7 ",
+      "csharp": 7
+    },
+    {
+      "input": "007",
+      "csharp": 7
+    },
+    {
+      "input": "15",
+      "csharp": 15
+    },
+    {
+      "input": "16",
+      "csharp": 16
+    },
+    {
+      "input": "-1",
+      "csharp": -1
+    },
+    {
+      "input": "99",
+      "csharp": 99
+    },
+    {
+      "input": "FlushBarrier",
+      "csharp": 15
+    },
+    {
+      "input": "flushbarrier",
+      "csharp": 15
+    },
+    {
+      "input": "UpsertVideo, DeleteVideo",
+      "csharp": 3
+    },
+    {
+      "input": "2,3",
+      "csharp": null
+    },
+    {
+      "input": "Upsert Video",
+      "csharp": null
+    },
+    {
+      "input": "UpsertVideo.",
+      "csharp": null
+    },
+    {
+      "input": "1.0",
+      "csharp": null
+    },
+    {
+      "input": "0x2",
+      "csharp": null
+    },
+    {
+      "input": "İpsertVideo",
+      "csharp": null
+    },
+    {
+      "input": "upsertvıdeo",
+      "csharp": null
+    }
+  ]
+}

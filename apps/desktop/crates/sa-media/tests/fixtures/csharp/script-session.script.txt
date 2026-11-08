@@ -1,0 +1,49 @@
+reset
+mkdir|A
+mkdir|B
+mkdir|C
+mkdir|ſub
+mkdir|Vidéo şarkı/İç
+mkdir|.hidden
+write|A/video.mp4|10
+write|B/video.mp4|10
+write|C/VIDEO.mp4|10
+write|A/x.mp4|1
+write|A/a&b`'+(1) ;=.mkv|2
+write|A/Işık şarkı.mp3|2
+write|B/video.srt|1
+write|ſub/ſon.mp4|3
+write|ſub/sample.mp4|4
+write|ſub/t.mp4|4
+write|ſub/ſa.mp4|4
+write|Vidéo şarkı/İç/klip.webm|5|638500000000000001
+write|Vidéo şarkı/notes.txt|5
+scan|.
+crawl|.|2
+dump
+dump|video
+dump|ſ
+dump|S
+dump|ı
+dump|i
+dump|İÇ
+delete|A/x.mp4
+write|A/new.mp4|5
+write|C/video.vtt|5
+scan|A
+scan|C
+dump
+write|B/zz.mp4|1
+delete|B/video.srt
+scan|B
+dump
+dump|VIDEO
+refresh|A
+transient|ſub
+delete|C
+scan|C
+dump
+dirs
+reload
+dump
+dirs

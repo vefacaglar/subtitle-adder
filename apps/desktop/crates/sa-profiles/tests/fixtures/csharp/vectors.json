@@ -1,0 +1,16 @@
+{
+  "password": "p\u00E4ssw\u00F6rd-1 \u0130\u0131",
+  "saltHex": "031425364758697a8b9cadbecfe0f102",
+  "hashBase64": "fa3eK5WLQiwCLn/Hi7YjBWYKD1ETMo2rXEotXCfp/04=",
+  "keyHex": "7aede8c97bbb25af7103589bbf7a9353c85579e1dd600a88739e0e3de4ee5d68",
+  "turkishPath": "C:\\Videolar\\\u0130zmir \u0131l\u0131k \u00D6dev \u00DF.mp4",
+  "storageVideoKey": "hk:b588df6998e8de8cb65daa883ea18f8acd05a252",
+  "storageVideoKeyFp": "hk:d0dd3b781f82da4cb7bed6d70d0425da3a032c39",
+  "ownerTag": "ot:de4d730198d70efbb58bea484d55ffc1d312f213",
+  "listItemHash": "711a302a9c4e7c0ac89963aacc91783c",
+  "upperInvariant": "\u0131I\u0130\u00DF \u01C4 \uFB03 \u0390 S \u039C \u1E9E \u01F0",
+  "csharpBlobBase64": "O52ehJURhc5m5zgyAydrN368Q\u002B6z37H/TyaMBEeMfGRMOKe2tqfsvswmHHxwarpbPe0n",
+  "vaultMarkerPlainLength": 23,
+  "pad300": 512,
+  "pad1025": 2048
+}

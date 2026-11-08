@@ -1,0 +1,11 @@
+{"op":"vm","enabled":false,"url":"http://h:1","model":"m","async":true,"models":["a"]}
+{"op":"migrate"}
+{"op":"vm","enabled":true,"url":"http://h:1","model":"m","async":true,"models":["a"]}
+{"op":"migrate"}
+{"op":"add","preset":"openai","name":null,"url":null,"key":"sk-1","model":null,"async":true,"active":true}
+{"op":"vm","enabled":true,"url":"http://h:2","model":"","async":false,"models":["x"]}
+{"op":"migrate"}
+{"op":"apply"}
+{"op":"active","index":null}
+{"op":"migrate"}
+{"op":"file"}

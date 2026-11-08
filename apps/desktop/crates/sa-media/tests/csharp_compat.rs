@@ -1,79 +1,84 @@
-//! Data compatibility with the C# app (Windows): `media-index.json` and the encrypted `VideoCache` chunks are written
-//! by the real C# `MediaLibraryIndex` / `EncryptedVideoCacheStore` / `BufferedVideoStream` (fixture tool
-//! `apps/desktop/tools/fixtures/MediaCompat`, which compiles the C# app's own sources read-only) and read by the Rust
-//! port, and the other way round.
-//!
-//! Opt-in: `SA_DOTNET_FIXTURES=1 cargo test -p sa-media --test csharp_compat` (needs the .NET 10 SDK; the tool is built
-//! on first use with `dotnet build -c Release`). Without the variable every test returns early.
+//! Data compatibility with the C# app (Windows), checked against golden fixtures frozen from the real C#
+//! `MediaLibraryIndex` / `EncryptedVideoCacheStore` / `BufferedVideoStream` (see `tests/fixtures/csharp/README.md`):
+//! the C#-written `media-index.json` files and encrypted `VideoCache` chunks are read by the Rust port, and what the
+//! Rust port writes must equal the C# bytes (index files) or match the C# files' structure and round-trip (chunks,
+//! whose nonces are random).
 #![cfg(windows)]
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use sa_core::cancel::CancellationToken;
 use sa_core::secrets::SecretKey32;
 use sa_media::win::{BufferedVideoStream, VaultKeyProvider, VideoCacheStore, WinMediaIndex};
 use sa_media::{MediaIndex, MediaIndexDocument, ScanResult};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-fn enabled() -> bool {
-    let on = std::env::var("SA_DOTNET_FIXTURES").is_ok_and(|v| v == "1");
-    if !on {
-        eprintln!("skipped: set SA_DOTNET_FIXTURES=1 to run the C# compatibility tests");
-    }
-    on
+// ---- fixtures -------------------------------------------------------------------------------------------------
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/csharp").join(name)
 }
 
-fn tool_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fixtures/MediaCompat")
+fn fixture_text(name: &str) -> String {
+    std::fs::read_to_string(fixture(name)).unwrap_or_else(|e| panic!("fixture {name}: {e}"))
 }
 
-/// The built tool; the staleness check and the build run once per test process, so tests running in parallel never
-/// start the exe while another test rebuilds it.
-fn tool_exe() -> PathBuf {
-    static EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    EXE.get_or_init(build_tool).clone()
+fn fixture_json(name: &str) -> Value {
+    serde_json::from_str(&fixture_text(name)).unwrap_or_else(|e| panic!("fixture {name}: {e}"))
 }
 
-fn build_tool() -> PathBuf {
-    let exe = tool_dir().join("bin/Release/net10.0/MediaCompat.exe");
-    let built = std::fs::metadata(&exe).and_then(|m| m.modified());
-    let stale = ["Program.cs", "MediaCompat.csproj"].iter().any(|source| {
-        match (&built, std::fs::metadata(tool_dir().join(source)).and_then(|m| m.modified())) {
-            (Ok(built), Ok(source)) => *built < source,
-            _ => true,
-        }
-    });
-    if stale {
-        let status = Command::new("dotnet")
-            .args(["build", "-c", "Release", "-nologo", "-v", "q"])
-            .current_dir(tool_dir())
-            .status()
-            .expect("dotnet is on PATH");
-        assert!(status.success(), "building the MediaCompat fixture tool failed");
-    }
-    exe
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_owned()).collect()
 }
 
-/// Runs the C# tool and returns its stdout lines (UTF-8).
-fn csharp(args: &[&str]) -> Vec<String> {
-    let out = Command::new(tool_exe()).args(args).output().expect("MediaCompat runs");
+/// `[{query, lines}]` of a frozen `index-dump` series.
+fn dumps(v: &Value) -> Vec<(String, Vec<String>)> {
+    v.as_array().unwrap().iter().map(|d| (d["query"].as_str().unwrap().to_owned(), strings(&d["lines"]))).collect()
+}
+
+/// The folder that replaces `{ROOT}`; it must need no JSON escaping, like the freeze-time folder.
+fn root_of(dir: &Path) -> String {
+    let root = dir.to_str().unwrap().to_owned();
     assert!(
-        out.status.success(),
-        "MediaCompat {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        root.chars().all(|c| c.is_ascii_alphanumeric() || "\\:._-".contains(c)),
+        "the temp folder {root} must be plain ASCII for the frozen fixtures"
     );
-    String::from_utf8(out.stdout).expect("UTF-8 output").lines().map(str::to_owned).collect()
+    root
 }
+
+/// Search also matches a file's directory path, so a query found inside `{ROOT}` matches every file there. The
+/// frozen C# results hold the freeze-time folder's answers (`matched` lists the queries it contained); the test's
+/// own folder must answer the same, or the comparison would test the folder name instead of the index.
+fn assert_root_matches(root: &str, queries: &[&str], matched: &[&str]) {
+    for q in queries.iter().filter(|q| !q.trim().is_empty()) {
+        assert_eq!(
+            sa_media::text::contains_ordinal_ignore_case(root, q.trim()),
+            matched.contains(q),
+            "the folder {root} must {}contain the search query {q:?}, as the freeze-time folder did",
+            if matched.contains(q) { "" } else { "not " }
+        );
+    }
+}
+
+fn with_root(lines: &[String], root: &str) -> Vec<String> {
+    lines.iter().map(|l| l.replace("{ROOT}", root)).collect()
+}
+
+fn with_root_json(text: &str, root: &str) -> String {
+    text.replace("{ROOT}", &root.replace('\\', "\\\\"))
+}
+
+// ---- helpers --------------------------------------------------------------------------------------------------
 
 fn dotnet_bool(b: bool) -> &'static str {
     if b { "True" } else { "False" }
 }
 
-/// The Rust index state in the format of the tool's `index-dump`.
+/// The Rust index state in the format of the C# tool's `index-dump`: `total|n`, then per folder `dir|path`,
+/// `sub|path` and `file|fullPath|name|dir|size|lastWriteTicks|hasSidecar|ext|indexedTicks`, then the search order.
 fn rust_dump(index: &WinMediaIndex, query: &str) -> Vec<String> {
     let mut lines = vec![format!("total|{}", index.total_indexed_files())];
     for d in index.indexed_directories() {
@@ -105,72 +110,14 @@ fn tok() -> CancellationToken {
     CancellationToken::new()
 }
 
-#[test]
-fn a_csharp_media_index_reads_identically_in_rust_and_a_rust_index_reads_identically_in_csharp() {
-    if !enabled() {
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().to_str().unwrap().to_owned();
-    let index_file = tmp.path().join("media-index.json");
-    let file_arg = index_file.to_str().unwrap().to_owned();
-
-    // C# writes: a scan and a depth-2 crawl of a tree with sidecars, non-ASCII and JSON-escaped names.
-    assert_eq!(csharp(&["index-write", &dir]), ["5|4"]);
-    let written = std::fs::read_to_string(&index_file).unwrap();
-    assert!(written.contains("\\u00E9") && written.contains("\\u002B"), "the C# file escapes non-ASCII and '+'");
-
-    for query in ["", "s01", "vid\u{e9}o", "I\u{15f}IK"] {
-        let csharp_view = csharp(&["index-dump", &file_arg, query]);
-        assert_eq!(csharp_view[0], "total|5");
-        assert_eq!(csharp_view.iter().filter(|l| l.starts_with("dir|")).count(), 4);
-        let rust = WinMediaIndex::new(Some(index_file.clone()), None);
-        assert_eq!(rust_dump(&rust, query), csharp_view, "Rust reads the C# file like C# does (query {query:?})");
-    }
-    assert_eq!(std::fs::read_to_string(&index_file).unwrap(), written, "reading never rewrites the C# file");
-
-    // Rust writes: the listing changes (a new episode, a removed sidecar, a deleted folder), so the file is rewritten.
-    let tree = tmp.path().join("tree");
-    std::fs::write(tree.join("Season 1").join("s01e02.mp4"), vec![1u8; 333]).unwrap();
-    std::fs::write(tree.join("Season 1").join("s01e02.vtt"), b"WEBVTT\n").unwrap();
-    std::fs::write(tree.join("Season 1").join("s01e03.mp4"), vec![2u8; 44]).unwrap();
-    std::fs::write(tree.join("Season 1").join("s01e03.tr.srt"), b"1\n").unwrap();
-    std::fs::remove_file(tree.join("intro.srt")).unwrap();
-    std::fs::remove_dir_all(tree.join("Season 1").join("Extras")).unwrap();
-    {
-        let rust = WinMediaIndex::new(Some(index_file.clone()), None);
-        assert!(matches!(rust.scan_directory(tree.to_str().unwrap(), &tok()), ScanResult::Listed(_)));
-        let crawled = rust.crawl(&tree, 2, 64, &tok(), &|_| {});
-        assert_eq!(crawled, 3, "the deleted folder is no longer listed by its parent");
-        let extras = tree.join("Season 1").join("Extras");
-        assert_eq!(rust.scan_directory(extras.to_str().unwrap(), &tok()), ScanResult::Missing, "dropped when scanned");
-        let rewritten = std::fs::read_to_string(&index_file).unwrap();
-        assert_ne!(rewritten, written);
-        let doc = MediaIndexDocument::parse(&rewritten).unwrap();
-        assert_eq!(doc.version, 2, "the Rust file is the current C# version, so C# never discards it as legacy");
-        for query in ["", "s01e0", "intro"] {
-            let csharp_view = csharp(&["index-dump", &file_arg, query]);
-            assert_eq!(csharp_view, rust_dump(&rust, query), "C# reads the Rust file like Rust holds it (query {query:?})");
-        }
-        let csharp_view = csharp(&["index-dump", &file_arg]);
-        assert!(csharp_view.iter().any(|l| l.contains("\\s01e02.mp4|s01e02.mp4|") && l.contains("|True|.vtt|")), "the new episode");
-        assert!(csharp_view.iter().any(|l| l.contains("\\s01e03.mp4|s01e03.mp4|") && l.contains("|False|null|")), "Windows has no language-suffixed sidecars");
-        assert!(csharp_view.iter().any(|l| l.contains("|intro.mp4|") && l.contains("|False|null|")), "the removed sidecar");
-        assert!(!csharp_view.iter().any(|l| l.contains("Extras")), "the deleted folder is gone for C# too");
-    }
+fn ticks_to_system_time(ticks: i64) -> std::time::SystemTime {
+    let rel = ticks - sa_media::dates::UNIX_EPOCH_TICKS;
+    std::time::UNIX_EPOCH + std::time::Duration::from_nanos(u64::try_from(rel).unwrap() * 100)
 }
 
-#[test]
-fn csharp_path_rules_match() {
-    if !enabled() {
-        return;
-    }
-    for line in csharp(&["probe"]) {
-        let parts: Vec<&str> = line.split('|').collect();
-        assert_eq!(parts.len(), 3, "{line}");
-        assert_eq!(sa_media::win::paths::path_root(parts[0]), parts[1], "GetPathRoot({})", parts[0]);
-        assert_eq!(WinMediaIndex::normalize_directory_path(parts[0]), parts[2], "NormalizeDirectoryPath({})", parts[0]);
-    }
+fn stamp(path: &Path, ticks: i64) {
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_times(std::fs::FileTimes::new().set_modified(ticks_to_system_time(ticks))).unwrap();
 }
 
 fn pattern(len: usize, seed: u32) -> Vec<u8> {
@@ -189,105 +136,136 @@ fn unhex32(text: &str) -> [u8; 32] {
     key
 }
 
-#[test]
-fn csharp_cache_chunks_are_read_by_rust_and_rust_chunks_by_csharp() {
-    if !enabled() {
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().to_str().unwrap().to_owned();
+// ---- media index ----------------------------------------------------------------------------------------------
 
-    // C# registers alice and plays a video (4 chunks of 64 KiB, the last one 1234 bytes) through its stream + cache.
-    let out = csharp(&["cache-write", &dir]);
-    let parts: Vec<&str> = out[0].split('|').collect();
-    // user|vaultKeyHex|identity (itself "PATH|len:N|cs:N")|chunkSize|length
-    let (user, key) = (parts[0].to_owned(), unhex32(parts[1]));
-    let identity = parts[2..parts.len() - 2].join("|");
-    let (chunk, length): (i32, i64) = (parts[parts.len() - 2].parse().unwrap(), parts[parts.len() - 1].parse().unwrap());
-    assert_eq!(user, "alice");
-    let video = tmp.path().join("video.bin");
-    let raw = std::fs::read(&video).unwrap();
-    assert_eq!(raw, pattern(3 * 65536 + 1234, 19));
-    assert_eq!(VideoCacheStore::compute_video_identity(video.to_str(), length, chunk), identity, "identity");
-
-    let provider_user = user.clone();
-    let keys: VaultKeyProvider = Arc::new(move || Some((provider_user.clone(), SecretKey32::new(key))));
-    let store = VideoCacheStore::new(tmp.path().join("VideoCache"), keys, Some(1 << 30));
-    let total = (length - 1) / i64::from(chunk) + 1;
-    assert_eq!(store.cached_chunk_indices(&identity, total, chunk, length), (0..total).collect::<HashSet<_>>());
-    for i in 0..total {
-        let start = (i * i64::from(chunk)) as usize;
-        let expected = &raw[start..raw.len().min(start + chunk as usize)];
-        let data = store.try_read_chunk(&identity, chunk, i, expected.len() as i32).expect("Rust decrypts the C# chunk");
-        assert_eq!(data, expected, "chunk {i}");
-    }
-
-    // Reopening the video in Rust is served entirely from the C# cache: zero reads of the source.
-    {
-        let mut stream = BufferedVideoStream::open_file(&video, chunk, 2, 0, Some(Arc::clone(&store))).unwrap();
-        let mut all = Vec::new();
-        std::io::Read::read_to_end(&mut stream, &mut all).unwrap();
-        assert_eq!(all, raw);
-        assert_eq!(stream.underlying_read_count(), 0);
-        assert_eq!(stream.encrypted_cache_read_count(), total as i32);
-    }
-
-    // Rust plays another video; C# (logged in again as alice) reads every chunk Rust wrote.
-    let video2 = tmp.path().join("second video.bin");
-    let raw2 = pattern(2 * 65536 + 77, 5);
-    std::fs::write(&video2, &raw2).unwrap();
-    {
-        let source = std::fs::File::open(&video2).unwrap();
-        let mut stream = BufferedVideoStream::from_stream(
-            Box::new(source),
-            false,
-            chunk,
-            2,
-            0,
-            Some(Arc::clone(&store)),
-            None,
-            Some(video2.to_string_lossy().into_owned()),
-        )
-        .unwrap();
-        let mut all = Vec::new();
-        std::io::Read::read_to_end(&mut stream, &mut all).unwrap();
-        assert_eq!(all, raw2);
-    }
-    let len2 = raw2.len() as i64;
-    let identity2 = VideoCacheStore::compute_video_identity(video2.to_str(), len2, chunk);
-    let lines = csharp(&["cache-read", &dir, &identity2, &chunk.to_string(), &len2.to_string()]);
-    let expected: Vec<String> = raw2
-        .chunks(chunk as usize)
-        .enumerate()
-        .map(|(i, c)| format!("{i}|True|{}", hex(&Sha256::digest(c))))
-        .collect();
-    assert_eq!(lines.len(), 3);
-    assert_eq!(lines, expected, "C# lists and decrypts the Rust chunks");
-
-    // Every file of the shared flat folder is padded to the chunk size and carries the fixed 2001-01-01 time.
-    for entry in std::fs::read_dir(tmp.path().join("VideoCache").join("v3")).unwrap() {
-        let meta = entry.unwrap().metadata().unwrap();
-        assert_eq!(meta.len(), 40 + chunk as u64);
-        assert_eq!(meta.modified().unwrap(), sa_media::win::cache::fixed_file_time());
-    }
-}
-
-// ---- script-driven comparison ---------------------------------------------------------------------------------
-
-/// `ScriptDefaultTicks` of the fixture: every written file gets this modification time unless the script names one.
+/// `ScriptDefaultTicks` of the C# tool: every scripted file (and every file the index-session test adds) gets this
+/// modification time unless the script names one.
 const SCRIPT_DEFAULT_TICKS: i64 = 638_000_000_000_000_000;
 
-fn ticks_to_system_time(ticks: i64) -> std::time::SystemTime {
-    let rel = ticks - sa_media::dates::UNIX_EPOCH_TICKS;
-    std::time::UNIX_EPOCH + std::time::Duration::from_nanos(u64::try_from(rel).unwrap() * 100)
+/// The time the C# `index-write` gave every file of its tree: 2026-11-01T08:12:44.1234567Z.
+const INDEX_WRITE_TICKS: i64 = 639_291_175_641_234_567;
+
+/// The tree of the C# `index-write`, rebuilt under `dir\tree` (same names, sizes and times).
+fn build_index_write_tree(dir: &Path) -> PathBuf {
+    let tree = dir.join("tree");
+    std::fs::create_dir_all(tree.join("Season 1").join("Extras")).unwrap();
+    std::fs::create_dir_all(tree.join("Vid\u{e9}o \u{15f}ark\u{131}")).unwrap();
+    std::fs::write(tree.join("intro.mp4"), vec![0u8; 2048]).unwrap();
+    std::fs::write(tree.join("intro.srt"), "1\n00:00:01,000 --> 00:00:02,000\nx\n").unwrap();
+    std::fs::write(tree.join("a+b'(c)\u{e9}.mkv"), vec![0u8; 10]).unwrap();
+    std::fs::write(tree.join("Season 1").join("s01e01.mkv"), vec![0u8; 4096]).unwrap();
+    std::fs::write(tree.join("Season 1").join("s01e01.vtt"), "WEBVTT\n").unwrap();
+    std::fs::write(tree.join("Season 1").join("Extras").join("behind.mov"), vec![0u8; 7]).unwrap();
+    std::fs::write(tree.join("Vid\u{e9}o \u{15f}ark\u{131}").join("I\u{15f}\u{131}k.mp3"), vec![0u8; 3]).unwrap();
+    for f in [
+        tree.join("intro.mp4"),
+        tree.join("intro.srt"),
+        tree.join("a+b'(c)\u{e9}.mkv"),
+        tree.join("Season 1").join("s01e01.mkv"),
+        tree.join("Season 1").join("s01e01.vtt"),
+        tree.join("Season 1").join("Extras").join("behind.mov"),
+        tree.join("Vid\u{e9}o \u{15f}ark\u{131}").join("I\u{15f}\u{131}k.mp3"),
+    ] {
+        stamp(&f, INDEX_WRITE_TICKS);
+    }
+    tree
 }
 
-fn stamp(path: &Path, ticks: i64) {
-    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
-    f.set_times(std::fs::FileTimes::new().set_modified(ticks_to_system_time(ticks))).unwrap();
+#[test]
+fn a_csharp_media_index_reads_identically_in_rust_and_a_rust_index_matches_the_csharp_view_of_it() {
+    assert_eq!(sa_media::dates::format_dotnet(INDEX_WRITE_TICKS), "2026-11-01T08:12:44.1234567+00:00");
+    let tmp = tempfile::tempdir().unwrap();
+    let root = root_of(tmp.path());
+    let tree = build_index_write_tree(tmp.path());
+    let index_file = tmp.path().join("media-index.json");
+    let frozen = fixture_json("index-session.dumps.json");
+
+    // C# wrote: a scan and a depth-2 crawl of the tree, with sidecars, non-ASCII and JSON-escaped names.
+    let written = with_root_json(&fixture_text("index-session.media-index.json"), &root);
+    assert!(written.contains("\\u00E9") && written.contains("\\u002B"), "the C# file escapes non-ASCII and '+'");
+    std::fs::write(&index_file, &written).unwrap();
+    let csharp_written = dumps(&frozen["csharp_written"]);
+    assert_eq!(csharp_written.len(), 4);
+    let all_queries: Vec<&str> = ["csharp_written", "rust_written"]
+        .iter()
+        .flat_map(|k| frozen[*k].as_array().unwrap().iter().map(|d| d["query"].as_str().unwrap()))
+        .collect();
+    assert_root_matches(&root, &all_queries, &[]);
+    for (query, lines) in &csharp_written {
+        let csharp_view = with_root(lines, &root);
+        assert_eq!(csharp_view[0], "total|5");
+        assert_eq!(csharp_view.iter().filter(|l| l.starts_with("dir|")).count(), 4);
+        let rust = WinMediaIndex::new(Some(index_file.clone()), None);
+        assert_eq!(rust_dump(&rust, query), csharp_view, "Rust reads the C# file like C# does (query {query:?})");
+    }
+    assert_eq!(std::fs::read_to_string(&index_file).unwrap(), written, "reading never rewrites the C# file");
+
+    // Rust writes: the listing changes (a new episode, a removed sidecar, a deleted folder), so the file is rewritten.
+    let season = tree.join("Season 1");
+    std::fs::write(season.join("s01e02.mp4"), vec![1u8; 333]).unwrap();
+    std::fs::write(season.join("s01e02.vtt"), b"WEBVTT\n").unwrap();
+    std::fs::write(season.join("s01e03.mp4"), vec![2u8; 44]).unwrap();
+    std::fs::write(season.join("s01e03.tr.srt"), b"1\n").unwrap();
+    for name in ["s01e02.mp4", "s01e02.vtt", "s01e03.mp4", "s01e03.tr.srt"] {
+        stamp(&season.join(name), SCRIPT_DEFAULT_TICKS);
+    }
+    std::fs::remove_file(tree.join("intro.srt")).unwrap();
+    std::fs::remove_dir_all(season.join("Extras")).unwrap();
+    let rust = WinMediaIndex::new(Some(index_file.clone()), None);
+    assert!(matches!(rust.scan_directory(tree.to_str().unwrap(), &tok()), ScanResult::Listed(_)));
+    let crawled = rust.crawl(&tree, 2, 64, &tok(), &|_| {});
+    assert_eq!(crawled, 3, "the deleted folder is no longer listed by its parent");
+    let extras = season.join("Extras");
+    assert_eq!(rust.scan_directory(extras.to_str().unwrap(), &tok()), ScanResult::Missing, "dropped when scanned");
+    let rewritten = std::fs::read_to_string(&index_file).unwrap();
+    assert_ne!(rewritten, written);
+    let doc = MediaIndexDocument::parse(&rewritten).unwrap();
+    assert_eq!(doc.version, 2, "the Rust file is the current C# version, so C# never discards it as legacy");
+
+    // What C# read from the Rust-written file at freeze time: Rust must still hold that state, and write a file
+    // that reads back into it.
+    let rust_written = dumps(&frozen["rust_written"]);
+    assert_eq!(rust_written.len(), 3);
+    let reloaded = WinMediaIndex::new(Some(index_file.clone()), None);
+    for (query, lines) in &rust_written {
+        let csharp_view = with_root(lines, &root);
+        assert_eq!(rust_dump(&rust, query), csharp_view, "Rust holds what C# read from the Rust file (query {query:?})");
+        assert_eq!(rust_dump(&reloaded, query), csharp_view, "the Rust file reads back the same (query {query:?})");
+    }
+    let view = rust_dump(&reloaded, "");
+    assert!(view.iter().any(|l| l.contains("\\s01e02.mp4|s01e02.mp4|") && l.contains("|True|.vtt|")), "the new episode");
+    assert!(view.iter().any(|l| l.contains("\\s01e03.mp4|s01e03.mp4|") && l.contains("|False|null|")), "Windows has no language-suffixed sidecars");
+    assert!(view.iter().any(|l| l.contains("|intro.mp4|") && l.contains("|False|null|")), "the removed sidecar");
+    assert!(!view.iter().any(|l| l.contains("Extras")), "the deleted folder is gone");
 }
 
-/// The Rust side of the fixture's `script` command: same ops, same tree, same index file.
+#[test]
+fn csharp_path_rules_match() {
+    let cwd = std::env::current_dir().unwrap().to_str().unwrap().to_owned();
+    let lines = strings(&fixture_json("probe.json"));
+    assert_eq!(lines.len(), 7);
+    for line in lines {
+        let parts: Vec<&str> = line.split('|').collect();
+        assert_eq!(parts.len(), 3, "{line}");
+        assert_eq!(sa_media::win::paths::path_root(parts[0]), parts[1], "GetPathRoot({})", parts[0]);
+        if parts[2] == "{CWD}" {
+            // `C:` is drive-relative: it resolves to the current directory only while that is on drive C.
+            if cwd.get(..2).is_some_and(|d| d.eq_ignore_ascii_case("C:")) {
+                assert_eq!(WinMediaIndex::normalize_directory_path(parts[0]), cwd, "NormalizeDirectoryPath({})", parts[0]);
+            }
+            continue;
+        }
+        assert_eq!(WinMediaIndex::normalize_directory_path(parts[0]), parts[2], "NormalizeDirectoryPath({})", parts[0]);
+    }
+}
+
+/// The Rust side of the C# tool's `script` command (one `op|arg|…` per line, against `dir\tree` and
+/// `dir\media-index.json`):
+///   reset                      empty tree, no index file, new index
+///   mkdir|rel  write|rel|len[|ticks]  delete|rel  stamp|rel|ticks   (files get SCRIPT_DEFAULT_TICKS unless given)
+///   scan|rel  refresh|rel  transient|rel  crawl|rel|depth  reload
+///   dump|query                 total|n, then search|fullPath of search(query, 500)
+///   dirs                       dir|path per indexed directory
 fn run_rust_script(dir: &Path, script: &str) -> Vec<String> {
     let tree = dir.join("tree");
     let index_file = dir.join("media-index.json");
@@ -338,115 +316,34 @@ fn run_rust_script(dir: &Path, script: &str) -> Vec<String> {
     out
 }
 
-/// Runs `script` with C#, then (from scratch, same paths) with Rust: the printed state and the final
-/// `media-index.json` bytes must be identical.
-fn compare_script(script: &str) -> Vec<String> {
-    let tmp = tempfile::tempdir().unwrap();
-    let script_file = tmp.path().join("script.txt");
-    std::fs::write(&script_file, script).unwrap();
+/// Search ties (the same name with the same time in several folders, e.g. copies) keep the C# dictionary order,
+/// including the reuse of freed slots after a rescan; OrdinalIgnoreCase treats `ſ` as its own letter; escaping and
+/// line breaks of the file match System.Text.Json: the printed state equals the frozen C# output line for line and
+/// the final `media-index.json` equals the C# file byte for byte.
+#[test]
+fn scripted_index_sessions_match_csharp_line_for_line_and_byte_for_byte() {
+    // The freeze-time folder (`%TEMP%\.tmp??????\work`) contained `S` (`Users`) and `i` (its random part) and none of
+    // the other queries; the prefix gives this folder an `i` and an `s` whatever the random part is.
+    let tmp = tempfile::Builder::new().prefix("sa-script-i-").tempdir().unwrap();
     let work = tmp.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
-    let csharp_out = csharp(&["script", work.to_str().unwrap(), script_file.to_str().unwrap()]);
-    let csharp_file = std::fs::read(work.join("media-index.json")).unwrap();
-    let rust_out = run_rust_script(&work, script);
+    let root = root_of(&work);
+    let script = fixture_text("script-session.script.txt");
+    let queries: Vec<&str> = script.lines().filter_map(|l| l.trim().strip_prefix("dump|")).collect();
+    assert_eq!(queries.len(), 7);
+    assert_root_matches(&root, &queries, &["S", "i"]);
+    let csharp_out = with_root(&fixture_text("script-session.out.txt").lines().map(str::to_owned).collect::<Vec<_>>(), &root);
+    let csharp_file = with_root_json(&fixture_text("script-session.media-index.json"), &root);
+
+    let rust_out = run_rust_script(&work, &script);
     let rust_file = std::fs::read(work.join("media-index.json")).unwrap();
     assert_eq!(rust_out.len(), csharp_out.len(), "C#:\n{}\nRust:\n{}", csharp_out.join("\n"), rust_out.join("\n"));
     for (i, (r, c)) in rust_out.iter().zip(&csharp_out).enumerate() {
         assert_eq!(r, c, "line {i}; C#:\n{}\nRust:\n{}", csharp_out.join("\n"), rust_out.join("\n"));
     }
-    assert_eq!(
-        String::from_utf8(rust_file).unwrap(),
-        String::from_utf8(csharp_file).unwrap(),
-        "the Rust media-index.json is byte-identical to the C# one"
-    );
-    csharp_out
-}
-
-/// Search ties (the same name with the same time in several folders, e.g. copies) keep the C# dictionary order,
-/// including the reuse of freed slots after a rescan; OrdinalIgnoreCase treats `ſ` as its own letter; escaping and
-/// line breaks of the file match System.Text.Json.
-#[test]
-fn scripted_index_sessions_match_csharp_line_for_line_and_byte_for_byte() {
-    if !enabled() {
-        return;
-    }
-    let out = compare_script(
-        "reset
-         mkdir|A
-         mkdir|B
-         mkdir|C
-         mkdir|ſub
-         mkdir|Vidéo şarkı/İç
-         mkdir|.hidden
-         write|A/video.mp4|10
-         write|B/video.mp4|10
-         write|C/VIDEO.mp4|10
-         write|A/x.mp4|1
-         write|A/a&b`'+(1) ;=.mkv|2
-         write|A/Işık şarkı.mp3|2
-         write|B/video.srt|1
-         write|ſub/ſon.mp4|3
-         write|ſub/sample.mp4|4
-         write|ſub/t.mp4|4
-         write|ſub/ſa.mp4|4
-         write|Vidéo şarkı/İç/klip.webm|5|638500000000000001
-         write|Vidéo şarkı/notes.txt|5
-         scan|.
-         crawl|.|2
-         dump
-         dump|video
-         dump|ſ
-         dump|S
-         dump|ı
-         dump|i
-         dump|İÇ
-         delete|A/x.mp4
-         write|A/new.mp4|5
-         write|C/video.vtt|5
-         scan|A
-         scan|C
-         dump
-         write|B/zz.mp4|1
-         delete|B/video.srt
-         scan|B
-         dump
-         dump|VIDEO
-         refresh|A
-         transient|ſub
-         delete|C
-         scan|C
-         dump
-         dirs
-         reload
-         dump
-         dirs",
-    );
-    assert!(out.iter().any(|l| l.ends_with("klip.webm")), "the crawl reached depth 2");
-    assert!(!out.iter().any(|l| l.contains(".hidden")));
-}
-
-/// The cache identity (input of every chunk file name and key) equals the C# app's for non-ASCII paths: Turkish
-/// letters, `ſ` (upper-cased to `S` by ICU `ToUpperInvariant`), `ß`, title-case digraphs, Greek, mixed separators.
-#[test]
-fn video_identity_matches_csharp_for_non_ascii_paths() {
-    if !enabled() {
-        return;
-    }
-    let b = std::path::MAIN_SEPARATOR;
-    let paths = [
-        format!("C:{b}Videolar{b}ſon ışık İÇ Straße.mp4"),
-        format!("c:/videolar/Şarkı ǅemal ǆ ǈ.MKV"),
-        format!("C:{b}a{b}..{b}b{b}Ωmega ﬁlm ΐ.mp4{b}"),
-        format!("{b}{b}server{b}share{b}Kelvin K Å µ ÿ.mp4"),
-        format!("  C:/x/Ⓐ ⓐ 𐐨 𞤢.mp4  "),
-    ];
-    for path in paths {
-        for (len, chunk) in [(1_234_567i64, 8 * 1024 * 1024), (0, 65_536)] {
-            let expected = csharp(&["identity", &path, &len.to_string(), &chunk.to_string()]);
-            assert_eq!(expected.len(), 1);
-            assert_eq!(VideoCacheStore::compute_video_identity(Some(&path), len, chunk), expected[0], "{path}");
-        }
-    }
+    assert_eq!(String::from_utf8(rust_file).unwrap(), csharp_file, "the Rust media-index.json is byte-identical to the C# one");
+    assert!(csharp_out.iter().any(|l| l.ends_with("klip.webm")), "the crawl reached depth 2");
+    assert!(!csharp_out.iter().any(|l| l.contains(".hidden")));
 }
 
 /// A hand-written index with the odd entries a file may hold (paths needing normalization, case-duplicate folders,
@@ -454,56 +351,202 @@ fn video_identity_matches_csharp_for_non_ascii_paths() {
 /// same state and the same search order in Rust as in C#.
 #[test]
 fn odd_index_files_load_like_csharp() {
-    if !enabled() {
-        return;
-    }
     let tmp = tempfile::tempdir().unwrap();
-    let b = std::path::MAIN_SEPARATOR;
-    let base = tmp.path().to_str().unwrap().to_owned();
-    let file = |dir: &str, name: &str, size: i64, time: &str| {
-        serde_json::json!({
-            "fullPath": format!("{dir}{b}{name}"), "fileName": name, "directoryPath": dir, "sizeBytes": size,
-            "lastWriteTimeUtc": time, "hasSidecarSubtitle": size % 2 == 0, "sidecarExtension": if size % 2 == 0 { serde_json::json!(".srt") } else { serde_json::Value::Null },
-            "indexedAtUtc": "0001-01-01T00:00:00+00:00", "extra": [1]
-        })
-    };
-    let d1 = format!("{base}{b}Movies");
-    let d1_upper = format!("{base}{b}MOVIES{b}");
-    let unc = format!("{b}{b}nohost-sa-test{b}share{b}v");
-    let slash_rooted = format!("{b}rooted{b}dir");
-    let forward = "//nohost-sa-test/share/w".to_owned();
-    let unknown_drive = format!("Q:{b}Films");
-    let doc = serde_json::json!({
-        "version": 3,
-        "unknownTop": {"a": 1},
-        "directories": [
-            { "directoryPath": d1, "subdirectories": [format!("{d1}{b}b{b}"), "  ", format!("{d1}{b}A")],
-              "mediaFiles": [file(&d1, "zeta.mp4", 3, "2026-11-01T10:00:00+03:00"), file(&d1, "Alpha.mkv", 4, "2026-11-01T07:00:00Z"),
-                             file(&d1, "same.mp4", 5, "2026-11-01T07:00:00.1234567+00:00"),
-                             serde_json::json!({"fullPath": "   ", "fileName": "blank.mp4"})] },
-            { "directoryPath": d1_upper, "subdirectories": [], "mediaFiles": [file(&d1_upper.trim_end_matches(b), "same.mp4", 5, "2026-11-01T07:00:00.1234567+00:00")] },
-            { "directoryPath": "   ", "mediaFiles": [file("X:", "never.mp4", 1, "2026-01-01T00:00:00Z")] },
-            { "directoryPath": unc, "mediaFiles": [file(&unc, "unc.mp4", 7, "2026-11-01T07:00:00Z")] },
-            { "directoryPath": slash_rooted, "mediaFiles": [file(&slash_rooted, "rooted.mp4", 7, "2026-11-01T07:00:00Z")] },
-            { "directoryPath": forward, "mediaFiles": [file(&forward, "fwd.mp4", 7, "2026-11-01T07:00:00Z")] },
-            { "directoryPath": unknown_drive, "mediaFiles": [file(&unknown_drive, "away.mp4", 7, "2026-11-01T07:00:00Z")] }
-        ]
-    });
     let index_file = tmp.path().join("media-index.json");
-    std::fs::write(&index_file, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
-    let before = std::fs::read(&index_file).unwrap();
-    for query in ["", "same", "A", "movies", "mp4"] {
-        let csharp_view = csharp(&["index-dump", index_file.to_str().unwrap(), query]);
+    let before = std::fs::read(fixture("odd-index.media-index.json")).unwrap();
+    std::fs::write(&index_file, &before).unwrap();
+    // The index holds the drive-relative directory `\rooted\dir`. C# resolved it against the drive of the freeze
+    // run's current directory (C:); Rust resolves it against the test's current drive (D: on CI runners). On another
+    // drive the frozen drive is replaced by the current one, and that directory's block (its `dir|` line and the
+    // lines up to the next `dir|`/`search|`) is compared on its own, because the directory order follows the
+    // resolved path; the other blocks must still come in the C# order.
+    let cwd = std::env::current_dir().unwrap().to_str().unwrap().to_owned();
+    let drive = cwd.get(..2).filter(|d| d.ends_with(':')).expect("the tests run from a drive-letter path").to_uppercase();
+    let rooted = format!("dir|{drive}\\rooted\\dir");
+    // (the lines without the rooted block, the rooted block)
+    let split_rooted = |lines: &[String]| -> (Vec<String>, Vec<String>) {
+        let mut rest = Vec::new();
+        let mut block = Vec::new();
+        let mut inside = false;
+        for l in lines {
+            if l.starts_with("dir|") || l.starts_with("search|") {
+                inside = *l == rooted;
+            }
+            if inside { block.push(l.clone()) } else { rest.push(l.clone()) }
+        }
+        (rest, block)
+    };
+    let frozen = dumps(&fixture_json("odd-index.dumps.json"));
+    assert_eq!(frozen.len(), 5);
+    for (query, csharp_view) in &frozen {
         let rust = WinMediaIndex::new(Some(index_file.clone()), None);
-        assert_eq!(rust_dump(&rust, query), csharp_view, "query {query:?}");
+        let rust_view = rust_dump(&rust, query);
+        if drive == "C:" {
+            assert_eq!(&rust_view, csharp_view, "query {query:?}");
+            continue;
+        }
+        let csharp_view: Vec<String> =
+            csharp_view.iter().map(|l| if l == "dir|C:\\rooted\\dir" { rooted.clone() } else { l.clone() }).collect();
+        let (rust_rest, rust_block) = split_rooted(&rust_view);
+        let (csharp_rest, csharp_block) = split_rooted(&csharp_view);
+        assert!(!csharp_block.is_empty(), "query {query:?}: the drive-relative entry");
+        assert_eq!(rust_block, csharp_block, "query {query:?}: the drive-relative directory");
+        assert_eq!(rust_rest, csharp_rest, "query {query:?}");
     }
     assert_eq!(std::fs::read(&index_file).unwrap(), before, "a current-version file is never rewritten on load");
 }
 
+// ---- video cache ----------------------------------------------------------------------------------------------
+
+/// The cache identity (input of every chunk file name and key) equals the C# app's for non-ASCII paths: Turkish
+/// letters, `ſ` (upper-cased to `S` by ICU `ToUpperInvariant`), `ß`, title-case digraphs, Greek, mixed separators.
+#[test]
+fn video_identity_matches_csharp_for_non_ascii_paths() {
+    let cases = fixture_json("identity.json");
+    assert_eq!(cases.as_array().unwrap().len(), 10);
+    for case in cases.as_array().unwrap() {
+        let path = case["path"].as_str().unwrap();
+        let (len, chunk) = (case["length"].as_i64().unwrap(), case["chunk_size"].as_i64().unwrap() as i32);
+        assert_eq!(VideoCacheStore::compute_video_identity(Some(path), len, chunk), case["identity"].as_str().unwrap(), "{path}");
+    }
+}
+
+fn keys_for(user: &str, key: [u8; 32]) -> VaultKeyProvider {
+    let user = user.to_owned();
+    Arc::new(move || Some((user.clone(), SecretKey32::new(key))))
+}
+
+/// Plays `raw` (identity from `path`) through a Rust stream into `store` (synchronous SSD writes, no read-ahead).
+fn play_into(store: &Arc<VideoCacheStore>, raw: &[u8], path: &str, chunk: i32) -> BufferedVideoStream {
+    let mut stream = BufferedVideoStream::from_stream(
+        Box::new(std::io::Cursor::new(raw.to_vec())),
+        false,
+        chunk,
+        2,
+        0,
+        Some(Arc::clone(store)),
+        None,
+        Some(path.to_owned()),
+    )
+    .unwrap();
+    let mut all = Vec::new();
+    std::io::Read::read_to_end(&mut stream, &mut all).unwrap();
+    assert_eq!(all, raw);
+    stream
+}
+
+fn vcache_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    files
+}
+
+#[test]
+fn csharp_cache_chunks_are_read_by_rust_and_rust_chunks_match_the_csharp_layout() {
+    let meta = fixture_json("cache/cache.json");
+    let user = meta["user"].as_str().unwrap();
+    let key = unhex32(meta["vault_key_hex"].as_str().unwrap());
+    let video_path = meta["video_path"].as_str().unwrap();
+    let identity = meta["identity"].as_str().unwrap();
+    let chunk = meta["chunk_size"].as_i64().unwrap() as i32;
+    let length = meta["length"].as_i64().unwrap();
+    let names: HashSet<String> = strings(&meta["files"]).into_iter().collect();
+    assert_eq!(user, "alice");
+    let raw = pattern(length as usize, meta["pattern_seed"].as_u64().unwrap() as u32);
+    assert_eq!(raw.len(), 3 * 65536 + 1234);
+    assert_eq!(VideoCacheStore::compute_video_identity(Some(video_path), length, chunk), identity, "identity");
+
+    // The C# chunks, copied into a fresh cache folder.
+    let tmp = tempfile::tempdir().unwrap();
+    let v3 = tmp.path().join("VideoCache").join(VideoCacheStore::LAYOUT_FOLDER);
+    std::fs::create_dir_all(&v3).unwrap();
+    for name in &names {
+        std::fs::copy(fixture("cache/v3").join(name), v3.join(name)).unwrap();
+    }
+    let store = VideoCacheStore::new(tmp.path().join("VideoCache"), keys_for(user, key), Some(1 << 30));
+    let total = (length - 1) / i64::from(chunk) + 1;
+    assert_eq!(total, 4);
+    assert_eq!(store.cached_chunk_indices(identity, total, chunk, length), (0..total).collect::<HashSet<_>>());
+    for i in 0..total {
+        let start = (i * i64::from(chunk)) as usize;
+        let expected = &raw[start..raw.len().min(start + chunk as usize)];
+        let data = store.try_read_chunk(identity, chunk, i, expected.len() as i32).expect("Rust decrypts the C# chunk");
+        assert_eq!(data, expected, "chunk {i}");
+    }
+
+    // Reopening the video in Rust is served entirely from the C# cache: zero reads of the source.
+    {
+        let stream = play_into(&store, &raw, video_path, chunk);
+        assert_eq!(stream.underlying_read_count(), 0);
+        assert_eq!(stream.encrypted_cache_read_count(), total as i32);
+    }
+
+    // Rust writes the same video with the same profile key into an empty cache: the same file names (the keyed
+    // tags) and sizes as the C# files, the same header (magic and padded chunk size), a different random nonce, and
+    // the chunks decrypt again in a new store.
+    let tmp2 = tempfile::tempdir().unwrap();
+    {
+        let writer = VideoCacheStore::new(tmp2.path().join("VideoCache"), keys_for(user, key), Some(1 << 30));
+        let stream = play_into(&writer, &raw, video_path, chunk);
+        assert_eq!(stream.encrypted_cache_read_count(), 0);
+    }
+    let rust_files = vcache_files(&tmp2.path().join("VideoCache").join(VideoCacheStore::LAYOUT_FOLDER));
+    let rust_names: HashSet<String> = rust_files.iter().map(|p| p.file_name().unwrap().to_str().unwrap().to_owned()).collect();
+    assert_eq!(rust_names, names, "Rust names the chunks like C#");
+    for path in &rust_files {
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let rust_bytes = std::fs::read(path).unwrap();
+        let csharp_bytes = std::fs::read(fixture("cache/v3").join(name)).unwrap();
+        assert_eq!(rust_bytes.len(), csharp_bytes.len(), "{name}");
+        assert_eq!(rust_bytes.len() as i64, VideoCacheStore::HEADER_SIZE + i64::from(chunk));
+        assert_eq!(&rust_bytes[..12], &csharp_bytes[..12], "{name}: magic and padded chunk size");
+        assert_eq!(&rust_bytes[..8], b"SAVC0003");
+        assert_ne!(&rust_bytes[12..24], &csharp_bytes[12..24], "{name}: a fresh nonce");
+        assert_eq!(std::fs::metadata(path).unwrap().modified().unwrap(), sa_media::win::cache::fixed_file_time());
+    }
+    let reader = VideoCacheStore::new(tmp2.path().join("VideoCache"), keys_for(user, key), Some(1 << 30));
+    assert_eq!(reader.cached_chunk_indices(identity, total, chunk, length), (0..total).collect::<HashSet<_>>());
+    for i in 0..total {
+        let start = (i * i64::from(chunk)) as usize;
+        let expected = &raw[start..raw.len().min(start + chunk as usize)];
+        assert_eq!(reader.try_read_chunk(identity, chunk, i, expected.len() as i32).as_deref(), Some(expected), "chunk {i}");
+    }
+
+    // Rust plays another video into the folder holding the C# chunks; a new store lists and decrypts every chunk.
+    let video2 = tmp.path().join("second video.bin");
+    let raw2 = pattern(2 * 65536 + 77, 5);
+    let video2 = video2.to_str().unwrap();
+    drop(play_into(&store, &raw2, video2, chunk));
+    let len2 = raw2.len() as i64;
+    let identity2 = VideoCacheStore::compute_video_identity(Some(video2), len2, chunk);
+    let reader = VideoCacheStore::new(tmp.path().join("VideoCache"), keys_for(user, key), Some(1 << 30));
+    assert_eq!(reader.cached_chunk_indices(&identity2, 3, chunk, len2), (0..3).collect::<HashSet<_>>());
+    for (i, c) in raw2.chunks(chunk as usize).enumerate() {
+        let data = reader.try_read_chunk(&identity2, chunk, i as i64, c.len() as i32).expect("the Rust chunk reads back");
+        assert_eq!(hex(&Sha256::digest(&data)), hex(&Sha256::digest(c)), "chunk {i}");
+    }
+
+    // Every file of the shared flat folder is padded to the chunk size; the Rust-written ones carry the fixed
+    // 2001-01-01 time (git does not keep the C# files' times; they had it at freeze time).
+    let files = vcache_files(&v3);
+    assert_eq!(files.len(), 4 + 3);
+    for path in files {
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.len(), 40 + chunk as u64);
+        if !names.contains(path.file_name().unwrap().to_str().unwrap()) {
+            assert_eq!(meta.modified().unwrap(), sa_media::win::cache::fixed_file_time());
+        }
+    }
+}
+
 // ---- stream and formatting behavior ---------------------------------------------------------------------------
 
-/// The Rust side of the fixture's `stream-trace`: the same ops on a `BufferedVideoStream` over an in-memory video
-/// (synchronous SSD writes, no read-ahead) with a Rust `VideoCacheStore` whose profile logs out (`o`) and in (`l`).
+/// The Rust side of the C# tool's `stream-trace`: plays `dir\video.bin` (pattern seed 19) through a
+/// `BufferedVideoStream` over an in-memory video (synchronous SSD writes, no read-ahead) with a `VideoCacheStore`
+/// whose profile logs out (`o`) and in (`l`). Ops (comma-separated): `sN` seek to N, `eN` seek to length-N, `cN` seek
+/// by N, `rN` read N bytes (prints `r|count|` and the first 16 hex of the SHA-256), `q` (prints the stream state and
+/// the buffered-ratio bits at 0, 0.25, 0.5, 0.99, NaN and 2), `x` dispose and reopen, `o` log out, `l` log in, `f`
+/// (prints `f|count|used` of the cache folder).
 fn run_rust_stream_trace(dir: &Path, length: usize, chunk: i32, max_cached: i32, ops: &str) -> Vec<String> {
     use std::sync::atomic::{AtomicBool, Ordering};
     let raw = pattern(length, 19);
@@ -587,40 +630,21 @@ fn run_rust_stream_trace(dir: &Path, length: usize, chunk: i32, max_cached: i32,
 /// RAM window eviction, SSD hits after a reopen, short reads at the end, seeks past the end, the buffer-bar ratio (bit
 /// for bit, NaN and out-of-range playback ratios included), and a logout in the middle of playback (the open stream's
 /// session ends: no more SSD reads or writes, even after the same profile logs in again; a reopened stream uses the
-/// cache again) behave exactly like the C# `BufferedVideoStream` + `EncryptedVideoCacheStore`.
+/// cache again) behave exactly like the C# `BufferedVideoStream` + `EncryptedVideoCacheStore`: the Rust trace equals
+/// the frozen C# trace. Scenario 2 has a chunk size below the 64 KiB floor, a two-chunk RAM window, seeks past the end
+/// and current-relative seeks; scenario 3 a video of exactly one chunk and empty reads.
 #[test]
 fn buffered_stream_traces_match_csharp() {
-    if !enabled() {
-        return;
-    }
-    let scenarios: [(usize, i32, i32, &str); 3] = [
-        (
-            330_000,
-            65_536,
-            3,
-            "q,r1000,q,s200000,r70000,q,e50,r100,q,s0,r10,q,f,x,q,r65536,q,s300000,r40000,q,o,s100000,r5000,q,f,l,\
-             s131072,r10,q,x,q,f",
-        ),
-        // Chunk size below the 64 KiB floor, a two-chunk RAM window, seeks past the end, current-relative seeks.
-        (200_000, 1000, 1, "r70000,q,c-5000,r10000,q,s500000,r10,q,e0,r10,q,s65535,r2,q,x,r200000,q,s131072,r1,q,f"),
-        // A video of exactly one chunk; empty reads.
-        (65_536, 65_536, 32, "r0,q,r65536,q,r1,q,x,q,r65536,q,f"),
-    ];
-    for (length, chunk, max_cached, ops) in scenarios {
+    let scenarios = fixture_json("stream-traces.json");
+    assert_eq!(scenarios.as_array().unwrap().len(), 3);
+    for s in scenarios.as_array().unwrap() {
+        let length = s["length"].as_u64().unwrap() as usize;
+        let chunk = s["chunk_size"].as_i64().unwrap() as i32;
+        let max_cached = s["max_cached_chunks"].as_i64().unwrap() as i32;
+        let ops = s["ops"].as_str().unwrap();
+        let expected = strings(&s["lines"]);
         let tmp = tempfile::tempdir().unwrap();
-        let csharp_dir = tmp.path().join("cs");
-        let rust_dir = tmp.path().join("rs");
-        std::fs::create_dir_all(&csharp_dir).unwrap();
-        std::fs::create_dir_all(&rust_dir).unwrap();
-        let expected = csharp(&[
-            "stream-trace",
-            csharp_dir.to_str().unwrap(),
-            &length.to_string(),
-            &chunk.to_string(),
-            &max_cached.to_string(),
-            ops,
-        ]);
-        let actual = run_rust_stream_trace(&rust_dir, length, chunk, max_cached, ops);
+        let actual = run_rust_stream_trace(tmp.path(), length, chunk, max_cached, ops);
         assert_eq!(actual, expected, "ops {ops}");
     }
 }
@@ -628,54 +652,35 @@ fn buffered_stream_traces_match_csharp() {
 /// `FormatFileSize`, `GetMimeType` and `SidecarBadge` give the C# text for the same inputs.
 #[test]
 fn size_mime_and_badge_texts_match_csharp() {
-    if !enabled() {
-        return;
-    }
-    let mut sizes: Vec<i64> = vec![-1, 0, 1, 1023, 1024, 1025, 1075, 1076, 1126, 1127, 1228, 1229, 1280, 10_188, 10_189, 1_048_575];
-    for unit in [1024i64, 1 << 20, 1 << 30] {
-        for m in [1i64, 2, 5, 9, 10, 99, 100, 999, 1000, 1023, 1024, 1025] {
-            for frac in [0i64, 1, 4, 5, 6, 49, 50, 51, 94, 95, 96, 499, 500, 501, 994, 995, 996] {
-                sizes.push(m * unit + unit * frac / 1000);
-                sizes.push(m * unit + unit * frac / 1000 - 1);
-            }
-        }
-    }
-    sizes.extend([i64::MAX, 5_000_000_000, 12_345_678_901, 1_099_511_627_776, 1_125_899_906_842_624]);
-    for batch in sizes.chunks(200) {
-        let mut args = vec!["format-size".to_owned()];
-        args.extend(batch.iter().map(i64::to_string));
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let actual: Vec<String> = batch.iter().map(|b| sa_media::format_file_size(*b)).collect();
-        assert_eq!(actual, csharp(&refs));
+    let texts = fixture_json("texts.json");
+    let sizes = texts["format_file_size"].as_array().unwrap();
+    assert!(sizes.len() > 1200);
+    for pair in sizes {
+        let bytes = pair[0].as_i64().unwrap();
+        assert_eq!(sa_media::format_file_size(bytes), pair[1].as_str().unwrap(), "format_file_size({bytes})");
     }
 
-    let paths = [
-        "a.MKV", "a.mK", "x", "", "b.Ts", "c.opus", "d.AVİ", "e.mp4.", "f.m2TS", "g.\u{212A}", "h.m\u{212A}v", "dir.mkv\\x",
-        "C:\\v.Wma",
-    ];
-    let mut args = vec!["mime"];
-    args.extend(paths);
-    let actual: Vec<String> = paths.iter().map(|p| sa_media::win::mime_type(Some(p)).to_owned()).collect();
-    assert_eq!(actual, csharp(&args));
+    let mimes = texts["mime_type"].as_array().unwrap();
+    assert_eq!(mimes.len(), 13);
+    for pair in mimes {
+        let path = pair[0].as_str().unwrap();
+        assert_eq!(sa_media::win::mime_type(Some(path)), pair[1].as_str().unwrap(), "mime_type({path:?})");
+    }
 
-    let exts = [".srt", " ", "", "-null", ".ſrt", "..vtt", " .vtt", ".ı", ".ass ", "ß", ".ǆ"];
-    let mut args = vec!["badge"];
-    args.extend(exts);
-    let actual: Vec<String> = exts
-        .iter()
-        .map(|e| {
-            let f = sa_media::IndexedMediaFile {
-                full_path: "C:\\a.mp4".into(),
-                file_name: "a.mp4".into(),
-                directory_path: "C:\\".into(),
-                size_bytes: 1,
-                last_write_time_utc: 0,
-                has_sidecar_subtitle: true,
-                sidecar_extension: (*e != "-null").then(|| (*e).to_owned()),
-                indexed_at_utc: 0,
-            };
-            f.sidecar_badge().unwrap_or_else(|| "(none)".into())
-        })
-        .collect();
-    assert_eq!(actual, csharp(&args));
+    let badges = texts["sidecar_badge"].as_array().unwrap();
+    assert_eq!(badges.len(), 11);
+    for pair in badges {
+        let ext = pair[0].as_str().map(str::to_owned);
+        let f = sa_media::IndexedMediaFile {
+            full_path: "C:\\a.mp4".into(),
+            file_name: "a.mp4".into(),
+            directory_path: "C:\\".into(),
+            size_bytes: 1,
+            last_write_time_utc: 0,
+            has_sidecar_subtitle: true,
+            sidecar_extension: ext.clone(),
+            indexed_at_utc: 0,
+        };
+        assert_eq!(f.sidecar_badge().as_deref(), pair[1].as_str(), "sidecar_badge({ext:?})");
+    }
 }

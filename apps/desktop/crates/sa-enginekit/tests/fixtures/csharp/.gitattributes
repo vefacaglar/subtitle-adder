@@ -1,0 +1,2 @@
+# Frozen C# output (JSON lines, gzip): keep every byte, never convert line endings.
+* -text

@@ -1,0 +1,219 @@
+{
+  "restoredUser": "zeynep",
+  "rememberMe": true,
+  "registered": [
+    "Emre",
+    "zeynep"
+  ],
+  "lastUsername": "zeynep",
+  "restored": {
+    "username": "zeynep",
+    "videos": [
+      {
+        "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4",
+        "fileName": "belgesel-uzay.mp4",
+        "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+        "contentFingerprint": "fp:70000:f049ba9812275e1b33e08fc5",
+        "viewCount": 0,
+        "isLiked": true,
+        "rating": 0,
+        "lastPositionSeconds": 0,
+        "durationSeconds": 0,
+        "lastWatchedTicks": null,
+        "updatedTicks": 639297432369847650,
+        "thumbnailSha256": null
+      },
+      {
+        "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\zeynep_klip.mp4",
+        "fileName": "zeynep_klip.mp4",
+        "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+        "contentFingerprint": "fp:1234:5ee3c62522b46646364d4e94",
+        "viewCount": 0,
+        "isLiked": false,
+        "rating": 5,
+        "lastPositionSeconds": 0,
+        "durationSeconds": 60,
+        "lastWatchedTicks": null,
+        "updatedTicks": 639297432369820626,
+        "thumbnailSha256": null
+      }
+    ],
+    "history": [],
+    "liked": [
+      "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4"
+    ],
+    "mostWatched": [],
+    "topRated": [
+      "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\zeynep_klip.mp4"
+    ],
+    "lists": [],
+    "totals": {
+      "watched": 0,
+      "views": 0,
+      "liked": 1,
+      "rated": 1
+    }
+  },
+  "profiles": {
+    "Emre": {
+      "username": "Emre",
+      "videos": [
+        {
+          "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4",
+          "fileName": "belgesel-uzay.mp4",
+          "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+          "contentFingerprint": "fp:70000:f049ba9812275e1b33e08fc5",
+          "viewCount": 0,
+          "isLiked": true,
+          "rating": 3,
+          "lastPositionSeconds": 0,
+          "durationSeconds": 0,
+          "lastWatchedTicks": null,
+          "updatedTicks": 639297432369219168,
+          "thumbnailSha256": "2c3dd77e3b2ba559851769a0933e4f7beb681789a4a7fbef05e8232a6690afad"
+        },
+        {
+          "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\missing_episode.mkv",
+          "fileName": "missing_episode.mkv",
+          "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+          "contentFingerprint": null,
+          "viewCount": 1,
+          "isLiked": false,
+          "rating": 0,
+          "lastPositionSeconds": 5,
+          "durationSeconds": 50,
+          "lastWatchedTicks": 639297432354610499,
+          "updatedTicks": 639297432354610499,
+          "thumbnailSha256": "861837d0550b69a81918ce0fac0d2fc4014d08bf29ebf22754cead3eaf5b86c6"
+        },
+        {
+          "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4",
+          "fileName": "Yaz Tatili \u00C7.mp4",
+          "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+          "contentFingerprint": "fp:5000:9f030afeff8d14245e7708c5",
+          "viewCount": 3,
+          "isLiked": false,
+          "rating": 4,
+          "lastPositionSeconds": 70,
+          "durationSeconds": 100,
+          "lastWatchedTicks": 639297432369010581,
+          "updatedTicks": 639297432369214108,
+          "thumbnailSha256": "b7bc2f933595e2ea346777d796ef53a60dc7c5be5edc3e827c984bd6149c9eb3"
+        },
+        {
+          "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\zeynep_klip.mp4",
+          "fileName": "zeynep_klip.mp4",
+          "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+          "contentFingerprint": "fp:1234:5ee3c62522b46646364d4e94",
+          "viewCount": 0,
+          "isLiked": false,
+          "rating": 0,
+          "lastPositionSeconds": 0,
+          "durationSeconds": 0,
+          "lastWatchedTicks": null,
+          "updatedTicks": null,
+          "thumbnailSha256": null
+        }
+      ],
+      "history": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4",
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\missing_episode.mkv"
+      ],
+      "liked": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4"
+      ],
+      "mostWatched": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4",
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\missing_episode.mkv"
+      ],
+      "topRated": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4",
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4"
+      ],
+      "lists": [
+        {
+          "id": "1429213d3e4d4b0fa2555992f3f0a8be",
+          "name": "Uzay Belgeselleri",
+          "videoPaths": [
+            "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4"
+          ],
+          "createdTicks": 639297432354795720,
+          "updatedTicks": 639297432369437078
+        },
+        {
+          "id": "7291b9deb3e746fcad4fc93a6f304f7a",
+          "name": "Yeni Liste",
+          "videoPaths": [
+            "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\zeynep_klip.mp4",
+            "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4"
+          ],
+          "createdTicks": 639297432369527088,
+          "updatedTicks": 639297432369548047
+        },
+        {
+          "id": "c259e1ca8ba447009cebe09816d71ced",
+          "name": "\u0130zlenecekler",
+          "videoPaths": [
+            "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\Yaz Tatili \u00C7.mp4"
+          ],
+          "createdTicks": 639297432354623906,
+          "updatedTicks": 639297432369239282
+        }
+      ],
+      "totals": {
+        "watched": 2,
+        "views": 4,
+        "liked": 1,
+        "rated": 2
+      }
+    },
+    "zeynep": {
+      "username": "zeynep",
+      "videos": [
+        {
+          "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4",
+          "fileName": "belgesel-uzay.mp4",
+          "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+          "contentFingerprint": "fp:70000:f049ba9812275e1b33e08fc5",
+          "viewCount": 0,
+          "isLiked": true,
+          "rating": 0,
+          "lastPositionSeconds": 0,
+          "durationSeconds": 0,
+          "lastWatchedTicks": null,
+          "updatedTicks": 639297432369847650,
+          "thumbnailSha256": null
+        },
+        {
+          "videoPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\zeynep_klip.mp4",
+          "fileName": "zeynep_klip.mp4",
+          "directoryPath": "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media",
+          "contentFingerprint": "fp:1234:5ee3c62522b46646364d4e94",
+          "viewCount": 0,
+          "isLiked": false,
+          "rating": 5,
+          "lastPositionSeconds": 0,
+          "durationSeconds": 60,
+          "lastWatchedTicks": null,
+          "updatedTicks": 639297432369820626,
+          "thumbnailSha256": null
+        }
+      ],
+      "history": [],
+      "liked": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\belgesel-uzay.mp4"
+      ],
+      "mostWatched": [],
+      "topRated": [
+        "C:\\ProgramData\\SubtitleAdderTestFixtures\\profiles\\media\\zeynep_klip.mp4"
+      ],
+      "lists": [],
+      "totals": {
+        "watched": 0,
+        "views": 0,
+        "liked": 1,
+        "rated": 1
+      }
+    }
+  }
+}
