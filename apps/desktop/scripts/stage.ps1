@@ -29,6 +29,17 @@ Windows PowerShell 5.1 compatible.
 #>
 param([switch]$Force, [switch]$SkipEngine)
 $ErrorActionPreference = 'Stop'
+function Get-Sha256Hex([string]$Path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try { return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $sha.Dispose() }
+}
+# Windows PowerShell 5.1 started from pwsh 7 inherits pwsh's PSModulePath, which breaks module autoloading
+# (e.g. Get-FileHash not found); fall back to 5.1's own module path.
+if ($PSVersionTable.PSEdition -eq 'Desktop' -and $env:PSModulePath -match 'PowerShell[\/]7') {
+    $env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+}
 
 $desktop = Split-Path $PSScriptRoot -Parent
 $repo = Split-Path (Split-Path $desktop -Parent) -Parent
@@ -133,7 +144,7 @@ if (-not (Test-Path (Join-Path $ffbin 'avcodec-62.dll'))) {
 $lgplDlls = @(Get-ChildItem $ffbin -Filter *.dll -File)
 foreach ($dll in $lgplDlls) {
     $to = Join-Path $dist $dll.Name
-    if (-not (Test-Path $to) -or (Get-FileHash -LiteralPath $to).Hash -ne (Get-FileHash -LiteralPath $dll.FullName).Hash) {
+    if (-not (Test-Path $to) -or (Get-Sha256Hex $to) -ne (Get-Sha256Hex $dll.FullName)) {
         Copy-Item -LiteralPath $dll.FullName -Destination $to -Force
     }
 }

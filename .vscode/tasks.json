@@ -254,6 +254,76 @@
             }
         },
         {
+            "label": "desktop: run (Windows)",
+            "detail": "Builds and stages the Rust desktop app when its sources changed (apps/desktop/dist) and starts it.",
+            "type": "process",
+            "command": "${env:SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/apps/desktop/scripts/run.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": "$rustc",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "desktop: release (Windows)",
+            "detail": "Packages the Rust desktop app in release (build/desktop/Subtitle Adder + zip) and starts the packaged app.",
+            "type": "process",
+            "command": "${env:SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/apps/desktop/scripts/release.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": "$rustc",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "desktop: run (macOS)",
+            "detail": "Builds the engine when needed and the Rust desktop app in release, then starts it.",
+            "type": "shell",
+            "command": "bash \"${workspaceFolder}/apps/desktop/scripts/run.sh\"",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": "$rustc",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "desktop: release (macOS)",
+            "detail": "Packages the Rust desktop app as build/desktop/Subtitle Adder.app (signed inside-out) and opens it.",
+            "type": "shell",
+            "command": "bash \"${workspaceFolder}/apps/desktop/scripts/release.sh\"",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": "$rustc",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
             "label": "desktop (Rust): stage",
             "detail": "Builds the Rust desktop app (release) and stages apps/desktop/dist: SubtitleAdder.exe, the FFmpeg DLLs and the engine from engine/dist; skipped when dist is newer than the desktop sources (apps/desktop/scripts/stage.ps1).",
             "type": "process",

@@ -1,0 +1,5 @@
+# Static CRT on Windows, like the engine: the app must not depend on VCRUNTIME140.dll. Setting it here (not through
+# RUSTFLAGS in a script) keeps run (stage.ps1) and release (package-desktop-windows.ps1) builds on the same flags, so
+# they share one build cache instead of rebuilding everything when switching modes.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

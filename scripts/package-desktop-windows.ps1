@@ -131,11 +131,14 @@ if (-not (Test-Path $AppExe)) { throw "cargo produced no $AppExe." }
 if ($env:SKIP_ENGINE_BUILD -eq '1') { $SkipEngineBuild = $true }
 $EngineDir = Join-Path $Root 'engine'
 if ($SkipEngineBuild) {
-    if (-not (Test-Path $EngineExe)) {
-        $EngineDist = Join-Path $EngineDir 'dist'
+    # Prefer engine\dist: engine\scripts\build-dev.ps1 keeps it current (apps\desktop\scripts\release.ps1 runs it
+    # first), while build\engine-dist is only refreshed by a full package run and may be stale.
+    $devDist = Join-Path $EngineDir 'dist'
+    if (Test-Path (Join-Path $devDist 'subtitle-engine.exe')) {
+        $EngineDist = $devDist
         $EngineExe = Join-Path $EngineDist 'subtitle-engine.exe'
     }
-    if (-not (Test-Path $EngineExe)) { throw "-SkipEngineBuild: no staged engine in build\engine-dist\subtitle-engine or engine\dist." }
+    if (-not (Test-Path $EngineExe)) { throw "-SkipEngineBuild: no staged engine in engine\dist or build\engine-dist\subtitle-engine." }
     Log "2/5 Engine build skipped (reusing $EngineDist)"
 }
 else {

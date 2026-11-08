@@ -12,13 +12,22 @@ because long paths break cl.exe.
 #>
 param([switch]$Force)
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 started from pwsh 7 inherits pwsh's PSModulePath, which breaks module autoloading
+# (e.g. Get-FileHash not found); fall back to 5.1's own module path.
+if ($PSVersionTable.PSEdition -eq 'Desktop' -and $env:PSModulePath -match 'PowerShell[\/]7') {
+    $env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+}
 $engine = Split-Path $PSScriptRoot -Parent
 $exe = Join-Path $engine 'dist\subtitle-engine.exe'
 
+# dist\.stamp marks the last finished build-dev run (the staged exe keeps cargo's timestamp, so it cannot tell when the
+# staging scripts last ran). Staging-script changes (runtime DLLs, license notices) restage the folder too.
+$stamp = Join-Path $engine 'dist\.stamp'
 if (-not $Force -and (Test-Path $exe)) {
-    $built = (Get-Item $exe).LastWriteTimeUtc
+    $built = if (Test-Path $stamp) { (Get-Item $stamp).LastWriteTimeUtc } else { (Get-Item $exe).LastWriteTimeUtc }
     $sources = @(Get-ChildItem (Join-Path $engine 'crates') -Recurse -File -Include *.rs, *.toml) +
-        @(Get-Item (Join-Path $engine 'Cargo.toml'), (Join-Path $engine 'Cargo.lock'))
+        @(Get-Item (Join-Path $engine 'Cargo.toml'), (Join-Path $engine 'Cargo.lock')) +
+        @(Get-ChildItem (Join-Path $engine 'scripts') -File -Include *.ps1 -Recurse)
     $newer = $sources | Where-Object { $_.LastWriteTimeUtc -gt $built } | Select-Object -First 1
     if (-not $newer) {
         Write-Host 'engine\dist is up to date.'
@@ -48,3 +57,5 @@ try {
     Pop-Location
 }
 & (Join-Path $PSScriptRoot 'stage-runtime.ps1')
+if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Set-Content -Path $stamp -Value (Get-Date).ToUniversalTime().ToString('o') -Encoding ASCII

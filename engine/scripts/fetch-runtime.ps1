@@ -78,7 +78,13 @@ $Components = @(
 $Tar = Join-Path $env:SystemRoot 'System32\tar.exe'
 if (-not (Test-Path $Tar)) { throw "tar.exe not found at $Tar (Windows 10 1803+ ships it)." }
 
-function Get-Sha256([string]$Path) { (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant() }
+function Get-Sha256([string]$Path) {
+    # .NET instead of Get-FileHash: works even when 5.1 inherited pwsh 7's PSModulePath.
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try { return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $sha.Dispose() }
+}
 
 function Install-Component($c) {
     if ($c.Sha256 -notmatch '^[0-9a-f]{64}$') {

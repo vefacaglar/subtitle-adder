@@ -27,10 +27,31 @@
             "preLaunchTask": "windows: build"
         },
         {
-            "name": "Subtitle Adder (Rust)",
+            "name": "Rust: Run (Windows)",
             "type": "node-terminal",
             "request": "launch",
             "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}/apps/desktop/scripts/run.ps1\"",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Rust: Release (Windows)",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}/apps/desktop/scripts/release.ps1\"",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Rust: Run (macOS)",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "bash \"${workspaceFolder}/apps/desktop/scripts/run.sh\"",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Rust: Release (macOS)",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "bash \"${workspaceFolder}/apps/desktop/scripts/release.sh\"",
             "cwd": "${workspaceFolder}"
         },
         {
