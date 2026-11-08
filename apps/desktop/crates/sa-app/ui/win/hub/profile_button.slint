@@ -1,0 +1,137 @@
+// ProfileStatusButton (win-ui-hub-settings §3): the toolbar profile button between "Otomatik kaydet" and the
+// Settings gear, and its light-dismiss flyout (BottomEdgeAlignedRight). Logged out: sign-in panel (width 252);
+// logged in: name, summary, "Video Platformu", "Çıkış yap" (width 240).
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { Glyph, ToolTip } from "../main/controls.slint";
+import { HubButton } from "hub_controls.slint";
+import { AuthForm } from "auth_card.slint";
+
+component ProfileFlyout inherits PopupWindow {
+    close-policy: close-on-click-outside;
+    Rectangle {
+        background: Theme.flyout-background;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.flyout-stroke;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #00000040;
+        // One layout child gives the surface its size (a conditional alone would not).
+        VerticalLayout {
+        // Logged out (StackPanel spacing 8, width 252).
+        if !HubBridge.is-logged-in: VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+            width: 252px + 32px;
+            Text {
+                text: Loc.t("Profil / Giriş");
+                font-size: 14px;
+                font-weight: 600;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: Loc.t("İzleme geçmişi, görüntülenme sayısı, beğeni ve yıldız puanları profilinize özel kaydedilir.");
+                font-size: 12px;
+                opacity: 0.75;
+                wrap: word-wrap;
+                color: Theme.text-primary;
+            }
+            AuthForm {
+                card: false;
+                register-title: Loc.t("Yeni profil oluştur");
+            }
+        }
+        // Logged in (spacing 10, width 240).
+        if HubBridge.is-logged-in: VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+            width: 240px + 32px;
+            Text {
+                text: HubBridge.current-username;
+                font-size: 15px;
+                font-weight: 600;
+                overflow: elide;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: HubBridge.summary-text;
+                font-size: 12.5px;
+                opacity: 0.8;
+                wrap: word-wrap;
+                color: Theme.text-primary;
+            }
+            HubButton {
+                label: Loc.t("Video Platformu");
+                font-size: 14px;
+                pad-y: 6px;
+                radius: 4px;
+                clicked => {
+                    root.close();
+                    HubBridge.open-platform();
+                }
+            }
+            HubButton {
+                label: Loc.t("Çıkış yap");
+                font-size: 14px;
+                pad-y: 6px;
+                radius: 4px;
+                clicked => { HubBridge.logout(); }
+            }
+        }
+        }
+    }
+}
+
+export component ProfileStatusButton inherits Rectangle {
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Theme.control-stroke;
+    background: touch.pressed ? Theme.control-fill-pressed : touch.has-hover ? Theme.control-fill-hover : Theme.control-fill;
+    min-height: Theme.control-height;
+    accessible-role: button;
+    accessible-label: HubBridge.profile-title;
+    accessible-action-default => { root.open(); }
+    function open() {
+        HubBridge.profile-opened();
+        flyout.show();
+    }
+    property <int> open-request: HubBridge.popover-open-epoch;
+    changed open-request => { root.open(); }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: 6px;
+        Glyph {
+            glyph: HubBridge.is-logged-in ? "\u{E77B}" : "\u{E72E}";
+            size: 13px;
+            color: Theme.text-primary;
+        }
+        Text {
+            text: HubBridge.profile-title;
+            font-size: 12.5px;
+            font-weight: 600;
+            max-width: 140px;
+            overflow: elide;
+            vertical-alignment: center;
+            color: Theme.text-primary;
+        }
+    }
+    touch := TouchArea {
+        clicked => { root.open(); }
+    }
+    ToolTip {
+        text: HubBridge.is-logged-in
+            ? Loc.t2("Aktif profil: %@ (%@)", HubBridge.current-username, HubBridge.summary-text)
+            : Loc.t("İzleme geçmişi, beğeni ve puanlama için giriş yapın");
+        show: touch.has-hover && !touch.pressed;
+    }
+    // BottomEdgeAlignedRight: below the button, right edges aligned.
+    flyout := ProfileFlyout {
+        x: root.width - (HubBridge.is-logged-in ? 272px : 284px);
+        y: root.height + 4px;
+    }
+}

@@ -1,0 +1,312 @@
+// Settings ▸ Görünüm (win-ui-hub-settings §6.3): Tema, Arayüz yazı tipi, the overlay preview and its style
+// (Yazı tipi, Boyut, Yazı rengi with a ColorPicker flyout, Arka plan, Arka plan opaklığı), Varsayılana döndür.
+import { Button, ComboBox, Slider, LineEdit } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { SettingsCard, CardCombo, SectionHeader, SecondaryText } from "controls.slint";
+
+// OverlayLabel (§6.3.1) at a fixed video height: semibold, centered, wrap; box / shadow / outline.
+export component PreviewLabel inherits Rectangle {
+    in property <string> text;
+    in property <string> family;
+    in property <float> size-fraction;
+    in property <color> text-color;
+    in property <int> mode;
+    in property <float> opacity-value;
+    in property <length> video-height: 150px;
+    property <length> font-px: max(12px, root.video-height * clamp(root.size-fraction, 0.03, 0.09));
+    property <length> r: clamp(root.font-px * 0.045, 1px, 2.5px);
+    property <length> d: root.r / 1.41421356;
+    property <float> shadow-a: max(root.opacity-value, 0.5);
+    property <[{dx: length, dy: length, a: float}]> copies: root.mode == 2 ? [
+            { dx: -root.r, dy: 0px, a: 1 }, { dx: root.r, dy: 0px, a: 1 }, { dx: 0px, dy: -root.r, a: 1 }, { dx: 0px, dy: root.r, a: 1 },
+            { dx: -root.d, dy: -root.d, a: 1 }, { dx: root.d, dy: -root.d, a: 1 }, { dx: -root.d, dy: root.d, a: 1 }, { dx: root.d, dy: root.d, a: 1 },
+        ] : root.mode == 1 ? [
+            { dx: 0px, dy: 1.5px, a: root.shadow-a }, { dx: 0px, dy: 0.8px, a: 0.8 }, { dx: -0.8px, dy: 0px, a: 0.8 }, { dx: 0.8px, dy: 0px, a: 0.8 },
+        ] : [];
+    width: label.preferred-width + 24px;
+    height: label.preferred-height + 12px;
+    border-radius: 8px;
+    background: root.mode == 0 ? rgba(0, 0, 0, clamp(root.opacity-value, 0, 1)) : transparent;
+    accessible-role: none;
+    for c in root.copies: Text {
+        x: 12px + c.dx;
+        y: 6px + c.dy;
+        text: root.text;
+        font-size: root.font-px;
+        font-weight: 600;
+        font-family: root.family;
+        horizontal-alignment: center;
+        color: rgba(0, 0, 0, c.a);
+    }
+    label := Text {
+        x: 12px;
+        y: 6px;
+        text: root.text;
+        font-size: root.font-px;
+        font-weight: 600;
+        font-family: root.family;
+        horizontal-alignment: center;
+        color: root.text-color;
+    }
+}
+
+// ColorPicker flyout: spectrum (hue × saturation), value slider, preview, hex; no alpha.
+component ColorFlyout inherits PopupWindow {
+    in property <color> initial;
+    callback picked(color);
+    property <float> hue: root.initial.to-hsv().hue;
+    property <float> sat: root.initial.to-hsv().saturation;
+    property <float> val: root.initial.to-hsv().value;
+    property <color> current: hsv(root.hue, root.sat, root.val);
+    close-policy: close-on-click-outside;
+    width: 300px;
+    Rectangle {
+        background: Theme.flyout-background;
+        border-color: Theme.flyout-stroke;
+        border-width: 1px;
+        border-radius: 8px;
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #00000040;
+        drop-shadow-offset-y: 4px;
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+            spectrum := Rectangle {
+                height: 160px;
+                border-radius: 4px;
+                clip: true;
+                background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.6%, #00ff00 33.3%, #00ffff 50%, #0000ff 66.6%, #ff00ff 83.3%, #ff0000 100%);
+                Rectangle {
+                    background: @linear-gradient(180deg, #ffffff00 0%, #ffffff 100%);
+                }
+                Rectangle {
+                    x: root.hue / 360 * parent.width - 7px;
+                    y: (1 - root.sat) * parent.height - 7px;
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 7px;
+                    border-width: 2px;
+                    border-color: white;
+                    drop-shadow-blur: 2px;
+                    drop-shadow-color: #00000080;
+                }
+                TouchArea {
+                    function pick() {
+                        root.hue = clamp(self.mouse-x / self.width, 0, 1) * 359.9;
+                        root.sat = 1 - clamp(self.mouse-y / self.height, 0, 1);
+                        root.picked(root.current);
+                    }
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            self.pick();
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            self.pick();
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                Slider {
+                    horizontal-stretch: 1;
+                    minimum: 0;
+                    maximum: 1;
+                    value: root.val;
+                    changed(v) => {
+                        root.val = v;
+                        root.picked(root.current);
+                    }
+                }
+                Rectangle {
+                    width: 44px;
+                    height: 32px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.control-stroke;
+                    background: root.current;
+                }
+            }
+            hex := LineEdit {
+                text: SettingsBridge.overlay-color-hex;
+                accessible-label: Loc.t("Yazı rengi");
+                accepted(t) => { SettingsBridge.overlay-color-hex-entered(t); }
+            }
+        }
+    }
+}
+
+export component AppearancePage inherits VerticalLayout {
+    spacing: 4px;
+
+    SectionHeader { text: Loc.t("Uygulama"); first: true; }
+    SettingsCard {
+        glyph: "\u{E771}";
+        title: Loc.t("Tema");
+        CardCombo {
+            model: [Loc.t("Sistem"), Loc.t("Açık"), Loc.t("Koyu")];
+            current-index <=> SettingsBridge.theme-index;
+            accessible-label: Loc.t("Tema");
+            selected => { SettingsBridge.theme-selected(self.current-index); }
+        }
+    }
+    SettingsCard {
+        title: Loc.t("Arayüz yazı tipi");
+        caption: Loc.t("Uygulamayı yeniden açınca uygulanır. Altyazı yazı tipinden bağımsızdır.");
+        ui-font := CardCombo {
+            model: SettingsBridge.font-titles;
+            current-index <=> SettingsBridge.ui-font-index;
+            accessible-label: Loc.t("Arayüz yazı tipi");
+            selected => { SettingsBridge.ui-font-selected(self.current-index); }
+        }
+    }
+
+    SectionHeader { text: Loc.t("Video üstündeki altyazı"); }
+    VerticalLayout {
+        padding-bottom: 4px;
+        Rectangle {
+            height: 120px;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.card-stroke;
+            background: @linear-gradient(180deg, #6b6b6b 0%, #000000 100%);
+            clip: true;
+            accessible-role: none;
+            label := PreviewLabel {
+                x: (parent.width - self.width) / 2;
+                y: parent.height - 18px - self.height;
+                text: Loc.t("Örnek altyazı metni");
+                family: SettingsBridge.overlay-font-family;
+                size-fraction: SettingsBridge.overlay-size;
+                text-color: SettingsBridge.overlay-color;
+                mode: SettingsBridge.overlay-background-index;
+                opacity-value: SettingsBridge.overlay-opacity;
+            }
+        }
+    }
+    SettingsCard {
+        glyph: "\u{E8D2}";
+        title: Loc.t("Yazı tipi");
+        CardCombo {
+            model: SettingsBridge.font-titles;
+            current-index <=> SettingsBridge.overlay-font-index;
+            accessible-label: Loc.t("Yazı tipi");
+            selected => { SettingsBridge.overlay-font-selected(self.current-index); }
+        }
+    }
+    SettingsCard {
+        sub: true;
+        title: Loc.t("Boyut");
+        HorizontalLayout {
+            spacing: 12px;
+            Slider {
+                width: 200px;
+                minimum: 0.03;
+                maximum: 0.09;
+                step: 0.001;
+                value <=> SettingsBridge.overlay-size;
+                accessible-label: Loc.t("Boyut");
+                changed(v) => { SettingsBridge.overlay-size-changed(v); }
+            }
+            Text {
+                width: 40px;
+                text: SettingsBridge.overlay-size-text;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                color: Theme.text-secondary;
+            }
+        }
+    }
+    SettingsCard {
+        sub: true;
+        title: Loc.t("Yazı rengi");
+        color-button := Rectangle {
+            width: swatch-row.preferred-width + 12px;
+            height: 32px;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: Theme.control-stroke;
+            background: color-touch.pressed ? Theme.control-fill-pressed : color-touch.has-hover ? Theme.control-fill-hover : Theme.control-fill;
+            accessible-role: button;
+            accessible-label: Loc.t("Yazı rengi");
+            swatch-row := HorizontalLayout {
+                padding: 6px;
+                spacing: 8px;
+                Rectangle {
+                    width: 44px;
+                    height: 20px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.control-stroke;
+                    background: SettingsBridge.overlay-color;
+                }
+                Text {
+                    text: SettingsBridge.overlay-color-hex;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+                Rectangle { width: 4px; }
+            }
+            color-touch := TouchArea { clicked => { flyout.show(); } }
+            flyout := ColorFlyout {
+                x: color-button.width - 300px;
+                y: color-button.height + 4px;
+                initial: SettingsBridge.overlay-color;
+                picked(c) => { SettingsBridge.overlay-color-picked(c); }
+            }
+        }
+    }
+    SettingsCard {
+        sub: true;
+        title: Loc.t("Arka plan");
+        CardCombo {
+            model: [Loc.t("Kutu"), Loc.t("Gölge"), Loc.t("Kontur")];
+            current-index <=> SettingsBridge.overlay-background-index;
+            accessible-label: Loc.t("Arka plan");
+            selected => { SettingsBridge.overlay-background-selected(self.current-index); }
+        }
+    }
+    SettingsCard {
+        sub: true;
+        title: Loc.t("Arka plan opaklığı");
+        title-opacity: SettingsBridge.overlay-background-index == 0 ? 1 : 0.5;
+        HorizontalLayout {
+            spacing: 12px;
+            Slider {
+                width: 200px;
+                minimum: 0;
+                maximum: 1;
+                step: 0.01;
+                enabled: SettingsBridge.overlay-background-index == 0;
+                value <=> SettingsBridge.overlay-opacity;
+                accessible-label: Loc.t("Arka plan opaklığı");
+                changed(v) => { SettingsBridge.overlay-opacity-changed(v); }
+            }
+            Text {
+                width: 40px;
+                text: SettingsBridge.overlay-opacity-text;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                color: Theme.text-secondary;
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-top: 8px;
+        spacing: 16px;
+        SecondaryText {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            text: Loc.t("Bu ayarlar yalnızca uygulamadaki önizlemeyi etkiler; dışa aktarılan altyazı dosyalarını değiştirmez.");
+        }
+        Button {
+            text: Loc.t("Varsayılana döndür");
+            clicked => { SettingsBridge.overlay-reset(); }
+        }
+    }
+
+}

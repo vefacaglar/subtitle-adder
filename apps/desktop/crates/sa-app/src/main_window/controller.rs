@@ -1,0 +1,2328 @@
+//! `MainWindowController`: wires one `MainWindow` to the view models and its own player (win-ui-main §6–§18,
+//! mac-ui §3–§8, §10). The view models decide; this file only maps their state onto `MainBridge` /
+//! `ExplorerBridge` / `AppBridge` / `MenuBridge` (diffed, on the UI thread) and turns callbacks into VM commands.
+//!
+//! Composition (which stores, which engine, which settings window) is the app shell's job: it builds
+//! [`MainWindowDeps`] and calls [`MainWindowController::attach`].
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
+
+use sa_core::appearance::{AppearanceSettings, OverlayBackground, OverlayText, SpeakerPalette, SubtitleDisplay};
+use sa_core::dispatch::UiDispatcher;
+use sa_core::engine_types::SubtitleFormat;
+use sa_core::models::SubtitleLanguage;
+use sa_core::platform::{FileFilter, PlatformShell};
+use sa_core::settings::{SettingsStore, defaults, keys};
+use sa_player::{MediaPlayerBackend, VideoFrame};
+use sa_viewmodels::explorer::{ExplorerChange, FileExplorerModel};
+use sa_viewmodels::hub::{HubChange, VideoPlatformModel};
+use sa_viewmodels::shortcuts::{self, PlayerShortcut, ShortcutFocus, ShortcutTarget, WindowsKeyAction};
+use sa_viewmodels::subtitle::subtitle_time_short;
+use sa_viewmodels::types::{ExportLanguage, JobStatusKind, PlaylistItemState, SubtitleChange, TimingEdge, Workspace};
+use sa_viewmodels::uiref::UiKey;
+use sa_viewmodels::{PlatformPolicy, SubtitleViewModel};
+use uuid::Uuid;
+
+use super::hud::{HudFlavor, HudState};
+use super::input::{self, DropBatcher, SlintKey};
+use super::layout::{LayoutFlags, LayoutMode, MacEditorContent, mac_editor_content, windows_layout};
+use super::menus::{self, Entry, MenuAction, RowMenuState};
+use super::player::{PlayerController, PlayerFlavor, PlayerOutput, SourceFactory};
+use super::rows::{fill_if_changed, sync_keyed};
+use super::status::{ErrorBar, bridge_fraction, mac_playback_notice, status_kind_index};
+use super::transport::{TransportInput, scrub_target, synchronize, windows_wheel_volume};
+use crate::ui::{self, AppBridge, ExplorerBridge, ExplorerRowData, MainBridge, MainWindow, MenuBridge, MenuEntry, PickerItem, QueueRowData, SentenceRowData};
+
+/// Converts the engine `preview` command into a playable copy (macOS fallback; runs on a worker thread).
+pub type PreviewMaker = Arc<dyn Fn(&Path) -> Result<PathBuf, String> + Send + Sync>;
+
+/// Everything a main window needs. `explorer` and `hub` are optional so the window also runs in previews/tests.
+pub struct MainWindowDeps {
+    pub vm: Rc<SubtitleViewModel>,
+    pub explorer: Option<Rc<FileExplorerModel>>,
+    pub hub: Option<Rc<VideoPlatformModel>>,
+    pub settings: Arc<dyn SettingsStore>,
+    pub appearance: Option<Arc<AppearanceSettings>>,
+    pub shell: Arc<dyn PlatformShell>,
+    pub ui: Arc<dyn UiDispatcher>,
+    pub player: Box<dyn MediaPlayerBackend>,
+    /// Windows: wraps a file in the buffered (VideoCache) stream; default = plain file.
+    pub source_factory: Option<SourceFactory>,
+    pub preview: Option<PreviewMaker>,
+    pub hooks: MainWindowHooks,
+}
+
+/// Actions owned by other areas (settings window, profile UI, translation-model picker, Apple-menu roles).
+#[derive(Default)]
+pub struct MainWindowHooks {
+    pub open_settings: Option<Rc<dyn Fn()>>,
+    pub profile_clicked: Option<Rc<dyn Fn()>>,
+    pub translation_model_clicked: Option<Rc<dyn Fn()>>,
+    /// Real window full screen (winit `set_fullscreen`); the controller keeps the state.
+    pub set_full_screen: Option<Rc<dyn Fn(bool)>>,
+    pub minimize: Option<Rc<dyn Fn()>>,
+    pub toggle_maximize: Option<Rc<dyn Fn()>>,
+    pub drag_window: Option<Rc<dyn Fn()>>,
+    pub close_window: Option<Rc<dyn Fn()>>,
+    pub new_window: Option<Rc<dyn Fn()>>,
+}
+
+#[derive(Default)]
+struct UiState {
+    full_screen: bool,
+    editing_text: bool,
+    list_focused: bool,
+    anchor: Option<Uuid>,
+    seek_scrubbing: bool,
+    scrub_ratio: f64,
+    volume_scrubbing: bool,
+    layout_epoch: i32,
+    scroll_epoch: i32,
+    run_after_picking: bool,
+    row_uids: Vec<Uuid>,
+    queue_ids: Vec<Uuid>,
+    explorer_paths: Vec<PathBuf>,
+    explorer_folders: Vec<bool>,
+    language_codes: Vec<&'static str>,
+    target_codes: Vec<&'static str>,
+    frame: Option<SharedPixelBuffer<Rgba8Pixel>>,
+    last_layout: Option<(LayoutFlags, bool, bool)>,
+    /// The ids `menu-entries` currently shows (`overflow` items map back to toolbar actions).
+    overflow_items: Vec<usize>,
+    last_window_size: (f32, f32),
+    mac_notches: shortcuts::ScrollNotches,
+}
+
+pub struct MainWindowController {
+    window: slint::Weak<MainWindow>,
+    mac: bool,
+    policy: Arc<PlatformPolicy>,
+    vm: Rc<SubtitleViewModel>,
+    explorer: Option<Rc<FileExplorerModel>>,
+    hub: Option<Rc<VideoPlatformModel>>,
+    settings: Arc<dyn SettingsStore>,
+    appearance: Option<Arc<AppearanceSettings>>,
+    shell: Arc<dyn PlatformShell>,
+    ui_dispatcher: Arc<dyn UiDispatcher>,
+    preview: Option<PreviewMaker>,
+    hooks: MainWindowHooks,
+    player: RefCell<PlayerController>,
+    hud: RefCell<HudState>,
+    error_bar: RefCell<ErrorBar>,
+    drops: RefCell<DropBatcher>,
+    st: RefCell<UiState>,
+    rows: Rc<VecModel<SentenceRowData>>,
+    queue_rows: Rc<VecModel<QueueRowData>>,
+    explorer_rows: Rc<VecModel<ExplorerRowData>>,
+    language_items: Rc<VecModel<PickerItem>>,
+    target_items: Rc<VecModel<PickerItem>>,
+    menu_entries: Rc<VecModel<MenuEntry>>,
+    timer: slint::Timer,
+    key: Cell<Option<UiKey<MainWindowController>>>,
+    disposed: Cell<bool>,
+}
+
+fn s(v: impl Into<SharedString>) -> SharedString {
+    v.into()
+}
+
+fn to_ui_workspace(w: Workspace) -> ui::Workspace {
+    match w {
+        Workspace::Editor => ui::Workspace::Editor,
+        Workspace::Platform => ui::Workspace::Platform,
+        Workspace::Playlist => ui::Workspace::Playlist,
+    }
+}
+
+fn from_ui_workspace(w: ui::Workspace) -> Workspace {
+    match w {
+        ui::Workspace::Editor => Workspace::Editor,
+        ui::Workspace::Platform => Workspace::Platform,
+        ui::Workspace::Playlist => Workspace::Playlist,
+    }
+}
+
+fn to_menu_entry(e: Entry) -> MenuEntry {
+    MenuEntry {
+        id: e.id.into(),
+        title: e.title.into(),
+        glyph: e.glyph.into(),
+        symbol: e.symbol.into(),
+        tint: e.tint.map(|(r, g, b)| slint::Color::from_rgb_u8(r, g, b)).unwrap_or(slint::Color::from_argb_u8(0, 0, 0, 0)),
+        checkable: e.checkable,
+        checked: e.checked,
+        radio: e.radio,
+        enabled: e.enabled,
+        separator: e.separator,
+        destructive: e.destructive,
+        hint: e.hint.into(),
+        level: e.level,
+        submenu: e.submenu,
+    }
+}
+
+/// Copies an RGBA frame into a reusable pixel buffer.
+fn frame_to_buffer(frame: &VideoFrame, reuse: Option<SharedPixelBuffer<Rgba8Pixel>>) -> SharedPixelBuffer<Rgba8Pixel> {
+    let (w, h) = (frame.width, frame.height);
+    let mut buf = match reuse {
+        Some(b) if b.width() == w && b.height() == h => b,
+        _ => SharedPixelBuffer::<Rgba8Pixel>::new(w, h),
+    };
+    let dst = buf.make_mut_bytes();
+    let row = (w * 4) as usize;
+    let stride = frame.stride.max(w * 4) as usize;
+    if stride == row && frame.rgba.len() >= dst.len() {
+        dst.copy_from_slice(&frame.rgba[..dst.len()]);
+    } else {
+        for y in 0..h as usize {
+            let src = &frame.rgba[y * stride..(y * stride + row).min(frame.rgba.len())];
+            dst[y * row..y * row + src.len()].copy_from_slice(src);
+        }
+    }
+    buf
+}
+
+impl MainWindowController {
+    /// Attaches to `window` and pushes the initial state. The returned `Rc` must be kept alive with the window.
+    pub fn attach(window: &MainWindow, deps: MainWindowDeps) -> Rc<Self> {
+        let policy = deps.vm.policy();
+        let mac = policy.catalog_chain == sa_core::l10n::CatalogChain::Mac;
+        let flavor = if mac { PlayerFlavor::Mac } else { PlayerFlavor::Windows };
+        let player = match deps.source_factory {
+            Some(f) => PlayerController::with_parts(flavor, deps.player, f, Box::new(Instant::now)),
+            None => PlayerController::new(flavor, deps.player),
+        };
+        let this = Rc::new(Self {
+            window: window.as_weak(),
+            mac,
+            policy,
+            vm: deps.vm,
+            explorer: deps.explorer,
+            hub: deps.hub,
+            settings: deps.settings,
+            appearance: deps.appearance,
+            shell: deps.shell,
+            ui_dispatcher: deps.ui,
+            preview: deps.preview,
+            hooks: deps.hooks,
+            player: RefCell::new(player),
+            hud: RefCell::new(HudState::new(if mac { HudFlavor::Mac } else { HudFlavor::Windows })),
+            error_bar: RefCell::new(ErrorBar::default()),
+            drops: RefCell::new(DropBatcher::default()),
+            st: RefCell::new(UiState::default()),
+            rows: Rc::new(VecModel::default()),
+            queue_rows: Rc::new(VecModel::default()),
+            explorer_rows: Rc::new(VecModel::default()),
+            language_items: Rc::new(VecModel::default()),
+            target_items: Rc::new(VecModel::default()),
+            menu_entries: Rc::new(VecModel::default()),
+            timer: slint::Timer::default(),
+            key: Cell::new(None),
+            disposed: Cell::new(false),
+        });
+        let key = UiKey::register(&this);
+        this.key.set(Some(key));
+        this.install_models(window);
+        this.wire_player();
+        this.wire_view_models();
+        this.wire_callbacks(window);
+        this.start_timer();
+        this.refresh_all(true);
+        if this.vm.video().is_some() {
+            this.on_video_changed();
+        }
+        this
+    }
+
+    fn win(&self) -> Option<MainWindow> {
+        self.window.upgrade()
+    }
+
+    fn weak(self: &Rc<Self>) -> std::rc::Weak<Self> {
+        Rc::downgrade(self)
+    }
+
+    fn install_models(&self, w: &MainWindow) {
+        let main = w.global::<MainBridge>();
+        main.set_rows(ModelRc::from(self.rows.clone()));
+        main.set_queue_rows(ModelRc::from(self.queue_rows.clone()));
+        main.set_language_items(ModelRc::from(self.language_items.clone()));
+        main.set_target_items(ModelRc::from(self.target_items.clone()));
+        main.set_menu_entries(ModelRc::from(self.menu_entries.clone()));
+        w.global::<ExplorerBridge>().set_rows(ModelRc::from(self.explorer_rows.clone()));
+    }
+
+    // ------------------------------------------------------------------ wiring
+
+    fn wire_player(self: &Rc<Self>) {
+        let key = self.key.get().expect("registered");
+        let ui = self.ui_dispatcher.clone();
+        self.player.borrow_mut().set_event_sink(Box::new(move |ev| {
+            key.post(&ui, move |c| c.on_player_event(ev));
+        }));
+    }
+
+    fn wire_view_models(self: &Rc<Self>) {
+        let weak = self.weak();
+        self.vm.on_change(Box::new(move |change| {
+            if let Some(c) = weak.upgrade() {
+                c.on_vm_change(change);
+            }
+        }));
+        if let Some(ex) = &self.explorer {
+            let weak = self.weak();
+            ex.on_change(Box::new(move |change| {
+                if let Some(c) = weak.upgrade() {
+                    c.on_explorer_change(change);
+                }
+            }));
+        }
+        if let Some(hub) = &self.hub {
+            let weak = self.weak();
+            hub.on_change(Box::new(move |change| {
+                if let Some(c) = weak.upgrade()
+                    && matches!(change, HubChange::Session | HubChange::Engagement)
+                {
+                    c.sync_engagement();
+                    if change == HubChange::Session
+                        && let Some(ex) = &c.explorer
+                    {
+                        ex.set_logged_in(c.hub.as_ref().is_some_and(|h| h.is_logged_in()));
+                    }
+                }
+            }));
+        }
+        if let Some(app) = &self.appearance {
+            let key = self.key.get().expect("registered");
+            let ui = self.ui_dispatcher.clone();
+            // The subscription lives as long as the window (the controller is dropped with it).
+            app.subscribe(move |_| {
+                key.post(&ui, |c| c.sync_overlay_style());
+            })
+            .detach();
+        }
+        let key = self.key.get().expect("registered");
+        let ui = self.ui_dispatcher.clone();
+        sa_core::l10n::LanguageState::shared()
+            .subscribe(move |_| {
+                key.post(&ui, |c| c.refresh_all(true));
+            })
+            .detach();
+    }
+
+    fn start_timer(self: &Rc<Self>) {
+        let weak = self.weak();
+        // win-ui-main §10.5: 100 ms on the UI thread (also drives the HUD timer and the drop batch).
+        self.timer.start(slint::TimerMode::Repeated, Duration::from_millis(100), move || {
+            if let Some(c) = weak.upgrade() {
+                c.on_timer();
+            }
+        });
+    }
+
+    fn on_timer(&self) {
+        if self.disposed.get() {
+            return;
+        }
+        self.player.borrow_mut().tick();
+        self.drain_player();
+        if self.hud.borrow_mut().poll(Instant::now()) {
+            self.sync_hud();
+        }
+        let batch = self.drops.borrow_mut().take_if_settled(Instant::now());
+        if let Some(paths) = batch {
+            self.handle_drop(paths);
+        }
+    }
+
+    // ------------------------------------------------------------------ view-model changes
+
+    fn on_vm_change(&self, change: SubtitleChange) {
+        if self.disposed.get() {
+            return;
+        }
+        match change {
+            SubtitleChange::Video => self.on_video_changed(),
+            SubtitleChange::Sentences => {
+                self.player.borrow_mut().set_sentences(self.vm.sentences());
+                self.drain_player();
+                self.sync_content();
+                self.sync_rows();
+                self.sync_editor_state();
+                self.sync_overlay();
+                self.sync_toolbar();
+            }
+            SubtitleChange::Translations => {
+                self.sync_rows();
+                self.sync_overlay();
+                self.sync_pickers(false);
+                self.sync_display();
+            }
+            SubtitleChange::Selection => {
+                self.sync_rows();
+                self.sync_editor_state();
+                // win-ui-main §9.1 / mac-ui §7.6: a selected line seeks the player to its start.
+                if let Some(uid) = self.vm.selection()
+                    && let Some(sentence) = self.vm.sentences().into_iter().find(|s| s.uid == uid)
+                {
+                    self.player.borrow_mut().seek(sentence.start);
+                    self.drain_player();
+                }
+            }
+            SubtitleChange::Drafts => {}
+            SubtitleChange::Status | SubtitleChange::Notice => {
+                self.sync_status();
+                self.sync_toolbar();
+                self.sync_editor_state();
+            }
+            SubtitleChange::Undo => self.sync_editor_state(),
+            SubtitleChange::Workspace => {
+                self.sync_workspace();
+                self.sync_toolbar();
+                self.sync_status();
+            }
+            SubtitleChange::Layout => {
+                self.sync_layout(true);
+            }
+            SubtitleChange::Playlist => {
+                self.sync_queue();
+                self.sync_toolbar();
+            }
+            SubtitleChange::Settings | SubtitleChange::Models | SubtitleChange::Providers => {
+                self.sync_pickers(false);
+                self.sync_toolbar();
+                self.sync_display();
+                self.sync_status();
+            }
+            SubtitleChange::All => self.refresh_all(true),
+        }
+    }
+
+    fn on_explorer_change(&self, _change: ExplorerChange) {
+        self.sync_explorer();
+    }
+
+    /// win-ui-main §9.2 `on_video_changed()`.
+    fn on_video_changed(&self) {
+        let video = self.vm.video();
+        self.error_bar.borrow_mut().video_changed();
+        let auto_play = self.vm.auto_play_video();
+        {
+            let mut p = self.player.borrow_mut();
+            p.load(video.as_deref(), auto_play);
+            p.set_sentences(self.vm.sentences());
+        }
+        self.drain_player();
+        self.st.borrow_mut().frame = None;
+        if let Some(w) = self.win() {
+            w.global::<MainBridge>().set_video_frame(slint::Image::default());
+        }
+        if let Some(ex) = &self.explorer {
+            ex.sync_to_video(video.as_deref());
+        }
+        if let Some(hub) = &self.hub {
+            // Playlist runs never count as an opened video (privacy-gated in the hub).
+            hub.player_video_changed(video.as_deref(), !self.vm.is_playlist_running());
+        }
+        self.refresh_all(false);
+    }
+
+    // ------------------------------------------------------------------ player
+
+    fn on_player_event(&self, ev: sa_player::PlayerEvent) {
+        if self.disposed.get() {
+            return;
+        }
+        self.player.borrow_mut().handle_event(ev);
+        self.drain_player();
+    }
+
+    fn drain_player(&self) {
+        let outputs = self.player.borrow_mut().take_outputs();
+        if outputs.is_empty() {
+            return;
+        }
+        let mut ticked = false;
+        for o in outputs {
+            match o {
+                PlayerOutput::Ticked => ticked = true,
+                PlayerOutput::ActiveChanged(_) => self.on_active_changed(),
+                PlayerOutput::VideoSizeChanged(w, h) => {
+                    if let Some(win) = self.win() {
+                        win.global::<MainBridge>().set_video_aspect((w / h.max(1.0)) as f32);
+                    }
+                }
+                PlayerOutput::FrameReady => self.present_frame(),
+                PlayerOutput::Failed(details) => {
+                    let make: Rc<dyn Fn() -> String> = Rc::new(move || sa_core::l!("Video oynatılamadı: %@", details.clone()));
+                    self.error_bar.borrow_mut().show_save_error(make);
+                    self.sync_error_bar();
+                }
+                PlayerOutput::FailureChanged => self.sync_status(),
+                PlayerOutput::PlayEmptyRequested => self.play_empty(),
+                PlayerOutput::Playback(report) => {
+                    if let Some(hub) = &self.hub {
+                        hub.report_playback(report);
+                    }
+                }
+                PlayerOutput::PreparePreview { source, generation } => self.start_preview(source, generation),
+                PlayerOutput::PreparingPreviewChanged(v) => {
+                    if let Some(w) = self.win() {
+                        w.global::<MainBridge>().set_preparing_preview(v);
+                    }
+                }
+            }
+        }
+        if ticked {
+            self.sync_transport();
+        }
+    }
+
+    fn start_preview(&self, source: PathBuf, generation: u64) {
+        let Some(maker) = self.preview.clone() else {
+            self.player.borrow_mut().preview_ready(generation, Err(String::new()));
+            return;
+        };
+        let key = self.key.get().expect("registered");
+        let ui = self.ui_dispatcher.clone();
+        std::thread::spawn(move || {
+            let result = maker(&source);
+            key.post(&ui, move |c| {
+                c.player.borrow_mut().preview_ready(generation, result);
+                c.drain_player();
+            });
+        });
+    }
+
+    fn present_frame(&self) {
+        let frame = self.player.borrow_mut().latest_frame();
+        let Some(frame) = frame else { return };
+        let Some(w) = self.win() else { return };
+        let reuse = self.st.borrow_mut().frame.take();
+        let buf = frame_to_buffer(&frame, reuse);
+        w.global::<MainBridge>().set_video_frame(slint::Image::from_rgba8(buf.clone()));
+        self.st.borrow_mut().frame = Some(buf);
+    }
+
+    /// win-ui-main §10.6: toggle without a loaded video plays the first candidate.
+    fn play_empty(&self) {
+        let candidate = self
+            .vm
+            .video()
+            .or_else(|| self.explorer.as_ref().and_then(|e| e.rows().into_iter().find(|r| r.is_active || !r.is_folder).map(|r| r.path)))
+            .or_else(|| self.vm.playlist().first().map(|p| p.video_path.clone()))
+            .or_else(|| self.hub.as_ref().and_then(|h| h.cards().first().map(|c| c.path.clone())));
+        let Some(c) = candidate.filter(|p| p.is_file()) else { return };
+        if !self.vm.video().is_some_and(|v| self.policy.same_path(&v, &c)) {
+            self.vm.open_video(Some(c.clone()));
+        }
+        self.player.borrow_mut().load(Some(&c), true);
+        self.drain_player();
+    }
+
+    fn on_active_changed(&self) {
+        self.sync_rows();
+        self.sync_overlay();
+        let (playing, active) = {
+            let p = self.player.borrow();
+            (p.is_playing(), p.active_id())
+        };
+        let editing = self.st.borrow().editing_text;
+        if playing
+            && !editing
+            && let Some(uid) = active
+            && let Some(index) = self.st.borrow().row_uids.iter().position(|u| *u == uid)
+            && let Some(w) = self.win()
+        {
+            let main = w.global::<MainBridge>();
+            main.set_scroll_row(index as i32);
+            let mut st = self.st.borrow_mut();
+            st.scroll_epoch += 1;
+            main.set_scroll_epoch(st.scroll_epoch);
+        }
+    }
+
+    // ------------------------------------------------------------------ sync (VM → bridge)
+
+    /// `refresh_all()` (win-ui-main §9.1).
+    pub fn refresh_all(&self, force_pickers: bool) {
+        if self.disposed.get() {
+            return;
+        }
+        self.sync_title();
+        self.sync_workspace();
+        self.sync_content();
+        self.sync_pickers(force_pickers);
+        self.sync_toolbar();
+        self.sync_status();
+        {
+            let failed = self.failed_message();
+            self.error_bar.borrow_mut().relocalize(failed.as_ref());
+        }
+        self.sync_error_bar();
+        self.sync_editor_state();
+        self.sync_rows();
+        self.sync_queue();
+        self.sync_explorer();
+        self.sync_layout(false);
+        self.sync_display();
+        self.sync_overlay_style();
+        self.sync_overlay();
+        self.sync_transport();
+        self.sync_engagement();
+        self.sync_menu_bar();
+    }
+
+    fn sync_title(&self) {
+        let Some(w) = self.win() else { return };
+        let app = w.global::<AppBridge>();
+        let title = self.vm.window_title();
+        let file = self.vm.video().and_then(|v| v.file_name().map(|n| n.to_string_lossy().into_owned()));
+        app.set_window_title(s(title));
+        app.set_title_file(s(file.map(|n| format!("— {n}")).unwrap_or_default()));
+    }
+
+    fn sync_workspace(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        main.set_workspace(to_ui_workspace(self.vm.workspace()));
+        let count = if self.mac { self.vm.list_rows().len() } else { self.vm.playlist().len() };
+        main.set_playlist_count(count as i32);
+        if let Some(hub) = &self.hub {
+            hub.set_hub_active(self.vm.workspace() == Workspace::Platform);
+        }
+    }
+
+    fn sync_content(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        main.set_has_video(self.vm.video().is_some());
+        main.set_has_sentences(self.vm.has_sentences());
+    }
+
+    /// Pickers `fill` rule (win-ui-main §9.5).
+    fn sync_pickers(&self, force: bool) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        let langs: Vec<PickerItem> = SubtitleLanguage::ALL.iter().map(|l| PickerItem { title: s(l.title()), enabled: true }).collect();
+        fill_if_changed(&self.language_items, langs, force);
+        let code = self.vm.language();
+        main.set_language_index(SubtitleLanguage::ALL.iter().position(|l| l.code == code).map(|i| i as i32).unwrap_or(-1));
+        let targets = SubtitleLanguage::translation_targets();
+        let items: Vec<PickerItem> =
+            targets.iter().map(|l| PickerItem { title: s(l.target_name()), enabled: self.vm.is_translation_target_enabled(l.code) }).collect();
+        fill_if_changed(&self.target_items, items, force);
+        let target = self.vm.translation_target();
+        main.set_target_index(targets.iter().position(|l| l.code == target).map(|i| i as i32).unwrap_or(-1));
+        main.set_target_help(s(self.vm.translation_target_help()));
+        let mut st = self.st.borrow_mut();
+        st.language_codes = SubtitleLanguage::ALL.iter().map(|l| l.code).collect();
+        st.target_codes = targets.iter().map(|l| l.code).collect();
+    }
+
+    fn translation_model_kind(&self) -> &'static str {
+        if !self.vm.is_external_llm_active() {
+            ""
+        } else if self.vm.active_cloud_provider_name().is_some() {
+            "cloud"
+        } else {
+            "network"
+        }
+    }
+
+    /// macOS `TranslationModelPickerButton.helpText` (title + newline + where it runs).
+    fn translation_model_help(&self) -> String {
+        let title = self.vm.translation_model_name();
+        if !self.mac {
+            return title;
+        }
+        let detail = match (self.vm.is_external_llm_active(), self.vm.active_cloud_provider_name()) {
+            (false, _) => sa_core::l("Çeviri motoru (Gemma 4, Qwen 3.5, MADLAD, NLLB); ilk kullanımda indirilir."),
+            (true, Some(name)) => sa_core::l!("Çeviri %@ sağlayıcısında yapılır: çevrilecek metin ona gönderilir, ses gönderilmez.", name),
+            (true, None) => sa_core::l("Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır."),
+        };
+        format!("{title}\n{detail}")
+    }
+
+    fn sync_toolbar(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        let vm = &self.vm;
+        let working = vm.is_working();
+        main.set_is_working(working);
+        main.set_model_title(s(vm.model_name()));
+        main.set_diarize(vm.diarize());
+        main.set_translation_model_title(s(vm.translation_model_name()));
+        main.set_translation_model_help(s(self.translation_model_help()));
+        main.set_translation_model_kind(s(self.translation_model_kind()));
+        main.set_can_translate(vm.can_translate());
+        main.set_can_generate(vm.can_generate());
+        main.set_can_generate_and_translate(if self.mac { vm.can_generate_and_translate() } else { !working });
+        main.set_can_cancel(vm.can_cancel());
+        main.set_can_pick_video(vm.workspace() == Workspace::Editor);
+        main.set_can_pick_subtitle(!working);
+        main.set_auto_save(vm.auto_save_subtitle());
+        main.set_can_save_subtitle(vm.can_save_subtitle());
+        main.set_can_export(vm.can_export());
+        let explorer_open = self.explorer_open();
+        main.set_show_file_explorer(explorer_open);
+        self.sync_menu_bar();
+    }
+
+    fn explorer_open(&self) -> bool {
+        match &self.explorer {
+            Some(e) => e.is_sidebar_visible(),
+            None => self.settings.get_bool(keys::SHOW_FILE_EXPLORER).unwrap_or(defaults::SHOW_FILE_EXPLORER),
+        }
+    }
+
+    fn set_explorer_open(&self, open: bool) {
+        // macOS §3.3: while full screen a change is not a choice and is ignored.
+        if self.mac && !super::layout::mac::sidebar_change_is_stored(self.st.borrow().full_screen) {
+            return;
+        }
+        match &self.explorer {
+            Some(e) => e.set_sidebar_visible(open),
+            None => self.settings.set_bool(keys::SHOW_FILE_EXPLORER, open),
+        }
+        self.sync_toolbar();
+        self.sync_layout(true);
+    }
+
+    fn failed_message(&self) -> Option<sa_core::l10n::LocalizedMessage> {
+        match self.vm.status() {
+            sa_viewmodels::types::JobStatus::Failed { message } => Some(message),
+            _ => None,
+        }
+    }
+
+    fn sync_status(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        let vm = &self.vm;
+        let kind = vm.status_kind();
+        main.set_status_kind(status_kind_index(kind));
+        main.set_status_text(s(vm.status_text()));
+        main.set_status_fraction(if vm.is_indeterminate() { -1.0 } else { bridge_fraction(vm.status_fraction()) });
+        main.set_status_detail(s(if self.mac { vm.async_status_detail().map(|d| format!("· {d}")).unwrap_or_default() } else { String::new() }));
+        let notice = vm.model_notice().map(|m| m.text()).unwrap_or_default();
+        main.set_model_notice(s(notice));
+        main.set_model_notice_help(s(SubtitleViewModel::model_notice_help()));
+        main.set_format_index(SubtitleFormat::ALL.iter().position(|f| *f == vm.export_format()).map(|i| i as i32).unwrap_or(0));
+        main.set_export_language_index(if vm.export_language() == ExportLanguage::Translated { 1 } else { 0 });
+        main.set_translation_title(s(vm.translation_title()));
+        let retry = vm.can_go_online_and_retry();
+        main.set_retry_visible(self.mac && retry && kind == JobStatusKind::Failed);
+        main.set_retry_title(s(vm.offline_retry_title()));
+        main.set_badge_text(s(vm.translation_badge_text()));
+        main.set_empty_title(s(self.empty_title()));
+        main.set_empty_detail(s(if vm.is_working() || vm.is_queued() { String::new() } else { sa_core::l("Araç çubuğundan “Altyazı üret”e bas.") }));
+        main.set_empty_symbol(s(if self.mac && vm.is_queued() && !vm.has_sentences() { "clock" } else { "captions.bubble" }));
+        let notice = if self.mac {
+            mac_playback_notice(self.player.borrow().failure_message(), vm.workspace(), vm.status().kind(), vm.async_translation_fraction().is_some() || vm.is_async_translating())
+                .map(|m| m.text())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        main.set_playback_notice(s(notice));
+        if !self.mac {
+            let failed = self.failed_message();
+            self.error_bar.borrow_mut().update(failed.as_ref(), retry);
+            self.sync_error_bar();
+        }
+    }
+
+    fn empty_title(&self) -> String {
+        let vm = &self.vm;
+        if self.mac && vm.is_queued() && !vm.has_sentences() {
+            return match vm.queue_position() {
+                Some(p) => sa_core::l!("Sırada: %lld.", p as i64),
+                None => sa_core::l("Sırada"),
+            };
+        }
+        if vm.is_working() { sa_core::l("Altyazı üretiliyor…") } else { sa_core::l("Henüz altyazı yok") }
+    }
+
+    fn sync_error_bar(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        let bar = self.error_bar.borrow();
+        main.set_error_open(bar.open);
+        main.set_error_text(s(bar.message.clone()));
+        main.set_go_online_visible(bar.go_online_visible);
+    }
+
+    fn sync_editor_state(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        let vm = &self.vm;
+        let now = self.player.borrow().current_time();
+        let single = !self.policy.split_merge_timing_need_single_selection || vm.has_single_selection();
+        main.set_selected_start_text(s(vm.selected_edge_text(TimingEdge::Start)));
+        main.set_selected_end_text(s(vm.selected_edge_text(TimingEdge::End)));
+        main.set_timing_enabled(vm.selection().is_some() && single && (!self.mac || !vm.is_working()));
+        main.set_can_split(vm.can_split_selected(now));
+        main.set_can_merge(vm.can_merge_selected());
+        main.set_can_delete(vm.can_delete_selected());
+        main.set_can_retranslate(vm.can_translate_selected());
+        main.set_can_undo(vm.can_undo());
+        main.set_can_redo(vm.can_redo());
+        main.set_undo_title(s(vm.undo_title()));
+        main.set_redo_title(s(vm.redo_title()));
+        main.set_has_translations(vm.has_translations());
+        self.sync_menu_bar();
+    }
+
+    /// Rows (keyed by `Sentence.uid`, win-ui-main §9.3).
+    fn sync_rows(&self) {
+        let Some(w) = self.win() else { return };
+        let dark = w.global::<ui::Palette>().get_color_scheme() == slint::language::ColorScheme::Dark;
+        let vm = &self.vm;
+        let sentences = vm.sentences();
+        let translations = vm.translations();
+        let selected = vm.selected_uids();
+        let active = self.player.borrow().active_id();
+        let shows_speakers = sentences.iter().any(|s| s.speaker.is_some());
+        let mut uids = Vec::with_capacity(sentences.len());
+        let rows: Vec<SentenceRowData> = sentences
+            .iter()
+            .map(|sentence| {
+                uids.push(sentence.uid);
+                let tr = translations.get(&sentence.uid);
+                let speaker_text = match (sentence.speaker, self.mac) {
+                    (Some(sp), true) => menus::speaker_title(sp),
+                    (None, true) => sa_core::l("Konuşmacı yok"),
+                    (sp, false) => menus::compact_speaker_title(sp),
+                };
+                let color = sentence.speaker.map(|sp| {
+                    let c = SpeakerPalette::color(sp, dark);
+                    slint::Color::from_rgb_u8(c.r, c.g, c.b)
+                });
+                let text = vm.draft_text(sentence.uid);
+                SentenceRowData {
+                    uid: s(sentence.uid.to_string()),
+                    number: s(sentence.id.to_string()),
+                    time_text: s(format!("{} → {}", subtitle_time_short(sentence.start), subtitle_time_short(sentence.end))),
+                    text: s(text.clone()),
+                    has_speaker: sentence.speaker.is_some(),
+                    speaker_text: s(speaker_text),
+                    speaker_color: color.unwrap_or(slint::Color::from_argb_u8(0, 0, 0, 0)),
+                    has_translation: tr.is_some(),
+                    translation_text: s(if tr.is_some() { vm.translation_draft_text(sentence.uid) } else { String::new() }),
+                    is_stale: tr.is_some() && vm.is_translation_stale(sentence.uid),
+                    needs_review: vm.needs_review(sentence.uid),
+                    is_active: active == Some(sentence.uid),
+                    is_selected: selected.contains(&sentence.uid),
+                    accessible_label: s(format!("{}. {}", sentence.id, text)),
+                }
+            })
+            .collect();
+        sync_keyed(&self.rows, rows, |r| r.uid.clone());
+        w.global::<MainBridge>().set_shows_speakers(shows_speakers);
+        self.st.borrow_mut().row_uids = uids;
+    }
+
+    fn sync_queue(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        let vm = &self.vm;
+        let running = vm.is_playlist_running();
+        let mut ids = Vec::new();
+        let rows: Vec<QueueRowData> = if self.mac {
+            vm.list_rows()
+                .into_iter()
+                .map(|r| {
+                    ids.push(r.id);
+                    let is_item = matches!(r.origin, sa_viewmodels::types::ListRowOrigin::Playlist(_));
+                    let source = SubtitleLanguage::from_code(&r.source_language).map(|l| l.title()).unwrap_or_else(|| sa_core::l("Otomatik"));
+                    QueueRowData {
+                        id: s(r.id.to_string()),
+                        file_name: s(r.title.clone()),
+                        folder_path: s(r.video_path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()),
+                        source_language_title: s(source.clone()),
+                        status_text: s(r.status_text.clone()),
+                        state: state_index(r.state),
+                        audio_ready: r.is_audio_ready,
+                        indeterminate: r.state == PlaylistItemState::Working && r.fraction.is_none(),
+                        progress: r.fraction.filter(|f| f.is_finite()).unwrap_or(0.0).clamp(0.0, 1.0) as f32,
+                        can_edit: r.state != PlaylistItemState::Working && !running,
+                        can_stop: r.can_stop,
+                        is_playlist_item: is_item,
+                        accessible_label: s(format!("{} ({source}) — {}", r.title, r.status_text)),
+                    }
+                })
+                .collect()
+        } else {
+            vm.playlist()
+                .into_iter()
+                .map(|item| {
+                    ids.push(item.id);
+                    let source = SubtitleLanguage::from_code(&item.source_language).map(|l| l.title()).unwrap_or_else(|| sa_core::l("Otomatik"));
+                    let status = item.status_text();
+                    QueueRowData {
+                        id: s(item.id.to_string()),
+                        file_name: s(item.file_name()),
+                        folder_path: s(item.folder_path()),
+                        source_language_title: s(source.clone()),
+                        status_text: s(status.clone()),
+                        state: state_index(item.state),
+                        audio_ready: item.is_audio_ready(),
+                        indeterminate: item.state == PlaylistItemState::Working && item.fraction.is_none(),
+                        progress: item.fraction.filter(|f| f.is_finite()).unwrap_or(0.0).clamp(0.0, 1.0) as f32,
+                        can_edit: item.is_editable() && !running,
+                        can_stop: false,
+                        is_playlist_item: true,
+                        accessible_label: s(format!("{} ({source}) — {status}", item.file_name())),
+                    }
+                })
+                .collect()
+        };
+        let has_items = !vm.playlist().is_empty();
+        sync_keyed(&self.queue_rows, rows, |r| r.id.clone());
+        main.set_has_playlist_items(has_items);
+        main.set_has_list_rows(!ids.is_empty());
+        main.set_playlist_summary(s(vm.playlist_summary_text()));
+        main.set_can_start_playlist(vm.can_start_playlist());
+        main.set_is_playlist_running(running);
+        main.set_can_clear_queue(vm.queued_job_count() > 0);
+        let count = if self.mac { ids.len() } else { vm.playlist().len() };
+        main.set_playlist_count(count as i32);
+        match vm.playlist_notice() {
+            Some(n) => {
+                main.set_playlist_notice(s(n.message.text()));
+                main.set_playlist_notice_retry(n.has_retry);
+                main.set_playlist_notice_retry_title(s(vm.offline_retry_title()));
+            }
+            None => {
+                main.set_playlist_notice(SharedString::new());
+                main.set_playlist_notice_retry(false);
+            }
+        }
+        self.st.borrow_mut().queue_ids = ids;
+    }
+
+    fn sync_explorer(&self) {
+        let Some(w) = self.win() else { return };
+        let ex_bridge = w.global::<ExplorerBridge>();
+        let Some(ex) = &self.explorer else { return };
+        let folder = ex.current_folder();
+        ex_bridge.set_current_folder(s(ex.current_folder_name()));
+        ex_bridge.set_current_path(s(folder.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()));
+        ex_bridge.set_is_scanning(ex.is_scanning());
+        ex_bridge.set_can_go_back(ex.can_go_back());
+        ex_bridge.set_can_go_up(ex.can_go_up());
+        ex_bridge.set_can_open_folder(folder.is_some());
+        ex_bridge.set_status_text(s(ex.status_text()));
+        ex_bridge.set_search_text(s(ex.search_query()));
+        let searching = !ex.search_query().trim().is_empty();
+        let (empty, symbol) = match (searching, ex.availability()) {
+            (true, _) => (sa_core::l("Eşleşen medya dosyası bulunamadı"), "magnifyingglass"),
+            (false, sa_viewmodels::explorer::FolderAvailability::Available) => (sa_core::l("Bu klasörde medya dosyası bulunamadı"), "folder"),
+            (false, sa_viewmodels::explorer::FolderAvailability::NotFound) => (sa_core::l("Klasör bulunamadı"), "questionmark.folder"),
+            (false, sa_viewmodels::explorer::FolderAvailability::Unreadable) => (sa_core::l("Klasör okunamadı"), "lock"),
+            #[allow(unreachable_patterns)]
+            (false, _) => (sa_core::l("Bu birim bağlı değil"), "externaldrive.badge.xmark"),
+        };
+        ex_bridge.set_empty_text(s(if self.mac { empty } else { sa_core::l("Bu klasörde medya dosyası bulunamadı") }));
+        ex_bridge.set_empty_symbol(s(symbol));
+        let current_lower = folder.as_ref().map(|f| f.to_string_lossy().to_lowercase());
+        let mut paths = Vec::new();
+        let mut folders = Vec::new();
+        let rows: Vec<ExplorerRowData> = ex
+            .rows()
+            .into_iter()
+            .map(|r| {
+                paths.push(r.path.clone());
+                folders.push(r.is_folder);
+                let parent_differs = r.path.parent().map(|p| p.to_string_lossy().to_lowercase()) != current_lower;
+                let mut detail = r.size_text.clone();
+                if !r.is_folder && parent_differs
+                    && let Some(dir) = r.path.parent().and_then(|p| p.file_name())
+                {
+                    detail = format!("{detail} · {}", dir.to_string_lossy());
+                }
+                let is_audio = r.path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                    ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "wma"].iter().any(|a| a.eq_ignore_ascii_case(e))
+                });
+                ExplorerRowData {
+                    path: s(r.path.to_string_lossy().into_owned()),
+                    name: s(r.name.clone()),
+                    is_folder: r.is_folder,
+                    is_audio,
+                    detail: s(detail.clone()),
+                    badge: s(r.sidecar_badge.clone().unwrap_or_default()),
+                    is_active: r.is_active,
+                    accessible_label: s(if r.is_folder { r.name.clone() } else if self.mac { r.name.clone() } else { format!("{} ({})", r.name, r.size_text) }),
+                }
+            })
+            .collect();
+        sync_keyed(&self.explorer_rows, rows, |r| r.path.clone());
+        let mut st = self.st.borrow_mut();
+        st.explorer_paths = paths;
+        st.explorer_folders = folders;
+    }
+
+    fn layout_flags(&self) -> LayoutFlags {
+        LayoutFlags {
+            explorer_open: self.explorer_open(),
+            editor_hidden: self.vm.hide_subtitle_panel(),
+            side_by_side: self.vm.side_by_side_layout(),
+            theater: self.vm.is_theater_mode(),
+            full_screen: self.st.borrow().full_screen,
+        }
+    }
+
+    /// `apply_workspace_layout()` (win-ui-main §8) / mac-ui §7.1 content selection. Every re-apply resets the
+    /// splitter proportions (`layout-epoch`).
+    fn sync_layout(&self, reset_splitter: bool) {
+        let Some(w) = self.win() else { return };
+        let f = self.layout_flags();
+        let has_video = self.vm.video().is_some();
+        let has_lines = self.vm.has_sentences();
+        let main = w.global::<MainBridge>();
+        let app = w.global::<AppBridge>();
+        let mode = if self.mac {
+            let content = mac_editor_content(has_video, has_lines, f);
+            main.set_editor_hidden(f.editor_hidden);
+            content.layout_mode()
+        } else {
+            let l = windows_layout(f);
+            main.set_editor_hidden(f.editor_hidden);
+            l.mode
+        };
+        let _ = MacEditorContent::DropZone;
+        main.set_layout_mode(mode as i32);
+        main.set_side_by_side(f.side_by_side);
+        main.set_show_file_explorer(f.explorer_open);
+        app.set_is_full_screen(f.full_screen);
+        app.set_is_theater_mode(f.theater);
+        let changed = self.st.borrow().last_layout != Some((f, has_video, has_lines));
+        if reset_splitter || changed {
+            let mut st = self.st.borrow_mut();
+            st.last_layout = Some((f, has_video, has_lines));
+            st.layout_epoch += 1;
+            main.set_layout_epoch(st.layout_epoch);
+        }
+        let _ = LayoutMode::Stacked;
+        self.sync_menu_bar();
+    }
+
+    fn sync_display(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        let has = self.vm.has_translations();
+        let mode = if has { self.vm.effective_display_mode() } else { SubtitleDisplay::Original };
+        main.set_display_mode(match mode {
+            SubtitleDisplay::Original => 0,
+            SubtitleDisplay::Translation => 1,
+            SubtitleDisplay::Both => 2,
+        });
+        main.set_has_translations(has);
+        main.set_translation_title(s(self.vm.translation_title()));
+    }
+
+    fn sync_overlay_style(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        let style = self.appearance.as_ref().map(|a| a.style()).unwrap_or_else(sa_core::appearance::OverlayStyle::standard);
+        main.set_overlay_font_family(s(style.font_family.clone()));
+        main.set_overlay_size_fraction(style.size_fraction as f32);
+        let c = style.text_color();
+        main.set_overlay_color(slint::Color::from_rgb_u8(c.r, c.g, c.b));
+        main.set_overlay_background(match style.background {
+            OverlayBackground::Box => 0,
+            OverlayBackground::Shadow => 1,
+            OverlayBackground::Outline => 2,
+        });
+        main.set_overlay_opacity(style.background_opacity as f32);
+        if let Some(a) = &self.appearance {
+            w.global::<AppBridge>().set_ui_font_family(s(a.ui_font_family()));
+        }
+    }
+
+    fn sync_overlay(&self) {
+        let Some(w) = self.win() else { return };
+        let active = self.player.borrow().active_id();
+        let text = active.and_then(|uid| OverlayText::compose(&self.vm.sentences(), &self.vm.translations(), self.vm.effective_display_mode(), uid));
+        w.global::<MainBridge>().set_overlay_text(s(text.unwrap_or_default()));
+    }
+
+    fn sync_transport(&self) {
+        let Some(w) = self.win() else { return };
+        let main = w.global::<MainBridge>();
+        let (input, playing) = {
+            let p = self.player.borrow();
+            let st = self.st.borrow();
+            (
+                TransportInput {
+                    position: p.current_time(),
+                    duration: p.duration(),
+                    is_playing: p.is_playing(),
+                    is_muted: p.is_muted(),
+                    volume: p.volume(),
+                    buffered_ratio: p.buffered_ratio(),
+                    seek_scrubbing: st.seek_scrubbing,
+                    scrub_ratio: st.scrub_ratio,
+                    volume_scrubbing: st.volume_scrubbing,
+                },
+                p.is_playing(),
+            )
+        };
+        let v = synchronize(input, self.mac);
+        main.set_seek_interactive(v.interactive);
+        if let Some(r) = v.seek_ratio {
+            main.set_seek_ratio(r as f32);
+        }
+        let old = main.get_buffered_ratio() as f64;
+        if (old - v.buffered_ratio).abs() >= super::transport::BUFFERED_EPSILON || v.buffered_ratio == 0.0 {
+            main.set_buffered_ratio(v.buffered_ratio as f32);
+        }
+        main.set_elapsed_text(s(v.elapsed));
+        main.set_total_text(s(v.total));
+        main.set_remaining_text(s(v.remaining));
+        main.set_is_playing(playing);
+        main.set_is_muted(input.is_muted);
+        if let Some(vr) = v.volume_ratio {
+            main.set_volume(vr as f32);
+        }
+        // Split follows the playback position (win-ui-main §6.5.5).
+        main.set_can_split(self.vm.can_split_selected(input.position));
+        self.hud.borrow_mut().set_playing(playing);
+        self.sync_hud();
+    }
+
+    fn sync_hud(&self) {
+        let Some(w) = self.win() else { return };
+        let v = self.hud.borrow().visibility();
+        let main = w.global::<MainBridge>();
+        main.set_hud_visible(v.transport);
+        main.set_picker_visible(v.pickers);
+    }
+
+    fn sync_engagement(&self) {
+        let Some(w) = self.win() else { return };
+        let visible = self.hub.as_ref().is_some_and(|h| h.is_logged_in()) && self.vm.video().is_some();
+        w.global::<MainBridge>().set_engagement_visible(visible);
+    }
+
+    /// macOS menu bar state (mac-ui §4).
+    fn sync_menu_bar(&self) {
+        if !self.mac {
+            return;
+        }
+        let Some(w) = self.win() else { return };
+        let m = w.global::<MenuBridge>();
+        let vm = &self.vm;
+        let editor = vm.workspace() == Workspace::Editor;
+        m.set_can_open_video(editor);
+        m.set_can_generate(vm.video().is_some() && !vm.is_working() && editor);
+        m.set_can_stop(vm.can_cancel());
+        m.set_theater_mode(vm.is_theater_mode());
+        m.set_side_by_side(vm.side_by_side_layout());
+        m.set_panel_hidden(vm.hide_subtitle_panel());
+        m.set_can_toggle_panel(vm.is_player_shown());
+        m.set_can_undo(vm.can_undo());
+        m.set_can_redo(vm.can_redo());
+        let title = |base: &str, with: &str, key: Option<String>| match key {
+            Some(k) => sa_core::l!(with, sa_core::l(&k)),
+            None => sa_core::l(base),
+        };
+        m.set_undo_title(s(title("Geri Al", "Geri Al: %@", vm.undo_action_key())));
+        m.set_redo_title(s(title("Yinele", "Yinele: %@", vm.redo_action_key())));
+    }
+
+    // ------------------------------------------------------------------ callbacks (UI → VM)
+
+    fn wire_callbacks(self: &Rc<Self>, w: &MainWindow) {
+        let main = w.global::<MainBridge>();
+        let app = w.global::<AppBridge>();
+        macro_rules! on {
+            ($target:expr, $setter:ident, |$c:ident $(, $arg:ident)*| $body:expr) => {{
+                let weak = self.weak();
+                $target.$setter(move |$($arg),*| {
+                    if let Some($c) = weak.upgrade() {
+                        $body
+                    }
+                });
+            }};
+        }
+        macro_rules! on_ret {
+            ($target:expr, $setter:ident, $default:expr, |$c:ident $(, $arg:ident)*| $body:expr) => {{
+                let weak = self.weak();
+                $target.$setter(move |$($arg),*| match weak.upgrade() {
+                    Some($c) => $body,
+                    None => $default,
+                });
+            }};
+        }
+
+        // Window / chrome.
+        on!(app, on_open_settings, |c| c.open_settings());
+        on!(app, on_minimize_requested, |c| if let Some(h) = &c.hooks.minimize { h() });
+        on!(app, on_maximize_toggle_requested, |c| if let Some(h) = &c.hooks.toggle_maximize { h() });
+        on!(app, on_drag_requested, |c| if let Some(h) = &c.hooks.drag_window { h() });
+        on!(app, on_title_double_clicked, |c| if let Some(h) = &c.hooks.toggle_maximize { h() });
+        on!(app, on_close_requested, |c| match &c.hooks.close_window {
+            Some(h) => h(),
+            None => {
+                if let Some(w) = c.win() {
+                    let _ = w.hide();
+                }
+            }
+        });
+
+        // Toolbar.
+        on!(main, on_pick_video, |c| c.choose_video(false));
+        on!(main, on_pick_subtitle, |c| c.choose_subtitle());
+        on!(main, on_generate, |c| {
+            c.vm.finish_editing();
+            c.vm.generate();
+        });
+        on!(main, on_generate_and_translate, |c| c.generate_and_translate());
+        on!(main, on_cancel, |c| c.vm.cancel());
+        on!(main, on_translate, |c| {
+            c.vm.finish_editing();
+            c.vm.translate();
+        });
+        on!(main, on_save_subtitle, |c| {
+            c.vm.save_subtitle_next_to_video();
+        });
+        on!(main, on_export_subtitle, |c| c.export());
+        on!(main, on_workspace_selected, |c, w| c.vm.set_workspace(from_ui_workspace(w)));
+        on!(main, on_file_explorer_toggled, |c, v| c.set_explorer_open(v));
+        on!(main, on_language_selected, |c, i| {
+            let code = c.st.borrow().language_codes.get(i as usize).copied();
+            if let Some(code) = code {
+                c.vm.set_language(code);
+            }
+        });
+        on!(main, on_target_selected, |c, i| {
+            let code = c.st.borrow().target_codes.get(i as usize).copied();
+            if let Some(code) = code
+                && c.vm.is_translation_target_enabled(code)
+            {
+                c.vm.set_translation_target(code);
+            }
+            c.sync_pickers(false);
+        });
+        on!(main, on_auto_save_toggled, |c, v| c.vm.set_auto_save_subtitle(v));
+        on!(main, on_translation_model_clicked, |c| if let Some(h) = &c.hooks.translation_model_clicked { h() });
+        on!(main, on_profile_clicked, |c| if let Some(h) = &c.hooks.profile_clicked { h() });
+
+        // Menus.
+        on!(main, on_menu_requested, |c, id| c.open_menu(id.as_str()));
+        on!(main, on_menu_activated, |c, id| c.menu_activated(id.as_str()));
+
+        // Error bar.
+        on!(main, on_error_closed, |c| {
+            c.error_bar.borrow_mut().close();
+            c.sync_error_bar();
+        });
+        on!(main, on_go_online, |c| c.vm.go_online_and_retry());
+
+        // Layout toggles.
+        on!(main, on_toggle_subtitle_panel, |c| c.toggle_panel());
+        on!(main, on_toggle_side_by_side, |c| c.vm.set_side_by_side_layout(!c.vm.side_by_side_layout()));
+        on!(main, on_toggle_theater, |c| c.vm.set_theater_mode(!c.vm.is_theater_mode()));
+        on!(main, on_toggle_full_screen, |c| c.toggle_full_screen());
+
+        // Player surface.
+        on!(main, on_player_pointer, |c, inside| {
+            {
+                let mut h = c.hud.borrow_mut();
+                if inside { h.pointer_entered(Instant::now()) } else { h.pointer_exited() }
+            }
+            c.sync_hud();
+        });
+        on!(main, on_player_pointer_moved, |c| {
+            c.hud.borrow_mut().pointer_moved(Instant::now());
+            c.sync_hud();
+        });
+        on!(main, on_picker_pointer, |c, inside| {
+            {
+                let mut h = c.hud.borrow_mut();
+                if inside { h.picker_entered(Instant::now()) } else { h.picker_exited(Instant::now()) }
+            }
+            c.sync_hud();
+        });
+        on!(main, on_video_clicked, |c, count| {
+            for a in shortcuts::video_click_actions(count.max(0) as u32) {
+                c.perform_shortcut(a, false);
+            }
+        });
+        on!(main, on_video_wheel, |c, delta, precise| c.video_wheel(delta as f64, precise));
+
+        // Transport.
+        on!(main, on_play_pause, |c| {
+            c.player.borrow_mut().toggle_playback();
+            c.drain_player();
+        });
+        on!(main, on_seek_scrub, |c, scrubbing, ratio| c.seek_scrub(scrubbing, ratio as f64));
+        on!(main, on_toggle_mute, |c| {
+            c.player.borrow_mut().toggle_mute();
+            c.drain_player();
+        });
+        on!(main, on_volume_scrub, |c, scrubbing, ratio| {
+            {
+                let mut st = c.st.borrow_mut();
+                st.volume_scrubbing = scrubbing;
+            }
+            c.hud.borrow_mut().set_interacting(scrubbing || c.st.borrow().seek_scrubbing, Instant::now());
+            c.player.borrow_mut().set_volume(ratio as f64);
+            c.drain_player();
+        });
+        on!(main, on_volume_wheel, |c, delta| {
+            let (v, m) = {
+                let p = c.player.borrow();
+                (p.volume(), p.is_muted())
+            };
+            c.player.borrow_mut().set_volume(windows_wheel_volume(v, m, delta as f64));
+            c.drain_player();
+        });
+
+        // Display picker.
+        on!(main, on_display_mode_selected, |c, i| {
+            let mode = match i {
+                1 => SubtitleDisplay::Translation,
+                2 => SubtitleDisplay::Both,
+                _ => SubtitleDisplay::Original,
+            };
+            if mode == SubtitleDisplay::Original || c.vm.has_translations() {
+                c.vm.set_display_mode(mode);
+            }
+            c.sync_display();
+            c.sync_overlay();
+        });
+
+        // Line editor.
+        on!(main, on_row_pressed, |c, index, toggle, range| c.row_pressed(index, toggle, range));
+        on!(main, on_row_context, |c, index| c.select_row_at(index));
+        on!(main, on_speaker_clicked, |c, index| c.select_row_at(index));
+        on!(main, on_text_focus, |c, index, translation, focused| c.text_focus(index, translation, focused));
+        on!(main, on_text_edited, |c, index, translation, text| {
+            if let Some(uid) = c.uid_at(index) {
+                if translation { c.vm.set_translation_draft(uid, text.as_str()) } else { c.vm.set_draft(uid, text.as_str()) }
+            }
+        });
+        on!(main, on_text_commit, |c, _index, translation| {
+            if translation { c.vm.commit_translation_draft() } else { c.vm.commit_draft() }
+        });
+        on!(main, on_nudge, |c, edge, delta| {
+            c.vm.nudge(if edge == 0 { TimingEdge::Start } else { TimingEdge::End }, delta as f64);
+        });
+        on!(main, on_set_now, |c, edge| {
+            let now = c.player.borrow().current_time();
+            c.vm.set_edge_to_now(if edge == 0 { TimingEdge::Start } else { TimingEdge::End }, now);
+        });
+        on!(main, on_split, |c| {
+            c.vm.finish_editing();
+            let now = c.player.borrow().current_time();
+            c.vm.split_selected(now);
+        });
+        on!(main, on_merge, |c| {
+            c.vm.finish_editing();
+            c.vm.merge_selected_with_next();
+        });
+        on!(main, on_delete_lines, |c| {
+            c.vm.finish_editing();
+            c.vm.delete_selected();
+        });
+        on!(main, on_retranslate, |c| {
+            c.vm.finish_editing();
+            c.vm.translate_selected();
+        });
+        on!(main, on_undo, |c| {
+            c.vm.finish_editing();
+            c.vm.undo();
+        });
+        on!(main, on_redo, |c| {
+            c.vm.finish_editing();
+            c.vm.redo();
+        });
+        on_ret!(main, on_list_key, false, |c, key, shift| c.list_key(key.as_str(), shift));
+        on!(main, on_editing_changed, |c, editing| c.st.borrow_mut().editing_text = editing);
+        on!(main, on_list_focus_changed, |c, focused| c.st.borrow_mut().list_focused = focused);
+
+        // Status bar.
+        on!(main, on_format_selected, |c, i| {
+            if let Some(f) = SubtitleFormat::ALL.get(i as usize) {
+                c.vm.set_export_format(*f);
+            }
+        });
+        on!(main, on_export_language_selected, |c, i| {
+            if i == 0 || c.vm.has_translations() {
+                c.vm.set_export_language(if i == 1 { ExportLanguage::Translated } else { ExportLanguage::Original });
+            }
+            c.sync_status();
+        });
+        on!(main, on_retry, |c| c.vm.go_online_and_retry());
+        on!(main, on_dismiss_playback_notice, |c| {
+            c.player.borrow_mut().dismiss_failure();
+            c.drain_player();
+            c.sync_status();
+        });
+
+        // Playlist.
+        on!(main, on_add_playlist_videos, |c| c.add_playlist_videos());
+        on!(main, on_clear_playlist, |c| c.vm.clear_playlist());
+        on!(main, on_clear_queue, |c| c.vm.clear_queue());
+        on!(main, on_start_playlist, |c| {
+            c.vm.finish_editing();
+            c.vm.start_playlist();
+        });
+        on!(main, on_queue_row_clicked, |c, i| c.queue_row_clicked(i));
+        on!(main, on_queue_row_remove, |c, i| c.queue_row_remove(i));
+        on!(main, on_playlist_notice_closed, |c| {
+            c.sync_queue();
+        });
+        on!(main, on_playlist_notice_retried, |c| c.vm.go_online_and_retry_playlist());
+
+        // Keyboard (tunneling root handler).
+        on_ret!(main, on_key_pressed, false, |c, text, shift, control, alt, meta, repeat| {
+            c.key_pressed(SlintKey { text: text.to_string(), shift, control, alt, meta, repeat })
+        });
+
+        // Explorer.
+        let ex = w.global::<ExplorerBridge>();
+        on!(ex, on_row_clicked, |c, i| c.explorer_row_clicked(i as usize, false));
+        on!(ex, on_row_context, |_c, _i| {});
+        on!(ex, on_go_back, |c| if let Some(e) = &c.explorer { e.go_back() });
+        on!(ex, on_go_up, |c| if let Some(e) = &c.explorer { e.go_up() });
+        on!(ex, on_refresh, |c| if let Some(e) = &c.explorer { e.refresh() });
+        on!(ex, on_open_folder, |c| {
+            if let Some(f) = c.explorer.as_ref().and_then(|e| e.current_folder()) {
+                c.shell.open_folder(&f);
+            }
+        });
+        on!(ex, on_search_edited, |c, q| {
+            let logged_in = c.hub.as_ref().is_some_and(|h| h.is_logged_in());
+            if let Some(e) = &c.explorer {
+                e.set_search(q.as_str(), logged_in);
+            }
+        });
+
+        // macOS menu bar.
+        if self.mac {
+            let m = w.global::<MenuBridge>();
+            on!(m, on_new_window, |c| if let Some(h) = &c.hooks.new_window { h() });
+            on!(m, on_open_video, |c| c.choose_video(false));
+            on!(m, on_generate, |c| {
+                if c.vm.video().is_some() && !c.vm.is_working() && c.vm.workspace() == Workspace::Editor {
+                    c.vm.finish_editing();
+                    c.vm.generate();
+                }
+            });
+            on!(m, on_stop, |c| c.vm.cancel());
+            on!(m, on_undo, |c| {
+                if !c.st.borrow().editing_text {
+                    c.vm.finish_editing();
+                    c.vm.undo();
+                }
+            });
+            on!(m, on_redo, |c| {
+                if !c.st.borrow().editing_text {
+                    c.vm.finish_editing();
+                    c.vm.redo();
+                }
+            });
+            on!(m, on_toggle_sidebar, |c| c.set_explorer_open(!c.explorer_open()));
+            on!(m, on_toggle_full_screen, |c| c.toggle_full_screen());
+            on!(m, on_toggle_theater, |c| c.vm.set_theater_mode(!c.vm.is_theater_mode()));
+            on!(m, on_toggle_side_by_side, |c| {
+                if !c.vm.hide_subtitle_panel() {
+                    c.vm.set_side_by_side_layout(!c.vm.side_by_side_layout());
+                }
+            });
+            on!(m, on_toggle_panel, |c| {
+                if c.vm.is_player_shown() {
+                    c.vm.toggle_subtitle_panel();
+                }
+            });
+            on!(m, on_delete, |c| {
+                if !c.st.borrow().editing_text && c.st.borrow().list_focused {
+                    c.vm.finish_editing();
+                    c.vm.delete_selected();
+                }
+            });
+            on!(m, on_close_window, |c| match &c.hooks.close_window {
+                Some(h) => h(),
+                None => {
+                    if let Some(w) = c.win() {
+                        let _ = w.hide();
+                    }
+                }
+            });
+            on!(m, on_minimize, |c| if let Some(h) = &c.hooks.minimize { h() });
+            on!(m, on_zoom, |c| if let Some(h) = &c.hooks.toggle_maximize { h() });
+        }
+
+        self.install_window_events(w);
+    }
+
+    /// Winit window events the main window needs: file drops (batched), size (responsive rules) and focus.
+    fn install_window_events(self: &Rc<Self>, w: &MainWindow) {
+        use slint::winit_030::{EventResult, WinitWindowAccessor, winit};
+        let weak = self.weak();
+        w.window().on_winit_window_event(move |window, event| {
+            let Some(c) = weak.upgrade() else { return EventResult::Propagate };
+            match event {
+                winit::event::WindowEvent::DroppedFile(path) => {
+                    c.drops.borrow_mut().push(path.clone(), Instant::now());
+                }
+                winit::event::WindowEvent::Resized(_) | winit::event::WindowEvent::ScaleFactorChanged { .. } => {
+                    let size = window.size().to_logical(window.scale_factor());
+                    c.window_resized(size.width, size.height);
+                    let full = window.with_winit_window(|ww| ww.fullscreen().is_some()).unwrap_or(false);
+                    let maximized = window.is_maximized();
+                    if let Some(win) = c.win() {
+                        win.global::<AppBridge>().set_is_maximized(maximized);
+                    }
+                    if full != c.st.borrow().full_screen {
+                        c.st.borrow_mut().full_screen = full;
+                        c.sync_layout(true);
+                        c.sync_toolbar();
+                    }
+                }
+                winit::event::WindowEvent::Focused(f) => {
+                    if let Some(win) = c.win() {
+                        win.global::<AppBridge>().set_is_active(*f);
+                    }
+                }
+                _ => {}
+            }
+            EventResult::Propagate
+        });
+    }
+
+    /// Pushes the logical window size (responsive rules read `MainBridge.window-width`).
+    pub fn window_resized(&self, width: f32, height: f32) {
+        let changed = {
+            let mut st = self.st.borrow_mut();
+            let changed = st.last_window_size != (width, height);
+            st.last_window_size = (width, height);
+            changed
+        };
+        if changed && let Some(w) = self.win() {
+            w.global::<MainBridge>().set_window_width(width);
+        }
+    }
+
+    // ------------------------------------------------------------------ commands
+
+    fn open_settings(&self) {
+        if let Some(h) = &self.hooks.open_settings {
+            h();
+        }
+    }
+
+    /// Windows `Ctrl+O` / macOS `⌘O`: the video picker (editor tab only on macOS).
+    fn choose_video(self: &Rc<Self>, run_after_picking: bool) {
+        if self.mac && self.vm.workspace() != Workspace::Editor {
+            return;
+        }
+        self.st.borrow_mut().run_after_picking = run_after_picking;
+        let fut = self.shell.pick_open_file(FileFilter::Videos);
+        let weak = self.weak();
+        let _ = slint::spawn_local(async move {
+            let picked = fut.await;
+            let Some(c) = weak.upgrade() else { return };
+            let then_translate = std::mem::take(&mut c.st.borrow_mut().run_after_picking);
+            let Some(path) = picked else { return };
+            if c.mac {
+                c.vm.request_open_video(path);
+            } else {
+                c.vm.open_video(Some(path));
+            }
+            if then_translate && (c.vm.video().is_some() || c.vm.has_sentences()) {
+                c.vm.generate_and_translate();
+            }
+        });
+    }
+
+    fn choose_subtitle(self: &Rc<Self>) {
+        let fut = self.shell.pick_open_file(FileFilter::Subtitles);
+        let weak = self.weak();
+        let _ = slint::spawn_local(async move {
+            let Some(path) = fut.await else { return };
+            let Some(c) = weak.upgrade() else { return };
+            if c.mac {
+                c.vm.request_open_subtitle(path);
+            } else {
+                // win-ui-main §18.2: a companion video opens first when no video is open.
+                if c.vm.video().is_none()
+                    && let Some(v) = sa_core::subtitle_import::find_companion_video_windows(&path)
+                {
+                    c.vm.open_video(Some(v));
+                }
+                c.vm.load_subtitle_file(&path);
+            }
+        });
+    }
+
+    fn generate_and_translate(self: &Rc<Self>) {
+        self.vm.finish_editing();
+        if self.vm.video().is_none() && !self.vm.has_sentences() {
+            self.choose_video(true);
+            return;
+        }
+        self.vm.generate_and_translate();
+    }
+
+    fn add_playlist_videos(self: &Rc<Self>) {
+        let fut = self.shell.pick_open_files(FileFilter::Videos);
+        let weak = self.weak();
+        let _ = slint::spawn_local(async move {
+            let paths = fut.await;
+            let Some(c) = weak.upgrade() else { return };
+            if !paths.is_empty() {
+                c.vm.add_playlist_videos(paths);
+                c.vm.set_workspace(Workspace::Playlist);
+            }
+        });
+    }
+
+    /// Export (win-ui-main §18.4, mac-ui §6.3): render, then the save dialog, then write UTF-8 without BOM.
+    fn export(self: &Rc<Self>) {
+        self.vm.finish_editing();
+        let name = self.vm.export_file_name();
+        let format = self.vm.export_format();
+        let weak = self.weak();
+        self.vm.render_export(Box::new(move |text| {
+            let Some(text) = text else { return };
+            let Some(c) = weak.upgrade() else { return };
+            let suggested = if c.mac { name.clone() } else { Path::new(&name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or(name.clone()) };
+            let fut = c.shell.pick_save_file(&suggested, format);
+            let weak = Rc::downgrade(&c);
+            let _ = slint::spawn_local(async move {
+                let picked = fut.await;
+                let Some(c) = weak.upgrade() else { return };
+                let Some(mut path) = picked else { return };
+                if !c.mac && path.extension().is_none() {
+                    path.set_extension(format.raw());
+                }
+                // UTF-8 without BOM (win-ui-main §18.4, mac-ui §6.3).
+                let result = std::fs::write(&path, text.as_bytes()).map_err(|e| e.to_string());
+                if c.mac {
+                    c.vm.export_finished(result.err());
+                } else if let Err(e) = result {
+                    let make: Rc<dyn Fn() -> String> = Rc::new(move || sa_core::l!("Dosya kaydedilemedi: %@", e.clone()));
+                    c.error_bar.borrow_mut().show_save_error(make);
+                    c.sync_error_bar();
+                }
+            });
+        }));
+    }
+
+    fn toggle_panel(&self) {
+        if self.st.borrow().full_screen {
+            return;
+        }
+        self.vm.toggle_subtitle_panel();
+    }
+
+    fn toggle_full_screen(&self) {
+        let on = !self.st.borrow().full_screen;
+        self.set_full_screen(on);
+    }
+
+    fn set_full_screen(&self, on: bool) {
+        self.st.borrow_mut().full_screen = on;
+        match &self.hooks.set_full_screen {
+            Some(h) => h(on),
+            None => {
+                if let Some(w) = self.win() {
+                    w.window().set_fullscreen(on);
+                }
+            }
+        }
+        self.sync_layout(true);
+        self.sync_toolbar();
+    }
+
+    fn leave_full_screen_or_theater(&self) {
+        if self.st.borrow().full_screen {
+            self.set_full_screen(false);
+        } else if self.vm.is_theater_mode() {
+            self.vm.set_theater_mode(false);
+        }
+    }
+
+    fn seek_scrub(&self, scrubbing: bool, ratio: f64) {
+        {
+            let mut st = self.st.borrow_mut();
+            st.seek_scrubbing = scrubbing;
+            st.scrub_ratio = ratio;
+        }
+        let interacting = scrubbing || self.st.borrow().volume_scrubbing;
+        self.hud.borrow_mut().set_interacting(interacting, Instant::now());
+        let duration = self.player.borrow().duration();
+        if scrubbing && let Some(t) = scrub_target(ratio, duration) {
+            self.player.borrow_mut().seek(t);
+        }
+        self.drain_player();
+        self.sync_transport();
+    }
+
+    fn video_wheel(&self, delta: f64, precise: bool) {
+        if self.mac {
+            let n = self.st.borrow_mut().mac_notches.feed(delta, precise, false);
+            if n != 0 {
+                self.player.borrow_mut().adjust_volume(n as f64 * shortcuts::VOLUME_STEP);
+            }
+        } else {
+            let (v, m) = {
+                let p = self.player.borrow();
+                (p.volume(), p.is_muted())
+            };
+            self.player.borrow_mut().set_volume(windows_wheel_volume(v, m, delta));
+            self.hud.borrow_mut().reveal(Instant::now());
+        }
+        self.drain_player();
+        self.sync_hud();
+    }
+
+    // ---- rows
+
+    fn uid_at(&self, index: i32) -> Option<Uuid> {
+        usize::try_from(index).ok().and_then(|i| self.st.borrow().row_uids.get(i).copied())
+    }
+
+    /// `select_row(row)` (win-ui-main §9.3): inside the selection keeps it and moves the primary line.
+    fn select_row_at(&self, index: i32) {
+        if let Some(uid) = self.uid_at(index) {
+            self.vm.select_row(uid);
+            self.st.borrow_mut().anchor = Some(uid);
+        }
+    }
+
+    fn row_pressed(&self, index: i32, toggle: bool, range: bool) {
+        let Some(i) = usize::try_from(index).ok() else { return };
+        let (order, anchor) = {
+            let st = self.st.borrow();
+            (st.row_uids.clone(), st.anchor)
+        };
+        if !toggle && !range {
+            if let Some(uid) = order.get(i).copied() {
+                self.vm.set_selection(Some(uid));
+                self.st.borrow_mut().anchor = Some(uid);
+            }
+            return;
+        }
+        let selected = self.vm.selected_uids();
+        let (set, primary) = super::rows::press_selection(&order, &selected, anchor.as_ref(), i, toggle, range);
+        if !range {
+            self.st.borrow_mut().anchor = primary;
+        }
+        self.vm.set_selected_lines(set, primary);
+    }
+
+    fn text_focus(&self, index: i32, translation: bool, focused: bool) {
+        let Some(uid) = self.uid_at(index) else { return };
+        if focused {
+            self.vm.select_row(uid);
+            if translation { self.vm.begin_translation_editing(uid) } else { self.vm.begin_editing(uid) }
+        } else if translation {
+            self.vm.commit_translation_draft();
+        } else {
+            self.vm.commit_draft();
+        }
+    }
+
+    /// Keys inside the line list that are not text editing (win-ui-main §15 step 5, mac-ui §7.6).
+    fn list_key(&self, key: &str, shift: bool) -> bool {
+        if self.st.borrow().editing_text {
+            return false;
+        }
+        match key {
+            "up" | "down" => {
+                let (order, anchor) = {
+                    let st = self.st.borrow();
+                    (st.row_uids.clone(), st.anchor)
+                };
+                let primary = self.vm.selection();
+                match super::rows::arrow_selection(&order, primary.as_ref(), anchor.as_ref(), key == "down", shift) {
+                    Some((set, p)) => {
+                        if !shift {
+                            self.st.borrow_mut().anchor = Some(p);
+                        }
+                        self.vm.set_selected_lines(set, Some(p));
+                        if let Some(i) = order.iter().position(|u| *u == p)
+                            && let Some(w) = self.win()
+                        {
+                            let main = w.global::<MainBridge>();
+                            main.set_scroll_row(i as i32);
+                            let mut st = self.st.borrow_mut();
+                            st.scroll_epoch += 1;
+                            main.set_scroll_epoch(st.scroll_epoch);
+                        }
+                        true
+                    }
+                    None => false,
+                }
+            }
+            "delete" => {
+                self.vm.finish_editing();
+                self.vm.delete_selected();
+                true
+            }
+            // Windows: Space on the list toggles playback; macOS leaves it to the window chrome.
+            "space" if !self.mac => {
+                self.perform_shortcut(PlayerShortcut::TogglePlayback, false);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    // ---- queue
+
+    fn queue_row_clicked(&self, index: i32) {
+        let Some(id) = usize::try_from(index).ok().and_then(|i| self.st.borrow().queue_ids.get(i).copied()) else { return };
+        if self.mac {
+            if let Some(row) = self.vm.list_rows().into_iter().find(|r| r.id == id) {
+                self.vm.open_list_row(&row);
+            }
+        } else if let Some(item) = self.vm.playlist().into_iter().find(|p| p.id == id)
+            && !item.video_path.as_os_str().is_empty()
+        {
+            self.vm.set_workspace(Workspace::Editor);
+            self.vm.open_video(Some(item.video_path));
+        }
+    }
+
+    fn queue_row_remove(&self, index: i32) {
+        let Some(id) = usize::try_from(index).ok().and_then(|i| self.st.borrow().queue_ids.get(i).copied()) else { return };
+        if self.mac {
+            if let Some(row) = self.vm.list_rows().into_iter().find(|r| r.id == id) {
+                self.vm.remove_list_row(&row);
+            }
+        } else {
+            self.vm.remove_playlist_item(id);
+        }
+    }
+
+    // ---- explorer
+
+    fn explorer_row_clicked(&self, index: usize, start_playing: bool) {
+        let (path, is_folder) = {
+            let st = self.st.borrow();
+            match (st.explorer_paths.get(index), st.explorer_folders.get(index)) {
+                (Some(p), Some(f)) => (p.clone(), *f),
+                _ => return,
+            }
+        };
+        if is_folder {
+            if let Some(e) = &self.explorer {
+                e.navigate(&path);
+            }
+            return;
+        }
+        self.show_video(path, start_playing);
+    }
+
+    /// `showVideo(url, startPlaying)` (mac-ui §6.3) / `FileSelected(path)` (Windows).
+    fn show_video(&self, path: PathBuf, start_playing: bool) {
+        let already = self.vm.video().is_some_and(|v| self.policy.same_path(&v, &path));
+        self.vm.set_workspace(Workspace::Editor);
+        if already {
+            if start_playing {
+                self.player.borrow_mut().play();
+                self.drain_player();
+            }
+            return;
+        }
+        if self.mac {
+            self.vm.request_open_video(path);
+        } else {
+            self.vm.open_video(Some(path));
+        }
+        if start_playing {
+            self.player.borrow_mut().play();
+            self.drain_player();
+        }
+    }
+
+    // ---- menus
+
+    fn open_menu(&self, id: &str) {
+        let Some(w) = self.win() else { return };
+        let dark = w.global::<ui::Palette>().get_color_scheme() == slint::language::ColorScheme::Dark;
+        let now = self.player.borrow().current_time();
+        let (head, rest) = id.split_once(':').unwrap_or((id, ""));
+        let entries: Vec<Entry> = match head {
+            "model" => menus::model_menu(&self.vm.available_models(), &self.vm.model(), self.mac),
+            "speakers" => menus::speakers_menu(self.vm.diarize(), self.vm.speaker_count()),
+            "speaker" | "row" => {
+                let Ok(row) = rest.parse::<usize>() else { return };
+                let Some(uid) = self.uid_at(row as i32) else { return };
+                let Some(sentence) = self.vm.sentences().into_iter().find(|s| s.uid == uid) else { return };
+                let speakers = menus::speaker_items(row, &self.vm.speakers(), sentence.speaker, dark, self.mac);
+                if head == "speaker" {
+                    speakers
+                } else {
+                    let st = RowMenuState {
+                        can_retranslate: self.vm.can_translate_selected(),
+                        can_split: self.vm.can_split_selected(now),
+                        can_merge: self.vm.can_merge_selected(),
+                        can_delete: !self.vm.is_working(),
+                        shows_speakers: self.vm.sentences().iter().any(|s| s.speaker.is_some()),
+                        is_working: self.vm.is_working(),
+                    };
+                    menus::row_menu(row, st, speakers, self.mac)
+                }
+            }
+            "bulk-language" => menus::language_menu("lang-all:", None),
+            "queue-language" => {
+                let Ok(row) = rest.parse::<usize>() else { return };
+                let Some(id) = self.st.borrow().queue_ids.get(row).copied() else { return };
+                let current = self.vm.playlist().into_iter().find(|p| p.id == id).map(|p| p.source_language).unwrap_or_default();
+                menus::language_menu(&format!("row-lang:{row}:"), Some(&current))
+            }
+            "display" => {
+                let i = w.global::<MainBridge>().get_display_mode();
+                menus::display_menu(i, &self.vm.translation_title(), self.vm.has_translations())
+            }
+            "explorer-quick" => self
+                .explorer
+                .as_ref()
+                .map(|e| {
+                    e.quick_locations()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, q)| {
+                            let mut en = Entry::item(format!("quick:{i}"), q.title);
+                            en.symbol = quick_symbol(q.kind).to_owned();
+                            en.glyph = quick_glyph(q.kind).to_string();
+                            en
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            "explorer-row" => {
+                let Ok(row) = rest.parse::<usize>() else { return };
+                let Some(is_folder) = self.st.borrow().explorer_folders.get(row).copied() else { return };
+                menus::explorer_row_menu(row, is_folder, self.mac)
+            }
+            "overflow" => {
+                let first: usize = rest.parse().unwrap_or(0);
+                self.overflow_menu(first)
+            }
+            _ => Vec::new(),
+        };
+        self.menu_entries.set_vec(entries.into_iter().map(to_menu_entry).collect::<Vec<_>>());
+    }
+
+    /// macOS toolbar overflow `»`: the titles of the items from `first` on that are present (mac-ui §6.2).
+    fn overflow_menu(&self, first: usize) -> Vec<Entry> {
+        let editor = self.vm.workspace() == Workspace::Editor;
+        let not_platform = self.vm.workspace() != Workspace::Platform;
+        let can_cancel = self.vm.can_cancel();
+        let items: Vec<(usize, bool, String, bool)> = vec![
+            (0, editor, sa_core::l("Video seç"), true),
+            (1, editor, sa_core::l("Altyazı aç"), !self.vm.is_working()),
+            (6, editor && self.vm.has_sentences(), sa_core::l("Çevir…"), !self.vm.is_working()),
+            (7, not_platform, sa_core::l("Çeviri modeli"), !self.vm.is_working()),
+            (8, editor, sa_core::l("Otomatik kaydet"), true),
+            (9, can_cancel, sa_core::l("Durdur"), true),
+            (91, !can_cancel && editor, sa_core::l("Komple çevir"), self.vm.can_generate_and_translate()),
+            (92, !can_cancel && editor, sa_core::l("Altyazı üret"), self.vm.video().is_some()),
+            (10, true, sa_core::l("Profil"), true),
+        ];
+        let mut out = Vec::new();
+        let mut ids = Vec::new();
+        for (i, visible, title, enabled) in items {
+            let order = if i >= 90 { 9 } else { i };
+            if visible && order >= first {
+                let mut e = Entry::item(format!("ovf:{i}"), title);
+                e.enabled = enabled;
+                if i == 8 {
+                    e.checkable = true;
+                    e.checked = self.vm.auto_save_subtitle();
+                }
+                out.push(e);
+                ids.push(i);
+            }
+        }
+        self.st.borrow_mut().overflow_items = ids;
+        out
+    }
+
+    fn menu_activated(self: &Rc<Self>, id: &str) {
+        let Some(action) = MenuAction::parse(id) else { return };
+        match action {
+            MenuAction::Model(m) => self.vm.set_model(&m),
+            MenuAction::ToggleDiarize => self.vm.set_diarize(!self.vm.diarize()),
+            MenuAction::SpeakerCount(n) => self.vm.set_speaker_count(n),
+            MenuAction::SetSpeaker(row, sp) => {
+                if let Some(uid) = self.uid_at(row as i32) {
+                    self.vm.set_speaker(uid, sp);
+                }
+            }
+            MenuAction::NewSpeaker(row) => {
+                if let Some(uid) = self.uid_at(row as i32) {
+                    self.vm.assign_new_speaker(uid);
+                }
+            }
+            MenuAction::RowRetranslate(row) => {
+                self.select_row_at(row as i32);
+                self.vm.finish_editing();
+                self.vm.translate_selected();
+            }
+            MenuAction::RowSplit(row) => {
+                self.select_row_at(row as i32);
+                self.vm.finish_editing();
+                let now = self.player.borrow().current_time();
+                self.vm.split_selected(now);
+            }
+            MenuAction::RowMerge(row) => {
+                self.select_row_at(row as i32);
+                self.vm.finish_editing();
+                self.vm.merge_selected_with_next();
+            }
+            MenuAction::RowDelete(row) => {
+                self.select_row_at(row as i32);
+                self.vm.finish_editing();
+                self.vm.delete_selected();
+            }
+            MenuAction::AllPlaylistLanguages(code) => self.vm.set_all_playlist_languages(&code),
+            MenuAction::QueueRowLanguage(row, code) => {
+                let id = self.st.borrow().queue_ids.get(row).copied();
+                if let Some(id) = id {
+                    self.vm.set_playlist_item_language(id, &code);
+                }
+            }
+            MenuAction::Display(i) => {
+                if let Some(w) = self.win() {
+                    w.global::<MainBridge>().invoke_display_mode_selected(i);
+                }
+            }
+            MenuAction::QuickLocation(i) => {
+                if let Some(e) = &self.explorer
+                    && let Some(q) = e.quick_locations().get(i)
+                {
+                    e.navigate(&q.path);
+                }
+            }
+            MenuAction::ExplorerPlay(i) => self.explorer_row_clicked(i, true),
+            MenuAction::ExplorerAddToPlaylist(i) => {
+                let path = self.st.borrow().explorer_paths.get(i).cloned();
+                if let Some(p) = path {
+                    self.vm.add_playlist_videos(vec![p]);
+                    self.vm.set_workspace(Workspace::Playlist);
+                }
+            }
+            MenuAction::ExplorerReveal(i) => {
+                let path = self.st.borrow().explorer_paths.get(i).cloned();
+                if let Some(p) = path {
+                    self.shell.reveal_in_file_manager(&p);
+                }
+            }
+            MenuAction::ExplorerOpenFolder(i) => {
+                let path = self.st.borrow().explorer_paths.get(i).cloned();
+                if let Some(p) = path {
+                    self.shell.open_folder(&p);
+                }
+            }
+            MenuAction::Overflow(i) => match i {
+                0 => self.choose_video(false),
+                1 => self.choose_subtitle(),
+                6 => self.vm.translate(),
+                7 => {
+                    if let Some(h) = &self.hooks.translation_model_clicked {
+                        h();
+                    }
+                }
+                8 => self.vm.set_auto_save_subtitle(!self.vm.auto_save_subtitle()),
+                9 => self.vm.cancel(),
+                91 => self.generate_and_translate(),
+                92 => self.vm.generate(),
+                10 => {
+                    if let Some(h) = &self.hooks.profile_clicked {
+                        h();
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+
+    // ---- keyboard
+
+    fn focus(&self) -> ShortcutFocus {
+        let st = self.st.borrow();
+        ShortcutFocus {
+            is_editing_text: st.editing_text,
+            is_on_button: false,
+            is_in_list: st.list_focused,
+            is_full_screen: st.full_screen,
+            panel_hidden: self.vm.hide_subtitle_panel(),
+            is_theater: self.vm.is_theater_mode(),
+        }
+    }
+
+    /// The root (tunneling) key handler: `true` = consumed.
+    fn key_pressed(self: &Rc<Self>, key: SlintKey) -> bool {
+        let input = input::to_key_input(&key, self.mac);
+        let focus = self.focus();
+        if self.mac {
+            if let Some(cmd) = input::mac_command_key(&input) {
+                // On a real Mac the NSMenu owns these key equivalents; previews and Slint builds without a menu
+                // handle them here.
+                return self.mac_command(cmd);
+            }
+            if input::is_plain_escape(&input) {
+                if focus.is_editing_text {
+                    return false;
+                }
+                if focus.is_full_screen {
+                    self.set_full_screen(false);
+                    return true;
+                }
+                if self.vm.is_theater_mode() {
+                    self.vm.set_theater_mode(false);
+                    return true;
+                }
+                return false;
+            }
+            return match shortcuts::resolve_mac(&input, &focus) {
+                Some(sc) => self.perform_shortcut(sc, input.is_repeat),
+                None => false,
+            };
+        }
+        match shortcuts::resolve_windows_key(&input, &focus) {
+            Some(WindowsKeyAction::Player(sc)) => {
+                // Windows root handler: every listed key is consumed (§15), even without a player on screen.
+                self.perform_shortcut(sc, input.is_repeat);
+                true
+            }
+            Some(WindowsKeyAction::Undo) => {
+                self.vm.undo();
+                true
+            }
+            Some(WindowsKeyAction::Redo) => {
+                self.vm.redo();
+                true
+            }
+            Some(WindowsKeyAction::PickVideo) => {
+                self.choose_video(false);
+                true
+            }
+            Some(WindowsKeyAction::ToggleExplorer) => {
+                self.set_explorer_open(!self.explorer_open());
+                true
+            }
+            Some(WindowsKeyAction::Generate) => {
+                self.vm.finish_editing();
+                if self.vm.can_generate() {
+                    self.vm.generate();
+                }
+                true
+            }
+            Some(WindowsKeyAction::OpenSettings) => {
+                self.open_settings();
+                true
+            }
+            Some(WindowsKeyAction::DeleteSelectedLines) => {
+                self.vm.finish_editing();
+                self.vm.delete_selected();
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn mac_command(self: &Rc<Self>, cmd: input::MacCommandKey) -> bool {
+        use input::MacCommandKey as K;
+        match cmd {
+            K::OpenVideo => self.choose_video(false),
+            K::Generate => {
+                if self.vm.video().is_some() && !self.vm.is_working() && self.vm.workspace() == Workspace::Editor {
+                    self.vm.finish_editing();
+                    self.vm.generate();
+                }
+            }
+            K::Stop => {
+                if self.vm.can_cancel() {
+                    self.vm.cancel();
+                }
+            }
+            K::ToggleSidebar => self.set_explorer_open(!self.explorer_open()),
+            K::ToggleFullScreen => self.toggle_full_screen(),
+            K::Settings => self.open_settings(),
+            K::Undo | K::Redo => {
+                if self.st.borrow().editing_text {
+                    return false;
+                }
+                self.vm.finish_editing();
+                if cmd == K::Undo { self.vm.undo() } else { self.vm.redo() }
+            }
+        }
+        true
+    }
+
+    /// `PlayerShortcutActions.perform` through the shared performer.
+    fn perform_shortcut(&self, sc: PlayerShortcut, repeat: bool) -> bool {
+        let reveal = matches!(sc, PlayerShortcut::TogglePlayback | PlayerShortcut::Seek(_) | PlayerShortcut::AdjustVolume(_) | PlayerShortcut::ToggleMute);
+        let mut target = Target { c: self };
+        let done = shortcuts::perform(sc, repeat, &mut target);
+        self.drain_player();
+        if reveal {
+            self.hud.borrow_mut().reveal(Instant::now());
+            self.sync_hud();
+        }
+        done
+    }
+
+    // ---- drops / external files
+
+    /// A finished drop batch (win-ui-main §17.1, mac-ui §13.1; FIX-W: a single video switches to the Player tab).
+    pub fn handle_drop(&self, paths: Vec<PathBuf>) {
+        let split = input::split_drop(&paths, |p| p.is_dir());
+        if split.videos.is_empty() && split.subtitle.is_none() {
+            return;
+        }
+        let playlist_tab = self.vm.workspace() == Workspace::Playlist;
+        if split.videos.len() > 1 || (playlist_tab && !split.videos.is_empty()) {
+            self.vm.add_playlist_videos(split.videos);
+            self.vm.set_workspace(Workspace::Playlist);
+            return;
+        }
+        let files: Vec<PathBuf> = split.videos.into_iter().chain(split.subtitle).collect();
+        self.vm.open_files(files);
+    }
+
+    /// Command line, second instance, "Open with", Finder (win-ui-main §17.2, mac-ui §13.2).
+    pub fn open_external_files(&self, paths: Vec<PathBuf>) {
+        self.vm.open_external_files(paths);
+    }
+
+    /// Window closing: pauses the player, reports where it was, stops the timer.
+    pub fn detach(&self) {
+        if self.disposed.replace(true) {
+            return;
+        }
+        self.timer.stop();
+        self.vm.finish_editing();
+        self.player.borrow_mut().dispose();
+        let outputs = self.player.borrow_mut().take_outputs();
+        for o in outputs {
+            if let (PlayerOutput::Playback(r), Some(hub)) = (o, &self.hub) {
+                hub.report_playback(r);
+            }
+        }
+        if let Some(k) = self.key.take() {
+            k.unregister();
+        }
+    }
+
+    /// The player (tests, the app shell's quit path).
+    pub fn player(&self) -> std::cell::Ref<'_, PlayerController> {
+        self.player.borrow()
+    }
+
+    pub fn is_full_screen(&self) -> bool {
+        self.st.borrow().full_screen
+    }
+
+    /// The selection anchor used by Shift+click (tests).
+    pub fn selected_uids(&self) -> HashSet<Uuid> {
+        self.vm.selected_uids()
+    }
+}
+
+impl Drop for MainWindowController {
+    fn drop(&mut self) {
+        self.timer.stop();
+    }
+}
+
+struct Target<'a> {
+    c: &'a MainWindowController,
+}
+
+impl ShortcutTarget for Target<'_> {
+    fn is_player_shown(&self) -> bool {
+        self.c.vm.is_player_shown()
+    }
+    fn is_full_screen(&self) -> bool {
+        self.c.st.borrow().full_screen
+    }
+    fn toggle_playback(&mut self) {
+        self.c.player.borrow_mut().toggle_playback();
+    }
+    fn seek_by(&mut self, seconds: f64) {
+        self.c.player.borrow_mut().seek_by(seconds);
+    }
+    fn adjust_volume(&mut self, step: f64) {
+        self.c.player.borrow_mut().adjust_volume(step);
+    }
+    fn toggle_mute(&mut self) {
+        self.c.player.borrow_mut().toggle_mute();
+    }
+    fn toggle_full_screen(&mut self) {
+        self.c.toggle_full_screen();
+    }
+    fn toggle_theater(&mut self) {
+        self.c.vm.set_theater_mode(!self.c.vm.is_theater_mode());
+    }
+    fn toggle_subtitle_panel(&mut self) {
+        self.c.vm.toggle_subtitle_panel();
+    }
+    fn leave_full_screen_or_theater(&mut self) {
+        self.c.leave_full_screen_or_theater();
+    }
+}
+
+fn state_index(s: PlaylistItemState) -> i32 {
+    match s {
+        PlaylistItemState::Pending => 0,
+        PlaylistItemState::Working => 1,
+        PlaylistItemState::Completed => 2,
+        PlaylistItemState::Failed => 3,
+    }
+}
+
+fn quick_symbol(k: sa_core::platform::QuickLocationKind) -> &'static str {
+    use sa_core::platform::QuickLocationKind as Q;
+    match k {
+        Q::Videos => "film",
+        Q::Downloads => "arrow.down.circle",
+        Q::Desktop => "menubar.dock.rectangle",
+        Q::Home => "house",
+        Q::Drive | Q::Volume => "externaldrive",
+    }
+}
+
+fn quick_glyph(k: sa_core::platform::QuickLocationKind) -> char {
+    use sa_core::platform::QuickLocationKind as Q;
+    match k {
+        Q::Videos => '\u{E8B2}',
+        Q::Downloads => '\u{E896}',
+        Q::Desktop => '\u{E7F4}',
+        Q::Home => '\u{E80F}',
+        Q::Drive | Q::Volume => '\u{EDA2}',
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_are_copied_row_by_row_when_strided() {
+        let frame = VideoFrame { width: 2, height: 2, stride: 12, pts: 0.0, rgba: Arc::new((0..24).collect()) };
+        let buf = frame_to_buffer(&frame, None);
+        assert_eq!(buf.as_bytes(), &[0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18, 19]);
+        let tight = VideoFrame { width: 2, height: 1, stride: 8, pts: 0.0, rgba: Arc::new((0..8).collect()) };
+        let reused = frame_to_buffer(&tight, Some(SharedPixelBuffer::new(2, 1)));
+        assert_eq!(reused.as_bytes(), &[0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+}

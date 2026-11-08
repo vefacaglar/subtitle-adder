@@ -1,0 +1,72 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Behavior fixture for sa-providers. Compiles the C# app's own SubtitleAdder.Core and EngineKit sources (linked
+    read-only from apps/windows; nothing is built inside apps/windows) and prints what the real C# code does for inputs
+    the Rust test hands it: the pure helpers of TranslationProviderManager / SubtitleViewModel / TranslationModelSelection,
+    how translation-providers.json files load, and scripted scenarios against a real TranslationProviderManager +
+    SubtitleViewModel (edits, the legacy LAN bridge, the picker, connection tests through a scripted HttpMessageHandler).
+    See Program.cs for the commands.
+
+    One source is patched at build time (PatchProviderManager below): `TranslationProviderManager.Shared` would otherwise
+    be constructed on first use of the type and read the user's real %LOCALAPPDATA%\SubtitleAdder file and join the real
+    broker. The patched singleton lives in a temp folder with a private broker; every other line is the C# app's.
+    Build: dotnet build -c Release (bin/ and obj/ stay under this folder and are git-ignored).
+    Used by crates/sa-providers/tests/csharp_behavior.rs (skipped when the fixture is not built).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <NoWarn>$(NoWarn);CS1591;CS8618;CS0618;CS8600;CS8602;CS8604</NoWarn>
+    <WinCore>..\..\..\..\windows\src\SubtitleAdder.Core</WinCore>
+    <WinEngineKit>..\..\..\..\windows\src\EngineKit</WinEngineKit>
+    <MacSources>..\..\..\..\macos\Sources</MacSources>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <PatchedProviderManager>$(MSBuildProjectDirectory)\obj\patched\TranslationProviderManager.cs</PatchedProviderManager>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="$(WinCore)\*.cs" Exclude="$(WinCore)\TranslationProviderManager.cs" LinkBase="Core" />
+    <Compile Include="$(WinEngineKit)\*.cs" LinkBase="EngineKit" />
+    <Compile Include="$(PatchedProviderManager)" Link="Core\TranslationProviderManager.cs" />
+    <EmbeddedResource Include="$(MacSources)\SubtitleAdderApp\Resources\Localizable.xcstrings"
+                      LogicalName="SubtitleAdder.Core.Localizable.xcstrings" />
+    <EmbeddedResource Include="$(WinCore)\Strings\Windows.xcstrings" LogicalName="SubtitleAdder.Core.Windows.xcstrings" />
+    <EmbeddedResource Include="$(MacSources)\EngineKit\Resources\Localizable.xcstrings"
+                      LogicalName="SubtitleAdder.EngineKit.Localizable.xcstrings" />
+  </ItemGroup>
+
+  <UsingTask TaskName="ReplaceOnce" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Source ParameterType="System.String" Required="true" />
+      <Destination ParameterType="System.String" Required="true" />
+      <Find ParameterType="System.String" Required="true" />
+      <Replacement ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var text = System.IO.File.ReadAllText(Source);
+        var index = text.IndexOf(Find, System.StringComparison.Ordinal);
+        if (index < 0 || text.IndexOf(Find, index + 1, System.StringComparison.Ordinal) >= 0)
+        {
+            Log.LogError("ReplaceOnce: the patch target must occur exactly once in " + Source);
+            return false;
+        }
+        var patched = text.Substring(0, index) + Replacement + text.Substring(index + Find.Length);
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Destination));
+        if (!System.IO.File.Exists(Destination) || System.IO.File.ReadAllText(Destination) != patched)
+            System.IO.File.WriteAllText(Destination, patched);
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="PatchProviderManager" BeforeTargets="BeforeBuild;CoreCompile">
+    <ReplaceOnce Source="$(WinCore)\TranslationProviderManager.cs" Destination="$(PatchedProviderManager)"
+                 Find="public static TranslationProviderManager Shared { get; } = new();"
+                 Replacement="public static TranslationProviderManager Shared => FixtureHooks.SharedProviders;" />
+  </Target>
+</Project>

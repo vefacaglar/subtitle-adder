@@ -1,0 +1,98 @@
+// Main window layout (mac-ui §6): resizable sidebar (220–420, ideal 260) under the unified title bar, detail
+// column (min 600) with the 52 pt toolbar (hidden in theater mode), the centered segmented workspace switcher, the
+// workspace content and the status bar. Full screen with a player shown: the player fills the detail. A root
+// FocusScope pre-dispatches every key to Rust (`MainBridge.key-pressed`, mac-ui §3.2).
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, AppBridge, Workspace } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Toolbar } from "toolbar.slint";
+import { Sidebar } from "sidebar.slint";
+import { WorkspaceSwitcher } from "workspace_switcher.slint";
+import { EditorView } from "editor_view.slint";
+import { PlaylistView } from "playlist_view.slint";
+import { StatusBar } from "status_bar.slint";
+import { HubView } from "../hub/hub_view.slint";
+
+export component MainView inherits Rectangle {
+    property <bool> sidebar-visible: MainBridge.show-file-explorer && !AppBridge.is-full-screen;
+    property <bool> player-only: AppBridge.is-full-screen && MainBridge.has-video && MainBridge.workspace == Workspace.editor;
+    property <length> sidebar-width: MacTheme.sidebar-ideal;
+    background: MacTheme.window-background;
+
+    keys := FocusScope {
+        capture-key-pressed(e) => {
+            if (MainBridge.key-pressed(e.text, e.modifiers.shift, e.modifiers.control, e.modifiers.alt, e.modifiers.meta, e.repeat)) {
+                return accept;
+            }
+            reject
+        }
+        HorizontalLayout {
+            if root.sidebar-visible: Sidebar {
+                width: root.sidebar-width;
+            }
+            if root.sidebar-visible: Rectangle {
+                width: 1px;
+                background: MacTheme.separator;
+                TouchArea {
+                    x: -3px;
+                    width: 7px;
+                    mouse-cursor: col-resize;
+                    moved => {
+                        if (self.pressed) {
+                            root.sidebar-width = clamp(root.sidebar-width + self.mouse-x - self.pressed-x, MacTheme.sidebar-min, MacTheme.sidebar-max);
+                        }
+                    }
+                }
+            }
+            // Detail column (min 600).
+            VerticalLayout {
+                min-width: MacTheme.detail-min;
+                horizontal-stretch: 1;
+                if !AppBridge.is-theater-mode && !root.player-only: Toolbar {
+                    leading-reserve: root.sidebar-visible || AppBridge.is-full-screen ? 0 : MacTheme.traffic-light-reserve;
+                    available-width: MainBridge.window-width - (root.sidebar-visible ? root.sidebar-width + 1px : 0);
+                    show-sidebar-toggle: !root.sidebar-visible;
+                }
+                // Theater mode keeps the title bar strip (traffic lights + title) without the toolbar items.
+                if AppBridge.is-theater-mode && !root.player-only: Rectangle {
+                    height: 28px;
+                    background: MacTheme.toolbar-background;
+                    Text {
+                        text: AppBridge.window-title;
+                        font-size: MacTheme.body-size;
+                        font-weight: 600;
+                        color: MacTheme.secondary-label;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                                AppBridge.drag-requested();
+                            }
+                        }
+                        double-clicked => { AppBridge.title-double-clicked(); }
+                    }
+                }
+                if !root.player-only: Rectangle { height: 1px; background: MacTheme.separator; }
+                Rectangle {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        if !root.player-only: WorkspaceSwitcher { }
+                        if !root.player-only: Rectangle { height: 1px; background: MacTheme.separator; }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            if MainBridge.workspace == Workspace.editor: EditorView { }
+                            if MainBridge.workspace == Workspace.platform: HubView { }
+                            if MainBridge.workspace == Workspace.playlist: PlaylistView { }
+                        }
+                        if !root.player-only: Rectangle { height: 1px; background: MacTheme.separator; }
+                        if !root.player-only: StatusBar { }
+                    }
+                }
+            }
+        }
+    }
+
+    init => { keys.focus(); }
+}

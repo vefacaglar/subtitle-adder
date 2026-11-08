@@ -1,0 +1,221 @@
+// SettingsWindow content (win-ui-hub-settings §6.1): 48 px title bar (icon + "Ayarlar", drag region, caption
+// buttons), NavigationView (pane 220, always expanded, no back/settings/toggle) with Genel / Görünüm / Modeller, and
+// a ScrollView (padding 36,0,36,36; MaxWidth 860) holding the page title (Title style, top 24) and the page (top 64).
+import { ScrollView } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { ContentDialog } from "controls.slint";
+import { GeneralPage } from "general_page.slint";
+import { AppearancePage } from "appearance_page.slint";
+import { ModelsPage } from "models_page.slint";
+
+component CaptionButton inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> close;
+    in property <string> label;
+    callback clicked();
+    width: 46px;
+    background: touch.pressed ? (root.close ? #c42b1ce6 : Theme.subtle-pressed) : touch.has-hover ? (root.close ? #c42b1c : Theme.subtle-hover) : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    Text {
+        text: root.glyph;
+        font-family: Theme.icon-font;
+        font-size: 10px;
+        color: touch.has-hover && root.close ? white : (SettingsBridge.is-active ? Theme.text-primary : Theme.text-tertiary);
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+component SettingsTitleBar inherits Rectangle {
+    height: 48px;
+    TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                SettingsBridge.drag-requested();
+            }
+        }
+        double-clicked => { SettingsBridge.title-double-clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        spacing: 10px;
+        // AppIcon 18×18.
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            background: @linear-gradient(135deg, #3a7bd5 0%, #6a4fd8 100%);
+            Text {
+                text: "\u{E7F0}";
+                font-family: Theme.icon-font;
+                font-size: 11px;
+                color: white;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: Loc.t("Ayarlar");
+            font-size: Theme.caption-size;
+            color: SettingsBridge.is-active ? Theme.text-primary : Theme.text-tertiary;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        HorizontalLayout {
+            width: Theme.caption-reserve - 2px;
+            alignment: end;
+            CaptionButton {
+                glyph: "\u{E921}";
+                clicked => { SettingsBridge.minimize-requested(); }
+            }
+            CaptionButton {
+                glyph: SettingsBridge.is-maximized ? "\u{E923}" : "\u{E922}";
+                clicked => { SettingsBridge.maximize-toggle-requested(); }
+            }
+            CaptionButton {
+                glyph: "\u{E8BB}";
+                close: true;
+                label: Loc.t("Kapat");
+                clicked => { SettingsBridge.close-requested(); }
+            }
+        }
+    }
+}
+
+component NavItem inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+    height: 36px;
+    border-radius: Theme.control-radius;
+    background: touch.pressed ? Theme.subtle-pressed : (root.selected || touch.has-hover) ? Theme.subtle-hover : transparent;
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selected: root.selected;
+    HorizontalLayout {
+        padding-left: 16px;
+        spacing: 16px;
+        Text {
+            text: root.glyph;
+            font-family: Theme.icon-font;
+            font-size: 16px;
+            vertical-alignment: center;
+            color: Theme.text-primary;
+        }
+        Text {
+            text: root.label;
+            font-size: Theme.body-size;
+            vertical-alignment: center;
+            horizontal-alignment: left;
+            horizontal-stretch: 1;
+            color: Theme.text-primary;
+        }
+    }
+    if root.selected: Rectangle {
+        x: 0;
+        width: 3px;
+        height: 16px;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component SettingsView inherits Rectangle {
+    property <string> page-title: SettingsBridge.page == 1 ? Loc.t("Görünüm") : SettingsBridge.page == 2 ? Loc.t("Modeller") : Loc.t("Genel");
+
+    VerticalLayout {
+        SettingsTitleBar { }
+        HorizontalLayout {
+            // NavigationView pane (220, always expanded).
+            VerticalLayout {
+                width: 220px;
+                padding-left: 4px;
+                padding-right: 4px;
+                padding-top: 4px;
+                spacing: 4px;
+                alignment: start;
+                NavItem {
+                    glyph: "\u{E713}";
+                    label: Loc.t("Genel");
+                    selected: SettingsBridge.page == 0;
+                    clicked => { SettingsBridge.page-selected(0); }
+                }
+                NavItem {
+                    glyph: "\u{E790}";
+                    label: Loc.t("Görünüm");
+                    selected: SettingsBridge.page == 1;
+                    clicked => { SettingsBridge.page-selected(1); }
+                }
+                NavItem {
+                    glyph: "\u{E8F1}";
+                    label: Loc.t("Modeller");
+                    selected: SettingsBridge.page == 2;
+                    clicked => { SettingsBridge.page-selected(2); }
+                }
+            }
+            // Content: the NavigationView content area (layer fill, top-left rounded corner).
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.layer-fill;
+                border-top-left-radius: 8px;
+                border-width: 1px;
+                border-color: Theme.card-stroke;
+                scroller := ScrollView {
+                    content-width: self.visible-width;
+                    content-height: column.preferred-height;
+                    column := VerticalLayout {
+                        width: scroller.visible-width;
+                        padding-left: 36px;
+                        padding-right: 36px;
+                        padding-bottom: 36px;
+                        HorizontalLayout {
+                            alignment: center;
+                            VerticalLayout {
+                                // Grid MaxWidth 860, stretched below that.
+                                width: min(860px, scroller.visible-width - 72px);
+                                padding-top: 24px;
+                                Text {
+                                    text: root.page-title;
+                                    font-size: 28px;
+                                    font-weight: 600;
+                                    color: Theme.text-primary;
+                                    accessible-role: AccessibleRole.text;
+                                }
+                                // Pages start 64 below the grid top (title 36 + 4).
+                                Rectangle { height: 4px; }
+                                if SettingsBridge.page == 0: GeneralPage { }
+                                if SettingsBridge.page == 1: AppearancePage { }
+                                if SettingsBridge.page == 2: ModelsPage { }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Scroll to top instantly on a page change.
+    property <int> epoch: SettingsBridge.scroll-epoch;
+    changed epoch => {
+        scroller.content-y = 0;
+    }
+
+    ContentDialog {
+        width: root.width;
+        height: root.height;
+        open: SettingsBridge.confirm-open;
+        title: SettingsBridge.confirm-title;
+        message: SettingsBridge.confirm-message;
+        primary-text: SettingsBridge.confirm-primary;
+        close-text: Loc.t("Vazgeç");
+        primary => { SettingsBridge.confirm-accepted(); }
+        dismissed => { SettingsBridge.confirm-dismissed(); }
+    }
+}

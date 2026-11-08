@@ -1,0 +1,64 @@
+// Segmented workspace switcher (mac-ui §6.1): centered, intrinsic width, 8 pt vertical padding.
+// Third label: `Çeviri listesi (N)` when list rows exist, else `Çeviri listesi`.
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, Workspace } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+
+component Segment inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+    border-radius: 5px;
+    background: selected ? (MacTheme.dark ? #636366 : #ffffff) : transparent;
+    drop-shadow-blur: selected ? 1px : 0;
+    drop-shadow-color: #0000003a;
+    drop-shadow-offset-y: selected ? 0.5px : 0;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text {
+            text: root.label;
+            font-size: MacTheme.body-size;
+            color: MacTheme.label;
+            vertical-alignment: center;
+        }
+    }
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selected: root.selected;
+    TouchArea { clicked => { root.clicked(); } }
+}
+
+export component WorkspaceSwitcher inherits Rectangle {
+    height: 22px + 16px;
+    HorizontalLayout {
+        alignment: center;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        Rectangle {
+            border-radius: 6px;
+            background: MacTheme.quaternary-fill;
+            accessible-role: tab-list;
+            accessible-label: Loc.t("Çalışma alanı");
+            HorizontalLayout {
+                padding: 1px;
+                spacing: 1px;
+                Segment {
+                    label: Loc.t("Player");
+                    selected: MainBridge.workspace == Workspace.editor;
+                    clicked => { MainBridge.workspace-selected(Workspace.editor); }
+                }
+                Segment {
+                    label: Loc.t("Platform");
+                    selected: MainBridge.workspace == Workspace.platform;
+                    clicked => { MainBridge.workspace-selected(Workspace.platform); }
+                }
+                Segment {
+                    label: MainBridge.has-list-rows ? Loc.t1("Çeviri listesi (%lld)", MainBridge.playlist-count) : Loc.t("Çeviri listesi");
+                    selected: MainBridge.workspace == Workspace.playlist;
+                    clicked => { MainBridge.workspace-selected(Workspace.playlist); }
+                }
+            }
+        }
+    }
+}

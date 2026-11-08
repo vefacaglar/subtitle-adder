@@ -1,0 +1,215 @@
+// ProfileToolbarButton + ProfilePopover (mac-ui §9.4): the toolbar's profile button and the popover it toggles
+// (padding 16, width 300). Logged out: header + ProfileAuthForm; logged in: avatar, name, summary, "Video Platformu",
+// "Çıkış yap", DeleteProfileSection (closed → password → confirm).
+import { LineEdit } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, ToolbarButton, PushButton, SmallSpinner } from "../main/controls.slint";
+import { PopoverSurface, PlainButton, ErrorLabel } from "hub_controls.slint";
+import { ProfileAuthForm } from "auth_form.slint";
+
+component DeleteProfileSection inherits VerticalLayout {
+    // 0 closed, 1 password, 2 confirm
+    in-out property <int> step;
+    property <int> failed: HubBridge.delete-failed-epoch;
+    changed failed => { root.step = 1; }
+    spacing: 8px;
+    alignment: start;
+    function close() {
+        pw.text = "";
+        HubBridge.clear-auth-error();
+        root.step = 0;
+    }
+    function next() {
+        if (pw.text != "") {
+            HubBridge.clear-auth-error();
+            root.step = 2;
+        }
+    }
+    if root.step == 0: PlainButton {
+        symbol: "trash";
+        label: Loc.t("Profili sil…");
+        fg: MacTheme.system-red;
+        clicked => {
+            HubBridge.clear-auth-error();
+            root.step = 1;
+        }
+    }
+    if root.step == 1: Text {
+        text: Loc.t1("“%@” profilini silmek için şifresini girin.", HubBridge.current-username);
+        font-size: MacTheme.callout-size;
+        wrap: word-wrap;
+        color: MacTheme.label;
+    }
+    if root.step == 2: Text {
+        text: Loc.t1("“%@” profili ve içindeki izleme geçmişi, favoriler, puanlar ve listeler kalıcı olarak silinsin mi? Bu işlem geri alınamaz.", HubBridge.current-username);
+        font-size: MacTheme.callout-size;
+        wrap: word-wrap;
+        color: MacTheme.label;
+    }
+    // The password field lives while the section is open (kept across the two steps).
+    pw := LineEdit {
+        visible: root.step == 1;
+        height: root.step == 1 ? self.preferred-height : 0;
+        input-type: password;
+        placeholder-text: Loc.t("Şifre");
+        accessible-label: Loc.t("Şifre");
+        accepted => { root.next(); }
+    }
+    if root.step != 0 && HubBridge.auth-error != "": ErrorLabel {
+        text: HubBridge.auth-error;
+    }
+    if root.step == 1: HorizontalLayout {
+        spacing: 8px;
+        PushButton {
+            label: Loc.t("Vazgeç");
+            clicked => { root.close(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        PushButton {
+            label: Loc.t("Devam");
+            destructive: true;
+            enabled: pw.text != "";
+            clicked => { root.next(); }
+        }
+    }
+    if root.step == 2: HorizontalLayout {
+        spacing: 8px;
+        PushButton {
+            label: Loc.t("Vazgeç");
+            clicked => { root.close(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        if HubBridge.is-authenticating: SmallSpinner {
+            width: 16px;
+            height: 16px;
+        }
+        PushButton {
+            label: Loc.t("Profili sil");
+            destructive: true;
+            enabled: !HubBridge.is-authenticating;
+            clicked => { HubBridge.delete-profile(pw.text); }
+        }
+    }
+}
+
+export component ProfilePopover inherits PopupWindow {
+    close-policy: close-on-click-outside;
+    property <int> close-epoch: HubBridge.popover-close-epoch;
+    changed close-epoch => { root.close(); }
+    PopoverSurface {
+        width: 300px + 32px;
+        // One layout child gives the surface its height (a conditional alone would not).
+        VerticalLayout {
+        if !HubBridge.is-logged-in: VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+            VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    Sym {
+                        y: (parent.height - self.height) / 2;
+                        name: "person.crop.circle";
+                        size: 14px;
+                        tint: MacTheme.label;
+                    }
+                    Text {
+                        text: Loc.t("Profil / Giriş");
+                        font-size: MacTheme.body-size;
+                        font-weight: 600;
+                        color: MacTheme.label;
+                    }
+                }
+                Text {
+                    text: Loc.t("İzleme geçmişi, görüntülenme sayısı, beğeni ve yıldız puanları profilinize özel kaydedilir.");
+                    font-size: MacTheme.caption-size;
+                    color: MacTheme.secondary-label;
+                    wrap: word-wrap;
+                }
+            }
+            ProfileAuthForm {
+                in-popover: true;
+                register-title: Loc.t("Yeni profil oluştur");
+            }
+        }
+        if HubBridge.is-logged-in: VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                Sym {
+                    y: (parent.height - self.height) / 2;
+                    name: "person.crop.circle.fill";
+                    size: 34px;
+                    tint: MacTheme.control-accent;
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    alignment: center;
+                    Text {
+                        text: HubBridge.current-username;
+                        font-size: MacTheme.body-size;
+                        font-weight: 600;
+                        overflow: elide;
+                        color: MacTheme.label;
+                    }
+                    Text {
+                        text: HubBridge.summary-text;
+                        font-size: MacTheme.caption-size;
+                        color: MacTheme.secondary-label;
+                    }
+                }
+            }
+            Rectangle { height: 1px; background: MacTheme.separator; }
+            PlainButton {
+                symbol: "play.rectangle.on.rectangle";
+                label: Loc.t("Video Platformu");
+                clicked => {
+                    root.close();
+                    HubBridge.open-platform();
+                }
+            }
+            PlainButton {
+                symbol: "rectangle.portrait.and.arrow.right";
+                label: Loc.t("Çıkış yap");
+                clicked => {
+                    root.close();
+                    HubBridge.logout();
+                }
+            }
+            Rectangle { height: 1px; background: MacTheme.separator; }
+            DeleteProfileSection { }
+        }
+        }
+    }
+}
+
+// The toolbar button (title + icon `person.crop.circle`); click toggles the popover (arrow down).
+export component ProfileToolbarButton inherits Rectangle {
+    property <int> open-request: HubBridge.popover-open-epoch;
+    changed open-request => {
+        HubBridge.profile-opened();
+        popover.show();
+    }
+    width: button.preferred-width;
+    height: button.preferred-height;
+    button := ToolbarButton {
+        width: parent.width;
+        symbol: "person.crop.circle";
+        label: HubBridge.profile-title;
+        tooltip: HubBridge.is-logged-in ? Loc.t("Profil") : Loc.t("İzleme geçmişi, beğeni ve puanlama için giriş yapın");
+        accessible-name: HubBridge.profile-title;
+        clicked => {
+            HubBridge.profile-opened();
+            popover.show();
+        }
+    }
+    popover := ProfilePopover {
+        x: root.width - 332px;
+        y: root.height + 6px;
+    }
+}

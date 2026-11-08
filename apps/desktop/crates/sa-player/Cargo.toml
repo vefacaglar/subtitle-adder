@@ -1,0 +1,23 @@
+[package]
+name = "sa-player"
+description = "Video player: FFmpeg (ffmpeg-next) decode, cpal audio output, A/V sync, RGBA frames for the UI; playback timeline and session gate."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["ffmpeg"]
+# The FFmpeg/cpal backend. View models depend on this crate without it (trait + pure types only).
+ffmpeg = ["dep:ffmpeg-next", "dep:cpal"]
+
+[dependencies]
+sa-core.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+ffmpeg-next = { workspace = true, optional = true }
+cpal = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

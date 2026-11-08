@@ -1,0 +1,149 @@
+// Settings ▸ Modeller (win-ui-hub-settings §6.4): freed-space InfoBar, load-error InfoBar, Altyazı modelleri,
+// Konuşmacılar (only with diarization rows), Çeviri modelleri, loading ring + total disk text.
+import { Button, Spinner } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge, SettingsModelRow } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { CardFrame, SectionHeader, SecondaryText, InfoBar, Glyph, GlyphButton } from "controls.slint";
+
+component ModelCard inherits CardFrame {
+    in property <SettingsModelRow> item;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 16px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 2px;
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Text {
+                    text: root.item.name;
+                    font-size: Theme.body-size;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                }
+                if root.item.is-active: HorizontalLayout {
+                    spacing: 4px;
+                    Glyph {
+                        glyph: "\u{E720}";
+                        font-size: 12px;
+                        color: Theme.text-secondary;
+                    }
+                    SecondaryText {
+                        text: Loc.t("Kullanılıyor");
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            SecondaryText { text: root.item.language-summary; }
+            SecondaryText { text: root.item.storage-status; }
+            SecondaryText { text: root.item.rating-text; }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                SecondaryText { text: root.item.license-text; }
+                if root.item.is-non-commercial: HorizontalLayout {
+                    spacing: 4px;
+                    Glyph {
+                        glyph: "\u{E7BA}";
+                        font-size: 12px;
+                        color: Theme.caution;
+                    }
+                    Text {
+                        text: Loc.t("Ticari olmayan lisans");
+                        font-size: Theme.caption-size;
+                        color: Theme.caution;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            if root.item.error-text != "": Text {
+                text: root.item.error-text;
+                font-size: Theme.caption-size;
+                color: Theme.critical;
+                wrap: word-wrap;
+                overflow: elide;
+                max-height: 2 * 16px;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            if root.item.is-deleting: HorizontalLayout {
+                spacing: 8px;
+                Spinner {
+                    width: 16px;
+                    height: 16px;
+                    indeterminate: true;
+                }
+                SecondaryText {
+                    text: Loc.t("Siliniyor…");
+                    vertical-alignment: center;
+                }
+            }
+            if !root.item.is-deleting && root.item.shows-delete: GlyphButton {
+                glyph: "\u{E74D}";
+                label: Loc.t("Sil…");
+                enabled: root.item.can-delete;
+                clicked => { SettingsBridge.model-delete(root.item.id); }
+            }
+        }
+    }
+}
+
+export component ModelsPage inherits VerticalLayout {
+    spacing: 4px;
+
+    VerticalLayout {
+        padding-top: SettingsBridge.models-notice-open ? 8px : 0px;
+        InfoBar {
+            open: SettingsBridge.models-notice-open;
+            severity: 1;
+            message: SettingsBridge.models-notice-text;
+            closed => { SettingsBridge.models-notice-closed(); }
+        }
+    }
+    VerticalLayout {
+        padding-top: SettingsBridge.models-load-error != "" ? 8px : 0px;
+        InfoBar {
+            open: SettingsBridge.models-load-error != "";
+            severity: 2;
+            closable: false;
+            message: SettingsBridge.models-load-error;
+        }
+    }
+
+    SectionHeader { text: Loc.t("Altyazı modelleri"); first: true; }
+    VerticalLayout {
+        spacing: 4px;
+        for row in SettingsBridge.transcription-rows: ModelCard { item: row; }
+    }
+    if SettingsBridge.diarization-rows.length > 0: VerticalLayout {
+        spacing: 4px;
+        SectionHeader { text: Loc.t("Konuşmacılar"); }
+        for row in SettingsBridge.diarization-rows: ModelCard { item: row; }
+    }
+    SectionHeader { text: Loc.t("Çeviri modelleri"); }
+    VerticalLayout {
+        spacing: 4px;
+        for row in SettingsBridge.translation-rows: ModelCard { item: row; }
+    }
+    HorizontalLayout {
+        padding-left: 1px;
+        padding-top: 8px;
+        spacing: 8px;
+        alignment: start;
+        if SettingsBridge.models-loading: Spinner {
+            width: 16px;
+            height: 16px;
+            indeterminate: true;
+        }
+        SecondaryText {
+            text: SettingsBridge.models-total-text;
+            vertical-alignment: center;
+        }
+    }
+}

@@ -1,0 +1,261 @@
+// Playlist workspace "Çeviri listesi" (mac-ui §8): actions row (Videoları ekle…, Tüm kaynak diller, Listeyi
+// temizle, Sıradakileri temizle, summary, prominent Tümünü Çevir ve Kaydet), notice bar, divider, inset list rows with
+// per-row Stop / remove, or the dashed empty state.
+import { ListView, ProgressIndicator } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge } from "../../shared/bridge.slint";
+import { QueueRowData } from "../../shared/main_types.slint";
+import { DashedBorder } from "../../shared/dashed_border.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, PushButton, MenuButton, SmallSpinner, ToolTip } from "controls.slint";
+
+component ListRowView inherits Rectangle {
+    in property <int> index;
+    in property <QueueRowData> item;
+    min-height: 44px;
+    border-radius: 6px;
+    background: touch.has-hover ? MacTheme.quaternary-fill : transparent;
+    accessible-role: list-item;
+    accessible-label: root.item.accessible-label;
+    touch := TouchArea {
+        clicked => { MainBridge.queue-row-clicked(root.index); }
+    }
+    ToolTip {
+        text: Loc.t("Videoyu düzenleyicide aç");
+        show: touch.has-hover && !touch.pressed;
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 12px;
+        Rectangle {
+            width: 22px;
+            if root.item.state == 0: Sym { name: root.item.audio-ready ? "waveform" : "clock"; size: 14px; tint: MacTheme.secondary-label; }
+            if root.item.state == 1: SmallSpinner { }
+            if root.item.state == 2: Sym { name: "checkmark.circle.fill"; size: 14px; tint: MacTheme.system-green; }
+            if root.item.state == 3: Sym { name: "exclamationmark.triangle.fill"; size: 14px; tint: MacTheme.system-red; }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.file-name;
+                font-size: MacTheme.body-size;
+                font-weight: 600;
+                overflow: elide;
+                color: MacTheme.label;
+            }
+            Text {
+                text: root.item.folder-path;
+                font-size: MacTheme.caption-size;
+                overflow: elide;
+                color: MacTheme.secondary-label;
+            }
+        }
+        if root.item.is-playlist-item: MenuButton {
+            width: 170px;
+            y: (parent.height - self.height) / 2;
+            bordered: true;
+            menu-id: "queue-language:" + root.index;
+            label: root.item.source-language-title;
+            enabled: root.item.can-edit && !MainBridge.is-playlist-running;
+            accessible-name: Loc.t("Konuşma dili");
+            tooltip: Loc.t("Bu videonun konuşma (kaynak) dilini seç");
+            menu-width: 200px;
+        }
+        VerticalLayout {
+            width: 240px;
+            spacing: 4px;
+            alignment: center;
+            Text {
+                text: root.item.status-text;
+                font-size: MacTheme.callout-size;
+                wrap: word-wrap;
+                overflow: elide;
+                max-height: 30px;
+                color: MacTheme.secondary-label;
+            }
+            if root.item.state == 1: ProgressIndicator {
+                height: 4px;
+                indeterminate: root.item.indeterminate;
+                progress: root.item.progress;
+            }
+        }
+        Rectangle {
+            width: 20px;
+            accessible-role: button;
+            accessible-label: root.item.can-stop ? Loc.t("Durdur") : Loc.t("Listeden kaldır");
+            opacity: root.item.can-stop || root.item.state != 1 ? 1 : 0.4;
+            Sym {
+                y: (parent.height - self.height) / 2;
+                name: root.item.can-stop ? "stop.fill" : "xmark";
+                size: 12px;
+                tint: MacTheme.secondary-label;
+            }
+            rtouch := TouchArea {
+                enabled: root.item.can-stop || root.item.state != 1;
+                clicked => { MainBridge.queue-row-remove(root.index); }
+            }
+            ToolTip {
+                text: root.item.can-stop ? Loc.t("Bu videonun işini durdur") : Loc.t("Listeden kaldır");
+                show: rtouch.has-hover;
+            }
+        }
+    }
+}
+
+export component PlaylistView inherits Rectangle {
+    VerticalLayout {
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 10px;
+            PushButton {
+                symbol: "plus";
+                label: Loc.t("Videoları ekle…");
+                tooltip: Loc.t("Listeye birden fazla video dosyası ekle");
+                clicked => { MainBridge.add-playlist-videos(); }
+            }
+            MenuButton {
+                bordered: true;
+                menu-id: "bulk-language";
+                symbol: "globe";
+                label: Loc.t("Tüm kaynak diller");
+                enabled: MainBridge.has-playlist-items && !MainBridge.is-playlist-running;
+                tooltip: Loc.t("Listedeki tüm videoların konuşma (kaynak) dilini tek seferde ayarla");
+                menu-width: 200px;
+            }
+            PushButton {
+                symbol: "trash";
+                label: Loc.t("Listeyi temizle");
+                enabled: MainBridge.has-list-rows;
+                tooltip: Loc.t("Tamamlanan ve bekleyen videoları listeden temizle");
+                clicked => { MainBridge.clear-playlist(); }
+            }
+            PushButton {
+                symbol: "text.badge.xmark";
+                label: Loc.t("Sıradakileri temizle");
+                enabled: MainBridge.can-clear-queue;
+                tooltip: Loc.t("Sırada bekleyen tekil video işlerini iptal et; çalışan iş sürer");
+                clicked => { MainBridge.clear-queue(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: MainBridge.playlist-summary;
+                font-size: MacTheme.body-size;
+                color: MacTheme.secondary-label;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            PushButton {
+                symbol: "play.fill";
+                label: Loc.t("Tümünü Çevir ve Kaydet");
+                prominent: true;
+                enabled: MainBridge.can-start-playlist;
+                tooltip: Loc.t("Listedeki tüm videoları sırayla metne çevir, seçili hedef dile çevir ve kendi klasörlerine kaydet");
+                clicked => { MainBridge.start-playlist(); }
+            }
+        }
+        if MainBridge.playlist-notice != "": HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-bottom: 10px;
+            spacing: 10px;
+            Sym {
+                y: 2px;
+                name: "exclamationmark.triangle.fill";
+                size: 12px;
+                tint: MacTheme.system-red;
+            }
+            Text {
+                text: MainBridge.playlist-notice;
+                font-size: MacTheme.callout-size;
+                color: MacTheme.system-red;
+                wrap: word-wrap;
+                overflow: elide;
+                max-height: 32px;
+            }
+            if MainBridge.playlist-notice-retry: PushButton {
+                label: MainBridge.playlist-notice-retry-title;
+                clicked => { MainBridge.playlist-notice-retried(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                width: 16px;
+                accessible-role: button;
+                accessible-label: Loc.t("Kapat");
+                Sym {
+                    name: "xmark.circle.fill";
+                    size: 12px;
+                    tint: MacTheme.secondary-label;
+                }
+                TouchArea { clicked => { MainBridge.playlist-notice-closed(); } }
+            }
+        }
+        Rectangle { height: 1px; background: MacTheme.separator; }
+        if MainBridge.has-list-rows: ListView {
+            vertical-stretch: 1;
+            for row[i] in MainBridge.queue-rows: HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 1px;
+                padding-bottom: 1px;
+                ListRowView {
+                    index: i;
+                    item: row;
+                }
+            }
+        }
+        if !MainBridge.has-list-rows: VerticalLayout {
+            vertical-stretch: 1;
+            padding: 20px;
+            Rectangle {
+                border-radius: 16px;
+                background: MacTheme.quaternary-label.with-alpha(0.04);
+                DashedBorder {
+                    stroke: MacTheme.tertiary-label;
+                    stroke-width: 1.5px;
+                    dash: 7px;
+                    gap: 7px;
+                    radius: 16px;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    padding: 20px;
+                    HorizontalLayout {
+                        alignment: center;
+                        Sym { name: "rectangle.stack.badge.plus"; size: 44px; tint: MacTheme.secondary-label; }
+                    }
+                    Text {
+                        text: Loc.t("Birden fazla videoyu buraya sürükle");
+                        font-size: MacTheme.title3-size;
+                        horizontal-alignment: center;
+                        color: MacTheme.label;
+                    }
+                    Text {
+                        text: Loc.t("Listedeki tüm videolar sırayla seçili hedef dile çevrilip kendi klasörlerine kaydedilir.");
+                        font-size: MacTheme.body-size;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        color: MacTheme.secondary-label;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        padding-top: 4px;
+                        PushButton {
+                            symbol: "plus";
+                            label: Loc.t("Videoları ekle…");
+                            clicked => { MainBridge.add-playlist-videos(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

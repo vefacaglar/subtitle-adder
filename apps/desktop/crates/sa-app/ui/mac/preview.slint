@@ -1,0 +1,36 @@
+// PREVIEW of the macOS UI tree without the native MenuBar, compiled only when the mac tree is built on another OS
+// (sa-shot look checks). Keep MainWindow identical to app.slint minus the MenuBar.
+import { Palette } from "std-widgets.slint";
+import { Loc } from "../shared/loc.slint";
+import { AppBridge, MainBridge, HubBridge, ExplorerBridge, SettingsBridge, MenuBridge, Symbols, Workspace } from "../shared/bridge.slint";
+import { MacTheme } from "theme.slint";
+import { MainView } from "main/main_view.slint";
+import { SettingsWindow } from "settings/settings_window.slint";
+
+export { SettingsWindow }
+export { Loc, AppBridge, MainBridge, HubBridge, ExplorerBridge, SettingsBridge, MenuBridge, Symbols, Workspace, Palette }
+
+export component MainWindow inherits Window {
+    title: AppBridge.window-title;
+    // mac-ui §3.1: default 1180×720 pt, min 820×600.
+    preferred-width: 1180px;
+    preferred-height: 720px;
+    min-width: 820px;
+    min-height: 600px;
+    background: MacTheme.window-background;
+    default-font-family: AppBridge.ui-font-family;
+
+    MainView { }
+
+    // Stand-in for the system traffic lights (drawn by macOS on a real Mac).
+    HorizontalLayout {
+        x: 13px;
+        y: (52px - 12px) / 2;
+        width: 52px;
+        height: 12px;
+        spacing: 8px;
+        Rectangle { width: 12px; height: 12px; border-radius: 6px; background: #ff5f57; }
+        Rectangle { width: 12px; height: 12px; border-radius: 6px; background: #febc2e; }
+        Rectangle { width: 12px; height: 12px; border-radius: 6px; background: #28c840; }
+    }
+}

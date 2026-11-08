@@ -1,0 +1,63 @@
+// Dashed rounded-rectangle border (drop zones of both trees; Slint paths have no dash patterns). Straight edges get
+// dash/gap segments; the rounded corners are drawn solid by a transparent rounded rectangle clipped to the corners.
+
+export component DashedBorder inherits Rectangle {
+    in property <brush> stroke;
+    in property <length> stroke-width: 1.5px;
+    in property <length> dash: 7.5px;
+    in property <length> gap: 6px;
+    in property <length> radius: 8px;
+    property <length> step: root.dash + root.gap;
+    property <length> run-x: max(0px, root.width - 2 * root.radius);
+    property <length> run-y: max(0px, root.height - 2 * root.radius);
+    property <int> nx: max(0, floor((root.run-x + root.gap) / root.step));
+    property <int> ny: max(0, floor((root.run-y + root.gap) / root.step));
+    property <length> off-x: root.radius + (root.run-x - (root.nx * root.step - root.gap)) / 2;
+    property <length> off-y: root.radius + (root.run-y - (root.ny * root.step - root.gap)) / 2;
+
+    for i in root.nx: Rectangle {
+        x: root.off-x + i * root.step;
+        y: 0;
+        width: root.dash;
+        height: root.stroke-width;
+        background: root.stroke;
+    }
+    for i in root.nx: Rectangle {
+        x: root.off-x + i * root.step;
+        y: root.height - root.stroke-width;
+        width: root.dash;
+        height: root.stroke-width;
+        background: root.stroke;
+    }
+    for i in root.ny: Rectangle {
+        x: 0;
+        y: root.off-y + i * root.step;
+        width: root.stroke-width;
+        height: root.dash;
+        background: root.stroke;
+    }
+    for i in root.ny: Rectangle {
+        x: root.width - root.stroke-width;
+        y: root.off-y + i * root.step;
+        width: root.stroke-width;
+        height: root.dash;
+        background: root.stroke;
+    }
+    // Corners: quarter arcs.
+    Rectangle {
+        x: 0; y: 0; width: root.radius; height: root.radius; clip: true;
+        Rectangle { width: root.radius * 2; height: root.radius * 2; border-radius: root.radius; border-width: root.stroke-width; border-color: root.stroke; }
+    }
+    Rectangle {
+        x: root.width - root.radius; y: 0; width: root.radius; height: root.radius; clip: true;
+        Rectangle { x: -root.radius; width: root.radius * 2; height: root.radius * 2; border-radius: root.radius; border-width: root.stroke-width; border-color: root.stroke; }
+    }
+    Rectangle {
+        x: 0; y: root.height - root.radius; width: root.radius; height: root.radius; clip: true;
+        Rectangle { y: -root.radius; width: root.radius * 2; height: root.radius * 2; border-radius: root.radius; border-width: root.stroke-width; border-color: root.stroke; }
+    }
+    Rectangle {
+        x: root.width - root.radius; y: root.height - root.radius; width: root.radius; height: root.radius; clip: true;
+        Rectangle { x: -root.radius; y: -root.radius; width: root.radius * 2; height: root.radius * 2; border-radius: root.radius; border-width: root.stroke-width; border-color: root.stroke; }
+    }
+}

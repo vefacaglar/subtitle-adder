@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Wire-compat fixture for sa-platform's single-instance pipe (win-ui-main §2). The C# app's
+    SingleInstanceCoordinator derives its pipe name from Environment.UserName (not injectable), so this tool runs the
+    same client/server code (NamedPipeClientStream/NamedPipeServerStream with PipeOptions.CurrentUserOnly,
+    StreamWriter UTF-8 without BOM, WriteLine per path, ReadLine + Trim + Trim('"') + File.Exists + GetFullPath) on a
+    test pipe name, so a real running app is never contacted:
+      client <pipe> <path...>     forwards the paths (1200 ms connect timeout); prints ok or fail
+      server <pipe> <count>       serves <count> connections; prints one line "batch|<n>" then one "path|<full>" per
+                                  received path, per connection
+      names <user>                prints SanitizeToken(<user>), the mutex and the pipe name
+    Build: dotnet build -c Release (bin/ and obj/ stay under this folder).
+    Used by crates/sa-platform/tests/csharp_compat.rs (opt-in: SA_DOTNET_FIXTURES=1).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+</Project>

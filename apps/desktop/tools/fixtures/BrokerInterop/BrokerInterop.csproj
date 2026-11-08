@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Interop fixture for sa-sync: runs the C# app's real StateSyncBroker (linked read-only from apps/windows) against an
+    in-memory stand-in for SqliteProfileStore, driven over stdin/stdout by crates/sa-sync/tests/csharp_interop.rs.
+    Build: dotnet build -c Release (output stays under this folder; bin/ and obj/ are ignored).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SubtitleAdder.Core</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\..\..\windows\src\SubtitleAdder.Core\StateSyncBroker.cs" Link="Linked\StateSyncBroker.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,199 @@
+// macOS UI tree (cupertino style). Exports the shared contract plus the native menu bar (Slint MenuBar → NSMenu on
+// macOS; relabeled live through Loc). `preview.slint` is the same tree without the MenuBar (cross-platform
+// screenshots: on a real Mac the menu bar is at the top of the screen, not in the window).
+import { Palette } from "std-widgets.slint";
+import { Loc } from "../shared/loc.slint";
+import { AppBridge, MainBridge, HubBridge, ExplorerBridge, SettingsBridge, MenuBridge, Symbols, Workspace } from "../shared/bridge.slint";
+import { MacTheme } from "theme.slint";
+import { MainView } from "main/main_view.slint";
+import { SettingsWindow } from "settings/settings_window.slint";
+
+export { SettingsWindow }
+export { Loc, AppBridge, MainBridge, HubBridge, ExplorerBridge, SettingsBridge, MenuBridge, Symbols, Workspace, Palette }
+
+export component MainWindow inherits Window {
+    title: AppBridge.window-title;
+    // mac-ui §3.1: default 1180×720 pt, min 820×600.
+    preferred-width: 1180px;
+    preferred-height: 720px;
+    min-width: 820px;
+    min-height: 600px;
+    background: MacTheme.window-background;
+    default-font-family: AppBridge.ui-font-family;
+
+    // mac-ui §4 (ui-main): App, File, Edit, View, Window, Help. Titles are `Loc.t…` (relabel live); items are static
+    // and toggled through `enabled` / `title` / `checked` bindings. Slint `Control` = ⌘, `Meta` = ⌃, `Alt` = ⌥.
+    MenuBar {
+        Menu {
+            title: "Subtitle Adder";
+            MenuItem {
+                title: Loc.t1("%@ Hakkında", "Subtitle Adder");
+                activated => { MenuBridge.about(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: Loc.t("Ayarlar…");
+                shortcut: @keys(Control + ",");
+                activated => { AppBridge.open-settings(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: Loc.t1("%@ Uygulamasını Gizle", "Subtitle Adder");
+                shortcut: @keys(Control + H);
+                activated => { MenuBridge.hide-app(); }
+            }
+            MenuItem {
+                title: Loc.t("Diğerlerini Gizle");
+                shortcut: @keys(Alt + Control + H);
+                activated => { MenuBridge.hide-others(); }
+            }
+            MenuItem {
+                title: Loc.t("Tümünü Göster");
+                activated => { MenuBridge.show-all(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: Loc.t1("%@ Uygulamasından Çık", "Subtitle Adder");
+                shortcut: @keys(Control + Q);
+                activated => { MenuBridge.quit(); }
+            }
+        }
+        Menu {
+            title: Loc.t("Dosya");
+            MenuItem {
+                title: Loc.t("Yeni Pencere");
+                shortcut: @keys(Control + N);
+                activated => { MenuBridge.new-window(); }
+            }
+            MenuItem {
+                title: Loc.t("Video aç…");
+                icon: Symbols.image("film", 16px);
+                enabled: MenuBridge.has-main-window && MenuBridge.can-open-video;
+                shortcut: @keys(Control + O);
+                activated => { MenuBridge.open-video(); }
+            }
+            MenuItem {
+                title: Loc.t("Altyazı üret");
+                icon: Symbols.image("captions.bubble", 16px);
+                enabled: MenuBridge.has-main-window && MenuBridge.can-generate;
+                shortcut: @keys(Control + Return);
+                activated => { MenuBridge.generate(); }
+            }
+            MenuItem {
+                title: Loc.t("Durdur");
+                icon: Symbols.image("stop.fill", 16px);
+                enabled: MenuBridge.has-main-window && MenuBridge.can-stop;
+                shortcut: @keys(Control + ".");
+                activated => { MenuBridge.stop(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: Loc.t("Kapat");
+                shortcut: @keys(Control + W);
+                activated => { MenuBridge.close-window(); }
+            }
+        }
+        Menu {
+            title: Loc.t("Düzenle");
+            MenuItem {
+                title: MenuBridge.undo-title;
+                enabled: MenuBridge.can-undo;
+                shortcut: @keys(Control + Z);
+                activated => { MenuBridge.undo(); }
+            }
+            MenuItem {
+                title: MenuBridge.redo-title;
+                enabled: MenuBridge.can-redo;
+                shortcut: @keys(Control + Shift + Z);
+                activated => { MenuBridge.redo(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: Loc.t("Kes");
+                shortcut: @keys(Control + X);
+                activated => { MenuBridge.cut(); }
+            }
+            MenuItem {
+                title: Loc.t("Kopyala");
+                shortcut: @keys(Control + C);
+                activated => { MenuBridge.copy(); }
+            }
+            MenuItem {
+                title: Loc.t("Yapıştır");
+                shortcut: @keys(Control + V);
+                activated => { MenuBridge.paste(); }
+            }
+            MenuItem {
+                title: Loc.t("Sil");
+                activated => { MenuBridge.delete(); }
+            }
+            MenuItem {
+                title: Loc.t("Tümünü Seç");
+                shortcut: @keys(Control + A);
+                activated => { MenuBridge.select-all(); }
+            }
+        }
+        Menu {
+            title: Loc.t("Görüntü");
+            MenuItem {
+                title: MenuBridge.toolbar-visible ? Loc.t("Araç Çubuğunu Gizle") : Loc.t("Araç Çubuğunu Göster");
+                shortcut: @keys(Alt + Control + T);
+                activated => { MenuBridge.toggle-toolbar(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: Loc.t("Tiyatro modu");
+                checkable: true;
+                checked: MenuBridge.theater-mode;
+                enabled: MenuBridge.has-main-window;
+                activated => { MenuBridge.toggle-theater(); }
+            }
+            MenuItem {
+                title: Loc.t("Altyazıları sağa / alta al");
+                checkable: true;
+                checked: MenuBridge.side-by-side;
+                enabled: MenuBridge.has-main-window && !MenuBridge.panel-hidden;
+                activated => { MenuBridge.toggle-side-by-side(); }
+            }
+            MenuItem {
+                title: MenuBridge.panel-hidden ? Loc.t("Altyazı panelini göster") : Loc.t("Altyazı panelini gizle");
+                enabled: MenuBridge.has-main-window && MenuBridge.can-toggle-panel;
+                activated => { MenuBridge.toggle-panel(); }
+            }
+            MenuItem {
+                title: Loc.t("Kenar çubuğunu göster / gizle");
+                icon: Symbols.image("sidebar.left", 16px);
+                shortcut: @keys(Meta + Control + S);
+                activated => { MenuBridge.toggle-sidebar(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: AppBridge.is-full-screen ? Loc.t("Tam Ekrandan Çık") : Loc.t("Tam Ekrana Geç");
+                shortcut: @keys(Meta + Control + F);
+                activated => { MenuBridge.toggle-full-screen(); }
+            }
+        }
+        Menu {
+            title: Loc.t("Pencere");
+            MenuItem {
+                title: Loc.t("Küçült");
+                shortcut: @keys(Control + M);
+                activated => { MenuBridge.minimize(); }
+            }
+            MenuItem {
+                title: Loc.t("Büyüt/Küçült");
+                activated => { MenuBridge.zoom(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: Loc.t("Tümünü Öne Getir");
+                activated => { MenuBridge.bring-all-to-front(); }
+            }
+        }
+        Menu {
+            title: Loc.t("Yardım");
+        }
+    }
+
+    MainView { }
+}

@@ -1,0 +1,44 @@
+// Data types of the Settings bridge (ARCHITECTURE.md §6.2, owner: ui-settings). Both trees see the same structs;
+// Rust fills them (crates/sa-app/src/settings_window). Plain data only: no styled widgets here.
+
+// A row of Settings ▸ Models (`ModelRow`, win-ui-hub-settings §6.4 / mac-ui §11.4). Display-ready.
+export struct SettingsModelRow {
+    id: string,
+    name: string,
+    is-active: bool,
+    language-summary: string,
+    storage-status: string,
+    // "" = no rating line (macOS); Windows always shows it.
+    rating-text: string,
+    license-text: string,
+    is-non-commercial: bool,
+    error-text: string,
+    is-deleting: bool,
+    shows-delete: bool,
+    can-delete: bool,
+    delete-help: string,
+}
+
+// A saved translation provider (Windows provider card §7.3 / macOS ProviderRow §11.2).
+export struct SettingsProviderRow {
+    id: string,
+    name: string,
+    preset-name: string,
+    // macOS: the capsule tag only when the name differs from the preset name.
+    shows-preset-tag: bool,
+    // "<baseURL> · <masked key | Anahtar yok | …>"
+    summary: string,
+    is-active: bool,
+    is-testing: bool,
+    model: string,
+    models: [string],
+    // macOS connection-test notice under the row ("" = none).
+    notice-text: string,
+    notice-error: bool,
+}
+
+// A pop-up item with an optional separator above it (macOS menus: "Sistem", ─, families…).
+export struct SettingsChoice {
+    title: string,
+    separator-before: bool,
+}

@@ -1,0 +1,54 @@
+// Data types of the hub bridge (ARCHITECTURE.md §6.2, owner: ui-hub). Both trees see the same structs; Rust fills
+// them (crates/sa-app/src/hub). Display-ready values only: the trees decide nothing.
+
+// One video card of the Platform feed (win-ui-hub-settings §5.5, mac-ui §9.3).
+export struct HubCardData {
+    path: string,
+    title: string,
+    file-name: string,
+    // `"{folder} ({dir})"` (both platforms; "" = no folder line).
+    folder: string,
+    // Full directory path (macOS folder tooltip).
+    directory: string,
+    // `"%lld görüntüleme"` / `"Henüz izlenmedi"` (Windows views pill and badges row).
+    views-text: string,
+    // The plain view count (macOS views pill).
+    view-count: string,
+    // Windows badges row: `"{viewsText} · {lastWatchedText}"`.
+    watch-line: string,
+    // macOS watch badges, already joined with " · ".
+    watch-badges: string,
+    duration-text: string,
+    has-progress: bool,
+    // 0..1
+    progress: float,
+    has-subtitle: bool,
+    // `"SRT"` or "" (thumbnail badge).
+    subtitle-badge: string,
+    // Windows `subtitleStatusText` (`Altyazılı (SRT)` / `Altyazı yok`).
+    subtitle-status: string,
+    // macOS chip (`Altyazılı (SRT)` / `Altyazı yok`).
+    subtitle-chip: string,
+    is-liked: bool,
+    // `Favorilerde` / `Favorilere ekle`.
+    like-text: string,
+    // 0..5
+    rating: int,
+    // `"★ r/5"` (Windows) or "".
+    rating-badge: string,
+    // Names of the lists holding the video (list order).
+    list-names: [string],
+    is-audio: bool,
+    has-thumbnail: bool,
+    thumbnail: image,
+    accessible-label: string,
+}
+
+// One "Listelerim" pill.
+export struct HubListData {
+    id: string,
+    name: string,
+    // `"{name} ({count})"`.
+    title: string,
+    selected: bool,
+}

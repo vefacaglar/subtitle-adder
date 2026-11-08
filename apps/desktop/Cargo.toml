@@ -1,0 +1,107 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/sa-core",
+    "crates/sa-enginekit",
+    "crates/sa-profiles",
+    "crates/sa-sync",
+    "crates/sa-media",
+    "crates/sa-providers",
+    "crates/sa-viewmodels",
+    "crates/sa-player",
+    "crates/sa-platform",
+    "crates/sa-app",
+]
+default-members = ["crates/sa-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.92"
+publish = false
+
+# Every external version is pinned exactly ("=x.y.z"). Cargo.lock is committed and authoritative.
+# Implementers never bump a version or add a crate without updating ARCHITECTURE.md (coordinator sign-off).
+[workspace.dependencies]
+# Internal crates
+sa-core = { path = "crates/sa-core" }
+sa-enginekit = { path = "crates/sa-enginekit" }
+sa-profiles = { path = "crates/sa-profiles" }
+sa-sync = { path = "crates/sa-sync" }
+sa-media = { path = "crates/sa-media" }
+sa-providers = { path = "crates/sa-providers" }
+sa-viewmodels = { path = "crates/sa-viewmodels" }
+sa-player = { path = "crates/sa-player", default-features = false }
+sa-platform = { path = "crates/sa-platform" }
+
+# UI
+slint = { version = "=1.18.1", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-femtovg",
+    "renderer-software",
+    "software-renderer-systemfonts",
+    "accessibility",
+    "image-default-formats",
+    "raw-window-handle-06",
+    "unstable-winit-030",
+] }
+slint-build = "=1.18.1"
+rfd = { version = "=0.18.0", default-features = false, features = ["xdg-portal"] }
+# Already in the graph through slint/winit/rfd; named directly so dialogs can be parented to a Slint window.
+raw-window-handle = "=0.6.2"
+
+# Media
+ffmpeg-next = { version = "=8.1.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+cpal = "=0.18.2"
+
+# Storage
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
+
+# Crypto (byte-compatible with the C# and Swift primitives: PBKDF2-HMAC-SHA256, AES-256-GCM nonce|tag|ct, HMAC-SHA256)
+aes-gcm = "=0.11.1"
+pbkdf2 = { version = "=0.13.0", default-features = false, features = ["hmac"] }
+hmac = "=0.13.0"
+sha2 = "=0.11.1"
+subtle = "=2.6.1"
+getrandom = "=0.4.3"
+zeroize = { version = "=1.9.1", features = ["derive"] }
+
+# Text and data
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["preserve_order"] }
+indexmap = { version = "=2.14.2", features = ["serde"] }
+base64 = "=0.22.1"
+uuid = { version = "=1.29.1", features = ["v4"] }
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "clock"] }
+encoding_rs = "=0.8.44"
+regex = "=1.13.1"
+unicode-normalization = "=0.1.26"
+thiserror = "=2.0.21"
+
+# Concurrency
+parking_lot = "=0.12.5"
+crossbeam-channel = "=0.5.17"
+
+# Network (connection tests only; the engine does the real translation traffic)
+ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "gzip"] }
+
+# Images (thumbnail decode JPEG/PNG/BMP, screenshot PNGs)
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "bmp"] }
+
+# OS bindings
+libc = "=0.2.191"
+windows = "=0.62.2"
+objc2 = "=0.6.5"
+objc2-foundation = "=0.3.2"
+objc2-app-kit = "=0.3.2"
+core-foundation = "=0.10.1"
+
+# Tests
+tempfile = "=3.27.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

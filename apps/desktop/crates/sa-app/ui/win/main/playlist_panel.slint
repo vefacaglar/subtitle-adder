@@ -1,0 +1,215 @@
+// PlaylistPanel (win-ui-main §6.6): Fluent toolbar (Videoları ekle…, Tüm kaynak diller, Listeyi temizle, summary,
+// accent start), divider, queue rows (state icon, names, language drop-down, status + progress, remove), empty state.
+import { ListView, ProgressIndicator, Spinner } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge } from "../../shared/bridge.slint";
+import { QueueRowData } from "../../shared/main_types.slint";
+import { DashedBorder } from "../../shared/dashed_border.slint";
+import { Theme } from "../theme.slint";
+import { Glyph, ToolButton, DropDownButton, MenuFlyout, ToolTip } from "controls.slint";
+
+component QueueRow inherits Rectangle {
+    in property <int> index;
+    in property <QueueRowData> item;
+    min-height: 52px;
+    border-radius: Theme.control-radius;
+    background: touch.has-hover ? Theme.subtle-hover : transparent;
+    accessible-role: list-item;
+    accessible-label: root.item.accessible-label;
+    touch := TouchArea {
+        clicked => { MainBridge.queue-row-clicked(root.index); }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 14px;
+        Rectangle {
+            width: 24px;
+            if root.item.state == 0: Glyph { glyph: "\u{E823}"; size: 16px; color: Theme.text-secondary; }
+            if root.item.state == 1: Spinner { width: 18px; height: 18px; indeterminate: true; }
+            if root.item.state == 2: Glyph { glyph: "\u{E930}"; size: 16px; color: Theme.success; }
+            if root.item.state == 3: Glyph { glyph: "\u{E783}"; size: 16px; color: Theme.critical; }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 2px;
+            alignment: center;
+            Text {
+                text: root.item.file-name;
+                font-weight: 600;
+                font-size: Theme.body-size;
+                overflow: elide;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: root.item.folder-path;
+                font-size: 12px;
+                overflow: elide;
+                color: Theme.text-secondary;
+            }
+        }
+        DropDownButton {
+            min-width: 165px;
+            height: 32px;
+            y: (parent.height - self.height) / 2;
+            pad-x: 10px;
+            menu-id: "queue-language:" + root.index;
+            label: root.item.source-language-title;
+            stretch-label: true;
+            enabled: root.item.can-edit;
+            tooltip: Loc.t("Bu videonun konuşma (kaynak) dilini seç");
+            accessible-name: Loc.t("Konuşma dili");
+            menu-width: 200px;
+        }
+        VerticalLayout {
+            width: 240px;
+            spacing: 4px;
+            alignment: center;
+            Text {
+                text: root.item.status-text;
+                color: Theme.text-secondary;
+                font-size: Theme.body-size;
+                wrap: word-wrap;
+                overflow: elide;
+                max-height: 40px;
+            }
+            if root.item.state == 1: ProgressIndicator {
+                height: 4px;
+                indeterminate: root.item.indeterminate;
+                progress: root.item.progress;
+            }
+        }
+        ToolButton {
+            y: (parent.height - self.height) / 2;
+            glyph: "\u{E711}";
+            glyph-size: 12px;
+            subtle: true;
+            pad-x: 7px;
+            pad-y: 7px;
+            enabled: root.item.can-edit;
+            tooltip: Loc.t("Listeden kaldır");
+            accessible-name: Loc.t("Listeden kaldır");
+            clicked => { MainBridge.queue-row-remove(root.index); }
+        }
+    }
+}
+
+export component PlaylistPanel inherits Rectangle {
+    in property <length> window-width;
+    border-radius: 8px;
+    background: Theme.card-background;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 8px;
+                ToolButton {
+                    glyph: "\u{E710}";
+                    glyph-size: 14px;
+                    label: Loc.t("Videoları ekle…");
+                    tooltip: Loc.t("Listeye birden fazla video dosyası ekle");
+                    clicked => { MainBridge.add-playlist-videos(); }
+                }
+                DropDownButton {
+                    menu-id: "bulk-language";
+                    glyph: "\u{E774}";
+                    glyph-size: 14px;
+                    label: Loc.t("Tüm kaynak diller");
+                    show-label: root.window-width >= 920px;
+                    enabled: MainBridge.has-playlist-items;
+                    tooltip: Loc.t("Listedeki tüm videoların konuşma (kaynak) dilini tek seferde ayarla");
+                    accessible-name: Loc.t("Tümünü ayarla");
+                    menu-width: 220px;
+                }
+                ToolButton {
+                    glyph: "\u{E74D}";
+                    glyph-size: 14px;
+                    label: Loc.t("Listeyi temizle");
+                    show-label: root.window-width >= 980px;
+                    enabled: MainBridge.has-playlist-items;
+                    tooltip: Loc.t("Tamamlanan ve bekleyen videoları listeden temizle");
+                    clicked => { MainBridge.clear-playlist(); }
+                }
+            }
+            Text {
+                text: MainBridge.playlist-summary;
+                color: Theme.text-secondary;
+                font-size: Theme.body-size;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            ToolButton {
+                glyph: "\u{E768}";
+                glyph-size: 14px;
+                label: Loc.t("Tümünü Çevir ve Kaydet");
+                accent: true;
+                pad-x: 14px;
+                pad-y: 6px;
+                enabled: MainBridge.can-start-playlist;
+                tooltip: Loc.t("Listedeki tüm videoları sırayla metne çevir, seçili hedef dile çevir ve kendi klasörlerine kaydet");
+                clicked => { MainBridge.start-playlist(); }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.divider; }
+        if MainBridge.has-playlist-items: ListView {
+            vertical-stretch: 1;
+            accessible-label: Loc.t("Çalma listesi");
+            for row[i] in MainBridge.queue-rows: VerticalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                padding-top: 3px;
+                padding-bottom: 3px;
+                QueueRow {
+                    index: i;
+                    item: row;
+                }
+            }
+        }
+        if !MainBridge.has-playlist-items: Rectangle {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+                Glyph {
+                    glyph: "\u{E90B}";
+                    size: 42px;
+                    color: Theme.text-secondary;
+                }
+                Text {
+                    text: Loc.t("Birden fazla videoyu buraya sürükle");
+                    font-size: Theme.subtitle-size;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    color: Theme.text-primary;
+                }
+                Text {
+                    text: Loc.t("Listedeki tüm videolar sırayla seçili hedef dile çevrilip kendi klasörlerine kaydedilir.");
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    font-size: Theme.body-size;
+                    color: Theme.text-secondary;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    padding-top: 8px;
+                    ToolButton {
+                        glyph: "\u{E710}";
+                        glyph-size: 14px;
+                        label: Loc.t("Videoları ekle…");
+                        clicked => { MainBridge.add-playlist-videos(); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,322 @@
+// TranslationProvidersControl (win-ui-hub-settings §7): the local card, one card per saved provider (radio = the
+// active one, Test et / Düzenle / Sil, model combo), the status InfoBar and the inline add/edit form card.
+import { Button, ComboBox, LineEdit, Switch } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge, SettingsProviderRow } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { CardFrame, SectionHeader, InfoBar, EditableCombo } from "controls.slint";
+
+// Fluent RadioButton (20 px ring, accent dot when checked).
+component Radio inherits Rectangle {
+    in property <bool> checked;
+    callback clicked();
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    border-width: root.checked ? 0px : 1px;
+    border-color: Theme.control-strong-stroke;
+    background: root.checked ? Theme.accent : (touch.has-hover ? Theme.subtle-hover : transparent);
+    accessible-role: checkbox;
+    accessible-checked: root.checked;
+    if root.checked: Rectangle {
+        width: touch.has-hover ? 10px : 8px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.text-on-accent;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+component FieldLabel inherits Text {
+    font-size: 12px;
+    opacity: 0.8;
+    color: Theme.text-primary;
+}
+
+component ProviderCard inherits CardFrame {
+    in property <SettingsProviderRow> item;
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 12px;
+            HorizontalLayout {
+                horizontal-stretch: 1;
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: start;
+                    padding-top: 2px;
+                    Radio {
+                        checked: root.item.is-active;
+                        clicked => { SettingsBridge.provider-activate(root.item.id); }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    alignment: center;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        Text {
+                            text: root.item.name;
+                            font-size: Theme.body-size;
+                            font-weight: 600;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                        // Preset badge: radius 4, padding 6,2, invisible border, 11 pt at 0.85.
+                        Rectangle {
+                            border-radius: 4px;
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 6px;
+                                padding-top: 2px;
+                                padding-bottom: 2px;
+                                Text {
+                                    text: root.item.preset-name;
+                                    font-size: 11px;
+                                    opacity: 0.85;
+                                    color: Theme.text-primary;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.item.summary;
+                        font-size: 12px;
+                        opacity: 0.7;
+                        color: Theme.text-primary;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button {
+                        text: Loc.t("Test et");
+                        enabled: !root.item.is-testing;
+                        clicked => { SettingsBridge.provider-test(root.item.id); }
+                    }
+                    Button {
+                        text: Loc.t("Düzenle");
+                        clicked => { SettingsBridge.provider-edit(root.item.id); }
+                    }
+                    Button {
+                        text: Loc.t("Sil");
+                        clicked => { SettingsBridge.provider-delete(root.item.id); }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            padding-left: 28px;
+            spacing: 8px;
+            Text {
+                text: Loc.t("Model:");
+                font-size: 12px;
+                opacity: 0.8;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+            }
+            EditableCombo {
+                horizontal-stretch: 1;
+                model: root.item.models;
+                text: root.item.model;
+                placeholder: Loc.t("Model seçin veya yazın");
+                accessible-name: Loc.t("Model");
+                committed(t) => { SettingsBridge.provider-model-committed(root.item.id, t); }
+            }
+        }
+    }
+}
+
+export component ProvidersSection inherits VerticalLayout {
+    spacing: 6px;
+
+    SectionHeader { text: Loc.t("Çeviri sağlayıcıları ve API anahtarları"); }
+
+    VerticalLayout {
+        spacing: 4px;
+        // Local card.
+        CardFrame {
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: start;
+                    padding-top: 2px;
+                    Radio {
+                        checked: SettingsBridge.local-provider-active;
+                        clicked => { SettingsBridge.provider-activate(""); }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    alignment: center;
+                    Text {
+                        text: Loc.t("Yerel modeller (Cihaz üzerinde)");
+                        font-size: Theme.body-size;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                    }
+                    Text {
+                        text: Loc.t("Çeviri tamamen bu bilgisayarda indirilen yerel modellerle yapılır.");
+                        font-size: 12px;
+                        opacity: 0.7;
+                        color: Theme.text-primary;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+        for row in SettingsBridge.provider-rows: ProviderCard { item: row; }
+    }
+
+    VerticalLayout {
+        padding-top: 2px;
+        padding-bottom: 2px;
+        InfoBar {
+            open: SettingsBridge.provider-status-open;
+            severity: SettingsBridge.provider-status-success ? 1 : 2;
+            message: SettingsBridge.provider-status-text;
+            closed => { SettingsBridge.provider-status-closed(); }
+        }
+    }
+
+    // Add/edit form.
+    CardFrame {
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 12px;
+            spacing: 10px;
+            Text {
+                text: SettingsBridge.form-is-new ? Loc.t("API Sağlayıcısı Ekle") : Loc.t("API Sağlayıcısını Düzenle");
+                font-size: 14px;
+                font-weight: 600;
+                color: Theme.text-primary;
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    FieldLabel { text: Loc.t("Sağlayıcı türü"); }
+                    ComboBox {
+                        model: SettingsBridge.form-preset-items;
+                        current-index <=> SettingsBridge.form-preset-index;
+                        accessible-label: Loc.t("Sağlayıcı türü");
+                        selected => { SettingsBridge.form-preset-selected(self.current-index); }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    FieldLabel { text: Loc.t("Sağlayıcı adı"); }
+                    LineEdit {
+                        text <=> SettingsBridge.form-name;
+                        placeholder-text: Loc.t("Örn. OpenCode Go");
+                        accessible-label: Loc.t("Sağlayıcı adı");
+                        edited(t) => { SettingsBridge.form-name-edited(t); }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    FieldLabel { text: Loc.t("Sunucu adresi (Base URL)"); }
+                    LineEdit {
+                        text <=> SettingsBridge.form-url;
+                        placeholder-text: "https://opencode.ai/inference/go/openai/v1";
+                        accessible-label: Loc.t("Sunucu adresi (Base URL)");
+                        edited(t) => { SettingsBridge.form-url-edited(t); }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    FieldLabel { text: Loc.t("API anahtarı"); }
+                    LineEdit {
+                        input-type: password;
+                        text <=> SettingsBridge.form-key;
+                        placeholder-text: Loc.t("sk-... (Yerel ağ için boş bırakılabilir)");
+                        accessible-label: Loc.t("API anahtarı");
+                        edited(t) => { SettingsBridge.form-key-edited(t); }
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 4px;
+                FieldLabel { text: Loc.t("Model"); }
+                EditableCombo {
+                    model: SettingsBridge.form-model-items;
+                    text <=> SettingsBridge.form-model;
+                    placeholder: Loc.t("Model seçin veya yazın (örn. glm-5, gpt-4o-mini)");
+                    accessible-name: Loc.t("Model");
+                    edited(t) => { SettingsBridge.form-model-edited(t); }
+                    committed(t) => { SettingsBridge.form-model-edited(t); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: Loc.t("Asenkron çeviri");
+                        font-size: 13px;
+                        color: Theme.text-primary;
+                    }
+                    Text {
+                        text: Loc.t("Açıkken konuşma metne dökülürken aynı anda arka planda çeviri yapılır.");
+                        font-size: 11px;
+                        opacity: 0.7;
+                        color: Theme.text-primary;
+                        wrap: word-wrap;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Switch {
+                        text: "";
+                        checked <=> SettingsBridge.form-async;
+                        accessible-label: Loc.t("Asenkron çeviri");
+                        toggled => { SettingsBridge.form-async-toggled(self.checked); }
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-top: 4px;
+                spacing: 8px;
+                alignment: start;
+                Button {
+                    primary: true;
+                    text: SettingsBridge.form-is-new ? Loc.t("Kaydet ve Etkinleştir") : Loc.t("Güncelle");
+                    clicked => { SettingsBridge.form-save(); }
+                }
+                Button {
+                    text: Loc.t("Bağlantıyı test et");
+                    enabled: SettingsBridge.form-can-test;
+                    clicked => { SettingsBridge.form-test(); }
+                }
+                if !SettingsBridge.form-is-new: Button {
+                    text: Loc.t("Vazgeç");
+                    clicked => { SettingsBridge.form-cancel(); }
+                }
+            }
+        }
+    }
+}

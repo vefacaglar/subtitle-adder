@@ -1,0 +1,89 @@
+// AppTitleBar (win-ui-main §6.1): content in the title bar, drag region, 140 px reserved for the caption buttons.
+// The caption buttons are drawn here (Tall, 48 px, transparent background, glyph theme = content theme); the
+// platform chrome (`sa_platform::win::chrome::WindowChrome`) hit-tests them for Snap Layouts.
+import { AppBridge } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+
+component CaptionButton inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> close;
+    callback clicked();
+    width: 46px;
+    background: touch.pressed ? (root.close ? #c42b1ce6 : Theme.subtle-pressed) : touch.has-hover ? (root.close ? #c42b1c : Theme.subtle-hover) : transparent;
+    accessible-role: button;
+    Text {
+        text: root.glyph;
+        font-family: Theme.icon-font;
+        font-size: 10px;
+        color: touch.has-hover && root.close ? white : (AppBridge.is-active ? Theme.text-primary : Theme.text-tertiary);
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component TitleBar inherits Rectangle {
+    height: Theme.title-bar-height;
+    // Drag region (the WndProc hit-test answers HTCAPTION here; without the chrome subclass winit drags it).
+    TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                AppBridge.drag-requested();
+            }
+        }
+        double-clicked => { AppBridge.maximize-toggle-requested(); }
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        spacing: 10px;
+        // App icon 18×18 (Assets/AppIcon.png in the packaged build).
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            background: @linear-gradient(135deg, #3a7bd5 0%, #6a4fd8 100%);
+            Text {
+                text: "\u{E7F0}";
+                font-family: Theme.icon-font;
+                font-size: 11px;
+                color: white;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Text {
+            text: "Subtitle Adder";
+            font-size: Theme.caption-size;
+            color: AppBridge.is-active ? Theme.text-primary : Theme.text-tertiary;
+            vertical-alignment: center;
+        }
+        Text {
+            text: AppBridge.title-file;
+            font-size: Theme.caption-size;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        HorizontalLayout {
+            width: Theme.caption-reserve - 2px;
+            alignment: end;
+            CaptionButton {
+                glyph: "\u{E921}";
+                clicked => { AppBridge.minimize-requested(); }
+            }
+            CaptionButton {
+                glyph: AppBridge.is-maximized ? "\u{E923}" : "\u{E922}";
+                clicked => { AppBridge.maximize-toggle-requested(); }
+            }
+            CaptionButton {
+                glyph: "\u{E8BB}";
+                close: true;
+                clicked => { AppBridge.close-requested(); }
+            }
+        }
+    }
+}

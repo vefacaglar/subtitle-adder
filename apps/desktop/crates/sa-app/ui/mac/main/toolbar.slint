@@ -1,0 +1,207 @@
+// NSToolbar-like row unified with the title bar (mac-ui §6.2). Rust calls winit `drag_window()` on mouse-down over
+// empty toolbar space (`AppBridge.drag-requested`) and applies `AppleActionOnDoubleClick` on double click
+// (`AppBridge.title-double-clicked`). Items that do not fit go into the trailing overflow `»` menu (NSToolbar
+// behavior): item i is shown iff the widths of items 0…i fit; Rust lists the rest for `menu-requested("overflow:<i>")`.
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, AppBridge, Workspace } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, ToolbarButton, MenuButton, PopUpButton, MacMenu, ToolTip } from "controls.slint";
+import { ProfileToolbarButton } from "../hub/profile_popover.slint";
+
+export { ToolbarButton }
+
+export component Toolbar inherits Rectangle {
+    in property <length> leading-reserve;
+    in property <bool> show-sidebar-toggle: true;
+    // The toolbar's own width, computed by the parent from `MainBridge.window-width` (pushed by Rust on resize).
+    // Reading `root.width` here would make the item set depend on the layout it produces (binding loop).
+    in property <length> available-width: 1180px;
+    height: MacTheme.toolbar-height;
+    background: MacTheme.toolbar-background;
+
+    property <bool> editor: MainBridge.workspace == Workspace.editor;
+    property <bool> not-platform: MainBridge.workspace != Workspace.platform;
+    // Item widths (pt) in declaration order; hidden items count 0.
+    property <[length]> widths: [
+        root.editor ? 36px : 0, root.editor ? 36px : 0,
+        root.not-platform ? 179px : 0, root.not-platform ? 134px : 0, root.not-platform ? 48px : 0,
+        root.not-platform ? 164px : 0, root.editor && MainBridge.has-sentences ? 86px : 0,
+        root.not-platform ? 224px : 0, root.editor ? 36px : 0,
+        MainBridge.can-cancel ? 96px : (root.editor ? 252px : 0), 100px,
+    ];
+    property <length> title-w: 150px;
+    property <length> avail: root.available-width - 20px - root.leading-reserve - (root.show-sidebar-toggle ? 36px : 0) - root.title-w - 34px;
+    property <[length]> cum: [
+        root.widths[0], root.widths[0] + root.widths[1], root.widths[0] + root.widths[1] + root.widths[2],
+        root.widths[0] + root.widths[1] + root.widths[2] + root.widths[3],
+        root.widths[0] + root.widths[1] + root.widths[2] + root.widths[3] + root.widths[4],
+        root.widths[0] + root.widths[1] + root.widths[2] + root.widths[3] + root.widths[4] + root.widths[5],
+        root.widths[0] + root.widths[1] + root.widths[2] + root.widths[3] + root.widths[4] + root.widths[5] + root.widths[6],
+        root.widths[0] + root.widths[1] + root.widths[2] + root.widths[3] + root.widths[4] + root.widths[5] + root.widths[6] + root.widths[7],
+        root.widths[0] + root.widths[1] + root.widths[2] + root.widths[3] + root.widths[4] + root.widths[5] + root.widths[6] + root.widths[7] + root.widths[8],
+        root.widths[0] + root.widths[1] + root.widths[2] + root.widths[3] + root.widths[4] + root.widths[5] + root.widths[6] + root.widths[7] + root.widths[8] + root.widths[9],
+        root.widths[0] + root.widths[1] + root.widths[2] + root.widths[3] + root.widths[4] + root.widths[5] + root.widths[6] + root.widths[7] + root.widths[8] + root.widths[9] + root.widths[10],
+    ];
+    pure function fits(i: int) -> bool {
+        return root.cum[i] <= root.avail;
+    }
+    property <int> first-hidden: root.fits(10) ? 11 : root.fits(9) ? 10 : root.fits(8) ? 9 : root.fits(7) ? 8 : root.fits(6) ? 7
+        : root.fits(5) ? 6 : root.fits(4) ? 5 : root.fits(3) ? 4 : root.fits(2) ? 3 : root.fits(1) ? 2 : root.fits(0) ? 1 : 0;
+
+    // Empty toolbar space drags the window; double click = system zoom/minimize.
+    TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                AppBridge.drag-requested();
+            }
+        }
+        double-clicked => { AppBridge.title-double-clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px + root.leading-reserve;
+        padding-right: 10px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 4px;
+        if root.show-sidebar-toggle: ToolbarButton {
+            symbol: "sidebar.left";
+            accessible-name: Loc.t("Kenar çubuğunu göster / gizle");
+            clicked => { MainBridge.file-explorer-toggled(!MainBridge.show-file-explorer); }
+        }
+        Text {
+            width: root.title-w;
+            text: AppBridge.window-title;
+            font-size: MacTheme.title3-size;
+            font-weight: 700;
+            color: MacTheme.label;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        if root.editor && root.first-hidden > 0: ToolbarButton {
+            symbol: "film";
+            enabled: MainBridge.can-pick-video;
+            tooltip: Loc.t("Video dosyası seç (⌘O)");
+            accessible-name: Loc.t("Video seç");
+            clicked => { MainBridge.pick-video(); }
+        }
+        if root.editor && root.first-hidden > 1: ToolbarButton {
+            symbol: "doc.text";
+            enabled: !MainBridge.is-working;
+            tooltip: Loc.t("Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle");
+            accessible-name: Loc.t("Altyazı aç");
+            clicked => { MainBridge.pick-subtitle(); }
+        }
+        if root.not-platform && root.first-hidden > 2: PopUpButton {
+            width: 175px;
+            y: 3px;
+            items: MainBridge.language-items;
+            current-index: MainBridge.language-index;
+            accessible-name: Loc.t("Dil");
+            tooltip: Loc.t("Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır.");
+            selected(i) => { MainBridge.language-selected(i); }
+        }
+        if root.not-platform && root.first-hidden > 3: MenuButton {
+            menu-id: "model";
+            label: MainBridge.model-title;
+            label-min-width: 92px;
+            accessible-name: Loc.t("Altyazı modeli");
+            tooltip: Loc.t("Daha doğru modeller daha yavaştır; ilk kullanımda indirilir.");
+            menu-width: 320px;
+        }
+        if root.not-platform && root.first-hidden > 4: MenuButton {
+            menu-id: "speakers";
+            symbol: MainBridge.diarize ? "person.2.fill" : "person.2";
+            indicator: true;
+            enabled: !MainBridge.is-working;
+            accessible-name: Loc.t("Konuşmacılar");
+            tooltip: Loc.t("Videoda birden çok kişi konuşuyorsa kimin ne dediğini ayır; ilk kullanımda küçük bir model indirilir.");
+            menu-width: 200px;
+        }
+        if root.not-platform && root.first-hidden > 5: PopUpButton {
+            width: 160px;
+            y: 3px;
+            enabled: !MainBridge.is-working;
+            items: MainBridge.target-items;
+            current-index: MainBridge.target-index;
+            accessible-name: Loc.t("Çeviri dili");
+            tooltip: MainBridge.target-help;
+            selected(i) => { MainBridge.target-selected(i); }
+        }
+        if root.editor && MainBridge.has-sentences && root.first-hidden > 6: ToolbarButton {
+            symbol: "translate";
+            label: Loc.t("Çevir…");
+            enabled: !MainBridge.is-working;
+            tooltip: Loc.t("Tüm satırları seçili hedef dile yerel modelle çevir");
+            clicked => { MainBridge.translate(); }
+        }
+        if root.not-platform && root.first-hidden > 7: ToolbarButton {
+            min-width: 110px;
+            max-width: 220px;
+            enabled: !MainBridge.is-working;
+            accessible-name: Loc.t("Çeviri modeli");
+            tooltip: MainBridge.translation-model-help;
+            clicked => { MainBridge.translation-model-clicked(); }
+            HorizontalLayout {
+                spacing: 4px;
+                if MainBridge.translation-model-kind != "": Sym {
+                    y: (parent.height - self.height) / 2;
+                    name: MainBridge.translation-model-kind;
+                    size: 14px;
+                }
+                Text {
+                    text: MainBridge.translation-model-title;
+                    font-size: MacTheme.body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    color: MacTheme.label;
+                }
+            }
+        }
+        if root.editor && root.first-hidden > 8: ToolbarButton {
+            symbol: "square.and.arrow.down";
+            toggled: MainBridge.auto-save;
+            accessible-name: Loc.t("Otomatik kaydet");
+            tooltip: Loc.t("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet");
+            clicked => { MainBridge.auto-save-toggled(!MainBridge.auto-save); }
+        }
+        if MainBridge.can-cancel && root.first-hidden > 9: ToolbarButton {
+            symbol: "stop.fill";
+            label: Loc.t("Durdur");
+            tooltip: Loc.t("Süren altyazı ya da çeviri işini durdur (⌘.)");
+            clicked => { MainBridge.cancel(); }
+        }
+        if !MainBridge.can-cancel && root.editor && root.first-hidden > 9: ToolbarButton {
+            symbol: "wand.and.stars";
+            label: Loc.t("Komple çevir");
+            prominent: true;
+            enabled: MainBridge.can-generate-and-translate;
+            tooltip: Loc.t("Altyazıyı üret, seçili dile çevir ve otomatik kaydet");
+            clicked => { MainBridge.generate-and-translate(); }
+        }
+        if !MainBridge.can-cancel && root.editor && root.first-hidden > 9: ToolbarButton {
+            symbol: "captions.bubble";
+            label: Loc.t("Altyazı üret");
+            enabled: MainBridge.has-video;
+            tooltip: Loc.t("Videonun sesini metne çevirip altyazı çıkar (⌘↩)");
+            clicked => { MainBridge.generate(); }
+        }
+        // ProfileToolbarButton (hub area, mac-ui §9.4): toggles the profile popover.
+        if root.first-hidden > 10: ProfileToolbarButton { }
+        if root.first-hidden < 11: ToolbarButton {
+            label: "»";
+            accessible-name: "»";
+            clicked => {
+                MainBridge.menu-requested("overflow:" + root.first-hidden);
+                omenu.show();
+            }
+        }
+    }
+    // A PopupWindow cannot be conditional: the overflow menu hangs off the trailing edge of the toolbar.
+    omenu := MacMenu {
+        x: root.width - 230px;
+        y: root.height - 6px;
+        min-menu-width: 220px;
+    }
+}

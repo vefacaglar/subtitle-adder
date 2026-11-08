@@ -1,0 +1,82 @@
+// Data types of the main-window bridge (ARCHITECTURE.md §6.2, owner: ui-main). Both trees see the same structs;
+// Rust fills them (crates/sa-app/src/main_window). Plain data only: no styled widgets here.
+
+// One entry of a drop-down / context menu. Rust builds the whole list when a menu opens (`MainBridge.menu-requested`)
+// and gets `id` back through `MainBridge.menu-activated`.
+export struct MenuEntry {
+    id: string,
+    title: string,
+    // Segoe Fluent glyph (Windows tree) and SF Symbol name (mac tree); "" = no icon.
+    glyph: string,
+    symbol: string,
+    // Icon tint (speaker colors); transparent = the text color.
+    tint: color,
+    checkable: bool,
+    checked: bool,
+    // Radio look (dot) instead of a check mark.
+    radio: bool,
+    enabled: bool,
+    separator: bool,
+    destructive: bool,
+    // Accelerator hint drawn at the trailing edge (Windows "Delete").
+    hint: string,
+    // 0 = top level; 1 = item of the submenu opened by the nearest preceding `submenu` entry.
+    level: int,
+    submenu: bool,
+}
+
+// A combo/pop-up item whose enabled state is per item (std ComboBox cannot disable items).
+export struct PickerItem {
+    title: string,
+    enabled: bool,
+}
+
+// A subtitle line of the editor list (win-ui-main §9.3 `SentenceRow`, mac-ui §7.6). Display-ready, decides nothing.
+export struct SentenceRowData {
+    uid: string,
+    number: string,
+    time-text: string,
+    text: string,
+    has-speaker: bool,
+    speaker-text: string,
+    speaker-color: color,
+    has-translation: bool,
+    translation-text: string,
+    is-stale: bool,
+    needs-review: bool,
+    is-active: bool,
+    is-selected: bool,
+    accessible-label: string,
+}
+
+// A row of the translation queue tab (Windows `PlaylistRow`, macOS `ListRow`).
+export struct QueueRowData {
+    id: string,
+    file-name: string,
+    folder-path: string,
+    source-language-title: string,
+    status-text: string,
+    // 0 pending, 1 working, 2 completed, 3 failed
+    state: int,
+    audio-ready: bool,
+    indeterminate: bool,
+    progress: float,
+    can-edit: bool,
+    can-stop: bool,
+    // false for macOS recent-job rows (no language pop-up)
+    is-playlist-item: bool,
+    accessible-label: string,
+}
+
+// A row of the file explorer sidebar.
+export struct ExplorerRowData {
+    path: string,
+    name: string,
+    is-folder: bool,
+    is-audio: bool,
+    detail: string,
+    // "" = no sidecar badge
+    badge: string,
+    is-active: bool,
+    accessible-label: string,
+}

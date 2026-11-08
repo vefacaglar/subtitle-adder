@@ -1,0 +1,295 @@
+// CommandBar (win-ui-main §6.2): left tools / right actions, folder-style tab strip below. Responsive rules of §7 are
+// evaluated from the window width; tab-gated visibility of §9.6 from the active workspace.
+import { CheckBox } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, AppBridge, Workspace } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { Glyph, ToolButton, ToggleGlyph, DropDownButton, PickerCombo, BarSeparator, ToolTip } from "controls.slint";
+import { ProfileStatusButton } from "../hub/profile_button.slint";
+
+component FolderTab inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> selected;
+    in property <int> badge: -1;
+    callback clicked();
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    height: 38px;
+    // Corner radius 6,6,0,0; border 1,1,1,0 (the bottom edge sits on the strip's divider).
+    frame := Rectangle {
+        y: 0;
+        height: parent.height + 1px;
+        border-top-left-radius: 6px;
+        border-top-right-radius: 6px;
+        border-width: root.selected ? 1px : 0;
+        border-color: Theme.card-stroke;
+        background: root.selected ? Theme.layer-fill : (touch.pressed ? Theme.subtle-pressed : touch.has-hover ? Theme.subtle-hover : transparent);
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 7px;
+        padding-bottom: 9px;
+        spacing: 8px;
+        Glyph { glyph: root.glyph; size: 14px; color: Theme.text-primary; }
+        Text {
+            text: root.label;
+            font-size: Theme.body-size;
+            font-weight: root.selected ? 600 : 400;
+            vertical-alignment: center;
+            color: Theme.text-primary;
+        }
+        if root.badge > 0: Rectangle {
+            border-radius: 8px;
+            background: Theme.accent;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                padding-top: 1px;
+                padding-bottom: 1px;
+                Text {
+                    text: root.badge;
+                    font-size: 11px;
+                    color: white;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+    // Accent indicator: height 3, radius 1.5, bottom margin −7 relative to the content (overlaps the divider).
+    if root.selected: Rectangle {
+        y: parent.height - 2px;
+        height: 3px;
+        width: 16px;
+        x: (parent.width - self.width) / 2;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+component LeftTools inherits HorizontalLayout {
+    in property <bool> single;
+    in property <bool> compact;
+    in property <bool> hide-translate-label;
+    spacing: 8px;
+    alignment: start;
+    ToggleGlyph {
+        glyph: "\u{EC50}";
+        checked: MainBridge.show-file-explorer;
+        tooltip: Loc.t("Dosya Gezgini kenar çubuğunu göster / gizle (Ctrl+B)");
+        accessible-name: Loc.t("Dosya Gezgini");
+        toggled => { MainBridge.file-explorer-toggled(!MainBridge.show-file-explorer); }
+    }
+    if root.single: ToolButton {
+        glyph: "\u{E8E5}";
+        label: Loc.t("Video seç");
+        show-label: !root.compact;
+        tooltip: Loc.t("Video dosyası seç (Ctrl+O)");
+        clicked => { MainBridge.pick-video(); }
+    }
+    if root.single: ToolButton {
+        glyph: "\u{E8A5}";
+        label: Loc.t("Altyazı aç");
+        show-label: !root.compact;
+        tooltip: Loc.t("Altyazı dosyası seç (.srt, .vtt, .ass) — yeniden ses ayırmadan yükle");
+        clicked => { MainBridge.pick-subtitle(); }
+    }
+    BarSeparator { }
+    if root.single: PickerCombo {
+        width: root.compact ? 132px : 165px;
+        items: MainBridge.language-items;
+        current-index: MainBridge.language-index;
+        accessible-name: Loc.t("Konuşma dili");
+        tooltip: Loc.t("Konuşma dili. Otomatik seçilirse model dili kendisi algılar; diğer modeller sabit dil listesiyle çalışır.");
+        selected(i) => { MainBridge.language-selected(i); }
+    }
+    DropDownButton {
+        menu-id: "model";
+        label: MainBridge.model-title;
+        label-min-width: root.compact ? 74px : 95px;
+        accessible-name: Loc.t("Altyazı modeli");
+        tooltip: Loc.t("Daha doğru modeller daha yavaştır; ilk kullanımda indirilir.");
+        menu-width: 300px;
+    }
+    DropDownButton {
+        menu-id: "speakers";
+        enabled: !MainBridge.is-working;
+        glyph: MainBridge.diarize ? "\u{E716}" : "\u{E8D4}";
+        glyph-opacity: MainBridge.diarize ? 1 : 0.6;
+        label: Loc.t("Konuşmacılar");
+        show-label: !root.compact;
+        accessible-name: Loc.t("Konuşmacılar");
+        tooltip: Loc.t("Videoda birden çok kişi konuşuyorsa kimin ne dediğini ayır; ilk kullanımda küçük bir model indirilir.");
+        menu-width: 220px;
+    }
+    BarSeparator { }
+    PickerCombo {
+        width: root.compact ? 128px : 155px;
+        enabled: !MainBridge.is-working;
+        items: MainBridge.target-items;
+        current-index: MainBridge.target-index;
+        accessible-name: Loc.t("Çeviri dili");
+        tooltip: MainBridge.target-help;
+        selected(i) => { MainBridge.target-selected(i); }
+    }
+    DropDownButton {
+        width: root.compact ? 180px : 220px;
+        custom: true;
+        enabled: !MainBridge.is-working;
+        accessible-name: Loc.t("Çeviri modeli");
+        tooltip: MainBridge.translation-model-title;
+        custom-clicked => { MainBridge.translation-model-clicked(); }
+        HorizontalLayout {
+            spacing: 6px;
+            horizontal-stretch: 1;
+            if MainBridge.translation-model-kind != "": Glyph {
+                glyph: "\u{E968}";
+                size: 14px;
+                color: Theme.accent-text;
+            }
+            Text {
+                text: MainBridge.translation-model-title;
+                font-size: Theme.body-size;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+                color: MainBridge.is-working ? Theme.text-disabled : Theme.text-primary;
+            }
+        }
+    }
+    if root.single && MainBridge.has-sentences: ToolButton {
+        glyph: "\u{F2B7}";
+        label: Loc.t("Çevir…");
+        show-label: !root.hide-translate-label;
+        enabled: MainBridge.can-translate;
+        tooltip: Loc.t("Tüm satırları seçili hedef dile yerel modelle çevir");
+        clicked => { MainBridge.translate(); }
+    }
+}
+
+component RightActions inherits HorizontalLayout {
+    in property <bool> single;
+    in property <bool> hide-generate-labels;
+    spacing: 8px;
+    alignment: end;
+    if root.single: HorizontalLayout {
+        // CheckBox, min width 0, margin right 2. Its tooltip (`Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak
+        // videonun klasörüne kaydet`) is its accessible description (std CheckBox exposes no hover state).
+        padding-right: 2px;
+        CheckBox {
+            text: Loc.t("Otomatik kaydet");
+            checked: MainBridge.auto-save;
+            accessible-description: Loc.t("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet");
+            toggled => { MainBridge.auto-save-toggled(self.checked); }
+        }
+    }
+    // ProfileStatusButton (hub area, win-ui-hub-settings §3): `HubBridge` drives it.
+    ProfileStatusButton { }
+    ToolButton {
+        glyph: "\u{E713}";
+        subtle: true;
+        pad-x: 7px;
+        pad-y: 7px;
+        tooltip: Loc.t("Ayarlar (Ctrl+,)");
+        accessible-name: Loc.t("Ayarlar");
+        clicked => { AppBridge.open-settings(); }
+    }
+    if root.single && !MainBridge.is-working: ToolButton {
+        glyph: "\u{E7F0}";
+        label: Loc.t("Altyazı üret");
+        show-label: !root.hide-generate-labels;
+        pad-x: 12px;
+        enabled: MainBridge.can-generate;
+        tooltip: Loc.t("Videonun sesini metne çevirip altyazı çıkar (Ctrl+Enter)");
+        clicked => { MainBridge.generate(); }
+    }
+    if root.single && !MainBridge.is-working: ToolButton {
+        glyph: "\u{F2B7}";
+        label: Loc.t("Komple çevir");
+        show-label: !root.hide-generate-labels;
+        accent: true;
+        pad-x: 14px;
+        enabled: !MainBridge.is-working;
+        tooltip: Loc.t("Altyazıyı üret, seçili dile çevir ve otomatik kaydet");
+        clicked => { MainBridge.generate-and-translate(); }
+    }
+    if MainBridge.is-working: ToolButton {
+        glyph: "\u{E71A}";
+        glyph-size: 14px;
+        label: Loc.t("Durdur");
+        enabled: MainBridge.can-cancel;
+        tooltip: Loc.t("Süren altyazı ya da çeviri işini durdur");
+        clicked => { MainBridge.cancel(); }
+    }
+}
+
+export component CommandBar inherits Rectangle {
+    in property <length> window-width;
+    property <bool> wide: root.window-width >= 1380px;
+    property <bool> compact: root.window-width < 1120px;
+    property <bool> single: MainBridge.workspace == Workspace.editor;
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-bottom: 8px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            LeftTools {
+                horizontal-stretch: 1;
+                single: root.single;
+                compact: root.compact;
+                hide-translate-label: root.window-width < 1180px;
+            }
+            if root.wide: RightActions {
+                single: root.single;
+                hide-generate-labels: root.window-width < 920px;
+            }
+        }
+        // Tab strip (margin top 4) with the full-width 1 px divider; right actions sit opposite it below 1380 px.
+        Rectangle {
+            height: 42px;
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.divider;
+            }
+            HorizontalLayout {
+                padding-top: 4px;
+                spacing: 2px;
+                FolderTab {
+                    glyph: "\u{E714}";
+                    label: Loc.t("Player");
+                    selected: MainBridge.workspace == Workspace.editor;
+                    clicked => { MainBridge.workspace-selected(Workspace.editor); }
+                }
+                FolderTab {
+                    glyph: "\u{E80F}";
+                    label: Loc.t("Platform");
+                    selected: MainBridge.workspace == Workspace.platform;
+                    clicked => { MainBridge.workspace-selected(Workspace.platform); }
+                }
+                FolderTab {
+                    glyph: "\u{E90B}";
+                    label: Loc.t("Çeviri listesi");
+                    badge: MainBridge.has-playlist-items ? MainBridge.playlist-count : -1;
+                    selected: MainBridge.workspace == Workspace.playlist;
+                    clicked => { MainBridge.workspace-selected(Workspace.playlist); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if !root.wide: RightActions {
+                    y: 0;
+                    height: 32px;
+                    single: root.single;
+                    hide-generate-labels: root.window-width < 920px;
+                }
+            }
+        }
+    }
+}

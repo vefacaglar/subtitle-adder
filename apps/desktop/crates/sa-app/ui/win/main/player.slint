@@ -1,0 +1,397 @@
+// Player surface (win-ui-main §6.5.2–6.5.3, §11–§13, §16): black letterboxed video, subtitle overlay, the
+// QuickTime-style transport pill, the display picker pill and the engagement bar slot. Always dark.
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, AppBridge } from "../../shared/bridge.slint";
+import { SubtitleOverlay } from "../../shared/overlay_label.slint";
+import { Theme } from "../theme.slint";
+import { Glyph, ToggleGlyph, ToolTip } from "controls.slint";
+import { EngagementBar } from "../hub/engagement_bar.slint";
+
+// SleekScrubber (§11.1).
+component Scrubber inherits Rectangle {
+    in property <float> ratio;
+    in property <float> buffered;
+    in property <bool> interactive: true;
+    in property <bool> show-buffer;
+    in property <length> rest-height: 3.5px;
+    in property <length> hover-height: 5.5px;
+    in property <length> thumb: 12px;
+    in property <string> accessible-name;
+    callback scrub(bool /* scrubbing */, float /* ratio */);
+    property <bool> scrubbing;
+    property <float> drag-ratio;
+    property <float> shown: root.scrubbing ? root.drag-ratio : clamp(root.ratio, 0, 1);
+    property <bool> active: (touch.has-hover || root.scrubbing) && root.interactive;
+    property <length> h: root.active ? root.hover-height : root.rest-height;
+    property <length> fill-h: root.show-buffer ? root.h + 2px : root.h;
+    property <length> fill-w: clamp(root.width * root.shown, 0, root.width);
+    height: 18px;
+    accessible-role: slider;
+    accessible-label: root.accessible-name;
+    accessible-value: round(root.shown * 100) + "%";
+    // Track
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: root.h;
+        border-radius: root.h / 2;
+        background: #ffffff2e;
+    }
+    // Buffer bar
+    if root.show-buffer: Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        height: root.h + 2px;
+        width: clamp(root.width * max(root.shown, root.buffered), root.fill-w, root.width);
+        border-radius: self.height / 2;
+        background: #ffffff78;
+    }
+    // Fill
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        height: root.fill-h;
+        width: root.fill-w;
+        border-radius: self.height / 2;
+        background: #fffffff5;
+    }
+    // Thumb
+    Rectangle {
+        x: clamp(root.fill-w - root.thumb / 2, 0, max(0, root.width - root.thumb));
+        y: (parent.height - self.height) / 2;
+        width: root.thumb;
+        height: root.thumb;
+        border-radius: root.thumb / 2;
+        background: white;
+        opacity: root.active ? 1 : 0;
+        animate opacity { duration: 150ms; }
+    }
+    touch := TouchArea {
+        enabled: root.interactive;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.scrubbing = true;
+                root.drag-ratio = clamp(self.mouse-x / max(1px, root.width), 0, 1);
+                root.scrub(true, root.drag-ratio);
+            } else if (e.kind == PointerEventKind.up && root.scrubbing) {
+                root.scrubbing = false;
+                root.scrub(false, root.drag-ratio);
+            } else if (e.kind == PointerEventKind.cancel && root.scrubbing) {
+                root.scrubbing = false;
+                root.scrub(false, root.drag-ratio);
+            }
+        }
+        moved => {
+            if (root.scrubbing) {
+                root.drag-ratio = clamp(self.mouse-x / max(1px, root.width), 0, 1);
+                root.scrub(true, root.drag-ratio);
+            }
+        }
+    }
+}
+
+// Transport HUD (§11): 336 wide, dark gradient pill, two rows.
+component TransportHud inherits Rectangle {
+    in property <bool> shown;
+    width: 336px;
+    height: 74px;
+    border-radius: 16px;
+    background: @linear-gradient(180deg, #242429dc 0%, #141418ea 100%);
+    border-width: 1px;
+    border-color: @linear-gradient(180deg, #ffffff44 0%, #ffffff18 100%);
+    drop-shadow-blur: 24px;
+    drop-shadow-offset-y: 8px;
+    drop-shadow-color: #00000040;
+    opacity: root.shown ? 1 : 0;
+    animate opacity { duration: 240ms; }
+    property <bool> can-play: MainBridge.seek-interactive;
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 9px;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: MainBridge.elapsed-text;
+                min-width: 31px;
+                font-size: 11px;
+                color: #ffffffbf;
+                vertical-alignment: center;
+            }
+            Scrubber {
+                horizontal-stretch: 1;
+                show-buffer: true;
+                ratio: MainBridge.seek-ratio;
+                buffered: MainBridge.buffered-ratio;
+                interactive: MainBridge.seek-interactive;
+                accessible-name: Loc.t("Video konumu");
+                scrub(s, r) => { MainBridge.seek-scrub(s, r); }
+            }
+            Text {
+                text: MainBridge.total-text;
+                min-width: 31px;
+                font-size: 11px;
+                horizontal-alignment: right;
+                color: #ffffff78;
+                vertical-alignment: center;
+                accessible-role: text;
+                accessible-label: Loc.t("Oynatma süresi");
+            }
+        }
+        Rectangle {
+            height: 34px;
+            // Play / pause circle 34.
+            play := Rectangle {
+                width: 34px;
+                height: 34px;
+                x: (parent.width - self.width) / 2;
+                border-radius: 17px;
+                border-width: 1px;
+                opacity: root.can-play ? 1 : 0.4;
+                background: !root.can-play ? #ffffff12 : ptouch.pressed ? #ffffff14 : ptouch.has-hover ? #ffffff34 : #ffffff1e;
+                border-color: !root.can-play ? #ffffff18 : ptouch.has-hover ? #ffffff4c : #ffffff28;
+                accessible-role: button;
+                accessible-label: MainBridge.is-playing ? "Pause" : "Play";
+                Glyph {
+                    x: MainBridge.is-playing ? 0 : 1.5px;
+                    glyph: MainBridge.is-playing ? "\u{E769}" : "\u{E768}";
+                    size: 14px;
+                    color: white;
+                }
+                ptouch := TouchArea {
+                    enabled: root.can-play;
+                    clicked => { MainBridge.play-pause(); }
+                }
+            }
+            // Mute + volume (receives the wheel).
+            HorizontalLayout {
+                x: parent.width - self.width;
+                width: 26px + 6px + 56px;
+                spacing: 6px;
+                alignment: end;
+                mute := Rectangle {
+                    width: 26px;
+                    height: 26px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 13px;
+                    background: mtouch.has-hover ? #ffffff24 : #ffffff00;
+                    property <float> eff: MainBridge.is-muted ? 0 : MainBridge.volume;
+                    Glyph {
+                        glyph: mute.eff <= 0.001 ? "\u{E74F}" : mute.eff < 0.33 ? "\u{E992}" : mute.eff < 0.66 ? "\u{E993}" : "\u{E767}";
+                        size: 13px;
+                        color: mtouch.has-hover ? #ffffffff : #ffffffd8;
+                    }
+                    // Fires on press (not release).
+                    mtouch := TouchArea {
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                                MainBridge.toggle-mute();
+                            }
+                        }
+                    }
+                }
+                Scrubber {
+                    width: 56px;
+                    y: (parent.height - self.height) / 2;
+                    rest-height: 3.5px;
+                    hover-height: 5px;
+                    thumb: 9px;
+                    ratio: MainBridge.is-muted ? 0 : MainBridge.volume;
+                    scrub(s, r) => { MainBridge.volume-scrub(s, r); }
+                }
+            }
+            TouchArea {
+                x: parent.width - 88px;
+                width: 88px;
+                // Transparent wheel catcher behind the volume controls.
+                scroll-event(e) => {
+                    MainBridge.volume-wheel(e.delta-y / 1px);
+                    accept
+                }
+            }
+        }
+    }
+}
+
+// Display picker pill (§6.5.3).
+component DisplayPicker inherits Rectangle {
+    border-radius: 8px;
+    background: #1c1c1ecc;
+    border-width: 1px;
+    border-color: #ffffff40;
+    width: lay.preferred-width;
+    height: lay.preferred-height;
+    property <int> active: MainBridge.has-translations ? MainBridge.display-mode : 0;
+    // The pill's own TouchArea wraps the toggles: it tracks hover ("pointer over picker", §12) without taking clicks.
+    ptouch := TouchArea {
+        changed has-hover => { MainBridge.picker-pointer(self.has-hover); }
+    lay := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 4px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 4px;
+        Text {
+            text: Loc.t("Gösterilen");
+            font-size: Theme.caption-size;
+            color: #ffffffd9;
+            vertical-alignment: center;
+        }
+        Rectangle { width: 4px; }
+        ToggleGlyph {
+            on-dark: true;
+            label: Loc.t("Orijinal");
+            min-w: 68px;
+            pad-x: 10px;
+            pad-y: 4px;
+            checked: root.active == 0;
+            toggled => { MainBridge.display-mode-selected(0); }
+        }
+        ToggleGlyph {
+            on-dark: true;
+            label: MainBridge.translation-title;
+            min-w: 68px;
+            pad-x: 10px;
+            pad-y: 4px;
+            enabled: MainBridge.has-translations;
+            checked: root.active == 1;
+            toggled => { MainBridge.display-mode-selected(1); }
+        }
+        ToggleGlyph {
+            on-dark: true;
+            label: Loc.t("İkisi");
+            min-w: 56px;
+            pad-x: 10px;
+            pad-y: 4px;
+            enabled: MainBridge.has-translations;
+            checked: root.active == 2;
+            toggled => { MainBridge.display-mode-selected(2); }
+        }
+        Rectangle {
+            width: 9px;
+            Rectangle {
+                x: 4px;
+                y: 4px;
+                width: 1px;
+                height: parent.height - 8px;
+                background: #ffffff40;
+            }
+        }
+        ToggleGlyph {
+            on-dark: true;
+            glyph: "\u{EC50}";
+            glyph-size: 14px;
+            checked: MainBridge.show-file-explorer;
+            tooltip: Loc.t("Dosya Gezgini kenar çubuğunu göster / gizle (Ctrl+B)");
+            accessible-name: Loc.t("Dosya Gezgini");
+            toggled => { MainBridge.file-explorer-toggled(!MainBridge.show-file-explorer); }
+        }
+        ToggleGlyph {
+            on-dark: true;
+            glyph: "\u{ED1E}";
+            glyph-size: 14px;
+            checked: !MainBridge.editor-hidden;
+            tooltip: Loc.t("Altyazı panelini gizle / göster");
+            accessible-name: Loc.t("Altyazı panelini gizle / göster");
+            toggled => { MainBridge.toggle-subtitle-panel(); }
+        }
+        ToggleGlyph {
+            on-dark: true;
+            glyph: "\u{E89F}";
+            glyph-size: 14px;
+            checked: MainBridge.side-by-side;
+            enabled: !MainBridge.editor-hidden && !AppBridge.is-full-screen;
+            tooltip: Loc.t("Altyazıları sağa / alta al");
+            accessible-name: Loc.t("Altyazıları sağa / alta al");
+            toggled => { MainBridge.toggle-side-by-side(); }
+        }
+        ToggleGlyph {
+            on-dark: true;
+            glyph: "\u{E799}";
+            glyph-size: 14px;
+            checked: AppBridge.is-theater-mode;
+            tooltip: Loc.t("Tiyatro modu — üst menüleri gizle");
+            accessible-name: Loc.t("Tiyatro modu");
+            toggled => { MainBridge.toggle-theater(); }
+        }
+        ToggleGlyph {
+            on-dark: true;
+            glyph: AppBridge.is-full-screen ? "\u{E73F}" : "\u{E740}";
+            glyph-size: 14px;
+            checked: AppBridge.is-full-screen;
+            tooltip: Loc.t("Tam ekran (F11)");
+            accessible-name: Loc.t("Tam ekran");
+            toggled => { MainBridge.toggle-full-screen(); }
+        }
+    }
+    }
+    // Pill tooltip (§6.5.3) on hover of the caption area.
+    ToolTip {
+        text: MainBridge.has-translations ? Loc.t("Video üstünde gösterilecek metin") : Loc.t("Önce altyazıları çevir; sonra orijinali, çeviriyi ya da ikisini birden gösterebilirsin.");
+        show: ptouch.has-hover && ptouch.mouse-x < 80px;
+    }
+}
+
+export component PlayerSurface inherits Rectangle {
+    background: black;
+    border-radius: AppBridge.is-full-screen ? 0 : 8px;
+    clip: true;
+
+    surface := TouchArea {
+        clicked => { MainBridge.video-clicked(1); }
+        double-clicked => { MainBridge.video-clicked(2); }
+        changed has-hover => { MainBridge.player-pointer(self.has-hover); }
+        changed mouse-x => { if (self.has-hover) { MainBridge.player-pointer-moved(); } }
+        changed mouse-y => { if (self.has-hover) { MainBridge.player-pointer-moved(); } }
+        scroll-event(e) => {
+            MainBridge.video-wheel(e.delta-y / 1px, false);
+            accept
+        }
+
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: MainBridge.video-frame;
+            image-fit: contain;
+            accessible-role: image;
+            accessible-label: Loc.t("Video");
+        }
+
+        SubtitleOverlay {
+            width: parent.width;
+            height: parent.height;
+            aspect: MainBridge.video-aspect;
+            text: MainBridge.overlay-text;
+            font-family: MainBridge.overlay-font-family;
+            size-fraction: MainBridge.overlay-size-fraction;
+            text-color: MainBridge.overlay-color;
+            background-mode: MainBridge.overlay-background;
+            background-opacity: MainBridge.overlay-opacity;
+            mac: false;
+        }
+
+        // Transport: bottom-centered, margin bottom 14; hidden = opacity 0, +8 px down, not hit-testable.
+        hud := TransportHud {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - 14px + (MainBridge.hud-visible ? 0 : 8px);
+            animate y { duration: 240ms; }
+            shown: MainBridge.hud-visible;
+            visible: self.opacity > 0.01;
+        }
+
+        // Engagement bar (hub area, win-ui-hub-settings §4): top-left, margin 10.
+        EngagementBar {
+            x: 10px;
+            y: 10px;
+        }
+
+        // Display picker: top-right, margin 10; visible while the HUD is or the player is paused (instant).
+        picker := DisplayPicker {
+            x: parent.width - self.width - 10px;
+            y: 10px;
+            opacity: MainBridge.picker-visible ? 1 : 0;
+            visible: MainBridge.picker-visible;
+        }
+    }
+}

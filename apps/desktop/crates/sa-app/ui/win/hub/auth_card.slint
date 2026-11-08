@@ -1,0 +1,204 @@
+// Windows sign-in surfaces (win-ui-hub-settings §3.2 / §5.4): the hub's auth gate card and the logged-out panel of
+// the profile flyout. Both collect username + password + the opt-in "Girişi hatırla" and call `HubBridge.login` /
+// `register`; Rust wraps the password in a zeroizing `SecretString` at once.
+import { LineEdit, CheckBox } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { Glyph } from "../main/controls.slint";
+import { HubButton, HubColors } from "hub_controls.slint";
+
+// A registered-profile chip (button; click fills the username and focuses the password).
+component NameChip inherits Rectangle {
+    in property <string> name;
+    in property <length> font-size: 11.5px;
+    in property <length> pad-x: 7px;
+    in property <length> pad-y: 2px;
+    in property <length> radius: 10px;
+    callback clicked();
+    border-radius: root.radius;
+    border-width: 1px;
+    border-color: Theme.control-stroke;
+    background: touch.pressed ? Theme.control-fill-pressed : touch.has-hover ? Theme.control-fill-hover : Theme.control-fill;
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: root.pad-x;
+        padding-right: root.pad-x;
+        padding-top: root.pad-y;
+        padding-bottom: root.pad-y;
+        Text {
+            text: root.name;
+            font-size: root.font-size;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Username / password / remember / error / the two actions. `card`: the hub card layout (5 chips centered, two equal
+// columns); else the flyout panel (4 chips, stacked stretch buttons).
+export component AuthForm inherits VerticalLayout {
+    in property <bool> card;
+    in property <string> register-title;
+    property <int> reset: HubBridge.auth-reset-epoch;
+    property <string> last: HubBridge.last-username;
+    spacing: root.card ? 12px : 8px;
+
+    changed reset => { pw.text = ""; }
+    changed last => { root.prefill(); }
+    init => { root.prefill(); }
+
+    public function prefill() {
+        if (user.text == "" && HubBridge.last-username != "") {
+            user.text = HubBridge.last-username;
+        }
+    }
+    public function clear-password() {
+        pw.text = "";
+    }
+    function login() {
+        HubBridge.login(user.text, pw.text, remember.checked);
+    }
+    function register() {
+        HubBridge.register(user.text, pw.text, remember.checked);
+    }
+
+    property <[string]> chips: root.card ? HubBridge.card-usernames : HubBridge.flyout-usernames;
+    if root.chips.length > 0: HorizontalLayout {
+        alignment: root.card ? center : start;
+        spacing: 6px;
+        for name in root.chips: NameChip {
+            name: name;
+            font-size: 11.5px;
+            pad-x: root.card ? 8px : 7px;
+            pad-y: root.card ? 3px : 2px;
+            radius: root.card ? 12px : 10px;
+            clicked => {
+                user.text = name;
+                pw.focus();
+            }
+        }
+    }
+    user := LineEdit {
+        placeholder-text: Loc.t("Kullanıcı adı");
+        accessible-label: Loc.t("Kullanıcı adı");
+        enabled: !HubBridge.is-authenticating;
+        accepted => { pw.focus(); }
+    }
+    pw := LineEdit {
+        input-type: password;
+        placeholder-text: Loc.t("Şifre");
+        accessible-label: Loc.t("Şifre");
+        enabled: !HubBridge.is-authenticating;
+        accepted => { root.login(); }
+    }
+    HorizontalLayout {
+        alignment: start;
+        remember := CheckBox {
+            text: Loc.t("Girişi hatırla");
+            checked <=> HubBridge.remember-me;
+            toggled => { HubBridge.remember-toggled(self.checked); }
+        }
+    }
+    if HubBridge.auth-error != "": Text {
+        text: HubBridge.auth-error;
+        font-size: 12px;
+        color: HubColors.error-text;
+        wrap: word-wrap;
+        horizontal-alignment: root.card ? center : left;
+    }
+    if root.card: HorizontalLayout {
+        spacing: 8px;
+        HubButton {
+            horizontal-stretch: 1;
+            accent: true;
+            label: Loc.t("Giriş yap");
+            font-size: 14px;
+            pad-y: 6px;
+            radius: 4px;
+            enabled: !HubBridge.is-authenticating;
+            clicked => { root.login(); }
+        }
+        HubButton {
+            horizontal-stretch: 1;
+            label: root.register-title;
+            font-size: 14px;
+            pad-y: 6px;
+            radius: 4px;
+            enabled: !HubBridge.is-authenticating;
+            clicked => { root.register(); }
+        }
+    }
+    if !root.card: HubButton {
+        accent: true;
+        label: Loc.t("Giriş yap");
+        font-size: 14px;
+        pad-y: 6px;
+        radius: 4px;
+        enabled: !HubBridge.is-authenticating;
+        clicked => { root.login(); }
+    }
+    if !root.card: HubButton {
+        label: root.register-title;
+        font-size: 14px;
+        pad-y: 6px;
+        radius: 4px;
+        enabled: !HubBridge.is-authenticating;
+        clicked => { root.register(); }
+    }
+}
+
+// The auth gate card (centered, MaxWidth 420, padding 28,24, radius 14).
+export component AuthCard inherits Rectangle {
+    max-width: 420px;
+    border-radius: 14px;
+    background: HubColors.auth-card;
+    border-width: 1px;
+    border-color: HubColors.auth-card-stroke;
+    VerticalLayout {
+        padding-left: 28px;
+        padding-right: 28px;
+        padding-top: 24px;
+        padding-bottom: 24px;
+        spacing: 12px;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 48px;
+                height: 48px;
+                border-radius: 24px;
+                background: HubColors.auth-icon;
+                Glyph {
+                    glyph: "\u{E77B}";
+                    size: 22px;
+                    color: Theme.text-primary;
+                }
+            }
+        }
+        Text {
+            text: Loc.t("Yerel Video Platformu");
+            font-size: 18px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            color: Theme.text-primary;
+        }
+        Text {
+            text: Loc.t("İzleme geçmişi, görüntülenme sayısı, favoriler, yıldız puanları ve özel listeleriniz yerel profilinize kaydedilir. Devam etmek için giriş yapın veya yeni profil oluşturun.");
+            font-size: 13px;
+            opacity: 0.78;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            color: Theme.text-primary;
+        }
+        AuthForm {
+            card: true;
+            register-title: Loc.t("Profil oluştur");
+        }
+    }
+}

@@ -1,0 +1,276 @@
+// VideoPlatformHubView, the "Platform" workspace tab (win-ui-hub-settings §5). Rows: search + profile bar, filter
+// pills, "Listelerim" bar (logged in), content (auth gate card | empty state | the card feed with 40-card paging).
+// Rule 6 (UNIFIED.md §3.9, §4): logged out every tab shows the sign-in card, the search box and "Ara" are disabled,
+// no cards or lists exist.
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { Glyph } from "../main/controls.slint";
+import { HubButton, HubPill, HubColors } from "hub_controls.slint";
+import { AuthCard } from "auth_card.slint";
+import { VideoCard } from "video_card.slint";
+
+component FilterPill inherits HubPill {
+    in property <int> value;
+    selected: HubBridge.filter == root.value;
+    fill: root.selected ? HubColors.pill-active : HubColors.pill-inactive;
+    hover-fill: root.selected ? HubColors.pill-active : HubColors.pill-inactive-hover;
+    text-color: root.selected ? white : HubColors.pill-inactive-text;
+    clicked => { HubBridge.filter-selected(root.value); }
+}
+
+component ListsBar inherits Rectangle {
+    border-radius: 10px;
+    background: HubColors.lists-bar;
+    border-width: 1px;
+    border-color: HubColors.lists-bar-stroke;
+    property <int> reset: HubBridge.new-list-reset-epoch;
+    changed reset => { name.text = ""; }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 6px;
+            Glyph {
+                glyph: "\u{E8FD}";
+                size: 13px;
+                opacity: 0.85;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: Loc.t("Listelerim:");
+                font-size: 12.5px;
+                font-weight: 600;
+                vertical-alignment: center;
+                color: Theme.text-primary;
+            }
+        }
+        // Horizontally scrollable pills.
+        Flickable {
+            horizontal-stretch: 1;
+            content-width: max(self.width, pills.preferred-width);
+            interactive: true;
+            pills := HorizontalLayout {
+                height: parent.height;
+                spacing: 6px;
+                alignment: start;
+                if HubBridge.lists.length == 0: Text {
+                    text: Loc.t("Henüz özel liste oluşturulmadı");
+                    font-size: 12px;
+                    opacity: 0.65;
+                    vertical-alignment: center;
+                    color: Theme.text-primary;
+                }
+                for list in HubBridge.lists: HorizontalLayout {
+                    spacing: 4px;
+                    HubPill {
+                        label: list.title;
+                        font-size: 12px;
+                        pad-x: 10px;
+                        pad-y: 4px;
+                        radius: 14px;
+                        selected: list.selected;
+                        fill: list.selected ? HubColors.pill-active : HubColors.list-pill-inactive;
+                        hover-fill: list.selected ? HubColors.pill-active : HubColors.pill-inactive-hover;
+                        text-color: list.selected ? white : HubColors.list-pill-text;
+                        clicked => { HubBridge.list-selected(list.id); }
+                    }
+                    if list.selected: HubPill {
+                        label: "×";
+                        font-size: 12px;
+                        font-weight: 700;
+                        pad-x: 6px;
+                        pad-y: 2px;
+                        radius: 12px;
+                        min-width: 24px;
+                        min-height: 24px;
+                        fill: HubColors.list-pill-inactive;
+                        hover-fill: HubColors.pill-inactive-hover;
+                        text-color: HubColors.list-pill-text;
+                        tooltip: Loc.t("Listeyi sil");
+                        clicked => { HubBridge.list-delete(list.id); }
+                    }
+                }
+            }
+        }
+        name := LineEdit {
+            width: 170px;
+            font-size: 12px;
+            placeholder-text: Loc.t("Yeni liste adı…");
+            accepted => { HubBridge.list-create(self.text); }
+        }
+        HubButton {
+            label: Loc.t("+ Liste oluştur");
+            font-weight: 600;
+            clicked => { HubBridge.list-create(name.text); }
+        }
+    }
+}
+
+export component HubView inherits Rectangle {
+    property <int> search-reset: HubBridge.search-reset-epoch;
+    changed search-reset => { search.text = ""; }
+    property <int> feed-epoch: HubBridge.feed-epoch;
+    changed feed-epoch => { feed.content-y = 0; }
+
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 10px;
+
+        // ---- Row 0: search + profile bar
+        HorizontalLayout {
+            spacing: 10px;
+            search := LineEdit {
+                horizontal-stretch: 1;
+                enabled: HubBridge.search-enabled;
+                placeholder-text: Loc.t("İndekslenen tüm videolarda ara (yazıp Enter'a basın)…");
+                accepted => { HubBridge.search-submitted(self.text); }
+                edited => {
+                    if (self.text == "") {
+                        HubBridge.search-edited("");
+                    }
+                }
+            }
+            HubButton {
+                accent: true;
+                enabled: HubBridge.search-enabled;
+                glyph: "\u{E721}";
+                glyph-size: 13px;
+                label: Loc.t("Ara");
+                font-size: 12.5px;
+                font-weight: 600;
+                pad-x: 12px;
+                pad-y: 6px;
+                clicked => { HubBridge.search-submitted(search.text); }
+            }
+            if HubBridge.search-query != "": HubButton {
+                glyph: "\u{E711}";
+                glyph-size: 12px;
+                pad-x: 8px;
+                pad-y: 6px;
+                tooltip: Loc.t("Aramayı temizle");
+                clicked => {
+                    search.text = "";
+                    HubBridge.clear-search();
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                if HubBridge.is-logged-in: Text {
+                    text: HubBridge.current-username + " · " + HubBridge.summary-text;
+                    font-size: 12px;
+                    opacity: 0.82;
+                    vertical-alignment: center;
+                    color: Theme.text-primary;
+                }
+                if HubBridge.can-clear-history: HubButton {
+                    label: Loc.t("Geçmişi temizle");
+                    clicked => { HubBridge.clear-history(); }
+                }
+                if HubBridge.is-logged-in: HubButton {
+                    label: Loc.t("Çıkış yap");
+                    clicked => { HubBridge.logout(); }
+                }
+                if !HubBridge.is-logged-in: HubButton {
+                    label: Loc.t("Giriş yap / Profil oluştur");
+                    clicked => { HubBridge.sign-in-requested(); }
+                }
+            }
+        }
+
+        // ---- Row 1: filter pills
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            FilterPill {
+                value: 0;
+                label: Loc.t("Keşfet");
+            }
+            FilterPill {
+                value: 1;
+                label: HubBridge.is-logged-in ? Loc.t1("İzleme geçmişi (%lld)", HubBridge.watched-count) : Loc.t("İzleme geçmişi");
+            }
+            FilterPill {
+                value: 2;
+                label: HubBridge.is-logged-in ? Loc.t1("Favorilerim (%lld)", HubBridge.liked-count) : Loc.t("Favorilerim");
+            }
+            FilterPill {
+                value: 3;
+                label: HubBridge.is-logged-in ? Loc.t1("Puan verdiklerim (%lld)", HubBridge.rated-count) : Loc.t("Puan verdiklerim");
+            }
+            FilterPill {
+                value: 4;
+                label: Loc.t("En çok izlenenler");
+            }
+        }
+
+        // ---- Row 2: lists bar
+        if HubBridge.is-logged-in: ListsBar { }
+
+        // ---- Row 3: content
+        Rectangle {
+            vertical-stretch: 1;
+            if HubBridge.shows-auth-card: VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    alignment: center;
+                    AuthCard {
+                        width: min(420px, parent.width);
+                    }
+                }
+            }
+            if !HubBridge.shows-auth-card && HubBridge.cards.length == 0: VerticalLayout {
+                alignment: center;
+                padding: 24px;
+                spacing: 6px;
+                Glyph {
+                    glyph: "\u{E714}";
+                    size: 28px;
+                    opacity: 0.55;
+                    color: Theme.text-primary;
+                }
+                Text {
+                    text: HubBridge.empty-title;
+                    font-size: 15px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    color: Theme.text-primary;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        max-width: 420px;
+                        text: HubBridge.empty-hint;
+                        font-size: 12.5px;
+                        opacity: 0.72;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        color: Theme.text-primary;
+                    }
+                }
+            }
+            feed := ListView {
+                visible: !HubBridge.shows-auth-card && HubBridge.cards.length > 0;
+                changed content-y => {
+                    if (self.content-height > self.visible-height && -self.content-y >= self.content-height - self.visible-height - 320px) {
+                        HubBridge.load-more();
+                    }
+                }
+                for card[i] in HubBridge.cards: VerticalLayout {
+                    padding-bottom: 10px;
+                    VideoCard {
+                        card: card;
+                        index: i;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,336 @@
+// Building blocks of the macOS Platform views (mac-ui §9): `PillButtonStyle`, chips, thumbnail pills, `StarRating`,
+// borderless icon buttons, the popover surface and an NSMenu-looking menu over `HubBridge.menu-entries`.
+import { MenuEntry } from "../../shared/main_types.slint";
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, ToolTip } from "../main/controls.slint";
+
+// Capsule pill: callout (compact caption), semibold when selected, padding h12 v5 (compact h9 v3); white on the
+// accent when selected, else primary on primary 8 %; pressed opacity 0.7.
+export component PillButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    in property <bool> compact;
+    in property <string> tooltip;
+    callback clicked();
+    border-radius: self.height / 2;
+    background: root.selected ? MacTheme.control-accent : (MacTheme.dark ? #ffffff14 : #00000014);
+    opacity: touch.pressed ? 0.7 : 1;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        padding-left: root.compact ? 9px : 12px;
+        padding-right: root.compact ? 9px : 12px;
+        padding-top: root.compact ? 3px : 5px;
+        padding-bottom: root.compact ? 3px : 5px;
+        Text {
+            text: root.label;
+            font-size: root.compact ? MacTheme.caption-size : MacTheme.callout-size;
+            font-weight: root.selected ? 600 : 400;
+            color: root.selected ? white : MacTheme.label;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    ToolTip {
+        text: root.tooltip;
+        show: touch.has-hover && !touch.pressed;
+    }
+}
+
+// A small rounded label under a card title: symbol (tint or secondary) + text; capsule (tint or secondary) 16 %.
+export component Chip inherits Rectangle {
+    in property <string> text;
+    in property <string> symbol;
+    in property <brush> tint: transparent;
+    in property <string> tooltip;
+    property <bool> tinted: root.tint != transparent;
+    border-radius: self.height / 2;
+    background: root.tinted ? root.tint.with-alpha(0.16) : MacTheme.secondary-label.with-alpha(0.16);
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 3px;
+        padding-bottom: 3px;
+        spacing: 4px;
+        Sym {
+            y: (parent.height - self.height) / 2;
+            name: root.symbol;
+            size: 10px;
+            tint: root.tinted ? root.tint : MacTheme.secondary-label;
+        }
+        Text {
+            text: root.text;
+            font-size: MacTheme.caption-size;
+            color: root.tinted ? MacTheme.label : MacTheme.secondary-label;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    touch := TouchArea { }
+    ToolTip {
+        text: root.tooltip;
+        show: touch.has-hover;
+    }
+}
+
+// Thumbnail overlay pill: HStack spacing 3, system 10 pt semibold white, padding h6 v2, black 62 % (dimmed: gray 70 %).
+export component ThumbPill inherits Rectangle {
+    in property <string> text;
+    in property <string> symbol;
+    in property <bool> dimmed;
+    in property <string> tooltip;
+    width: self.preferred-width;
+    height: self.preferred-height;
+    border-radius: self.height / 2;
+    background: root.dimmed ? #808080b3 : #0000009e;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 3px;
+        if root.symbol != "": Sym {
+            y: (parent.height - self.height) / 2;
+            name: root.symbol;
+            size: 9px;
+            tint: white;
+        }
+        Text {
+            text: root.text;
+            font-size: 10px;
+            font-weight: 600;
+            color: white;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea { }
+    ToolTip {
+        text: root.tooltip;
+        show: touch.has-hover;
+    }
+}
+
+// Five plain star buttons (18×20); clicking the current rating clears it.
+export component StarRating inherits HorizontalLayout {
+    in property <int> rating;
+    in property <brush> dimmed: MacTheme.secondary-label;
+    callback select(int);
+    spacing: 1px;
+    for n in [1, 2, 3, 4, 5]: Rectangle {
+        width: 18px;
+        height: 20px;
+        accessible-role: button;
+        accessible-label: Loc.t1("%lld yıldız", n);
+        accessible-checkable: true;
+        accessible-checked: n == root.rating;
+        accessible-action-default => { root.select(n == root.rating ? 0 : n); }
+        Sym {
+            name: n <= root.rating ? "star.fill" : "star";
+            size: 12px;
+            tint: n <= root.rating ? MacTheme.system-yellow : root.dimmed;
+        }
+        star-touch := TouchArea {
+            clicked => { root.select(n == root.rating ? 0 : n); }
+        }
+        ToolTip {
+            text: Loc.t1("%lld yıldız", n);
+            show: star-touch.has-hover && !star-touch.pressed;
+        }
+    }
+}
+
+// Borderless icon-only button (`labelStyle(.iconOnly)`, `.buttonStyle(.borderless)`).
+export component IconButton inherits Rectangle {
+    in property <string> symbol;
+    in property <length> size: 13px;
+    in property <brush> tint: MacTheme.secondary-label;
+    in property <string> tooltip;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: root.size + 6px;
+    height: root.size + 6px;
+    opacity: root.enabled ? (touch.pressed ? 0.6 : 1) : 0.4;
+    accessible-role: button;
+    accessible-label: root.tooltip;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    Sym {
+        name: root.symbol;
+        size: root.size;
+        tint: root.tint;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    ToolTip {
+        text: root.tooltip;
+        show: touch.has-hover && !touch.pressed;
+    }
+}
+
+// Plain text button (borderless, `.buttonStyle(.plain)` / `.borderless`) with an optional leading symbol.
+export component PlainButton inherits Rectangle {
+    in property <string> symbol;
+    in property <string> label;
+    in property <brush> fg: MacTheme.control-accent;
+    in property <brush> symbol-tint: root.fg;
+    in property <length> font-size: MacTheme.body-size;
+    in property <int> font-weight: 400;
+    in property <bool> enabled: true;
+    in property <string> tooltip;
+    callback clicked();
+    opacity: root.enabled ? (touch.pressed ? 0.6 : 1) : 0.45;
+    accessible-role: button;
+    accessible-label: root.label != "" ? root.label : root.tooltip;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    HorizontalLayout {
+        spacing: 5px;
+        alignment: start;
+        if root.symbol != "": Sym {
+            y: (parent.height - self.height) / 2;
+            name: root.symbol;
+            size: root.font-size + 1px;
+            tint: root.symbol-tint;
+        }
+        if root.label != "": Text {
+            text: root.label;
+            font-size: root.font-size;
+            font-weight: root.font-weight;
+            color: root.fg;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    ToolTip {
+        text: root.tooltip;
+        show: touch.has-hover && !touch.pressed;
+    }
+}
+
+// Red caption label with `exclamationmark.triangle.fill` (auth and list failures).
+export component ErrorLabel inherits HorizontalLayout {
+    in property <string> text;
+    spacing: 4px;
+    Sym {
+        name: "exclamationmark.triangle.fill";
+        size: 10px;
+        tint: MacTheme.system-red;
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.text;
+        font-size: MacTheme.caption-size;
+        color: MacTheme.system-red;
+        wrap: word-wrap;
+    }
+}
+
+// The popover surface (regular material, rounded, hairline border, soft shadow).
+export component PopoverSurface inherits Rectangle {
+    background: MacTheme.menu-background;
+    border-radius: 10px;
+    border-width: 0.5px;
+    border-color: MacTheme.menu-border;
+    drop-shadow-blur: 18px;
+    drop-shadow-offset-y: 6px;
+    drop-shadow-color: #00000045;
+}
+
+component HubMenuRow inherits Rectangle {
+    in property <MenuEntry> entry;
+    in property <bool> check-column;
+    callback activated();
+    height: root.entry.separator ? 11px : 22px;
+    border-radius: 4px;
+    property <bool> hot: touch.has-hover && root.entry.enabled && !root.entry.separator;
+    background: root.hot ? MacTheme.control-accent : transparent;
+    property <brush> fg: root.hot ? white : !root.entry.enabled ? MacTheme.tertiary-label : root.entry.destructive ? MacTheme.system-red : MacTheme.label;
+    accessible-role: button;
+    accessible-label: root.entry.title;
+    accessible-checkable: root.entry.checkable;
+    accessible-checked: root.entry.checked;
+    accessible-enabled: root.entry.enabled;
+    accessible-action-default => { if (root.entry.enabled) { root.activated(); } }
+    if root.entry.separator: Rectangle {
+        x: 10px;
+        width: parent.width - 20px;
+        y: 5px;
+        height: 1px;
+        background: MacTheme.separator;
+    }
+    if !root.entry.separator: HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 10px;
+        spacing: 4px;
+        if root.check-column: Rectangle {
+            width: 14px;
+            if root.entry.checked: Sym {
+                name: "checkmark";
+                size: 10px;
+                tint: root.fg;
+            }
+        }
+        if root.entry.symbol != "": Sym {
+            y: (parent.height - self.height) / 2;
+            name: root.entry.symbol;
+            size: 13px;
+            tint: root.fg;
+        }
+        Text {
+            text: root.entry.title;
+            font-size: MacTheme.body-size;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            color: root.fg;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.entry.enabled && !root.entry.separator;
+        clicked => { root.activated(); }
+    }
+}
+
+// NSMenu-looking popup over `HubBridge.menu-entries`.
+export component HubMacMenu inherits PopupWindow {
+    in property <length> min-menu-width: 200px;
+    property <[MenuEntry]> entries: HubBridge.menu-entries;
+    Rectangle {
+        min-width: root.min-menu-width;
+        background: MacTheme.menu-background;
+        border-radius: 6px;
+        border-width: 0.5px;
+        border-color: MacTheme.menu-border;
+        drop-shadow-blur: 14px;
+        drop-shadow-offset-y: 5px;
+        drop-shadow-color: #00000040;
+        VerticalLayout {
+            padding: 5px;
+            for e in root.entries: HubMenuRow {
+                entry: e;
+                check-column: root.entries.length > 0 && root.entries[0].checkable;
+                activated => {
+                    HubBridge.menu-activated(e.id);
+                    root.close();
+                }
+            }
+        }
+    }
+}

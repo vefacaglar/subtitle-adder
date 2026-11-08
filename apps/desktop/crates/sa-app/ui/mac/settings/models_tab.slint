@@ -1,0 +1,145 @@
+// Settings ▸ Modeller (mac-ui §11.4): Altyazı modelleri, Konuşmacılar (only if any), Çeviri modelleri (llama then
+// classic) with the footer: spinner, load error, delete notice (auto-dismiss 8 s, close button), total disk text.
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge, SettingsModelRow } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, PushButton, SmallSpinner, ToolTip } from "../main/controls.slint";
+import { FormSection, RowSeparator, Caption } from "form.slint";
+
+component ModelSettingsRow inherits HorizontalLayout {
+    in property <SettingsModelRow> item;
+    spacing: 12px;
+    padding-top: 4px + 7px;
+    padding-bottom: 4px + 7px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 3px;
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            Text {
+                text: root.item.name;
+                font-size: MacTheme.body-size;
+                font-weight: 500;
+                color: MacTheme.label;
+            }
+            if root.item.is-active: HorizontalLayout {
+                spacing: 3px;
+                Sym { name: "waveform"; size: 10px; tint: MacTheme.secondary-label; y: 2px; }
+                Caption { text: Loc.t("Kullanılıyor"); wrap: no-wrap; }
+            }
+        }
+        Caption { text: root.item.language-summary; }
+        if root.item.rating-text != "": Caption { text: root.item.rating-text; }
+        Caption { text: root.item.storage-status; }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Caption { text: root.item.license-text; wrap: no-wrap; }
+            if root.item.is-non-commercial: HorizontalLayout {
+                spacing: 3px;
+                Sym { name: "exclamationmark.triangle"; size: 10px; tint: MacTheme.system-orange; y: 2px; }
+                Text {
+                    text: Loc.t("Ticari olmayan lisans");
+                    font-size: 11px;
+                    color: MacTheme.system-orange;
+                }
+            }
+        }
+        if root.item.error-text != "": Text {
+            text: root.item.error-text;
+            font-size: 11px;
+            color: MacTheme.system-red;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: 2 * 14px;
+        }
+    }
+    VerticalLayout {
+        alignment: center;
+        min-width: 8px;
+        if root.item.is-deleting: HorizontalLayout {
+            spacing: 6px;
+            SmallSpinner { width: 16px; height: 16px; }
+            Caption { text: Loc.t("Siliniyor…"); wrap: no-wrap; vertical-alignment: center; }
+        }
+        if !root.item.is-deleting && root.item.shows-delete: PushButton {
+            label: Loc.t("Sil…");
+            enabled: !root.item.is-active;
+            tooltip: root.item.delete-help;
+            clicked => { SettingsBridge.model-delete(root.item.id); }
+        }
+    }
+}
+
+export component ModelsTab inherits VerticalLayout {
+    spacing: 20px;
+
+    FormSection {
+        header: Loc.t("Altyazı modelleri");
+        for row[i] in SettingsBridge.transcription-rows: VerticalLayout {
+            if i > 0: RowSeparator { }
+            ModelSettingsRow { item: row; }
+        }
+    }
+    if SettingsBridge.diarization-rows.length > 0: FormSection {
+        header: Loc.t("Konuşmacılar");
+        for row[i] in SettingsBridge.diarization-rows: VerticalLayout {
+            if i > 0: RowSeparator { }
+            ModelSettingsRow { item: row; }
+        }
+    }
+    VerticalLayout {
+        spacing: 0px;
+        FormSection {
+            header: Loc.t("Çeviri modelleri");
+            for row[i] in SettingsBridge.translation-rows: VerticalLayout {
+                if i > 0: RowSeparator { }
+                ModelSettingsRow { item: row; }
+            }
+        }
+        // Footer.
+        VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 6px;
+            spacing: 4px;
+            if SettingsBridge.models-loading: HorizontalLayout {
+                alignment: start;
+                SmallSpinner { width: 16px; height: 16px; }
+            }
+            if SettingsBridge.models-load-error != "": HorizontalLayout {
+                spacing: 4px;
+                Sym { name: "exclamationmark.triangle.fill"; size: 11px; tint: MacTheme.system-red; y: 2px; }
+                Text {
+                    text: SettingsBridge.models-load-error;
+                    font-size: 11px;
+                    color: MacTheme.system-red;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+            }
+            if SettingsBridge.models-notice-open: HorizontalLayout {
+                spacing: 6px;
+                Sym { name: "checkmark.circle.fill"; size: 11px; tint: MacTheme.system-green; y: 2px; }
+                Text {
+                    text: SettingsBridge.models-notice-text;
+                    font-size: 11px;
+                    color: MacTheme.system-green;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+                close := Rectangle {
+                    width: 16px;
+                    height: 16px;
+                    accessible-role: button;
+                    accessible-label: Loc.t("Kapat");
+                    Sym { name: "xmark.circle.fill"; size: 13px; tint: MacTheme.secondary-label; }
+                    ct := TouchArea { clicked => { SettingsBridge.models-notice-closed(); } }
+                    ToolTip { text: Loc.t("Mesajı kapat"); show: ct.has-hover; }
+                }
+            }
+            Caption { text: SettingsBridge.models-total-text; }
+        }
+    }
+}

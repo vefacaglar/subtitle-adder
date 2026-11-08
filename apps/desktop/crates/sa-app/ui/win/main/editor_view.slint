@@ -1,0 +1,134 @@
+// EditorView (win-ui-main §6.5): the drop zone when nothing is open, else the work area (player + splitter + editor
+// panel) laid out by `MainBridge.layout-mode` (§8): 0 player only, 1 side by side, 2 stacked.
+import { Loc } from "../../shared/loc.slint";
+import { DashedBorder } from "../../shared/dashed_border.slint";
+import { MainBridge, AppBridge } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { Glyph, ToolButton } from "controls.slint";
+import { PlayerSurface } from "player.slint";
+import { LineEditor } from "line_editor.slint";
+
+component DropZone inherits Rectangle {
+    border-radius: 8px;
+    background: Theme.layer-fill;
+    // Dashed 1.5 px border (dash 5 / gap 4 in stroke units = 7.5 / 6 px) in ControlStrongStrokeColorDefault.
+    DashedBorder {
+        stroke: Theme.control-strong-stroke;
+        stroke-width: 1.5px;
+        dash: 7.5px;
+        gap: 6px;
+        radius: 8px;
+    }
+    VerticalLayout {
+        alignment: center;
+        spacing: 10px;
+        Glyph {
+            glyph: "\u{E714}";
+            size: 44px;
+            color: Theme.text-secondary;
+        }
+        Text {
+            text: Loc.t("Videoyu buraya sürükle");
+            font-size: Theme.subtitle-size;
+            font-weight: 600;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: Loc.t("ya da araç çubuğundan seç");
+            color: Theme.text-secondary;
+            font-size: Theme.body-size;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            padding-top: 8px;
+            ToolButton {
+                glyph: "\u{E8E5}";
+                label: Loc.t("Video seç");
+                clicked => { MainBridge.pick-video(); }
+            }
+        }
+    }
+}
+
+// 12 px splitter track with a centered pill (§6.5.4, §14).
+component Splitter inherits Rectangle {
+    in property <bool> vertical-bar;
+    callback dragged(length);
+    Rectangle {
+        width: root.vertical-bar ? 4px : 40px;
+        height: root.vertical-bar ? 40px : 4px;
+        border-radius: 2px;
+        background: Theme.control-strong-fill-disabled;
+    }
+    touch := TouchArea {
+        mouse-cursor: root.vertical-bar ? ew-resize : ns-resize;
+        moved => {
+            if (self.pressed) {
+                root.dragged(root.vertical-bar ? self.mouse-x - self.pressed-x : self.mouse-y - self.pressed-y);
+            }
+        }
+    }
+}
+
+component WorkArea inherits Rectangle {
+    property <int> mode: MainBridge.layout-mode;
+    // Star weights reset to the defaults whenever the layout is re-applied (§8: Player 5* / Editor 4* stacked,
+    // Player 2* / Editor 1* side by side); dragging changes the player size (minimums 180/160 and 260/320).
+    property <float> stacked-ratio: 5 / 9;
+    property <float> side-ratio: 2 / 3;
+    property <int> epoch: MainBridge.layout-epoch;
+    changed epoch => {
+        root.stacked-ratio = 5 / 9;
+        root.side-ratio = 2 / 3;
+    }
+    property <length> avail-w: root.width - 12px;
+    property <length> avail-h: root.height - 12px;
+    property <length> player-w: root.mode == 1 ? clamp(root.avail-w * root.side-ratio, 260px, max(260px, root.avail-w - 320px)) : root.width;
+    property <length> player-h: root.mode == 2 ? clamp(root.avail-h * root.stacked-ratio, 180px, max(180px, root.avail-h - 160px)) : root.height;
+
+    player := PlayerSurface {
+        x: 0;
+        y: 0;
+        width: root.player-w;
+        height: root.player-h;
+    }
+    if root.mode == 1: Splitter {
+        x: root.player-w;
+        y: 0;
+        width: 12px;
+        height: root.height;
+        vertical-bar: true;
+        dragged(d) => {
+            root.side-ratio = clamp(root.player-w + d, 260px, max(260px, root.avail-w - 320px)) / max(1px, root.avail-w);
+        }
+    }
+    if root.mode == 2: Splitter {
+        x: 0;
+        y: root.player-h;
+        width: root.width;
+        height: 12px;
+        vertical-bar: false;
+        dragged(d) => {
+            root.stacked-ratio = clamp(root.player-h + d, 180px, max(180px, root.avail-h - 160px)) / max(1px, root.avail-h);
+        }
+    }
+    if root.mode == 1: LineEditor {
+        x: root.player-w + 12px;
+        y: 0;
+        width: root.width - root.player-w - 12px;
+        height: root.height;
+    }
+    if root.mode == 2: LineEditor {
+        x: 0;
+        y: root.player-h + 12px;
+        width: root.width;
+        height: root.height - root.player-h - 12px;
+    }
+}
+
+export component EditorView inherits Rectangle {
+    if !MainBridge.has-video && !MainBridge.has-sentences: DropZone { }
+    if MainBridge.has-video || MainBridge.has-sentences: WorkArea { }
+}

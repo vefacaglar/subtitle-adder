@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Data-compat fixture for sa-providers: serializes / deserializes translation-providers.json exactly like the C# app's
+    TranslationProviderManager (same record shape and JsonSerializerOptions, copied from
+    apps/windows/src/SubtitleAdder.Core/TranslationProviderManager.cs, which is not linked because it pulls in the whole
+    view model).
+      write <path>  writes the C# fixture (UTF-8 without BOM, as AtomicFileStore does)
+      read <path>   prints one line per provider: id|name|presetId|baseUrl|apiKey|model|async|models (models joined by ,)
+    Build: dotnet build -c Release (output stays under this folder; bin/ and obj/ are ignored).
+    Used by crates/sa-providers/tests/csharp_compat.rs.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,46 @@
+[package]
+name = "sa-enginekit"
+description = "Engine process client and JSON-lines protocol, sentence editing, external LLM address rules, provider presets."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sa-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+ureq = { workspace = true, optional = true }
+thiserror.workspace = true
+unicode-normalization.workspace = true
+# Grapheme clusters for the proportional split (Swift `String.count`, .NET `StringInfo.LengthInTextElements`);
+# already in the lockfile through Slint.
+unicode-segmentation = "=1.13.3"
+
+[features]
+# The default `ureq` HTTP fetcher of the connection test. Off only for the macOS cross-check from Windows
+# (`cargo check --target aarch64-apple-darwin -p sa-enginekit --no-default-features`), because ring's build script
+# needs an Apple C toolchain (ARCHITECTURE.md section 11).
+default = ["ureq-fetch"]
+ureq-fetch = ["dep:ureq"]
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# Test-only scripted stand-in for `subtitle-engine` (win-enginekit §11). Integration tests find it through
+# `CARGO_BIN_EXE_sa-fake-engine`; it is never packaged.
+[[bin]]
+name = "sa-fake-engine"
+path = "tests/support/fake_engine.rs"
+test = false
+doc = false

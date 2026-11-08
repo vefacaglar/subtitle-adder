@@ -1,0 +1,107 @@
+// Settings ▸ Genel (mac-ui §11.1): Dil (+ relaunch hint), Altyazı, Konuşmacılar, Medya oynatıcı, Gizlilik
+// (cloud-aware footer).
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { FormSection, FormRow, RowSeparator, Caption, MacPopUp, MacSwitch } from "form.slint";
+
+export component GeneralTab inherits VerticalLayout {
+    spacing: 20px;
+
+    FormSection {
+        header: Loc.t("Dil");
+        FormRow {
+            label: Loc.t("Arayüz dili");
+            MacPopUp {
+                model: SettingsBridge.ui-language-items;
+                current-index: SettingsBridge.ui-language-index;
+                accessible-name: Loc.t("Arayüz dili");
+                selected(i) => { SettingsBridge.ui-language-selected(i); }
+            }
+        }
+        if SettingsBridge.needs-relaunch: VerticalLayout {
+            RowSeparator { }
+            VerticalLayout {
+                padding-top: 7px;
+                padding-bottom: 7px;
+                Caption { text: Loc.t("Menüler ve sistem diyalogları uygulama yeniden açılınca güncellenir."); }
+            }
+        }
+    }
+
+    FormSection {
+        header: Loc.t("Altyazı");
+        FormRow {
+            label: Loc.t("Konuşma dili");
+            MacPopUp {
+                model: SettingsBridge.speech-language-items;
+                current-index: SettingsBridge.speech-language-index;
+                accessible-name: Loc.t("Konuşma dili");
+                selected(i) => { SettingsBridge.speech-language-selected(i); }
+            }
+        }
+        RowSeparator { }
+        FormRow {
+            label: Loc.t("Altyazı modeli");
+            enabled: SettingsBridge.model-enabled;
+            MacPopUp {
+                model: SettingsBridge.model-items;
+                current-index: SettingsBridge.model-index;
+                enabled: SettingsBridge.model-enabled;
+                accessible-name: Loc.t("Altyazı modeli");
+                selected(i) => { SettingsBridge.model-selected(i); }
+            }
+        }
+    }
+
+    FormSection {
+        header: Loc.t("Konuşmacılar");
+        footer: Loc.t("Videoda birden çok kişi konuşuyorsa kimin ne dediğini ayır; ilk kullanımda küçük bir model indirilir.");
+        FormRow {
+            label: Loc.t("Konuşmacıları ayır");
+            MacSwitch {
+                checked: SettingsBridge.diarize;
+                accessible-name: Loc.t("Konuşmacıları ayır");
+                toggled(v) => { SettingsBridge.diarize-toggled(v); }
+            }
+        }
+        RowSeparator { }
+        FormRow {
+            label: Loc.t("Konuşmacı sayısı");
+            enabled: SettingsBridge.diarize;
+            MacPopUp {
+                model: SettingsBridge.speaker-count-items;
+                current-index: SettingsBridge.speaker-count-index;
+                enabled: SettingsBridge.diarize;
+                accessible-name: Loc.t("Konuşmacı sayısı");
+                selected(i) => { SettingsBridge.speaker-count-selected(i); }
+            }
+        }
+    }
+
+    FormSection {
+        header: Loc.t("Medya oynatıcı");
+        footer: Loc.t("Bir video seçildiğinde veya çift tıklanarak açıldığında oynatmayı hemen başlatır.");
+        FormRow {
+            label: Loc.t("Video açıldığında otomatik oynat");
+            MacSwitch {
+                checked: SettingsBridge.auto-play;
+                accessible-name: Loc.t("Video açıldığında otomatik oynat");
+                toggled(v) => { SettingsBridge.auto-play-toggled(v); }
+            }
+        }
+    }
+
+    FormSection {
+        header: Loc.t("Gizlilik");
+        footer: SettingsBridge.offline-footer;
+        FormRow {
+            label: Loc.t("Çevrimdışı mod");
+            MacSwitch {
+                checked: SettingsBridge.offline;
+                accessible-name: Loc.t("Çevrimdışı mod");
+                toggled(v) => { SettingsBridge.offline-toggled(v); }
+            }
+        }
+    }
+}

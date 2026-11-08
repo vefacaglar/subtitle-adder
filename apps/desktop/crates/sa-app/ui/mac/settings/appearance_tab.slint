@@ -1,0 +1,318 @@
+// Settings ▸ Görünüm (mac-ui §11.3): Uygulama (segmented Tema, Arayüz yazı tipi) and Video üstündeki altyazı
+// (preview, Yazı tipi, Boyut, Yazı rengi color well, Arka plan, Arka plan opaklığı, Varsayılana döndür).
+import { Slider } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { PushButton, Segmented, ToolTip } from "../main/controls.slint";
+import { FormSection, FormRow, RowSeparator, MacPopUp, MacField } from "form.slint";
+
+// `SubtitleOverlayLabel(text, style, videoHeight: 150)`: semibold, centered; box / shadow / outline.
+component PreviewLabel inherits Rectangle {
+    in property <string> text;
+    in property <string> family;
+    in property <float> size-fraction;
+    in property <color> text-color;
+    in property <int> mode;
+    in property <float> opacity-value;
+    property <length> font-px: max(12px, 150px * clamp(root.size-fraction, 0.03, 0.09));
+    property <length> r: clamp(root.font-px * 0.045, 1px, 2.5px);
+    property <length> d: root.r / 1.41421356;
+    property <float> shadow-a: max(root.opacity-value, 0.5);
+    property <[{dx: length, dy: length, a: float}]> copies: root.mode == 2 ? [
+            { dx: -root.r, dy: 0px, a: 1 }, { dx: root.r, dy: 0px, a: 1 }, { dx: 0px, dy: -root.r, a: 1 }, { dx: 0px, dy: root.r, a: 1 },
+            { dx: -root.d, dy: -root.d, a: 1 }, { dx: root.d, dy: -root.d, a: 1 }, { dx: -root.d, dy: root.d, a: 1 }, { dx: root.d, dy: root.d, a: 1 },
+        ] : root.mode == 1 ? [
+            { dx: 0px, dy: 1px, a: root.shadow-a }, { dx: 0px, dy: 1.5px, a: root.shadow-a * 0.5 },
+            { dx: -0.5px, dy: 0px, a: 0.8 }, { dx: 0.5px, dy: 0px, a: 0.8 }, { dx: 0px, dy: -0.5px, a: 0.6 },
+        ] : [];
+    width: label.preferred-width + 24px;
+    height: label.preferred-height + 12px;
+    border-radius: 8px;
+    background: root.mode == 0 ? rgba(0, 0, 0, clamp(root.opacity-value, 0, 1)) : transparent;
+    accessible-role: none;
+    for c in root.copies: Text {
+        x: 12px + c.dx;
+        y: 6px + c.dy;
+        text: root.text;
+        font-size: root.font-px;
+        font-weight: 600;
+        font-family: root.family;
+        horizontal-alignment: center;
+        color: rgba(0, 0, 0, c.a);
+    }
+    label := Text {
+        x: 12px;
+        y: 6px;
+        text: root.text;
+        font-size: root.font-px;
+        font-weight: 600;
+        font-family: root.family;
+        horizontal-alignment: center;
+        color: root.text-color;
+    }
+}
+
+// The color well (`ColorPicker(supportsOpacity: false)`): a bordered swatch that opens a color panel popover.
+component ColorWell inherits Rectangle {
+    in property <color> value;
+    in property <string> hex;
+    in property <string> tooltip;
+    callback picked(color);
+    callback hex-entered(string);
+    width: 44px;
+    height: 22px;
+    border-radius: 5.5px;
+    border-width: 0.5px;
+    border-color: MacTheme.button-border;
+    background: MacTheme.button-background;
+    drop-shadow-blur: MacTheme.dark ? 0 : 1px;
+    drop-shadow-offset-y: 0.5px;
+    drop-shadow-color: #0000001f;
+    accessible-role: button;
+    accessible-label: Loc.t("Yazı rengi");
+    accessible-value: root.hex;
+    Rectangle {
+        x: 4px;
+        y: 4px;
+        width: parent.width - 8px;
+        height: parent.height - 8px;
+        border-radius: 3px;
+        background: root.value;
+        border-width: 0.5px;
+        border-color: #00000033;
+    }
+    touch := TouchArea { clicked => { panel.show(); } }
+    ToolTip {
+        text: root.tooltip;
+        show: touch.has-hover && !touch.pressed;
+    }
+    panel := PopupWindow {
+        x: root.width - 240px;
+        y: root.height + 6px;
+        close-policy: close-on-click-outside;
+        property <float> hue: root.value.to-hsv().hue;
+        property <float> sat: root.value.to-hsv().saturation;
+        property <float> val: root.value.to-hsv().value;
+        Rectangle {
+            width: 240px;
+            background: MacTheme.menu-background;
+            border-radius: 10px;
+            border-width: 0.5px;
+            border-color: MacTheme.menu-border;
+            drop-shadow-blur: 14px;
+            drop-shadow-offset-y: 5px;
+            drop-shadow-color: #00000040;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 10px;
+                Rectangle {
+                    height: 140px;
+                    border-radius: 6px;
+                    clip: true;
+                    background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.6%, #00ff00 33.3%, #00ffff 50%, #0000ff 66.6%, #ff00ff 83.3%, #ff0000 100%);
+                    Rectangle { background: @linear-gradient(180deg, #ffffff00 0%, #ffffff 100%); }
+                    Rectangle {
+                        x: panel.hue / 360 * parent.width - 6px;
+                        y: (1 - panel.sat) * parent.height - 6px;
+                        width: 12px;
+                        height: 12px;
+                        border-radius: 6px;
+                        border-width: 2px;
+                        border-color: white;
+                        drop-shadow-blur: 2px;
+                        drop-shadow-color: #00000080;
+                    }
+                    TouchArea {
+                        function pick() {
+                            panel.hue = clamp(self.mouse-x / self.width, 0, 1) * 359.9;
+                            panel.sat = 1 - clamp(self.mouse-y / self.height, 0, 1);
+                            root.picked(hsv(panel.hue, panel.sat, panel.val));
+                        }
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down) {
+                                self.pick();
+                            }
+                        }
+                        moved => {
+                            if (self.pressed) {
+                                self.pick();
+                            }
+                        }
+                    }
+                }
+                Slider {
+                    minimum: 0;
+                    maximum: 1;
+                    value: panel.val;
+                    changed(v) => {
+                        panel.val = v;
+                        root.picked(hsv(panel.hue, panel.sat, panel.val));
+                    }
+                }
+                MacField {
+                    text: root.hex;
+                    accessible-name: Loc.t("Yazı rengi");
+                    accepted(t) => { root.hex-entered(t); }
+                }
+            }
+        }
+    }
+}
+
+// Slider + monospaced percent text (width 36, trailing).
+component PercentSlider inherits HorizontalLayout {
+    in property <float> minimum;
+    in property <float> maximum;
+    in-out property <float> value;
+    in property <string> percent;
+    in property <bool> enabled: true;
+    in property <string> accessible-name;
+    callback changed-value(float);
+    spacing: 8px;
+    Slider {
+        width: 180px;
+        minimum: root.minimum;
+        maximum: root.maximum;
+        value <=> root.value;
+        enabled: root.enabled;
+        accessible-label: root.accessible-name;
+        changed(v) => { root.changed-value(v); }
+    }
+    Text {
+        width: 36px;
+        text: root.percent;
+        font-size: MacTheme.body-size;
+        color: MacTheme.secondary-label;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        opacity: root.enabled ? 1 : 0.5;
+    }
+}
+
+export component AppearanceTab inherits VerticalLayout {
+    spacing: 20px;
+
+    FormSection {
+        header: Loc.t("Uygulama");
+        FormRow {
+            label: Loc.t("Tema");
+            Segmented {
+                items: [
+                    { title: Loc.t("Sistem"), enabled: true },
+                    { title: Loc.t("Açık"), enabled: true },
+                    { title: Loc.t("Koyu"), enabled: true },
+                ];
+                current-index: SettingsBridge.theme-index;
+                accessible-name: Loc.t("Tema");
+                selected(i) => { SettingsBridge.theme-selected(i); }
+            }
+        }
+        RowSeparator { }
+        FormRow {
+            label: Loc.t("Arayüz yazı tipi");
+            MacPopUp {
+                model: SettingsBridge.font-titles;
+                current-index: SettingsBridge.ui-font-index;
+                separator-after-first: true;
+                tooltip: Loc.t("Altyazı yazı tipinden bağımsızdır.");
+                accessible-name: Loc.t("Arayüz yazı tipi");
+                selected(i) => { SettingsBridge.ui-font-selected(i); }
+            }
+        }
+    }
+
+    FormSection {
+        header: Loc.t("Video üstündeki altyazı");
+        footer: Loc.t("Bu ayarlar yalnızca uygulamadaki önizlemeyi etkiler; dışa aktarılan altyazı dosyalarını değiştirmez.");
+        VerticalLayout {
+            padding-top: 10px;
+            padding-bottom: 10px;
+            Rectangle {
+                height: 100px;
+                border-radius: 8px;
+                clip: true;
+                background: @linear-gradient(180deg, #808080b3 0%, #000000 100%);
+                accessible-role: none;
+                PreviewLabel {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height - 16px - self.height;
+                    text: Loc.t("Örnek altyazı metni");
+                    family: SettingsBridge.overlay-font-family;
+                    size-fraction: SettingsBridge.overlay-size;
+                    text-color: SettingsBridge.overlay-color;
+                    mode: SettingsBridge.overlay-background-index;
+                    opacity-value: SettingsBridge.overlay-opacity;
+                }
+            }
+        }
+        RowSeparator { }
+        FormRow {
+            label: Loc.t("Yazı tipi");
+            MacPopUp {
+                model: SettingsBridge.font-titles;
+                current-index: SettingsBridge.overlay-font-index;
+                separator-after-first: true;
+                accessible-name: Loc.t("Yazı tipi");
+                selected(i) => { SettingsBridge.overlay-font-selected(i); }
+            }
+        }
+        RowSeparator { }
+        FormRow {
+            label: Loc.t("Boyut");
+            PercentSlider {
+                minimum: 0.03;
+                maximum: 0.09;
+                value <=> SettingsBridge.overlay-size;
+                percent: SettingsBridge.overlay-size-text;
+                accessible-name: Loc.t("Boyut");
+                changed-value(v) => { SettingsBridge.overlay-size-changed(v); }
+            }
+        }
+        RowSeparator { }
+        FormRow {
+            label: Loc.t("Yazı rengi");
+            ColorWell {
+                value: SettingsBridge.overlay-color;
+                hex: SettingsBridge.overlay-color-hex;
+                tooltip: Loc.t("Yazı rengini seç");
+                picked(c) => { SettingsBridge.overlay-color-picked(c); }
+                hex-entered(t) => { SettingsBridge.overlay-color-hex-entered(t); }
+            }
+        }
+        RowSeparator { }
+        FormRow {
+            label: Loc.t("Arka plan");
+            MacPopUp {
+                model: [Loc.t("Kutu"), Loc.t("Gölge"), Loc.t("Kontur")];
+                current-index: SettingsBridge.overlay-background-index;
+                accessible-name: Loc.t("Arka plan");
+                selected(i) => { SettingsBridge.overlay-background-selected(i); }
+            }
+        }
+        RowSeparator { }
+        FormRow {
+            label: Loc.t("Arka plan opaklığı");
+            enabled: SettingsBridge.overlay-background-index == 0;
+            PercentSlider {
+                minimum: 0;
+                maximum: 1;
+                value <=> SettingsBridge.overlay-opacity;
+                percent: SettingsBridge.overlay-opacity-text;
+                enabled: SettingsBridge.overlay-background-index == 0;
+                accessible-name: Loc.t("Arka plan opaklığı");
+                changed-value(v) => { SettingsBridge.overlay-opacity-changed(v); }
+            }
+        }
+        RowSeparator { }
+        HorizontalLayout {
+            padding-top: 7px;
+            padding-bottom: 7px;
+            alignment: start;
+            PushButton {
+                label: Loc.t("Varsayılana döndür");
+                clicked => { SettingsBridge.overlay-reset(); }
+            }
+        }
+    }
+}

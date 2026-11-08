@@ -1,0 +1,213 @@
+// macOS VideoCardView (mac-ui §9.3): 192×108 thumbnail with pills (subtitles, views, length) and the red resume bar;
+// title, folder line, watch badges, chips, then actions (Oynat; logged in: favorite, stars, "+ Listeye ekle").
+// Right click opens the context menu (`Oynat`, `Finder'da göster`).
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge, HubCardData } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, PushButton, ToolTip } from "../main/controls.slint";
+import { Chip, ThumbPill, StarRating, HubMacMenu, PlainButton } from "hub_controls.slint";
+
+export component VideoCard inherits Rectangle {
+    in property <HubCardData> card;
+    in property <int> index;
+    property <bool> shows-history: HubBridge.is-logged-in;
+    property <length> menu-x;
+    property <length> menu-y;
+    property <length> add-x;
+    property <length> add-y;
+    min-height: 108px + 24px;
+    border-radius: 12px;
+    background: hover.has-hover ? (MacTheme.dark ? #ffffff17 : #00000017) : (MacTheme.dark ? #ffffff0d : #0000000d);
+    accessible-role: groupbox;
+    accessible-label: root.card.accessible-label;
+
+    hover := TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                root.menu-x = self.mouse-x;
+                root.menu-y = self.mouse-y;
+                HubBridge.menu-requested("card:" + root.index);
+                context.show();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 14px;
+        alignment: start;
+        // ---- thumbnail (button → play)
+        VerticalLayout {
+            alignment: start;
+            Rectangle {
+                width: 192px;
+                height: 108px;
+                border-radius: 8px;
+                clip: true;
+                background: MacTheme.quaternary-fill.with-alpha(0.18);
+                accessible-role: button;
+                accessible-label: Loc.t("Oynat");
+                if root.card.has-thumbnail: Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.card.thumbnail;
+                    image-fit: cover;
+                    accessible-role: none;
+                }
+                if !root.card.has-thumbnail: Sym {
+                    name: root.card.is-audio ? "waveform" : "film";
+                    size: 30px;
+                    tint: MacTheme.secondary-label;
+                }
+                ThumbPill {
+                    x: 6px;
+                    y: 6px;
+                    text: root.card.has-subtitle ? root.card.subtitle-badge : Loc.t("Altyazı yok");
+                    symbol: root.card.has-subtitle ? "captions.bubble.fill" : "";
+                    dimmed: !root.card.has-subtitle;
+                }
+                if root.shows-history: ThumbPill {
+                    x: parent.width - self.width - 6px;
+                    y: 6px;
+                    text: root.card.view-count;
+                    symbol: "eye.fill";
+                    tooltip: Loc.t1("%lld görüntüleme", root.card.view-count);
+                }
+                if root.card.duration-text != "": ThumbPill {
+                    x: parent.width - self.width - 6px;
+                    y: parent.height - self.height - 6px;
+                    text: root.card.duration-text;
+                }
+                if root.shows-history && root.card.has-progress: Rectangle {
+                    x: 0;
+                    y: parent.height - 3px;
+                    height: 3px;
+                    width: 192px * root.card.progress;
+                    background: MacTheme.system-red;
+                }
+                thumb-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { HubBridge.card-play(root.index); }
+                }
+                ToolTip {
+                    text: Loc.t("Oynat");
+                    show: thumb-touch.has-hover && !thumb-touch.pressed;
+                }
+            }
+        }
+        // ---- details (VStack leading spacing 6, min height 108)
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 6px;
+            min-height: 108px;
+            title := Text {
+                text: root.card.title;
+                font-size: MacTheme.body-size;
+                font-weight: 600;
+                overflow: elide;
+                color: MacTheme.label;
+                title-touch := TouchArea {
+                    clicked => { HubBridge.card-play(root.index); }
+                }
+                ToolTip {
+                    text: root.card.file-name;
+                    show: title-touch.has-hover && !title-touch.pressed;
+                }
+            }
+            if root.card.folder != "": HorizontalLayout {
+                spacing: 4px;
+                Sym {
+                    y: (parent.height - self.height) / 2;
+                    name: "folder";
+                    size: 10px;
+                    tint: MacTheme.secondary-label;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.card.folder;
+                    font-size: MacTheme.caption-size;
+                    color: MacTheme.secondary-label;
+                    overflow: elide;
+                }
+            }
+            if root.shows-history: Text {
+                text: root.card.watch-badges;
+                font-size: MacTheme.caption-size;
+                color: MacTheme.secondary-label;
+                overflow: elide;
+            }
+            // Chips (FlowLayout spacing 6; a narrow card clips the row instead of wrapping).
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                Chip {
+                    text: root.card.subtitle-chip;
+                    symbol: root.card.has-subtitle ? "captions.bubble.fill" : "captions.bubble";
+                    tint: root.card.has-subtitle ? MacTheme.system-green : transparent;
+                    tooltip: root.card.has-subtitle ? Loc.t("Altyazı / çeviri dosyası mevcut") : Loc.t("Altyazı yok");
+                }
+                if root.card.is-liked: Chip {
+                    text: Loc.t("Favori");
+                    symbol: "heart.fill";
+                    tint: MacTheme.system-pink;
+                }
+                if root.card.rating > 0: Chip {
+                    text: root.card.rating + "/5";
+                    symbol: "star.fill";
+                    tint: MacTheme.system-yellow;
+                    accessible-label: Loc.t1("%lld yıldız", root.card.rating);
+                }
+                for name in root.card.list-names: Chip {
+                    text: name;
+                    symbol: "list.bullet";
+                }
+            }
+            Rectangle { vertical-stretch: 1; }
+            // Actions (HStack spacing 10).
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                PushButton {
+                    symbol: "play.fill";
+                    label: Loc.t("Oynat");
+                    prominent: true;
+                    small: true;
+                    clicked => { HubBridge.card-play(root.index); }
+                }
+                if root.shows-history: PushButton {
+                    symbol: root.card.is-liked ? "heart.fill" : "heart";
+                    label: root.card.like-text;
+                    small: true;
+                    clicked => { HubBridge.card-like(root.index); }
+                }
+                if root.shows-history: StarRating {
+                    rating: root.card.rating;
+                    select(n) => { HubBridge.card-rate(root.index, n); }
+                }
+                if root.shows-history: PlainButton {
+                    label: Loc.t("+ Listeye ekle");
+                    font-size: MacTheme.small-size;
+                    fg: MacTheme.control-accent;
+                    tooltip: Loc.t("+ Listeye ekle");
+                    clicked => {
+                        root.add-x = self.absolute-position.x - root.absolute-position.x;
+                        root.add-y = self.absolute-position.y - root.absolute-position.y + self.height + 2px;
+                        HubBridge.menu-requested("add:" + root.index);
+                        add-menu.show();
+                    }
+                }
+            }
+        }
+    }
+
+    context := HubMacMenu {
+        x: root.menu-x;
+        y: root.menu-y;
+        min-menu-width: 180px;
+    }
+    add-menu := HubMacMenu {
+        x: root.add-x;
+        y: root.add-y;
+        min-menu-width: 240px;
+    }
+}

@@ -1,0 +1,120 @@
+// StatusBar (win-ui-main §6.8): progress / done / fail, status text (2 lines), model notice, Biçim, Dil,
+// Altyazıyı kaydet, Dışa aktar…. Labels of the two buttons hide below 980 px window width (§7).
+import { ProgressIndicator, Spinner } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge } from "../../shared/bridge.slint";
+import { PickerItem } from "../../shared/main_types.slint";
+import { Theme } from "../theme.slint";
+import { Glyph, ToolButton, PickerCombo, ToolTip } from "controls.slint";
+
+export component StatusBar inherits Rectangle {
+    in property <length> window-width;
+    property <bool> labels: root.window-width >= 980px;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 8px;
+            if MainBridge.status-kind == 1: Spinner {
+                width: 16px;
+                height: 16px;
+                y: (parent.height - 16px) / 2;
+                indeterminate: true;
+            }
+            if MainBridge.status-kind == 1: ProgressIndicator {
+                width: 120px;
+                height: 4px;
+                y: (parent.height - 4px) / 2;
+                indeterminate: MainBridge.status-fraction < 0;
+                progress: clamp(MainBridge.status-fraction, 0, 1);
+            }
+            if MainBridge.status-kind == 2: Glyph {
+                glyph: "\u{E930}";
+                size: 16px;
+                color: Theme.success;
+            }
+            if MainBridge.status-kind == 3: Glyph {
+                glyph: "\u{E783}";
+                size: 16px;
+                color: Theme.critical;
+            }
+        }
+        Text {
+            text: MainBridge.status-text;
+            color: Theme.text-primary;
+            font-size: Theme.body-size;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: 2 * 20px;
+            min-width: 0;
+            horizontal-stretch: 1;
+        }
+        if MainBridge.model-notice != "": Rectangle {
+            max-width: 340px;
+            horizontal-stretch: 0;
+            HorizontalLayout {
+                spacing: 6px;
+                Glyph {
+                    glyph: "\u{E946}";
+                    size: 13px;
+                    color: Theme.text-secondary;
+                }
+                Text {
+                    text: MainBridge.model-notice;
+                    font-size: Theme.caption-size;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    max-width: 320px;
+                }
+            }
+            ntouch := TouchArea { }
+            ToolTip {
+                text: MainBridge.model-notice-help;
+                show: ntouch.has-hover;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            horizontal-stretch: 0;
+            PickerCombo {
+                horizontal-stretch: 0;
+                min-width: 90px;
+                items: [{ title: "SRT", enabled: true }, { title: "VTT", enabled: true }, { title: "JSON", enabled: true }];
+                current-index: MainBridge.format-index;
+                accessible-name: Loc.t("Biçim");
+                selected(i) => { MainBridge.format-selected(i); }
+            }
+            PickerCombo {
+                horizontal-stretch: 0;
+                min-width: 150px;
+                items: [{ title: Loc.t("Orijinal"), enabled: true }, { title: MainBridge.translation-title, enabled: MainBridge.has-translations }];
+                current-index: MainBridge.export-language-index;
+                accessible-name: Loc.t("Dil");
+                tooltip: Loc.t("Dışa aktarılan altyazıda orijinal mi, çeviri mi kullanılsın");
+                selected(i) => { MainBridge.export-language-selected(i); }
+            }
+            ToolButton {
+                glyph: "\u{E74E}";
+                glyph-size: 14px;
+                label: Loc.t("Altyazıyı kaydet");
+                show-label: root.labels;
+                enabled: MainBridge.can-save-subtitle;
+                tooltip: Loc.t("Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet");
+                clicked => { MainBridge.save-subtitle(); }
+            }
+            ToolButton {
+                glyph: "\u{EDE1}";
+                glyph-size: 14px;
+                label: Loc.t("Dışa aktar…");
+                show-label: root.labels;
+                enabled: MainBridge.can-export;
+                clicked => { MainBridge.export-subtitle(); }
+            }
+        }
+    }
+}

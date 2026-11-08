@@ -1,0 +1,28 @@
+{
+  "activeProviderId": "adf244d7-d14a-4a40-abf1-2da9a43ba655",
+  "providers": [
+    {
+      "id": "1bed0ce2-2d54-4a5d-a9fa-52fd7ad76929",
+      "name": "Yerel A\u011F (Ollama / LM Studio)",
+      "presetId": "lan",
+      "baseUrl": "http://192.168.68.58:11434",
+      "apiKey": "",
+      "model": "gemma4:12b",
+      "asyncTranslation": true,
+      "discoveredModels": [
+        "gemma4:e2b",
+        "qwen3.5:4b"
+      ]
+    },
+    {
+      "id": "adf244d7-d14a-4a40-abf1-2da9a43ba655",
+      "name": "\u015Eirket \u003Ctest\u003E \u0026 \u0027quote\u0027 \u002B \u0060tick\u0060 \u0022dq\u0022 \\ \uD83D\uDE00",
+      "presetId": "opencode-go",
+      "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+      "apiKey": "oc_csharp_plaintext_0123456789",
+      "model": "glm-5.3-flash",
+      "asyncTranslation": false,
+      "discoveredModels": []
+    }
+  ]
+}

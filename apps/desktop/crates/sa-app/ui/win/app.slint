@@ -1,0 +1,36 @@
+// Windows UI tree (fluent style). Exports exactly the shared contract (ARCHITECTURE.md §6.2): the two windows and
+// the shared globals. Areas live in main/, hub/, settings/ so the UI agents work in parallel.
+import { Palette } from "std-widgets.slint";
+import { Loc } from "../shared/loc.slint";
+import { AppBridge, MainBridge, HubBridge, ExplorerBridge, SettingsBridge, MenuBridge, Symbols, Workspace } from "../shared/bridge.slint";
+import { Theme } from "theme.slint";
+import { MainView } from "main/main_view.slint";
+import { SettingsView } from "settings/settings_view.slint";
+
+export { Loc, AppBridge, MainBridge, HubBridge, ExplorerBridge, SettingsBridge, MenuBridge, Symbols, Workspace, Palette }
+
+export component MainWindow inherits Window {
+    title: AppBridge.window-title;
+    // win-ui-main §4.1: default 1240×840, min 760×580 (DIP).
+    preferred-width: 1240px;
+    preferred-height: 840px;
+    min-width: 760px;
+    min-height: 580px;
+    background: Theme.window-background;
+    default-font-family: AppBridge.ui-font-family;
+
+    MainView { }
+}
+
+export component SettingsWindow inherits Window {
+    title: Loc.t("Ayarlar") + " — Subtitle Adder";
+    // win-ui-main §1.6: default 860×760, min 640×520.
+    preferred-width: 860px;
+    preferred-height: 760px;
+    min-width: 640px;
+    min-height: 520px;
+    background: Theme.window-background;
+    default-font-family: AppBridge.ui-font-family;
+
+    SettingsView { }
+}

@@ -1,0 +1,269 @@
+// Sheets of the Settings window: the provider editor (mac-ui §11.2 `ProviderEditorSheet`, 520×500) and the
+// NSAlert-style confirmation (model / provider delete: destructive "Sil", cancel "Vazgeç"). Sheets slide down from the
+// top edge of the window and dim nothing behind them except blocking input.
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, PushButton, SmallSpinner } from "../main/controls.slint";
+import { FormSection, FormRow, RowSeparator, Caption, MacPopUp, MacField, MacSwitch, FieldRow } from "form.slint";
+import { ModelsMenu, NoticeLabel } from "translation_tab.slint";
+
+component SheetFrame inherits Rectangle {
+    in property <length> sheet-width;
+    in property <length> sheet-height;
+    background: transparent;
+    // Block the window behind the sheet.
+    TouchArea { }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 0;
+        width: root.sheet-width;
+        height: root.sheet-height;
+        background: MacTheme.window-background;
+        border-radius: 10px;
+        border-width: 0.5px;
+        border-color: MacTheme.menu-border;
+        drop-shadow-blur: 30px;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-color: #00000059;
+        clip: true;
+        @children
+    }
+}
+
+export component ProviderEditorSheet inherits SheetFrame {
+    sheet-width: min(520px, root.width - 20px);
+    sheet-height: min(500px, root.height - 10px);
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                SettingsBridge.form-cancel();
+                return accept;
+            }
+            if (e.text == Key.Return && SettingsBridge.form-can-save) {
+                SettingsBridge.form-save();
+                return accept;
+            }
+            return reject;
+        }
+        VerticalLayout {
+            VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 20px;
+                Text {
+                    text: SettingsBridge.form-is-new ? Loc.t("API Sağlayıcısı Ekle") : Loc.t("API Sağlayıcısını Düzenle");
+                    font-size: 13px;
+                    font-weight: 700;
+                    color: MacTheme.label;
+                }
+            }
+            Flickable {
+                vertical-stretch: 1;
+                content-height: body.preferred-height;
+                body := VerticalLayout {
+                    padding: 20px;
+                    padding-top: 12px;
+                    spacing: 16px;
+                    FormSection {
+                        FormRow {
+                            label: Loc.t("Sağlayıcı türü");
+                            MacPopUp {
+                                model: SettingsBridge.form-preset-items;
+                                current-index: SettingsBridge.form-preset-index;
+                                accessible-name: Loc.t("Sağlayıcı türü");
+                                selected(i) => { SettingsBridge.form-preset-selected(i); }
+                            }
+                        }
+                        RowSeparator { }
+                        FieldRow {
+                            label: Loc.t("Sağlayıcı adı");
+                            text <=> SettingsBridge.form-name;
+                            placeholder: Loc.t("Örn. OpenCode Go");
+                            edited(t) => { SettingsBridge.form-name-edited(t); }
+                        }
+                        RowSeparator { }
+                        FieldRow {
+                            label: Loc.t("Sunucu adresi (Base URL)");
+                            text <=> SettingsBridge.form-url;
+                            placeholder: SettingsBridge.form-url-placeholder;
+                            edited(t) => { SettingsBridge.form-url-edited(t); }
+                        }
+                        if SettingsBridge.form-is-lan: VerticalLayout {
+                            padding-bottom: 7px;
+                            Caption { text: Loc.t("Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        FormSection {
+                            FieldRow {
+                                label: Loc.t("API anahtarı");
+                                password: true;
+                                text <=> SettingsBridge.form-key;
+                                placeholder: SettingsBridge.form-key-placeholder;
+                                edited(t) => { SettingsBridge.form-key-edited(t); }
+                            }
+                            if SettingsBridge.form-key-note != "": HorizontalLayout {
+                                padding-bottom: 7px;
+                                spacing: 8px;
+                                Caption {
+                                    text: SettingsBridge.form-key-note;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                if SettingsBridge.form-can-remove-key: PushButton {
+                                    small: true;
+                                    label: Loc.t("Kayıtlı anahtarı sil");
+                                    clicked => { SettingsBridge.form-remove-key(); }
+                                }
+                            }
+                            VerticalLayout {
+                                padding-bottom: 7px;
+                                Caption { text: Loc.t("API anahtarı bu Mac'te şifrelenmiş olarak saklanır."); }
+                            }
+                            RowSeparator { }
+                            HorizontalLayout {
+                                padding-top: 7px;
+                                padding-bottom: 7px;
+                                spacing: 4px;
+                                Text {
+                                    text: Loc.t("Model");
+                                    font-size: MacTheme.body-size;
+                                    color: MacTheme.label;
+                                    vertical-alignment: center;
+                                    min-width: 110px;
+                                }
+                                MacField {
+                                    horizontal-stretch: 1;
+                                    text <=> SettingsBridge.form-model;
+                                    placeholder: Loc.t("Model seçin veya yazın (örn. glm-5, gpt-4o-mini)");
+                                    accessible-name: Loc.t("Model");
+                                    edited(t) => { SettingsBridge.form-model-edited(t); }
+                                }
+                                ModelsMenu {
+                                    models: SettingsBridge.form-model-items;
+                                    refresh-enabled: SettingsBridge.form-can-test;
+                                    chosen(m) => {
+                                        SettingsBridge.form-model = m;
+                                        SettingsBridge.form-model-edited(m);
+                                    }
+                                    refresh => { SettingsBridge.form-test(); }
+                                }
+                            }
+                            VerticalLayout {
+                                padding-bottom: 7px;
+                                Caption { text: Loc.t("Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır."); }
+                            }
+                            RowSeparator { }
+                            FormRow {
+                                label: Loc.t("Asenkron çeviri");
+                                MacSwitch {
+                                    checked: SettingsBridge.form-async;
+                                    accessible-name: Loc.t("Asenkron çeviri");
+                                    toggled(v) => { SettingsBridge.form-async-toggled(v); }
+                                }
+                            }
+                            VerticalLayout {
+                                padding-bottom: 7px;
+                                Caption { text: Loc.t("Açıkken konuşma metne dökülürken aynı anda arka planda çeviri yapılır."); }
+                            }
+                        }
+                        VerticalLayout {
+                            padding-left: 10px;
+                            spacing: 4px;
+                            if SettingsBridge.form-key-not-stored: NoticeLabel {
+                                text: Loc.t("API anahtarı kaydedilemedi. Yeniden girip tekrar dene.");
+                                error: true;
+                            }
+                            if SettingsBridge.form-notice-text != "": NoticeLabel {
+                                text: SettingsBridge.form-notice-text;
+                                error: SettingsBridge.form-notice-error;
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { height: 1px; background: MacTheme.separator; }
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 8px;
+                PushButton {
+                    label: Loc.t("Bağlantıyı test et");
+                    enabled: SettingsBridge.form-can-test;
+                    clicked => { SettingsBridge.form-test(); }
+                }
+                if SettingsBridge.form-testing: SmallSpinner { width: 16px; height: 16px; }
+                Rectangle { horizontal-stretch: 1; }
+                PushButton {
+                    label: Loc.t("Vazgeç");
+                    clicked => { SettingsBridge.form-cancel(); }
+                }
+                PushButton {
+                    prominent: true;
+                    label: SettingsBridge.form-is-new ? Loc.t("Kaydet ve Etkinleştir") : Loc.t("Güncelle");
+                    enabled: SettingsBridge.form-can-save;
+                    clicked => { SettingsBridge.form-save(); }
+                }
+            }
+        }
+    }
+}
+
+// NSAlert sheet (macOS 11+ layout): app icon, bold title, informative text, vertically stacked buttons.
+export component AlertSheet inherits SheetFrame {
+    sheet-width: 260px;
+    sheet-height: content.preferred-height;
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                SettingsBridge.confirm-dismissed();
+                return accept;
+            }
+            return reject;
+        }
+        content := VerticalLayout {
+            padding: 16px;
+            padding-top: 20px;
+            spacing: 10px;
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 54px;
+                    height: 54px;
+                    border-radius: 12px;
+                    background: @linear-gradient(135deg, #3a7bd5 0%, #6a4fd8 100%);
+                    Sym { name: "captions.bubble"; size: 28px; tint: white; }
+                }
+            }
+            Text {
+                text: SettingsBridge.confirm-title;
+                font-size: 13px;
+                font-weight: 700;
+                color: MacTheme.label;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Text {
+                text: SettingsBridge.confirm-message;
+                font-size: 11px;
+                color: MacTheme.label;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            VerticalLayout {
+                padding-top: 6px;
+                spacing: 8px;
+                PushButton {
+                    destructive: true;
+                    label: SettingsBridge.confirm-primary;
+                    clicked => { SettingsBridge.confirm-accepted(); }
+                }
+                PushButton {
+                    label: Loc.t("Vazgeç");
+                    clicked => { SettingsBridge.confirm-dismissed(); }
+                }
+            }
+        }
+    }
+}

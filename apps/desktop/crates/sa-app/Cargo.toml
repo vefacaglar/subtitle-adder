@@ -1,0 +1,56 @@
+[package]
+name = "sa-app"
+description = "Subtitle Adder desktop app: Slint UI (fluent on Windows, cupertino on macOS) and wiring."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lib]
+name = "sa_app"
+path = "src/lib.rs"
+
+# The app binary. Windows: `SubtitleAdder.exe` (registry + process-name contract, win-ui-main §3).
+# macOS packaging renames it to `SubtitleAdderApp` (CFBundleExecutable, mac-ui §13.3).
+[[bin]]
+name = "SubtitleAdder"
+path = "src/main.rs"
+
+# Renders UI screens to PNG with the software renderer (no window), for look checks on any machine.
+[[bin]]
+name = "sa-shot"
+path = "src/bin/sa_shot.rs"
+
+[features]
+default = []
+# Embed every platform's catalogs (needed by sa-shot when rendering the other platform's UI tree).
+all-catalogs = ["sa-core/all-catalogs"]
+
+[dependencies]
+sa-core.workspace = true
+sa-enginekit.workspace = true
+sa-profiles.workspace = true
+sa-sync.workspace = true
+sa-media.workspace = true
+sa-providers.workspace = true
+sa-viewmodels.workspace = true
+sa-player = { workspace = true, features = ["ffmpeg"] }
+sa-platform.workspace = true
+slint.workspace = true
+rfd.workspace = true
+image.workspace = true
+parking_lot.workspace = true
+# ui-settings: provider ids, zeroized key buffers.
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# ui-main: the main-window wiring tests reuse the view-model fakes (`../sa-viewmodels/tests/common`).
+tempfile.workspace = true
+crossbeam-channel.workspace = true
+sa-core = { workspace = true, features = ["all-catalogs"] }
+
+[build-dependencies]
+slint-build.workspace = true

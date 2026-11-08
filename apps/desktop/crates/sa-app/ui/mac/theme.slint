@@ -1,0 +1,54 @@
+// macOS look (mac-ui §14): AppKit semantic colors (read live from NSColor by Rust on macOS and pushed here; these
+// are the documented light/dark fallbacks), SF Pro via the system font, SF Symbols rasterized by Rust.
+import { Palette } from "std-widgets.slint";
+
+export global MacTheme {
+    // Follows `Palette.color-scheme` (Rust sets it from `appTheme`; System = NSApp effective appearance).
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+
+    in-out property <brush> window-background: dark ? #323232 : #ececec;
+    in-out property <brush> content-background: dark ? #1e1e1e : #ffffff;
+    in-out property <brush> control-background: dark ? #1e1e1e : #ffffff;
+    in-out property <brush> sidebar-background: dark ? #2a2a2c : #e8e6e8;
+    in-out property <brush> toolbar-background: dark ? #2b2b2d : #f4f3f4;
+    in-out property <brush> separator: dark ? #ffffff1a : #0000001a;
+    in-out property <brush> label: dark ? #ffffffd9 : #000000d9;
+    in-out property <brush> secondary-label: dark ? #ffffff8c : #00000080;
+    in-out property <brush> tertiary-label: dark ? #ffffff40 : #00000042;
+    in-out property <brush> quaternary-label: dark ? #ffffff1a : #0000001a;
+    in-out property <brush> quaternary-fill: dark ? #ffffff0d : #0000000d;
+    in-out property <brush> control-accent: dark ? #0a84ff : #007aff;
+    in-out property <brush> hover-fill: dark ? #ffffff14 : #0000000f;
+    // Push buttons / pop-ups (bordered, regular).
+    in-out property <brush> button-background: dark ? #ffffff26 : #ffffff;
+    in-out property <brush> button-border: dark ? #ffffff1a : #00000026;
+    in-out property <brush> button-pressed: dark ? #ffffff3a : #e6e6e6;
+    // Menus / popovers (regular material fallbacks).
+    in-out property <brush> menu-background: dark ? #282828f2 : #f6f6f6f2;
+    in-out property <brush> menu-border: dark ? #ffffff26 : #00000026;
+    in-out property <brush> tooltip-background: dark ? #3a3a3c : #f5f5f5;
+    // Unemphasized selection (list not focused).
+    in-out property <brush> unemphasized-selection: dark ? #464646 : #dcdcdc;
+
+    // System colors.
+    in-out property <brush> system-red: dark ? #ff453a : #ff3b30;
+    in-out property <brush> system-orange: dark ? #ff9f0a : #ff9500;
+    in-out property <brush> system-yellow: dark ? #ffd60a : #ffcc00;
+    in-out property <brush> system-green: dark ? #32d74b : #28cd41;
+    in-out property <brush> system-pink: dark ? #ff375f : #ff2d55;
+
+    // Metrics (points).
+    out property <length> toolbar-height: 52px;
+    // Space for the traffic lights in the unified title bar.
+    out property <length> traffic-light-reserve: 78px;
+    out property <length> sidebar-min: 220px;
+    out property <length> sidebar-ideal: 260px;
+    out property <length> sidebar-max: 420px;
+    out property <length> detail-min: 600px;
+    out property <length> callout-size: 12px;
+    out property <length> body-size: 13px;
+    out property <length> caption-size: 10px;
+    out property <length> title2-size: 17px;
+    out property <length> title3-size: 15px;
+    out property <length> small-size: 11px;
+}

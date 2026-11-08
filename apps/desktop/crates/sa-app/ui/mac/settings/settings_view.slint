@@ -1,0 +1,139 @@
+// Preferences-style window content (mac-ui §3.5, §11): toolbar tab bar (icon above label, centered, selected tab on
+// a rounded gray background) with Genel / Çeviri / Görünüm / Modeller (`settingsTab`), the selected tab's grouped
+// form inside the standard 20 pt scene padding, and the sheets (provider editor, confirmations).
+import { ScrollView } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge, Symbols } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { GeneralTab } from "general_tab.slint";
+import { TranslationTab } from "translation_tab.slint";
+import { AppearanceTab } from "appearance_tab.slint";
+import { ModelsTab } from "models_tab.slint";
+import { ProviderEditorSheet, AlertSheet } from "sheets.slint";
+
+component PrefTab inherits Rectangle {
+    in property <string> symbol;
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+    width: max(64px, lbl.preferred-width + 16px);
+    height: 50px;
+    border-radius: 6px;
+    background: root.selected ? MacTheme.hover-fill : touch.pressed ? MacTheme.quaternary-fill : transparent;
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selected: root.selected;
+    VerticalLayout {
+        alignment: center;
+        spacing: 3px;
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                width: 22px;
+                height: 22px;
+                source: Symbols.image(root.symbol, 22px);
+                colorize: root.selected ? MacTheme.control-accent : MacTheme.secondary-label;
+                image-fit: contain;
+            }
+        }
+        lbl := Text {
+            text: root.label;
+            font-size: 11px;
+            color: root.selected ? MacTheme.control-accent : MacTheme.secondary-label;
+            horizontal-alignment: center;
+        }
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component SettingsView inherits Rectangle {
+    VerticalLayout {
+        // Unified title bar + toolbar.
+        Rectangle {
+            background: MacTheme.toolbar-background;
+            VerticalLayout {
+                if SettingsBridge.draws-title-bar: Rectangle {
+                    height: 28px;
+                    // Stand-in traffic lights (a real Mac draws them; close only is enabled).
+                    HorizontalLayout {
+                        x: 9px;
+                        y: (28px - 12px) / 2;
+                        width: 52px;
+                        height: 12px;
+                        spacing: 8px;
+                        Rectangle { width: 12px; height: 12px; border-radius: 6px; background: #ff5f57; }
+                        Rectangle { width: 12px; height: 12px; border-radius: 6px; background: MacTheme.dark ? #ffffff26 : #0000001f; }
+                        Rectangle { width: 12px; height: 12px; border-radius: 6px; background: MacTheme.dark ? #ffffff26 : #0000001f; }
+                    }
+                    Text {
+                        text: SettingsBridge.page == 1 ? Loc.t("Çeviri") : SettingsBridge.page == 2 ? Loc.t("Görünüm") : SettingsBridge.page == 3 ? Loc.t("Modeller") : Loc.t("Genel");
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: MacTheme.label;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    padding-top: 2px;
+                    padding-bottom: 6px;
+                    spacing: 2px;
+                    PrefTab {
+                        symbol: "gearshape";
+                        label: Loc.t("Genel");
+                        selected: SettingsBridge.page == 0;
+                        clicked => { SettingsBridge.page-selected(0); }
+                    }
+                    PrefTab {
+                        symbol: "translate";
+                        label: Loc.t("Çeviri");
+                        selected: SettingsBridge.page == 1;
+                        clicked => { SettingsBridge.page-selected(1); }
+                    }
+                    PrefTab {
+                        symbol: "paintbrush";
+                        label: Loc.t("Görünüm");
+                        selected: SettingsBridge.page == 2;
+                        clicked => { SettingsBridge.page-selected(2); }
+                    }
+                    PrefTab {
+                        symbol: "square.stack.3d.up";
+                        label: Loc.t("Modeller");
+                        selected: SettingsBridge.page == 3;
+                        clicked => { SettingsBridge.page-selected(3); }
+                    }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: MacTheme.separator; }
+        // Grouped form of the selected tab (20 pt scene padding).
+        scroller := ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            content-height: body.preferred-height;
+            body := VerticalLayout {
+                width: scroller.visible-width;
+                padding: 20px;
+                if SettingsBridge.page == 0: GeneralTab { }
+                if SettingsBridge.page == 1: TranslationTab { }
+                if SettingsBridge.page == 2: AppearanceTab { }
+                if SettingsBridge.page == 3: ModelsTab { }
+            }
+        }
+    }
+
+    property <int> epoch: SettingsBridge.scroll-epoch;
+    changed epoch => {
+        scroller.content-y = 0;
+    }
+
+    if SettingsBridge.form-open: ProviderEditorSheet {
+        width: root.width;
+        height: root.height;
+    }
+    if SettingsBridge.confirm-open: AlertSheet {
+        width: root.width;
+        height: root.height;
+    }
+}

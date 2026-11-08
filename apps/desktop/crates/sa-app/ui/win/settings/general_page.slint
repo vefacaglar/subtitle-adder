@@ -1,0 +1,290 @@
+// Settings ▸ Genel (win-ui-hub-settings §6.2): Dil, Altyazı ve çeviri, Konuşmacılar, Harici LLM sunucusu (Yerel ağ),
+// translation providers (§7), Medya oynatıcı (auto play, encrypted video cache, file associations), Gizlilik.
+import { Button, Switch, LineEdit, SpinBox } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { SettingsBridge } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { SettingsCard, CardFrame, CardCombo, SectionHeader, SecondaryText, InfoBar, GlyphButton, EditableCombo, Glyph } from "controls.slint";
+import { ProvidersSection } from "providers_section.slint";
+
+// ToggleSwitch without On/Off text.
+component CardSwitch inherits Switch {
+    text: "";
+}
+
+export component GeneralPage inherits VerticalLayout {
+    spacing: 4px;
+
+    SectionHeader { text: Loc.t("Dil"); first: true; }
+    SettingsCard {
+        glyph: "\u{F2B7}";
+        title: Loc.t("Arayüz dili");
+        caption: Loc.t("Menüler ve sistem diyalogları uygulama yeniden açılınca güncellenir.");
+        CardCombo {
+            model: SettingsBridge.ui-language-items;
+            current-index <=> SettingsBridge.ui-language-index;
+            accessible-label: Loc.t("Arayüz dili");
+            selected => { SettingsBridge.ui-language-selected(self.current-index); }
+        }
+    }
+
+    SectionHeader { text: Loc.t("Altyazı ve çeviri"); }
+    SettingsCard {
+        glyph: "\u{E720}";
+        title: Loc.t("Konuşma dili");
+        CardCombo {
+            model: SettingsBridge.speech-language-items;
+            current-index <=> SettingsBridge.speech-language-index;
+            accessible-label: Loc.t("Konuşma dili");
+            selected => { SettingsBridge.speech-language-selected(self.current-index); }
+        }
+    }
+    SettingsCard {
+        glyph: "\u{E7F0}";
+        title: Loc.t("Altyazı modeli");
+        caption: Loc.t("Daha doğru modeller daha yavaştır; ilk kullanımda indirilir.");
+        CardCombo {
+            model: SettingsBridge.model-items;
+            current-index <=> SettingsBridge.model-index;
+            enabled: SettingsBridge.model-enabled;
+            accessible-label: Loc.t("Altyazı modeli");
+            selected => { SettingsBridge.model-selected(self.current-index); }
+        }
+    }
+    SettingsCard {
+        glyph: "\u{E8C1}";
+        title: Loc.t("Varsayılan çeviri modeli");
+        caption: Loc.t("“Çevir…” düğmesi bu modeli kullanır; seçim sonraki açılışlarda da korunur.");
+        CardCombo {
+            model: SettingsBridge.translation-model-items;
+            current-index <=> SettingsBridge.translation-model-index;
+            enabled: SettingsBridge.translation-model-enabled;
+            accessible-label: Loc.t("Varsayılan çeviri modeli");
+            selected => { SettingsBridge.translation-model-selected(self.current-index); }
+        }
+    }
+
+    SectionHeader { text: Loc.t("Konuşmacılar"); }
+    SettingsCard {
+        glyph: "\u{E716}";
+        title: Loc.t("Konuşmacıları ayır");
+        caption: Loc.t("Videoda birden çok kişi konuşuyorsa kimin ne dediğini ayır; ilk kullanımda küçük bir model indirilir.");
+        CardSwitch {
+            checked <=> SettingsBridge.diarize;
+            accessible-label: Loc.t("Konuşmacıları ayır");
+            toggled => { SettingsBridge.diarize-toggled(self.checked); }
+        }
+    }
+    SettingsCard {
+        sub: true;
+        title: Loc.t("Konuşmacı sayısı");
+        CardCombo {
+            model: SettingsBridge.speaker-count-items;
+            current-index <=> SettingsBridge.speaker-count-index;
+            enabled: SettingsBridge.diarize;
+            accessible-label: Loc.t("Konuşmacı sayısı");
+            selected => { SettingsBridge.speaker-count-selected(self.current-index); }
+        }
+    }
+
+    SectionHeader { text: Loc.t("Harici LLM sunucusu (Yerel ağ)"); }
+    SettingsCard {
+        glyph: "\u{E968}";
+        title: Loc.t("Ağdaki başka bir cihazın LLM sunucusunu kullan");
+        caption: Loc.t("Çeviriyi yerel ağdaki başka bir bilgisayara veya Mac'e (LM Studio, Ollama, llama-server) yaptırır.");
+        CardSwitch {
+            checked <=> SettingsBridge.lan-enabled;
+            accessible-label: Loc.t("Ağdaki başka bir cihazın LLM sunucusunu kullan");
+            toggled => { SettingsBridge.lan-toggled(self.checked); }
+        }
+    }
+    CardFrame {
+        VerticalLayout {
+            padding-left: 16px + 34px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 12px;
+            spacing: 8px;
+            Text {
+                text: Loc.t("Sunucu adresi (IP ve port)");
+                font-size: Theme.body-size;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                LineEdit {
+                    horizontal-stretch: 1;
+                    text <=> SettingsBridge.lan-url;
+                    placeholder-text: "http://192.168.1.50:11434";
+                    enabled: SettingsBridge.lan-enabled;
+                    accessible-label: Loc.t("Sunucu adresi (IP ve port)");
+                    edited(t) => { SettingsBridge.lan-url-edited(t); }
+                }
+                GlyphButton {
+                    glyph: "\u{E895}";
+                    label: Loc.t("Bağlantıyı test et");
+                    enabled: SettingsBridge.lan-enabled && !SettingsBridge.lan-busy;
+                    clicked => { SettingsBridge.lan-test(); }
+                }
+            }
+            SecondaryText { text: Loc.t("Örn. LM Studio için 192.168.1.50:1234, Ollama için 192.168.1.50:11434"); }
+            InfoBar {
+                open: SettingsBridge.lan-test-open;
+                severity: SettingsBridge.lan-test-success ? 1 : 2;
+                message: SettingsBridge.lan-test-text;
+                closed => { SettingsBridge.lan-test-closed(); }
+            }
+        }
+    }
+    CardFrame {
+        VerticalLayout {
+            padding-left: 16px + 34px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 12px;
+            spacing: 8px;
+            Text {
+                text: Loc.t("Uzak model adı (isteğe bağlı)");
+                font-size: Theme.body-size;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                EditableCombo {
+                    horizontal-stretch: 1;
+                    model: SettingsBridge.lan-models;
+                    text <=> SettingsBridge.lan-model;
+                    placeholder: "gemma4:e4b";
+                    enabled: SettingsBridge.lan-enabled;
+                    accessible-name: Loc.t("Uzak model adı (isteğe bağlı)");
+                    committed(t) => { SettingsBridge.lan-model-committed(t); }
+                }
+                GlyphButton {
+                    glyph: "\u{E72C}";
+                    label: "";
+                    tooltip: Loc.t("Uzaktaki modelleri listele");
+                    enabled: SettingsBridge.lan-enabled && !SettingsBridge.lan-busy;
+                    clicked => { SettingsBridge.lan-refresh-models(); }
+                }
+            }
+            SecondaryText { text: Loc.t("Boş bırakılırsa sunucuda yüklü olan ilk model otomatik algılanır."); }
+        }
+    }
+    SettingsCard {
+        sub: true;
+        title: Loc.t("Asenkron çeviri (Sadece harici LLM ile)");
+        caption: Loc.t("Açıkken bu bilgisayar konuşmayı metne dökerken harici cihaz aynı anda çeviri yapar; kapalıyken sıralı çevrilir.");
+        CardSwitch {
+            checked <=> SettingsBridge.lan-async;
+            enabled: SettingsBridge.lan-enabled;
+            accessible-label: Loc.t("Asenkron çeviri (Sadece harici LLM ile)");
+            toggled => { SettingsBridge.lan-async-toggled(self.checked); }
+        }
+    }
+
+    ProvidersSection { }
+
+    SectionHeader { text: Loc.t("Medya oynatıcı"); }
+    SettingsCard {
+        glyph: "\u{E768}";
+        title: Loc.t("Video açıldığında otomatik oynat");
+        caption: Loc.t("Bir video seçildiğinde veya çift tıklanarak açıldığında oynatmayı hemen başlatır.");
+        CardSwitch {
+            checked <=> SettingsBridge.auto-play;
+            accessible-label: Loc.t("Video açıldığında otomatik oynat");
+            toggled => { SettingsBridge.auto-play-toggled(self.checked); }
+        }
+    }
+    SettingsCard {
+        glyph: "\u{EDA2}";
+        title: Loc.t("Şifreli video önbelleği (HDD koruma)");
+        caption: Loc.t("Videoları HDD'yi yormadan oynatmak ve ileri-geri sarmada anında açmak için seçili profil anahtarıyla şifrelenmiş olarak SSD/bellekte saklar.");
+        detail: SettingsBridge.cache-usage-text;
+        SpinBox {
+            width: 120px;
+            minimum: 1;
+            maximum: 500;
+            step-size: 5;
+            value <=> SettingsBridge.cache-gb;
+            accessible-label: Loc.t("Şifreli video önbelleği (HDD koruma)");
+            edited(v) => { SettingsBridge.cache-gb-edited(v); }
+        }
+        Text {
+            text: "GB";
+            opacity: 0.75;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+        }
+        Rectangle { width: 4px; }
+        Button {
+            text: Loc.t("Önbelleği temizle");
+            enabled: SettingsBridge.clear-cache-enabled;
+            clicked => { SettingsBridge.clear-cache(); }
+        }
+    }
+    CardFrame {
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 12px;
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 16px;
+                Glyph {
+                    glyph: "\u{E714}";
+                    font-size: 18px;
+                    width: 20px;
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: Loc.t("Varsayılan video oynatıcı ve dosya ilişkilendirme");
+                        font-size: Theme.body-size;
+                        color: Theme.text-primary;
+                        wrap: word-wrap;
+                    }
+                    SecondaryText { text: Loc.t("Videolara çift tıkladığında doğrudan Subtitle Adder ile açılması için dosya türlerini Windows'a kaydeder."); }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: SettingsBridge.associations-registered ? Loc.t("Kaydı kaldır") : Loc.t("Dosya türlerini kaydet");
+                            clicked => { SettingsBridge.associations-toggle(); }
+                        }
+                        Button {
+                            text: Loc.t("Varsayılan uygulamalar…");
+                            clicked => { SettingsBridge.default-apps(); }
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 34px;
+                InfoBar {
+                    open: SettingsBridge.associations-bar-open;
+                    severity: SettingsBridge.associations-bar-severity;
+                    message: SettingsBridge.associations-bar-text;
+                    closed => { SettingsBridge.associations-bar-closed(); }
+                }
+            }
+        }
+    }
+
+    SectionHeader { text: Loc.t("Gizlilik"); }
+    SettingsCard {
+        glyph: "\u{E709}";
+        title: Loc.t("Çevrimdışı mod");
+        caption: Loc.t("Açıkken internete hiç bağlanılmaz ve eksik modeller indirilmez. Ses ve metin hiçbir durumda dışarı gönderilmez.");
+        CardSwitch {
+            checked <=> SettingsBridge.offline;
+            accessible-label: Loc.t("Çevrimdışı mod");
+            toggled => { SettingsBridge.offline-toggled(self.checked); }
+        }
+    }
+}

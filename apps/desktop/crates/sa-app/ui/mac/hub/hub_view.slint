@@ -1,0 +1,345 @@
+// PlatformView, the Platform workspace (mac-ui §9.1–§9.5): header (search bar + profile actions, side by side when
+// they fit, else stacked), filter pills, lists bar (logged in) with rename popover and context menu, divider,
+// content (auth card | spinner | empty state | cards). Confirmations (clear history, delete list) are NSAlert
+// sheets shown by Rust. Rule 6: logged out every tab shows the sign-in card; the search field and "Ara" are disabled.
+import { LineEdit, ScrollView, ListView, Spinner } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge, MainBridge } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, PushButton, ToolTip } from "../main/controls.slint";
+import { PillButton, IconButton, ErrorLabel, PopoverSurface, HubMacMenu } from "hub_controls.slint";
+import { ProfileAuthCard } from "auth_form.slint";
+import { VideoCard } from "video_card.slint";
+
+component SearchBar inherits HorizontalLayout {
+    property <int> reset: HubBridge.search-reset-epoch;
+    changed reset => { field.text = ""; }
+    spacing: 8px;
+    Rectangle {
+        min-width: 200px;
+        horizontal-stretch: 1;
+        height: field.preferred-height;
+        field := LineEdit {
+            width: parent.width;
+            enabled: HubBridge.search-enabled;
+            placeholder-text: HubBridge.filter == 0 || !HubBridge.is-logged-in
+                ? Loc.t("İndekslenen tüm videolarda ara (yazıp Enter'a basın)…")
+                : Loc.t("Bu listede ara (yazıp Enter'a basın)…");
+            accepted => { HubBridge.search-submitted(self.text); }
+            edited => {
+                if (self.text == "") {
+                    HubBridge.search-edited("");
+                }
+            }
+        }
+        if field.text != "": IconButton {
+            x: parent.width - self.width - 6px;
+            y: (parent.height - self.height) / 2;
+            symbol: "xmark.circle.fill";
+            size: 13px;
+            tooltip: Loc.t("Aramayı temizle");
+            clicked => {
+                field.text = "";
+                HubBridge.clear-search();
+            }
+        }
+    }
+    PushButton {
+        symbol: "magnifyingglass";
+        label: Loc.t("Ara");
+        prominent: true;
+        enabled: HubBridge.search-enabled;
+        clicked => { HubBridge.search-submitted(field.text); }
+    }
+}
+
+component ProfileActions inherits HorizontalLayout {
+    spacing: 10px;
+    alignment: start;
+    if HubBridge.is-logged-in: Text {
+        text: HubBridge.current-username + " · " + HubBridge.summary-text;
+        font-size: MacTheme.callout-size;
+        color: MacTheme.secondary-label;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    if HubBridge.can-clear-history: PushButton {
+        label: Loc.t("Geçmişi temizle");
+        clicked => { HubBridge.clear-history(); }
+    }
+    if HubBridge.is-logged-in: PushButton {
+        label: Loc.t("Çıkış yap");
+        clicked => { HubBridge.logout(); }
+    }
+    if !HubBridge.is-logged-in: PushButton {
+        label: Loc.t("Giriş yap / Profil oluştur");
+        clicked => { HubBridge.sign-in-requested(); }
+    }
+}
+
+component RenamePopover inherits PopupWindow {
+    close-policy: close-on-click-outside;
+    property <int> done: HubBridge.rename-done-epoch;
+    changed done => { root.close(); }
+    PopoverSurface {
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+            Text {
+                text: Loc.t("Listeyi yeniden adlandır");
+                font-size: MacTheme.body-size;
+                font-weight: 600;
+                color: MacTheme.label;
+            }
+            // The content is created when the popover opens: it starts with the list's current name.
+            field := LineEdit {
+                width: 240px;
+                text: HubBridge.rename-initial;
+                placeholder-text: Loc.t("Yeni liste adı…");
+                accepted => { HubBridge.list-rename(HubBridge.rename-list-id, self.text); }
+                edited => { HubBridge.clear-list-error(); }
+            }
+            if HubBridge.rename-error != "": ErrorLabel {
+                width: 240px;
+                text: HubBridge.rename-error;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Rectangle { horizontal-stretch: 1; }
+                PushButton {
+                    label: Loc.t("Vazgeç");
+                    clicked => {
+                        HubBridge.clear-list-error();
+                        root.close();
+                    }
+                }
+                PushButton {
+                    label: Loc.t("Yeniden adlandır");
+                    prominent: true;
+                    clicked => { HubBridge.list-rename(HubBridge.rename-list-id, field.text); }
+                }
+            }
+        }
+    }
+}
+
+component ListsBar inherits VerticalLayout {
+    property <int> reset: HubBridge.new-list-reset-epoch;
+    changed reset => { name.text = ""; }
+    property <int> rename-open: HubBridge.rename-open-epoch;
+    changed rename-open => { rename.show(); }
+    property <length> menu-x;
+    property <length> menu-y;
+    spacing: 6px;
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: Loc.t("Listelerim:");
+            font-size: MacTheme.callout-size;
+            color: MacTheme.secondary-label;
+            vertical-alignment: center;
+        }
+        if HubBridge.lists.length == 0: Text {
+            horizontal-stretch: 1;
+            text: Loc.t("Henüz özel liste oluşturulmadı");
+            font-size: MacTheme.callout-size;
+            color: MacTheme.tertiary-label;
+            vertical-alignment: center;
+        }
+        if HubBridge.lists.length > 0: Flickable {
+            horizontal-stretch: 1;
+            height: pills.preferred-height;
+            content-width: max(self.width, pills.preferred-width);
+            pills := HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                padding-top: 1px;
+                padding-bottom: 1px;
+                for list in HubBridge.lists: HorizontalLayout {
+                    spacing: 2px;
+                    Rectangle {
+                        width: pill.preferred-width;
+                        height: pill.preferred-height;
+                        pill := PillButton {
+                            width: parent.width;
+                            height: parent.height;
+                            label: list.title;
+                            selected: list.selected;
+                            clicked => { HubBridge.list-selected(list.id); }
+                        }
+                        // Right click: context menu (Yeniden adlandır / Listeyi sil); the popover hangs below the pill.
+                        TouchArea {
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                                    root.menu-x = pill.absolute-position.x - root.absolute-position.x + self.mouse-x;
+                                    root.menu-y = pill.absolute-position.y - root.absolute-position.y + self.mouse-y;
+                                    HubBridge.menu-requested("list:" + list.id);
+                                    menu.show();
+                                }
+                            }
+                            clicked => { HubBridge.list-selected(list.id); }
+                        }
+                    }
+                    if list.selected: IconButton {
+                        y: (parent.height - self.height) / 2;
+                        symbol: "xmark.circle.fill";
+                        size: 13px;
+                        tooltip: Loc.t("Listeyi sil");
+                        clicked => { HubBridge.list-delete(list.id); }
+                    }
+                }
+            }
+        }
+        name := LineEdit {
+            width: 170px;
+            font-size: MacTheme.small-size;
+            placeholder-text: Loc.t("Yeni liste adı…");
+            accepted => { HubBridge.list-create(self.text); }
+            edited => { HubBridge.clear-list-error(); }
+        }
+        PushButton {
+            label: Loc.t("+ Liste oluştur");
+            small: true;
+            y: (parent.height - self.height) / 2;
+            clicked => { HubBridge.list-create(name.text); }
+        }
+    }
+    if HubBridge.list-error != "": ErrorLabel {
+        text: HubBridge.list-error;
+    }
+    menu := HubMacMenu {
+        x: root.menu-x;
+        y: root.menu-y;
+        min-menu-width: 180px;
+    }
+    rename := RenamePopover {
+        x: root.menu-x;
+        y: root.menu-y + 26px;
+    }
+}
+
+export component HubView inherits Rectangle {
+    property <int> feed-epoch: HubBridge.feed-epoch;
+    changed feed-epoch => { feed.content-y = 0; }
+    // ViewThatFits: search bar and profile actions side by side when they fit.
+    // The window width Rust pushes (minus the sidebar) avoids a layout binding loop on the hub's own width.
+    property <bool> header-row: MainBridge.window-width - (MainBridge.show-file-explorer ? MacTheme.sidebar-ideal + 1px : 0) >= 760px;
+    background: MacTheme.content-background;
+
+    VerticalLayout {
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 12px;
+            spacing: 10px;
+            if root.header-row: HorizontalLayout {
+                spacing: 10px;
+                SearchBar { horizontal-stretch: 1; }
+                ProfileActions { }
+            }
+            if !root.header-row: VerticalLayout {
+                spacing: 8px;
+                SearchBar { }
+                ProfileActions { }
+            }
+            // Filter bar.
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                padding-top: 1px;
+                padding-bottom: 1px;
+                PillButton {
+                    label: Loc.t("Keşfet");
+                    selected: HubBridge.filter == 0;
+                    clicked => { HubBridge.filter-selected(0); }
+                }
+                PillButton {
+                    label: HubBridge.is-logged-in ? Loc.t1("İzleme geçmişi (%lld)", HubBridge.watched-count) : Loc.t("İzleme geçmişi");
+                    selected: HubBridge.filter == 1;
+                    clicked => { HubBridge.filter-selected(1); }
+                }
+                PillButton {
+                    label: HubBridge.is-logged-in ? Loc.t1("Favorilerim (%lld)", HubBridge.liked-count) : Loc.t("Favorilerim");
+                    selected: HubBridge.filter == 2;
+                    clicked => { HubBridge.filter-selected(2); }
+                }
+                PillButton {
+                    label: HubBridge.is-logged-in ? Loc.t1("Puan verdiklerim (%lld)", HubBridge.rated-count) : Loc.t("Puan verdiklerim");
+                    selected: HubBridge.filter == 3;
+                    clicked => { HubBridge.filter-selected(3); }
+                }
+                PillButton {
+                    label: Loc.t("En çok izlenenler");
+                    selected: HubBridge.filter == 4;
+                    clicked => { HubBridge.filter-selected(4); }
+                }
+            }
+            if HubBridge.is-logged-in: ListsBar { }
+        }
+        Rectangle { height: 1px; background: MacTheme.separator; }
+        // Content.
+        Rectangle {
+            vertical-stretch: 1;
+            if HubBridge.shows-auth-card: ScrollView {
+                VerticalLayout {
+                    padding: 32px;
+                    alignment: start;
+                    HorizontalLayout {
+                        alignment: center;
+                        ProfileAuthCard { }
+                    }
+                }
+            }
+            if !HubBridge.shows-auth-card && HubBridge.cards.length == 0 && HubBridge.shows-loading: Spinner {
+                width: 32px;
+                height: 32px;
+                indeterminate: true;
+            }
+            if !HubBridge.shows-auth-card && HubBridge.cards.length == 0 && !HubBridge.shows-loading: VerticalLayout {
+                alignment: center;
+                spacing: 8px;
+                padding: 24px;
+                HorizontalLayout {
+                    alignment: center;
+                    Sym {
+                        name: HubBridge.empty-symbol;
+                        size: 36px;
+                        tint: MacTheme.secondary-label;
+                    }
+                }
+                Text {
+                    text: HubBridge.empty-title;
+                    font-size: MacTheme.title2-size;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    color: MacTheme.label;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    Text {
+                        max-width: 420px;
+                        text: HubBridge.empty-hint;
+                        font-size: MacTheme.body-size;
+                        color: MacTheme.secondary-label;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            feed := ListView {
+                visible: !HubBridge.shows-auth-card && HubBridge.cards.length > 0;
+                for card[i] in HubBridge.cards: VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-top: i == 0 ? 16px : 5px;
+                    padding-bottom: i == HubBridge.cards.length - 1 ? 16px : 5px;
+                    VideoCard {
+                        card: card;
+                        index: i;
+                    }
+                }
+            }
+        }
+    }
+}

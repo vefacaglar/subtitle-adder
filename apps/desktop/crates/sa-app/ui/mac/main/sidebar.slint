@@ -1,0 +1,337 @@
+// File explorer sidebar (mac-ui §10): resizable 220–420 source list. Header: folder menu (quick locations), Geri /
+// Üst klasör / Yenile / Finder'da göster, search field; folder rows then media rows; placeholder; footer with spinner
+// and the status line. The sidebar background is the sidebar material color; true vibrancy (NSVisualEffectView
+// under the Slint surface) is optional polish.
+import { ListView } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { ExplorerBridge, MainBridge, AppBridge } from "../../shared/bridge.slint";
+import { ExplorerRowData } from "../../shared/main_types.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, ToolbarButton, MenuButton, MacMenu, ToolTip, SmallSpinner } from "controls.slint";
+
+component IconButton inherits Rectangle {
+    in property <string> symbol;
+    in property <string> title;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    opacity: root.enabled ? 1 : 0.4;
+    background: touch.pressed ? MacTheme.hover-fill.darker(0.4) : touch.has-hover && root.enabled ? MacTheme.hover-fill : transparent;
+    accessible-role: button;
+    accessible-label: root.title;
+    accessible-enabled: root.enabled;
+    Sym {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: root.symbol;
+        size: 13px;
+        tint: MacTheme.secondary-label;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    ToolTip {
+        text: root.title;
+        show: touch.has-hover;
+    }
+}
+
+component SidebarRow inherits Rectangle {
+    in property <int> index;
+    in property <ExplorerRowData> item;
+    callback context(length, length);
+    height: 28px;
+    border-radius: 6px;
+    background: root.item.is-active ? MacTheme.control-accent.with-alpha(0.18) : transparent;
+    accessible-role: button;
+    accessible-label: root.item.name;
+    accessible-value: root.item.detail;
+    touch := TouchArea {
+        clicked => { ExplorerBridge.row-clicked(root.index); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && (e.button == PointerEventButton.right || (e.button == PointerEventButton.left && e.modifiers.control))) {
+                ExplorerBridge.row-context(root.index);
+                MainBridge.menu-requested("explorer-row:" + root.index);
+                root.context(self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 8px;
+        Rectangle {
+            width: 18px;
+            Sym {
+                name: root.item.is-folder ? "folder.fill" : (root.item.is-audio ? "waveform" : "film");
+                size: 14px;
+                tint: root.item.is-folder || root.item.is-active ? MacTheme.control-accent : MacTheme.secondary-label;
+            }
+        }
+        if root.item.is-folder: Text {
+            text: root.item.name;
+            font-size: MacTheme.body-size;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+            color: MacTheme.label;
+        }
+        if root.item.is-folder: Sym {
+            y: (parent.height - self.height) / 2;
+            name: "chevron.right";
+            size: 9px;
+            tint: MacTheme.tertiary-label;
+        }
+        if !root.item.is-folder: VerticalLayout {
+            spacing: 1px;
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.name;
+                font-size: MacTheme.body-size;
+                font-weight: root.item.is-active ? 600 : 400;
+                overflow: elide;
+                color: MacTheme.label;
+            }
+            Text {
+                text: root.item.detail;
+                font-size: MacTheme.caption-size;
+                overflow: elide;
+                color: MacTheme.secondary-label;
+            }
+        }
+        if !root.item.is-folder && root.item.badge != "": Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: 15px;
+            border-radius: 7.5px;
+            background: MacTheme.quaternary-label;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                Text {
+                    text: root.item.badge;
+                    font-size: MacTheme.caption-size;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    color: MacTheme.secondary-label;
+                }
+            }
+            btouch := TouchArea { }
+            ToolTip {
+                text: Loc.t("Altyazı dosyası mevcut");
+                show: btouch.has-hover;
+            }
+        }
+    }
+    ToolTip {
+        text: root.item.path;
+        show: touch.has-hover && !touch.pressed;
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    // The sidebar extends under the unified title bar; its top strip holds the traffic lights and the toggle.
+    background: MacTheme.sidebar-background;
+    accessible-role: groupbox;
+    accessible-label: Loc.t("Dosya Gezgini");
+    property <length> menu-x;
+    property <length> menu-y;
+
+    TouchArea {
+        y: 0;
+        height: MacTheme.toolbar-height;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                AppBridge.drag-requested();
+            }
+        }
+        double-clicked => { AppBridge.title-double-clicked(); }
+    }
+
+    VerticalLayout {
+        // Title-bar strip: traffic lights (system) + the sidebar toggle at the trailing edge.
+        HorizontalLayout {
+            height: MacTheme.toolbar-height;
+            padding-right: 8px;
+            alignment: end;
+            ToolbarButton {
+                y: 12px;
+                symbol: "sidebar.left";
+                accessible-name: Loc.t("Kenar çubuğunu göster / gizle");
+                clicked => { MainBridge.file-explorer-toggled(false); }
+            }
+        }
+        // Header
+        VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 8px;
+            HorizontalLayout {
+                spacing: 2px;
+                MenuButton {
+                    horizontal-stretch: 1;
+                    menu-id: "explorer-quick";
+                    symbol: "folder";
+                    label: ExplorerBridge.current-folder;
+                    tooltip: ExplorerBridge.current-path;
+                    accessible-name: Loc.t("Hızlı konumlar");
+                    menu-width: 220px;
+                }
+                IconButton {
+                    y: 3px;
+                    symbol: "chevron.backward";
+                    title: Loc.t("Geri");
+                    enabled: ExplorerBridge.can-go-back;
+                    clicked => { ExplorerBridge.go-back(); }
+                }
+                IconButton {
+                    y: 3px;
+                    symbol: "arrow.up";
+                    title: Loc.t("Üst klasör");
+                    enabled: ExplorerBridge.can-go-up;
+                    clicked => { ExplorerBridge.go-up(); }
+                }
+                IconButton {
+                    y: 3px;
+                    symbol: "arrow.clockwise";
+                    title: Loc.t("Yenile");
+                    clicked => { ExplorerBridge.refresh(); }
+                }
+                IconButton {
+                    y: 3px;
+                    symbol: "arrow.up.right.square";
+                    title: Loc.t("Finder'da göster");
+                    enabled: ExplorerBridge.can-open-folder;
+                    clicked => { ExplorerBridge.open-folder(); }
+                }
+            }
+            // Rounded small search field with a clear button.
+            Rectangle {
+                height: 22px;
+                border-radius: 6px;
+                background: MacTheme.dark ? #ffffff14 : #00000012;
+                border-width: search.has-focus ? 2px : 0;
+                border-color: MacTheme.control-accent.with-alpha(0.5);
+                accessible-role: text-input;
+                accessible-label: Loc.t("Klasörde veya indekste ara…");
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 4px;
+                    spacing: 4px;
+                    Sym {
+                        y: (parent.height - self.height) / 2;
+                        name: "magnifyingglass";
+                        size: 11px;
+                        tint: MacTheme.secondary-label;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        search := TextInput {
+                            height: parent.height;
+                            vertical-alignment: center;
+                            single-line: true;
+                            font-size: MacTheme.small-size + 1px;
+                            color: MacTheme.label;
+                            text: ExplorerBridge.search-text;
+                            edited => { ExplorerBridge.search-edited(self.text); }
+                            changed has-focus => { MainBridge.editing-changed(self.has-focus); }
+                        }
+                        if search.text == "": Text {
+                            height: parent.height;
+                            vertical-alignment: center;
+                            text: Loc.t("Klasörde veya indekste ara…");
+                            font-size: MacTheme.small-size + 1px;
+                            color: MacTheme.tertiary-label;
+                        }
+                    }
+                    if search.text != "": Rectangle {
+                        width: 16px;
+                        accessible-role: button;
+                        accessible-label: Loc.t("Temizle");
+                        Sym {
+                            y: (parent.height - self.height) / 2;
+                            name: "xmark.circle.fill";
+                            size: 12px;
+                            tint: MacTheme.secondary-label;
+                        }
+                        TouchArea {
+                            clicked => {
+                                search.text = "";
+                                ExplorerBridge.search-edited("");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // List
+        Rectangle {
+            vertical-stretch: 1;
+            ListView {
+                for row[i] in ExplorerBridge.rows: HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    SidebarRow {
+                        index: i;
+                        item: row;
+                        context(mx, my) => {
+                            root.menu-x = self.absolute-position.x - root.absolute-position.x + mx;
+                            root.menu-y = self.absolute-position.y - root.absolute-position.y + my;
+                            rowmenu.show();
+                        }
+                    }
+                }
+            }
+            if ExplorerBridge.rows.length == 0 && !ExplorerBridge.is-scanning: VerticalLayout {
+                alignment: center;
+                spacing: 6px;
+                padding: 16px;
+                HorizontalLayout {
+                    alignment: center;
+                    Sym {
+                        name: ExplorerBridge.empty-symbol;
+                        size: 28px;
+                        tint: MacTheme.secondary-label;
+                    }
+                }
+                Text {
+                    text: ExplorerBridge.empty-text;
+                    font-size: MacTheme.callout-size;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    color: MacTheme.label;
+                }
+            }
+        }
+        Rectangle { height: 1px; background: MacTheme.separator; }
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 6px;
+            if ExplorerBridge.is-scanning: SmallSpinner { width: 12px; height: 12px; }
+            Text {
+                text: ExplorerBridge.status-text;
+                font-size: MacTheme.caption-size;
+                overflow: elide;
+                horizontal-stretch: 1;
+                color: MacTheme.secondary-label;
+            }
+        }
+    }
+
+    rowmenu := MacMenu {
+        x: root.menu-x;
+        y: root.menu-y;
+        min-menu-width: 200px;
+    }
+}

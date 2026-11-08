@@ -1,0 +1,312 @@
+// FileExplorerPane (win-ui-hub-settings §9): 280 px card; quick-locations drop-down + Back/Up/Refresh/Open, search,
+// folder rows then file rows, empty state, status line with a scanning ring. Rows and menus come from Rust.
+import { ListView, Spinner } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { ExplorerBridge, MainBridge } from "../../shared/bridge.slint";
+import { ExplorerRowData } from "../../shared/main_types.slint";
+import { Theme } from "../theme.slint";
+import { Glyph, ToolButton, MenuFlyout, ToolTip } from "controls.slint";
+
+component ExplorerRow inherits Rectangle {
+    in property <int> index;
+    in property <ExplorerRowData> item;
+    callback context(length, length);
+    min-height: root.item.is-folder ? 34px : 40px;
+    border-radius: Theme.control-radius;
+    background: touch.pressed ? Theme.subtle-pressed : touch.has-hover ? Theme.subtle-hover : transparent;
+    accessible-role: list-item;
+    accessible-label: root.item.accessible-label;
+    touch := TouchArea {
+        clicked => { ExplorerBridge.row-clicked(root.index); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                ExplorerBridge.row-context(root.index);
+                MainBridge.menu-requested("explorer-row:" + root.index);
+                root.context(self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+    HorizontalLayout {
+        padding: 4px;
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        if root.item.is-folder: Glyph {
+            glyph: "\u{E8B7}";
+            size: 15px;
+            color: Theme.accent-text;
+        }
+        if root.item.is-folder: Text {
+            text: root.item.name;
+            font-size: 13px;
+            font-weight: 500;
+            overflow: elide;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            color: Theme.text-primary;
+        }
+        if root.item.is-folder: Glyph {
+            glyph: "\u{E76C}";
+            size: 10px;
+            color: Theme.text-secondary;
+        }
+        if !root.item.is-folder: Glyph {
+            glyph: "\u{E714}";
+            size: 14px;
+            color: root.item.is-active ? Theme.accent-text : Theme.text-secondary;
+        }
+        if !root.item.is-folder: VerticalLayout {
+            spacing: 1px;
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.name;
+                font-size: 12.5px;
+                font-weight: root.item.is-active ? 600 : 400;
+                overflow: elide;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: root.item.detail;
+                font-size: 11px;
+                overflow: elide;
+                color: Theme.text-secondary;
+            }
+        }
+        if !root.item.is-folder && root.item.badge != "": Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: 18px;
+            border-radius: 4px;
+            background: Theme.subtle-hover;
+            border-width: 1px;
+            border-color: Theme.card-stroke;
+            HorizontalLayout {
+                padding-left: 5px;
+                padding-right: 5px;
+                Text {
+                    text: root.item.badge;
+                    font-size: 10px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    color: Theme.accent-text;
+                }
+            }
+            btouch := TouchArea { }
+            ToolTip {
+                text: Loc.t("Altyazı dosyası mevcut");
+                show: btouch.has-hover;
+            }
+        }
+    }
+    ToolTip {
+        text: root.item.path;
+        show: touch.has-hover && !touch.pressed;
+    }
+}
+
+export component ExplorerPane inherits Rectangle {
+    border-radius: 8px;
+    background: Theme.layer-fill;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+    accessible-role: groupbox;
+    accessible-label: Loc.t("Dosya Gezgini");
+    property <length> menu-x;
+    property <length> menu-y;
+
+    VerticalLayout {
+        // Top bar
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            padding-top: 8px;
+            padding-bottom: 6px;
+            spacing: 4px;
+            quick := Rectangle {
+                horizontal-stretch: 1;
+                min-height: 32px;
+                border-radius: Theme.control-radius;
+                border-width: 1px;
+                border-color: Theme.control-stroke;
+                background: qtouch.pressed ? Theme.control-fill-pressed : qtouch.has-hover ? Theme.control-fill-hover : Theme.control-fill;
+                accessible-role: combobox;
+                accessible-label: Loc.t("Hızlı konumlar");
+                accessible-value: ExplorerBridge.current-path;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 6px;
+                    Glyph { glyph: "\u{E8B7}"; size: 14px; color: Theme.text-primary; }
+                    Text {
+                        text: ExplorerBridge.current-folder;
+                        font-size: 13px;
+                        font-weight: 600;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        color: Theme.text-primary;
+                    }
+                    Glyph { glyph: "\u{E70D}"; size: 10px; color: Theme.text-secondary; }
+                }
+                qtouch := TouchArea {
+                    clicked => {
+                        MainBridge.menu-requested("explorer-quick");
+                        qmenu.show();
+                    }
+                }
+                ToolTip {
+                    text: ExplorerBridge.current-path != "" ? ExplorerBridge.current-path : Loc.t("Hızlı konumlar");
+                    show: qtouch.has-hover && !qtouch.pressed;
+                }
+                qmenu := MenuFlyout {
+                    x: 0;
+                    y: quick.height + 4px;
+                    min-menu-width: 240px;
+                }
+            }
+            HorizontalLayout {
+                spacing: 2px;
+                ToolButton {
+                    glyph: "\u{E72B}";
+                    glyph-size: 13px;
+                    subtle: true;
+                    pad-x: 7px;
+                    pad-y: 7px;
+                    enabled: ExplorerBridge.can-go-back;
+                    tooltip: Loc.t("Geri");
+                    clicked => { ExplorerBridge.go-back(); }
+                }
+                ToolButton {
+                    glyph: "\u{E74A}";
+                    glyph-size: 13px;
+                    subtle: true;
+                    pad-x: 7px;
+                    pad-y: 7px;
+                    enabled: ExplorerBridge.can-go-up;
+                    tooltip: Loc.t("Üst klasör");
+                    clicked => { ExplorerBridge.go-up(); }
+                }
+                ToolButton {
+                    glyph: "\u{E72C}";
+                    glyph-size: 13px;
+                    subtle: true;
+                    pad-x: 7px;
+                    pad-y: 7px;
+                    tooltip: Loc.t("Yenile");
+                    clicked => { ExplorerBridge.refresh(); }
+                }
+                ToolButton {
+                    glyph: "\u{E8DA}";
+                    glyph-size: 13px;
+                    subtle: true;
+                    pad-x: 7px;
+                    pad-y: 7px;
+                    enabled: ExplorerBridge.can-open-folder;
+                    tooltip: Loc.t("Dosya Gezgini'nde aç");
+                    clicked => { ExplorerBridge.open-folder(); }
+                }
+            }
+        }
+        // Search
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            padding-bottom: 6px;
+            Rectangle {
+                height: 32px;
+                border-radius: Theme.control-radius;
+                border-width: 1px;
+                border-color: Theme.control-stroke;
+                background: search.has-focus ? (Theme.dark ? #1e1e1eb3 : #ffffff) : Theme.control-fill;
+                accessible-role: text-input;
+                accessible-label: Loc.t("Klasörde veya SSD indeksinde ara…");
+                search := TextInput {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    single-line: true;
+                    font-size: 12.5px;
+                    color: Theme.text-primary;
+                    text: ExplorerBridge.search-text;
+                    edited => { ExplorerBridge.search-edited(self.text); }
+                    changed has-focus => { MainBridge.editing-changed(self.has-focus); }
+                }
+                if search.text == "": Text {
+                    x: 8px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    text: Loc.t("Klasörde veya SSD indeksinde ara…");
+                    font-size: 12.5px;
+                    color: Theme.text-tertiary;
+                }
+                if search.has-focus: Rectangle {
+                    y: parent.height - 2px;
+                    height: 2px;
+                    background: Theme.accent;
+                }
+            }
+        }
+        // Rows + empty state
+        Rectangle {
+            vertical-stretch: 1;
+            ListView {
+                for row[i] in ExplorerBridge.rows: VerticalLayout {
+                    padding-left: 4px;
+                    padding-right: 4px;
+                    padding-top: 1px;
+                    padding-bottom: 1px;
+                    ExplorerRow {
+                        index: i;
+                        item: row;
+                        context(mx, my) => {
+                            root.menu-x = self.absolute-position.x - root.absolute-position.x + mx;
+                            root.menu-y = self.absolute-position.y - root.absolute-position.y + my;
+                            rowmenu.show();
+                        }
+                    }
+                }
+            }
+            if ExplorerBridge.rows.length == 0 && !ExplorerBridge.is-scanning: VerticalLayout {
+                alignment: center;
+                spacing: 8px;
+                padding: 16px;
+                Glyph { glyph: "\u{E8B7}"; size: 28px; color: Theme.text-secondary; }
+                Text {
+                    text: ExplorerBridge.empty-text;
+                    font-size: 12.5px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    color: Theme.text-secondary;
+                }
+            }
+        }
+        // Status
+        Rectangle { height: 1px; background: Theme.divider; }
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 8px;
+            if ExplorerBridge.is-scanning: Spinner {
+                width: 13px;
+                height: 13px;
+                indeterminate: true;
+            }
+            Text {
+                text: ExplorerBridge.status-text;
+                font-size: 11.5px;
+                overflow: elide;
+                color: Theme.text-secondary;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+
+    rowmenu := MenuFlyout {
+        x: root.menu-x;
+        y: root.menu-y;
+        min-menu-width: 220px;
+    }
+}

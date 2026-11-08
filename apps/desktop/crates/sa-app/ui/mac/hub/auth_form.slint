@@ -1,0 +1,142 @@
+// macOS sign-in surfaces (mac-ui §9.4): `ProfileAuthForm` (shared by the profile popover and the hub's card) and
+// `ProfileAuthCard`. ADD-M (UNIFIED.md §3.11): the opt-in "Girişi hatırla" checkbox below the password, default off.
+import { LineEdit, CheckBox } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, PushButton, SmallSpinner } from "../main/controls.slint";
+import { PillButton, ErrorLabel } from "hub_controls.slint";
+
+export component ProfileAuthForm inherits VerticalLayout {
+    // "Yeni profil oluştur" in the popover, "Profil oluştur" on the card.
+    in property <string> register-title;
+    // The popover form shows `flyout-usernames`, the card `card-usernames` (both 4 on macOS).
+    in property <bool> in-popover;
+    property <int> reset: HubBridge.auth-reset-epoch;
+    property <string> last: HubBridge.last-username;
+    property <[string]> names: root.in-popover ? HubBridge.flyout-usernames : HubBridge.card-usernames;
+    spacing: 10px;
+    alignment: start;
+
+    changed reset => { pw.text = ""; }
+    changed last => { root.prefill(); }
+    init => {
+        HubBridge.clear-auth-error();
+        root.prefill();
+    }
+    function prefill() {
+        if (user.text == "" && HubBridge.last-username != "") {
+            user.text = HubBridge.last-username;
+        }
+    }
+    function login() {
+        if (!HubBridge.is-authenticating) {
+            HubBridge.login(user.text, pw.text, remember.checked);
+        }
+    }
+    function register() {
+        if (!HubBridge.is-authenticating) {
+            HubBridge.register(user.text, pw.text, remember.checked);
+        }
+    }
+
+    if root.names.length > 0: HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+        for name in root.names: PillButton {
+            label: name;
+            compact: true;
+            clicked => {
+                user.text = name;
+                pw.focus();
+            }
+        }
+    }
+    user := LineEdit {
+        placeholder-text: Loc.t("Kullanıcı adı");
+        accessible-label: Loc.t("Kullanıcı adı");
+        enabled: !HubBridge.is-authenticating;
+        accepted => { pw.focus(); }
+    }
+    pw := LineEdit {
+        input-type: password;
+        placeholder-text: Loc.t("Şifre");
+        accessible-label: Loc.t("Şifre");
+        enabled: !HubBridge.is-authenticating;
+        accepted => { root.login(); }
+    }
+    HorizontalLayout {
+        alignment: start;
+        remember := CheckBox {
+            text: Loc.t("Girişi hatırla");
+            enabled: !HubBridge.is-authenticating;
+            checked <=> HubBridge.remember-me;
+            toggled => { HubBridge.remember-toggled(self.checked); }
+        }
+    }
+    if HubBridge.auth-error != "": ErrorLabel {
+        text: HubBridge.auth-error;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        PushButton {
+            label: Loc.t("Giriş yap");
+            prominent: true;
+            enabled: !HubBridge.is-authenticating;
+            clicked => { root.login(); }
+        }
+        PushButton {
+            label: root.register-title;
+            enabled: !HubBridge.is-authenticating;
+            clicked => { root.register(); }
+        }
+        if HubBridge.is-authenticating: SmallSpinner {
+            width: 16px;
+            height: 16px;
+        }
+    }
+}
+
+// The hub's sign-in card (VStack spacing 14, padding 24, max width 440, material, 1 pt separator border).
+export component ProfileAuthCard inherits Rectangle {
+    max-width: 440px;
+    border-radius: 14px;
+    background: MacTheme.dark ? #2c2c2ef0 : #f6f6f6f0;
+    border-width: 1px;
+    border-color: MacTheme.separator;
+    VerticalLayout {
+        padding: 24px;
+        spacing: 14px;
+        HorizontalLayout {
+            alignment: center;
+            Sym {
+                name: "person.crop.circle.badge.checkmark";
+                size: 40px;
+                tint: MacTheme.control-accent;
+            }
+        }
+        Text {
+            text: Loc.t("Yerel Video Platformu");
+            font-size: MacTheme.title2-size;
+            font-weight: 600;
+            horizontal-alignment: center;
+            color: MacTheme.label;
+        }
+        Text {
+            text: Loc.t("İzleme geçmişi, görüntülenme sayısı, favoriler, yıldız puanları ve özel listeleriniz yerel profilinize kaydedilir. Devam etmek için giriş yapın veya yeni profil oluşturun.");
+            font-size: MacTheme.callout-size;
+            color: MacTheme.secondary-label;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: center;
+            ProfileAuthForm {
+                max-width: 320px;
+                horizontal-stretch: 1;
+                register-title: Loc.t("Profil oluştur");
+            }
+        }
+    }
+}

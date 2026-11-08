@@ -1,0 +1,104 @@
+// macOS EngagementBar (mac-ui §7.5): top-left of the player while logged in with a loaded video. Full variant, or the
+// compact one (counts and icons only) when the full one does not fit. HStack spacing 8, caption, white, padding h8 v5,
+// black 45 % rounded 8; fades with the player's overlay panel.
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, ToolTip } from "../main/controls.slint";
+import { StarRating, PlainButton, HubMacMenu } from "hub_controls.slint";
+
+component BarDivider inherits Rectangle {
+    width: 1px;
+    height: 16px;
+    background: #ffffff59;
+}
+
+export component EngagementBar inherits Rectangle {
+    // Width the bar may take; the compact variant is used when the full one is wider.
+    in property <length> available: 10000px;
+    property <bool> compact: full-measure.preferred-width > root.available;
+    property <length> menu-x;
+    visible: HubBridge.engagement-visible;
+    width: row.preferred-width;
+    height: row.preferred-height;
+    border-radius: 8px;
+    background: #00000073;
+
+    // Invisible measurement of the full variant's width (ViewThatFits).
+    full-measure := HorizontalLayout {
+        visible: false;
+        spacing: 8px;
+        padding-left: 8px;
+        padding-right: 8px;
+        Text { text: Loc.t1("%lld görüntüleme", HubBridge.engagement-views); font-size: MacTheme.caption-size; }
+        Rectangle { width: 1px + 8px + 14px + 5px; }
+        Text { text: HubBridge.engagement-liked ? Loc.t("Beğenildi") : Loc.t("Beğen"); font-size: MacTheme.caption-size; }
+        Rectangle { width: 5 * 19px + 1px + 8px; }
+        Text { text: Loc.t("+ Listeye ekle"); font-size: MacTheme.caption-size; }
+    }
+
+    row := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: 8px;
+        // Views.
+        Rectangle {
+            width: views.preferred-width;
+            views := HorizontalLayout {
+                spacing: 4px;
+                Sym {
+                    y: (parent.height - self.height) / 2;
+                    name: "eye";
+                    size: 11px;
+                    tint: white;
+                }
+                Text {
+                    text: root.compact ? ("" + HubBridge.engagement-views) : Loc.t1("%lld görüntüleme", HubBridge.engagement-views);
+                    font-size: MacTheme.caption-size;
+                    color: white;
+                    vertical-alignment: center;
+                }
+            }
+            views-touch := TouchArea { }
+            ToolTip {
+                text: Loc.t1("%lld görüntüleme", HubBridge.engagement-views);
+                show: views-touch.has-hover;
+            }
+        }
+        BarDivider { y: (parent.height - self.height) / 2; }
+        // Like (what the bar shows is what flips).
+        PlainButton {
+            symbol: HubBridge.engagement-liked ? "heart.fill" : "heart";
+            label: root.compact ? "" : (HubBridge.engagement-liked ? Loc.t("Beğenildi") : Loc.t("Beğen"));
+            font-size: MacTheme.caption-size;
+            fg: HubBridge.engagement-liked ? MacTheme.system-pink : white;
+            tooltip: HubBridge.engagement-liked ? Loc.t("Beğenildi") : Loc.t("Beğen");
+            clicked => { HubBridge.engagement-like(); }
+        }
+        StarRating {
+            rating: HubBridge.engagement-rating;
+            dimmed: #ffffff8c;
+            select(n) => { HubBridge.engagement-rate(n); }
+        }
+        BarDivider { y: (parent.height - self.height) / 2; }
+        add := PlainButton {
+            symbol: root.compact ? "text.badge.plus" : "";
+            label: root.compact ? "" : Loc.t("+ Listeye ekle");
+            font-size: MacTheme.caption-size;
+            fg: white;
+            tooltip: Loc.t("+ Listeye ekle");
+            clicked => {
+                root.menu-x = self.x;
+                HubBridge.menu-requested("add:player");
+                menu.show();
+            }
+        }
+    }
+    menu := HubMacMenu {
+        x: root.menu-x;
+        y: root.height + 2px;
+        min-menu-width: 240px;
+    }
+}

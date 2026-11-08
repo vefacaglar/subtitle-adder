@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Profile data fixtures for the Rust port (crates/sa-profiles, Windows backend). Compiles the C# app's own
+    SubtitleAdder.Core and EngineKit sources (linked read-only from apps/windows; nothing is built or restored inside
+    apps/windows) and drives the real LocalProfileManager / SqliteProfileStore / StateSyncBroker:
+
+      generate <dir>                      profiles.json + profiles.db + media files with known profiles and history
+      dump <dir> [<user> <password>]...   canonical JSON of what the C# app reads from <dir>
+      inspect <dir>                       raw facts about the files (header keys, table columns, owners, blob sizes)
+
+    Build: dotnet build -c Release (bin/ and obj/ stay under this folder and are git-ignored).
+    Used by crates/sa-profiles/tests/win_fixtures.rs (skipped with a message when no .NET SDK is on PATH).
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- The real culture: list-name duplicates and sorting use CurrentCultureIgnoreCase like the app. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <NoWarn>$(NoWarn);CS1591;CS8618;CS0618</NoWarn>
+    <WinCore>..\..\..\..\windows\src\SubtitleAdder.Core</WinCore>
+    <WinEngineKit>..\..\..\..\windows\src\EngineKit</WinEngineKit>
+    <MacSources>..\..\..\..\macos\Sources</MacSources>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="$(WinCore)\*.cs" LinkBase="Core" />
+    <Compile Include="$(WinEngineKit)\*.cs" LinkBase="EngineKit" />
+    <EmbeddedResource Include="$(MacSources)\SubtitleAdderApp\Resources\Localizable.xcstrings"
+                      LogicalName="SubtitleAdder.Core.Localizable.xcstrings" />
+    <EmbeddedResource Include="$(WinCore)\Strings\Windows.xcstrings" LogicalName="SubtitleAdder.Core.Windows.xcstrings" />
+    <EmbeddedResource Include="$(MacSources)\EngineKit\Resources\Localizable.xcstrings"
+                      LogicalName="SubtitleAdder.EngineKit.Localizable.xcstrings" />
+  </ItemGroup>
+
+</Project>

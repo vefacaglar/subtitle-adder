@@ -1,0 +1,618 @@
+// The Rust <-> Slint data contract (ARCHITECTURE.md §6.2). Both platform trees import these globals and expose no
+// other public API, so the generated Rust types are identical for `ui/win` and `ui/mac`. Rust pushes view-model
+// state into `in` properties (diffed, on the UI thread) and handles the callbacks. UI agents extend these globals
+// (one global per area) and document every addition in API.md.
+
+import { MenuEntry, PickerItem, SentenceRowData, QueueRowData, ExplorerRowData } from "main_types.slint";
+export { MenuEntry, PickerItem, SentenceRowData, QueueRowData, ExplorerRowData }
+import { HubCardData, HubListData } from "hub_types.slint";
+export { HubCardData, HubListData }
+import { SettingsModelRow, SettingsProviderRow, SettingsChoice } from "settings_types.slint";
+export { SettingsModelRow, SettingsProviderRow, SettingsChoice }
+
+export enum Workspace { editor, platform, playlist }
+
+// Window, theme, platform facts.
+export global AppBridge {
+    in property <string> window-title: "Subtitle Adder";
+    // " — <file name>" (Windows title bar) or "".
+    in property <string> title-file;
+    // Optional UI font family from `appFontFamily` ("" = system font).
+    in property <string> ui-font-family;
+    in property <bool> is-full-screen;
+    in property <bool> is-theater-mode;
+    // ui-main: window chrome state.
+    in property <bool> is-maximized;
+    // ui-main: the window has keyboard focus (title bar text dims when inactive).
+    in property <bool> is-active: true;
+
+    callback open-settings();
+    callback close-requested();
+    // ui-main: caption buttons (Windows) and toolbar background (macOS drag / double click).
+    callback minimize-requested();
+    callback maximize-toggle-requested();
+    callback drag-requested();
+    callback title-double-clicked();
+}
+
+// Main window: toolbar, workspaces, editor, player, status bar, playlist (owner: ui-main; Rust: src/main_window).
+export global MainBridge {
+    in-out property <Workspace> workspace: Workspace.editor;
+    in property <int> playlist-count;
+
+    in property <bool> has-video;
+    in property <bool> has-sentences;
+    // The current video frame (RGBA buffer from sa-player, set on the UI thread).
+    in property <image> video-frame;
+    in property <string> overlay-text;
+
+    in property <string> status-text;
+    // -1 = indeterminate / none.
+    in property <float> status-fraction: -1;
+    in property <bool> is-working;
+    in property <bool> can-generate;
+    in property <bool> can-save-subtitle;
+    in property <bool> can-export;
+
+    in-out property <bool> show-file-explorer: true;
+    in-out property <bool> auto-save: true;
+
+    callback pick-video();
+    callback pick-subtitle();
+    callback generate();
+    callback generate-and-translate();
+    callback cancel();
+    callback save-subtitle();
+    callback export-subtitle();
+    callback workspace-selected(Workspace);
+    callback file-explorer-toggled(bool);
+
+    // ---- toolbar / command bar
+    // Window width in logical px, pushed by Rust on every resize (responsive rules; avoids a layout binding loop).
+    in property <length> window-width: 1240px;
+    in property <[PickerItem]> language-items;
+    in property <int> language-index;
+    in property <string> model-title: "large-v3";
+    in property <bool> diarize: true;
+    in property <[PickerItem]> target-items;
+    in property <int> target-index;
+    in property <string> target-help;
+    in property <string> translation-model-title;
+    in property <string> translation-model-help;
+    // "" local, "cloud" or "network" (mac symbol); Windows shows the external glyph when non-empty.
+    in property <string> translation-model-kind;
+    in property <bool> can-translate;
+    in property <bool> can-generate-and-translate: true;
+    in property <bool> can-cancel;
+    in property <bool> can-pick-video: true;
+    in property <bool> can-pick-subtitle: true;
+    callback language-selected(int);
+    callback target-selected(int);
+    callback translate();
+    callback auto-save-toggled(bool);
+    callback translation-model-clicked();
+    callback profile-clicked();
+
+    // ---- menus: Rust fills `menu-entries` on `menu-requested(<menu id>)`, the UI shows them, a click reports the id.
+    // Menu ids: "model", "speakers", "bulk-language", "queue-language:<row>", "row:<index>", "speaker:<index>",
+    // "explorer-quick", "explorer-row:<index>", "display", "overflow".
+    in property <[MenuEntry]> menu-entries;
+    callback menu-requested(string);
+    callback menu-activated(string);
+
+    // ---- error InfoBar (Windows)
+    in property <bool> error-open;
+    in property <string> error-text;
+    in property <bool> go-online-visible;
+    callback error-closed();
+    callback go-online();
+
+    // ---- workspace layout (win-ui-main §8, mac-ui §7.1): 0 player only, 1 side by side, 2 stacked, 3 editor only.
+    in property <int> layout-mode: 2;
+    // Bumped whenever the layout is re-applied: splitter proportions reset to their defaults.
+    in property <int> layout-epoch;
+    in property <bool> editor-hidden;
+    in property <bool> side-by-side;
+    callback toggle-subtitle-panel();
+    callback toggle-side-by-side();
+    callback toggle-theater();
+    callback toggle-full-screen();
+
+    // ---- player surface, overlay, HUD
+    in property <float> video-aspect: 1.7778;
+    in property <string> overlay-font-family;
+    in property <float> overlay-size-fraction: 0.05;
+    in property <color> overlay-color: white;
+    // 0 box, 1 shadow, 2 outline
+    in property <int> overlay-background;
+    in property <float> overlay-opacity: 0.6;
+    in property <bool> preparing-preview;
+    in property <bool> hud-visible;
+    in property <bool> picker-visible: true;
+    // Engagement bar slot (hub agent) is shown when this is true.
+    in property <bool> engagement-visible;
+    callback player-pointer(bool /* inside */);
+    callback player-pointer-moved();
+    callback picker-pointer(bool /* inside */);
+    callback video-clicked(int /* click count */);
+    callback video-wheel(float /* delta y (+ = up) */, bool /* precise */);
+
+    // ---- transport (Windows HUD pill, macOS inline bar)
+    in property <string> elapsed-text: "00:00";
+    in property <string> total-text: "--:--";
+    in property <string> remaining-text;
+    in property <float> seek-ratio;
+    in property <float> buffered-ratio;
+    in property <bool> seek-interactive;
+    in property <bool> is-playing;
+    in property <float> volume: 1;
+    in property <bool> is-muted;
+    callback play-pause();
+    callback seek-scrub(bool /* scrubbing */, float /* ratio */);
+    callback toggle-mute();
+    callback volume-scrub(bool /* scrubbing */, float /* ratio */);
+    callback volume-wheel(float /* delta */);
+
+    // ---- display picker: 0 original, 1 translation, 2 both
+    in property <int> display-mode;
+    in property <bool> has-translations;
+    // Windows `ExportTranslatedTitle` / macOS `translationTitle`.
+    in property <string> translation-title;
+    callback display-mode-selected(int);
+
+    // ---- line editor
+    in property <[SentenceRowData]> rows;
+    in property <bool> shows-speakers;
+    in property <string> selected-start-text;
+    in property <string> selected-end-text;
+    in property <bool> timing-enabled;
+    in property <bool> can-split;
+    in property <bool> can-merge;
+    in property <bool> can-delete;
+    in property <bool> can-retranslate;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    in property <string> undo-title;
+    in property <string> redo-title;
+    in property <string> badge-text;
+    in property <string> empty-title;
+    in property <string> empty-detail;
+    // macOS empty-state symbol ("captions.bubble" / "clock").
+    in property <string> empty-symbol: "captions.bubble";
+    // The row Rust wants visible (auto-follow); `scroll-epoch` changes on every request.
+    in property <int> scroll-row: -1;
+    in property <int> scroll-epoch;
+    // A text field of the list has focus (key routing).
+    out property <bool> editing-text;
+    callback row-pressed(int /* index */, bool /* toggle (Ctrl/⌘) */, bool /* range (Shift) */);
+    callback row-context(int);
+    callback speaker-clicked(int);
+    callback text-focus(int /* index */, bool /* translation */, bool /* focused */);
+    callback text-edited(int /* index */, bool /* translation */, string);
+    callback text-commit(int /* index */, bool /* translation */);
+    callback nudge(int /* 0 start, 1 end */, float /* delta */);
+    callback set-now(int /* 0 start, 1 end */);
+    callback split();
+    callback merge();
+    callback delete-lines();
+    callback retranslate();
+    callback undo();
+    callback redo();
+    // Keys inside the list that are not text editing: "up", "down", "delete", "space"; true = handled.
+    callback list-key(string, bool /* shift */) -> bool;
+    callback editing-changed(bool);
+    // ui-main: the line list (not a text field in it) has keyboard focus (Up/Down belong to the list).
+    callback list-focus-changed(bool);
+
+    // ---- status bar
+    // 0 idle, 1 working, 2 finished, 3 failed
+    in property <int> status-kind;
+    in property <string> status-detail;
+    in property <string> model-notice;
+    in property <string> model-notice-help;
+    in property <int> format-index;
+    in property <int> export-language-index;
+    in property <bool> retry-visible;
+    in property <string> retry-title;
+    in property <string> playback-notice;
+    callback format-selected(int);
+    callback export-language-selected(int);
+    callback retry();
+    callback dismiss-playback-notice();
+
+    // ---- translation queue tab
+    in property <[QueueRowData]> queue-rows;
+    in property <bool> has-playlist-items;
+    in property <bool> has-list-rows;
+    in property <string> playlist-summary;
+    in property <bool> can-start-playlist;
+    in property <bool> is-playlist-running;
+    in property <bool> can-clear-queue;
+    in property <string> playlist-notice;
+    in property <bool> playlist-notice-retry;
+    in property <string> playlist-notice-retry-title;
+    callback add-playlist-videos();
+    callback clear-playlist();
+    callback clear-queue();
+    callback start-playlist();
+    callback queue-row-clicked(int);
+    callback queue-row-remove(int);
+    callback playlist-notice-closed();
+    callback playlist-notice-retried();
+
+    // ---- keyboard: every key the window sees first (tunneling); true = consumed.
+    callback key-pressed(string /* text */, bool /* shift */, bool /* control */, bool /* alt */, bool /* meta */, bool /* repeat */) -> bool;
+}
+
+// Video platform hub + profile UI (owner: ui-hub; Rust: src/hub). Rule 6: logged out every tab shows the sign-in
+// card, the search is disabled, `cards`/`lists` are empty and nothing of a profile stays here after logout.
+export global HubBridge {
+    // ---- session / profile
+    in property <bool> is-logged-in;
+    in property <string> current-username;
+    // Username or `Profil / Giriş`.
+    in property <string> profile-title;
+    // `%lld izlenen · %lld beğenilen` / `İzleme geçmişi için giriş yapın`.
+    in property <string> summary-text;
+    // Registered profiles, alphabetical, already cut to what a surface shows: `card-usernames` (Windows auth card:
+    // 5; macOS: 4) and `flyout-usernames` (Windows flyout and macOS popover: 4).
+    in property <[string]> card-usernames;
+    in property <[string]> flyout-usernames;
+    // Prefill of an empty username field.
+    in property <string> last-username;
+    // "Girişi hatırla" (opt-in, default off).
+    in-out property <bool> remember-me;
+    // Localized auth failure ("" = none).
+    in property <string> auth-error;
+    in property <bool> is-authenticating;
+    // Bumped when the password fields must be cleared (login/register success, logout).
+    in property <int> auth-reset-epoch;
+    // Bumped when an open profile popover/flyout must close (macOS login success, profile deleted) / open (look
+    // checks and keyboard entry points).
+    in property <int> popover-close-epoch;
+    in property <int> popover-open-epoch;
+    // macOS DeleteProfileSection: bumped when a delete failed (back to the password step).
+    in property <int> delete-failed-epoch;
+    in property <int> watched-count;
+    in property <int> liked-count;
+    in property <int> rated-count;
+
+    // ---- filters / search
+    // 0 Keşfet, 1 İzleme geçmişi, 2 Favorilerim, 3 Puan verdiklerim, 4 En çok izlenenler, 5 a custom list.
+    in property <int> filter;
+    in property <bool> search-enabled;
+    // The applied query (trimmed).
+    in property <string> search-query;
+    // Bumped when the applied query became empty and the box must be cleared.
+    in property <int> search-reset-epoch;
+    in property <bool> can-clear-history;
+
+    // ---- lists
+    in property <[HubListData]> lists;
+    // Bumped after a list was created (the new-list box clears).
+    in property <int> new-list-reset-epoch;
+    // macOS: create failure under the lists row / rename failure in the popover ("" = none).
+    in property <string> list-error;
+    in property <string> rename-error;
+    // macOS rename popover: the list it edits, its current name, bumped to open it / to close it (rename done).
+    in property <string> rename-list-id;
+    in property <string> rename-initial;
+    in property <int> rename-open-epoch;
+    in property <int> rename-done-epoch;
+
+    // ---- content
+    in property <bool> shows-auth-card: true;
+    // macOS: large spinner while the first feed of a key loads.
+    in property <bool> shows-loading;
+    in property <[HubCardData]> cards;
+    in property <string> empty-title;
+    in property <string> empty-hint;
+    in property <string> empty-symbol: "film.stack";
+    // Bumped when the feed must scroll back to the top (filter, search or list changed).
+    in property <int> feed-epoch;
+
+    // ---- engagement bar (player)
+    in property <bool> engagement-visible;
+    in property <int> engagement-views;
+    in property <bool> engagement-liked;
+    in property <int> engagement-rating;
+
+    // ---- menus (add-to-list, card / list context): Rust fills `menu-entries` on `menu-requested(<id>)`.
+    // Ids: "add:player", "add:<card index>", "card:<card index>", "list:<list id>".
+    in property <[MenuEntry]> menu-entries;
+    callback menu-requested(string);
+    callback menu-activated(string);
+
+    callback sign-in-requested();
+    // The profile flyout/popover opened (Windows re-reads the VM; macOS clears the auth failure).
+    callback profile-opened();
+    callback profile-closed();
+    callback login(string /* username */, string /* password */, bool /* remember */);
+    callback register(string /* username */, string /* password */, bool /* remember */);
+    callback logout();
+    callback delete-profile(string /* password */);
+    callback clear-auth-error();
+    callback remember-toggled(bool);
+    callback open-platform();
+    callback search-submitted(string);
+    callback search-edited(string);
+    callback clear-search();
+    callback filter-selected(int);
+    callback list-selected(string /* id */);
+    callback list-delete(string /* id */);
+    callback list-create(string /* name */);
+    callback list-rename(string /* id */, string /* name */);
+    callback clear-list-error();
+    callback clear-history();
+    callback load-more();
+    callback card-play(int);
+    callback card-like(int);
+    callback card-rate(int /* index */, int /* stars, 0 = clear */);
+    callback engagement-like();
+    callback engagement-rate(int);
+}
+
+// File explorer sidebar.
+export global ExplorerBridge {
+    in property <string> current-folder;
+    in property <string> status-text;
+    // ui-main: full path of the current folder (tooltip), navigation state, rows.
+    in property <string> current-path;
+    in property <bool> is-scanning;
+    in property <bool> can-go-back;
+    in property <bool> can-go-up;
+    in property <bool> can-open-folder;
+    in property <[ExplorerRowData]> rows;
+    in property <string> empty-text;
+    in property <string> empty-symbol: "folder";
+    in property <string> search-text;
+    callback row-clicked(int);
+    callback row-context(int);
+    callback go-back();
+    callback go-up();
+    callback refresh();
+    callback open-folder();
+    callback search-edited(string);
+}
+
+// Settings window (owner: ui-settings; Rust: src/settings_window). Properties marked (W) / (M) are used by one tree
+// only; both trees export every property.
+export global SettingsBridge {
+    // Windows: 0 Genel, 1 Görünüm, 2 Modeller. macOS: 0 Genel, 1 Çeviri, 2 Görünüm, 3 Modeller (`settingsTab`).
+    in-out property <int> page;
+    callback page-selected(int);
+    // Bumped by Rust when the page content must scroll back to the top (W: instant scroll on page change).
+    in-out property <int> scroll-epoch;
+
+    // ---- window chrome (W: custom 48 px title bar with caption buttons; M: the preview on another OS draws a stand-in
+    // title bar with traffic lights, a real Mac draws its own)
+    in property <bool> draws-title-bar;
+    in-out property <bool> is-maximized;
+    in-out property <bool> is-active: true;
+    callback minimize-requested();
+    callback maximize-toggle-requested();
+    callback close-requested();
+    callback drag-requested();
+    callback title-double-clicked();
+
+    // ---- General ▸ Dil
+    in property <[string]> ui-language-items;
+    in-out property <int> ui-language-index;
+    // (M) the relaunch hint row is shown only while the effective language differs from the launch language.
+    in-out property <bool> needs-relaunch;
+    callback ui-language-selected(int);
+
+    // ---- General ▸ Altyazı (ve çeviri)
+    in property <[string]> speech-language-items;
+    in-out property <int> speech-language-index;
+    callback speech-language-selected(int);
+    in property <[string]> model-items;
+    in-out property <int> model-index: -1;
+    in-out property <bool> model-enabled;
+    callback model-selected(int);
+    // Default translation model (W: General card; M: Çeviri tab local row). (M) separator before `translation-model-separator`.
+    in property <[string]> translation-model-items;
+    in-out property <int> translation-model-index: -1;
+    in-out property <int> translation-model-separator: -1;
+    in-out property <bool> translation-model-enabled;
+    callback translation-model-selected(int);
+
+    // ---- General ▸ Konuşmacılar
+    in-out property <bool> diarize;
+    callback diarize-toggled(bool);
+    in property <[string]> speaker-count-items;
+    in-out property <int> speaker-count-index;
+    callback speaker-count-selected(int);
+
+    // ---- General ▸ Medya oynatıcı / Gizlilik
+    in-out property <bool> auto-play;
+    callback auto-play-toggled(bool);
+    in-out property <bool> offline;
+    callback offline-toggled(bool);
+    // (M) cloud-aware footer text of the Gizlilik section.
+    in-out property <string> offline-footer;
+
+    // ---- (W) Harici LLM sunucusu (Yerel ağ)
+    in-out property <bool> lan-enabled;
+    callback lan-toggled(bool);
+    in-out property <string> lan-url;
+    callback lan-url-edited(string);
+    in-out property <bool> lan-busy;
+    callback lan-test();
+    in-out property <bool> lan-test-open;
+    in-out property <bool> lan-test-success;
+    in-out property <string> lan-test-text;
+    callback lan-test-closed();
+    in property <[string]> lan-models;
+    in-out property <string> lan-model;
+    callback lan-model-committed(string);
+    callback lan-refresh-models();
+    in-out property <bool> lan-async;
+    callback lan-async-toggled(bool);
+
+    // ---- (W) Medya oynatıcı ▸ video cache + file associations
+    in-out property <string> cache-usage-text;
+    in-out property <int> cache-gb: 20;
+    callback cache-gb-edited(string);
+    in-out property <bool> clear-cache-enabled;
+    callback clear-cache();
+    in-out property <bool> associations-registered;
+    callback associations-toggle();
+    callback default-apps();
+    in-out property <bool> associations-bar-open;
+    // 0 informational, 1 success, 2 error
+    in-out property <int> associations-bar-severity;
+    in-out property <string> associations-bar-text;
+    callback associations-bar-closed();
+
+    // ---- Translation providers (W: General section + inline form; M: Çeviri tab + editor sheet)
+    in-out property <bool> local-provider-active: true;
+    in property <[SettingsProviderRow]> provider-rows;
+    // (M) "%@ bir bulut hizmeti…" callout ("" = none).
+    in-out property <string> cloud-callout;
+    callback provider-activate(string /* id, "" = local */);
+    callback provider-test(string);
+    callback provider-edit(string);
+    callback provider-delete(string);
+    callback provider-model-committed(string /* id */, string /* model */);
+    // (M) "Uzaktaki modelleri listele" in a row's model menu.
+    callback provider-refresh-models(string);
+    // (W) status InfoBar under the cards.
+    in-out property <bool> provider-status-open;
+    in-out property <bool> provider-status-success;
+    in-out property <string> provider-status-text;
+    callback provider-status-closed();
+    // (M) "API sağlayıcısı ekle…".
+    callback provider-add();
+
+    // ---- provider form (W inline card, always visible; M editor sheet, visible while `form-open`)
+    in-out property <bool> form-open;
+    in-out property <bool> form-is-new: true;
+    in property <[string]> form-preset-items;
+    in-out property <int> form-preset-index;
+    callback form-preset-selected(int);
+    in-out property <string> form-name;
+    callback form-name-edited(string);
+    in-out property <string> form-url;
+    in-out property <string> form-url-placeholder;
+    callback form-url-edited(string);
+    in-out property <bool> form-is-lan;
+    in-out property <string> form-key;
+    in-out property <string> form-key-placeholder;
+    // (M) stored-key note and "Kayıtlı anahtarı sil".
+    in-out property <string> form-key-note;
+    in-out property <bool> form-can-remove-key;
+    callback form-remove-key();
+    callback form-key-edited(string);
+    in-out property <string> form-model;
+    in property <[string]> form-model-items;
+    callback form-model-edited(string);
+    in-out property <bool> form-async: true;
+    callback form-async-toggled(bool);
+    in-out property <bool> form-testing;
+    in-out property <bool> form-can-test: true;
+    in-out property <bool> form-can-save: true;
+    // (M) test notice and key-write failure in the sheet footer.
+    in-out property <string> form-notice-text;
+    in-out property <bool> form-notice-error;
+    in-out property <bool> form-key-not-stored;
+    callback form-test();
+    callback form-save();
+    callback form-cancel();
+
+    // ---- Görünüm
+    in-out property <int> theme-index;
+    callback theme-selected(int);
+    in property <[SettingsChoice]> font-items;
+    // The same titles as a plain list (std ComboBox model).
+    in property <[string]> font-titles;
+    in-out property <int> ui-font-index;
+    callback ui-font-selected(int);
+    in-out property <int> overlay-font-index;
+    callback overlay-font-selected(int);
+    in-out property <string> overlay-font-family;
+    in-out property <float> overlay-size: 0.05;
+    in-out property <string> overlay-size-text;
+    callback overlay-size-changed(float);
+    in-out property <color> overlay-color: white;
+    in-out property <string> overlay-color-hex: "#FFFFFF";
+    callback overlay-color-picked(color);
+    callback overlay-color-hex-entered(string);
+    in-out property <int> overlay-background-index;
+    callback overlay-background-selected(int);
+    in-out property <float> overlay-opacity: 0.6;
+    in-out property <string> overlay-opacity-text;
+    callback overlay-opacity-changed(float);
+    callback overlay-reset();
+
+    // ---- Modeller
+    in property <[SettingsModelRow]> transcription-rows;
+    in property <[SettingsModelRow]> diarization-rows;
+    in property <[SettingsModelRow]> translation-rows;
+    in-out property <bool> models-loading;
+    in-out property <string> models-load-error;
+    in-out property <string> models-total-text;
+    in-out property <bool> models-notice-open;
+    in-out property <string> models-notice-text;
+    callback models-notice-closed();
+    callback model-delete(string);
+
+    // ---- confirmation (W ContentDialog: primary "Sil", close "Vazgeç" default; M NSAlert-style sheet, destructive)
+    in-out property <bool> confirm-open;
+    in-out property <string> confirm-title;
+    in-out property <string> confirm-message;
+    in-out property <string> confirm-primary;
+    callback confirm-accepted();
+    callback confirm-dismissed();
+}
+
+// macOS menu bar (mac-ui §4; only the mac tree binds it). Rust maps actions to the key window.
+export global MenuBridge {
+    in property <string> undo-title;
+    in property <string> redo-title;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    in property <bool> toolbar-visible: true;
+    callback new-window();
+    callback open-video();
+    callback undo();
+    callback redo();
+    callback toggle-sidebar();
+    callback toggle-toolbar();
+    callback toggle-full-screen();
+    // ui-main: File group (mac-ui §4) and View group state.
+    in property <bool> has-main-window: true;
+    in property <bool> can-open-video: true;
+    in property <bool> can-generate;
+    in property <bool> can-stop;
+    in property <bool> theater-mode;
+    in property <bool> side-by-side;
+    in property <bool> panel-hidden;
+    in property <bool> can-toggle-panel;
+    callback generate();
+    callback stop();
+    callback toggle-theater();
+    callback toggle-side-by-side();
+    callback toggle-panel();
+    callback close-window();
+    callback minimize();
+    callback zoom();
+    callback bring-all-to-front();
+    callback about();
+    callback hide-app();
+    callback hide-others();
+    callback show-all();
+    callback quit();
+    callback cut();
+    callback copy();
+    callback paste();
+    callback delete();
+    callback select-all();
+}
+
+
+// SF Symbols rasterized at runtime on macOS (`NSImage(systemSymbolName:)` → image, cached per name/size); empty
+// images elsewhere. Only the mac tree uses it.
+export global Symbols {
+    pure callback image(string /* name */, length /* point size */) -> image;
+}

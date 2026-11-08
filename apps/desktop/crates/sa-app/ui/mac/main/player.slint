@@ -1,0 +1,387 @@
+// PlayerView (mac-ui §7.2–§7.4): black background, aspect-fit picture, pointer surface (excluding the bottom 56 /
+// top 48 pt strips), subtitle overlay, preview spinner, the top overlay panels (engagement bar slot + controls
+// panel) and an AVKit-like inline control bar. On-video controls always use white on black.
+import { Spinner } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, AppBridge } from "../../shared/bridge.slint";
+import { SubtitleOverlay } from "../../shared/overlay_label.slint";
+import { MacTheme } from "../theme.slint";
+import { EngagementBar } from "../hub/engagement_bar.slint";
+import { Sym, Segmented, MenuButton, ToolTip } from "controls.slint";
+
+// AVKit-like scrubber: thin track white 30 %, played white, knob on hover/drag.
+component BarSlider inherits Rectangle {
+    in property <float> ratio;
+    in property <bool> interactive: true;
+    in property <string> accessible-name;
+    callback scrub(bool, float);
+    property <bool> dragging;
+    property <float> drag-ratio;
+    property <float> shown: root.dragging ? root.drag-ratio : clamp(root.ratio, 0, 1);
+    height: 16px;
+    accessible-role: slider;
+    accessible-label: root.accessible-name;
+    accessible-value: round(root.shown * 100) + "%";
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 3px;
+        border-radius: 1.5px;
+        background: #ffffff4d;
+    }
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: root.width * root.shown;
+        height: 3px;
+        border-radius: 1.5px;
+        background: white;
+    }
+    Rectangle {
+        x: clamp(root.width * root.shown - 5px, 0, root.width - 10px);
+        y: (parent.height - self.height) / 2;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: white;
+        opacity: (touch.has-hover || root.dragging) && root.interactive ? 1 : 0;
+        animate opacity { duration: 150ms; }
+    }
+    touch := TouchArea {
+        enabled: root.interactive;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.dragging = true;
+                root.drag-ratio = clamp(self.mouse-x / max(1px, root.width), 0, 1);
+                root.scrub(true, root.drag-ratio);
+            } else if ((e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) && root.dragging) {
+                root.dragging = false;
+                root.scrub(false, root.drag-ratio);
+            }
+        }
+        moved => {
+            if (root.dragging) {
+                root.drag-ratio = clamp(self.mouse-x / max(1px, root.width), 0, 1);
+                root.scrub(true, root.drag-ratio);
+            }
+        }
+    }
+}
+
+component BarButton inherits Rectangle {
+    in property <string> symbol;
+    in property <string> title;
+    in property <length> size: 15px;
+    callback clicked();
+    width: 28px;
+    height: 28px;
+    accessible-role: button;
+    accessible-label: root.title;
+    Sym {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: root.symbol;
+        size: root.size;
+        tint: touch.pressed ? #ffffffa0 : white;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+// Inline control bar (§7.4).
+component ControlBar inherits Rectangle {
+    in property <bool> shown;
+    height: 36px;
+    border-radius: 8px;
+    background: #00000080;
+    opacity: root.shown ? 1 : 0;
+    animate opacity { duration: 250ms; easing: ease-in-out; }
+    property <bool> volume-open: vtouch.has-hover;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 6px;
+        BarButton {
+            y: 4px;
+            symbol: MainBridge.is-playing ? "pause.fill" : "play.fill";
+            title: MainBridge.is-playing ? Loc.t("Duraklat") : Loc.t("Oynat");
+            clicked => { MainBridge.play-pause(); }
+        }
+        Text {
+            text: MainBridge.elapsed-text;
+            font-size: MacTheme.small-size;
+            color: white;
+            vertical-alignment: center;
+            min-width: 34px;
+        }
+        BarSlider {
+            y: 10px;
+            horizontal-stretch: 1;
+            ratio: MainBridge.seek-ratio;
+            interactive: MainBridge.seek-interactive;
+            accessible-name: Loc.t("Video konumu");
+            scrub(s, r) => { MainBridge.seek-scrub(s, r); }
+        }
+        Text {
+            text: MainBridge.remaining-text;
+            font-size: MacTheme.small-size;
+            color: #ffffffcc;
+            vertical-alignment: center;
+            min-width: 38px;
+        }
+        // Volume: hover reveals a horizontal slider.
+        vol := Rectangle {
+            width: root.volume-open ? 28px + 70px : 28px;
+            animate width { duration: 150ms; }
+            vtouch := TouchArea {
+                scroll-event(e) => {
+                    MainBridge.volume-wheel(e.delta-y / 1px);
+                    accept
+                }
+                HorizontalLayout {
+                    spacing: 2px;
+                    BarButton {
+                        y: 4px;
+                        symbol: MainBridge.is-muted ? "speaker.slash.fill" : "speaker.wave.2.fill";
+                        title: Loc.t("Sesi kapat");
+                        size: 14px;
+                        clicked => { MainBridge.toggle-mute(); }
+                    }
+                    if root.volume-open: BarSlider {
+                        y: 10px;
+                        width: 66px;
+                        ratio: MainBridge.is-muted ? 0 : MainBridge.volume;
+                        scrub(s, r) => { MainBridge.volume-scrub(s, r); }
+                    }
+                }
+            }
+        }
+        BarButton {
+            y: 4px;
+            symbol: AppBridge.is-full-screen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right";
+            title: Loc.t("Tam ekran");
+            size: 13px;
+            clicked => { MainBridge.toggle-full-screen(); }
+        }
+    }
+}
+
+// Layout button: 24×22, icon white or accent when on, on-background white 18 %, disabled 40 %.
+component LayoutButton inherits Rectangle {
+    in property <string> symbol;
+    in property <string> title;
+    in property <string> tooltip;
+    in property <bool> on;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: 24px;
+    height: 22px;
+    border-radius: 5px;
+    background: root.on ? #ffffff2e : (touch.has-hover && root.enabled ? #ffffff14 : transparent);
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: root.title;
+    accessible-checked: root.on;
+    accessible-checkable: true;
+    accessible-enabled: root.enabled;
+    Sym {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: root.symbol;
+        size: 14px;
+        tint: root.on ? MacTheme.control-accent : white;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    ToolTip {
+        text: root.tooltip;
+        show: touch.has-hover;
+    }
+}
+
+// Controls panel: display picker (captioned / plain segmented / compact menu) + divider + four layout buttons.
+component ControlsPanel inherits Rectangle {
+    // 0 captioned segmented, 1 segmented, 2 compact menu
+    in property <int> variant;
+    property <bool> full: AppBridge.is-full-screen;
+    border-radius: 8px;
+    background: #00000073;
+    width: lay.preferred-width;
+    height: lay.preferred-height;
+    lay := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: 8px;
+        if root.variant == 0: Text {
+            text: Loc.t("Gösterilen");
+            font-size: MacTheme.caption-size;
+            color: #ffffffd9;
+            vertical-alignment: center;
+        }
+        if root.variant < 2: Segmented {
+            fixed-width: 250px;
+            on-dark: true;
+            accessible-name: Loc.t("Gösterilen");
+            items: [
+                { title: Loc.t("Orijinal"), enabled: true },
+                { title: MainBridge.translation-title, enabled: MainBridge.has-translations },
+                { title: Loc.t("İkisi"), enabled: MainBridge.has-translations },
+            ];
+            current-index: MainBridge.has-translations ? MainBridge.display-mode : 0;
+            selected(i) => { MainBridge.display-mode-selected(i); }
+        }
+        if root.variant == 2: MenuButton {
+            menu-id: "display";
+            label: MainBridge.display-mode == 0 || !MainBridge.has-translations ? Loc.t("Orijinal") : MainBridge.display-mode == 1 ? MainBridge.translation-title : Loc.t("İkisi");
+            fg: white;
+            height: 22px;
+            menu-width: 180px;
+        }
+        Rectangle {
+            width: 1px;
+            height: 16px;
+            y: (parent.height - self.height) / 2;
+            background: #ffffff59;
+        }
+        LayoutButton {
+            symbol: MainBridge.editor-hidden || root.full ? "captions.bubble" : "captions.bubble.fill";
+            on: !MainBridge.editor-hidden && !root.full;
+            enabled: !root.full;
+            title: Loc.t("Altyazı panelini gizle / göster");
+            tooltip: Loc.t("Altyazı panelini gizle / göster (E)");
+            clicked => { MainBridge.toggle-subtitle-panel(); }
+        }
+        LayoutButton {
+            symbol: "rectangle.righthalf.inset.filled";
+            on: MainBridge.side-by-side;
+            enabled: !MainBridge.editor-hidden && !root.full;
+            title: Loc.t("Altyazıları sağa / alta al");
+            tooltip: Loc.t("Altyazıları sağa / alta al");
+            clicked => { MainBridge.toggle-side-by-side(); }
+        }
+        LayoutButton {
+            symbol: "rectangle.center.inset.filled";
+            on: AppBridge.is-theater-mode;
+            title: Loc.t("Tiyatro modu");
+            tooltip: Loc.t("Tiyatro modu — üst menüleri gizle");
+            clicked => { MainBridge.toggle-theater(); }
+        }
+        LayoutButton {
+            symbol: root.full ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right";
+            on: root.full;
+            title: Loc.t("Tam ekran");
+            tooltip: Loc.t("Tam ekran (F, ⌃⌘F)");
+            clicked => { MainBridge.toggle-full-screen(); }
+        }
+    }
+    ptouch := TouchArea {
+        enabled: false;
+    }
+    ToolTip {
+        text: MainBridge.has-translations ? Loc.t("Video üstünde gösterilecek metin") : Loc.t("Önce altyazıları çevir; sonra orijinali, çeviriyi ya da ikisini birden gösterebilirsin.");
+        show: false;
+    }
+}
+
+export component PlayerView inherits Rectangle {
+    background: black;
+    // Engagement bar width while logged in (hub area slot); used to choose the overlay layout.
+    property <length> engagement-w: MainBridge.engagement-visible ? 330px : 0;
+    property <length> panel-full: 520px;
+    property <length> panel-plain: 450px;
+    property <length> avail: root.width - 20px - (MainBridge.engagement-visible ? root.engagement-w + 12px : 0);
+    // First layout that fits: side by side (a) else stacked (b); first panel variant that fits.
+    property <bool> stacked: MainBridge.engagement-visible && root.avail < 210px;
+    property <length> panel-avail: root.stacked ? root.width - 20px : root.avail;
+    property <int> variant: root.panel-avail >= root.panel-full ? 0 : root.panel-avail >= root.panel-plain ? 1 : 2;
+
+    surface := TouchArea {
+        changed has-hover => { MainBridge.player-pointer(self.has-hover); }
+        changed mouse-x => { if (self.has-hover) { MainBridge.player-pointer-moved(); } }
+        changed mouse-y => { if (self.has-hover) { MainBridge.player-pointer-moved(); } }
+
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: MainBridge.video-frame;
+            image-fit: contain;
+            accessible-role: image;
+            accessible-label: Loc.t("Video");
+        }
+
+        // Pointer surface: clicks (1 = play/pause, 2 = + full screen) and wheel notches; not over the control strips.
+        TouchArea {
+            y: 48px;
+            height: max(0px, parent.height - 48px - 56px);
+            clicked => { MainBridge.video-clicked(1); }
+            double-clicked => { MainBridge.video-clicked(2); }
+            scroll-event(e) => {
+                MainBridge.video-wheel(e.delta-y / 1px, true);
+                accept
+            }
+        }
+
+        SubtitleOverlay {
+            width: parent.width;
+            height: parent.height;
+            aspect: MainBridge.video-aspect;
+            text: MainBridge.overlay-text;
+            font-family: MainBridge.overlay-font-family;
+            size-fraction: MainBridge.overlay-size-fraction;
+            text-color: MainBridge.overlay-color;
+            background-mode: MainBridge.overlay-background;
+            background-opacity: MainBridge.overlay-opacity;
+            mac: true;
+        }
+
+        if MainBridge.preparing-preview: VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+            HorizontalLayout {
+                alignment: center;
+                Spinner { width: 24px; height: 24px; indeterminate: true; }
+            }
+            Text {
+                text: Loc.t("Video önizlemesi hazırlanıyor…");
+                color: white;
+                font-size: MacTheme.body-size;
+                horizontal-alignment: center;
+            }
+        }
+
+        bar := ControlBar {
+            width: min(480px, parent.width - 24px);
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - 6px;
+            shown: MainBridge.hud-visible;
+            visible: self.opacity > 0.01;
+        }
+
+        // Top overlay panels (padding 10): engagement bar slot (hub area) leading, controls panel trailing.
+        panels := Rectangle {
+            x: 10px;
+            y: 10px;
+            width: parent.width - 20px;
+            height: 60px;
+            opacity: MainBridge.picker-visible ? 1 : 0;
+            animate opacity { duration: 250ms; easing: ease-in-out; }
+            visible: self.opacity > 0.01;
+            ptouch := TouchArea {
+                changed has-hover => { MainBridge.picker-pointer(self.has-hover); }
+                // Engagement bar (hub area, mac-ui §7.5): leading; compact when the full one does not fit.
+                EngagementBar {
+                    x: 0;
+                    y: 0;
+                    available: root.stacked ? parent.width : root.engagement-w;
+                }
+                ControlsPanel {
+                    variant: root.variant;
+                    x: parent.width - self.width;
+                    y: 0;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,108 @@
+{
+  "sourceLanguage": "tr",
+  "strings": {
+    "API anahtarı şifrelenmemiş bağlantıyla (http) gönderilmez; adresi https:// ile girin.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API key is not sent over an unencrypted (http) connection; enter the address with https://."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API anahtarı şifrelenmemiş bağlantıyla (http) gönderilmez; adresi https:// ile girin."
+          }
+        }
+      }
+    },
+    "Altyazı ve çeviri": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, Windows).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtitles and translation"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı ve çeviri"
+          }
+        }
+      }
+    },
+    "Bağlantı kurulamadı.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not connect."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bağlantı kurulamadı."
+          }
+        }
+      }
+    },
+    "Bağlantı reddedildi.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection refused."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bağlantı reddedildi."
+          }
+        }
+      }
+    },
+    "Güvenli bağlantı kurulamadı.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not establish a secure connection."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Güvenli bağlantı kurulamadı."
+          }
+        }
+      }
+    },
+    "Sunucu bulunamadı.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server not found."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunucu bulunamadı."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

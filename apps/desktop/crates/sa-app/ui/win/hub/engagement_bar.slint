@@ -1,0 +1,106 @@
+// PlayerEngagementBar (win-ui-hub-settings §4): over the video, top-left, margin 10. Present only while logged in with
+// a video open (`HubBridge.engagement-visible`); visible together with the player HUD or while paused (instant).
+import { Loc } from "../../shared/loc.slint";
+import { HubBridge, MainBridge } from "../../shared/bridge.slint";
+import { Glyph } from "../main/controls.slint";
+import { HubButton, HubColors, StarButton, HubMenuFlyout } from "hub_controls.slint";
+
+export component EngagementBar inherits Rectangle {
+    property <bool> shown: MainBridge.hud-visible || !MainBridge.is-playing;
+    visible: HubBridge.engagement-visible;
+    opacity: root.shown ? 1 : 0;
+    width: row.preferred-width;
+    height: row.preferred-height;
+    border-radius: 10px;
+    background: #1a1a20d8;
+    border-width: 1px;
+    border-color: #ffffff2e;
+    // Hovering the bar keeps the HUD alive (shares the display picker's pointer handlers).
+    hover := TouchArea {
+        enabled: root.shown;
+        changed has-hover => { MainBridge.picker-pointer(self.has-hover); }
+    }
+    row := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 12px;
+        // Views badge.
+        Rectangle {
+            border-radius: 6px;
+            background: #ffffff1e;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                spacing: 6px;
+                Glyph {
+                    glyph: "\u{E7B3}";
+                    size: 13px;
+                    color: #ffffffdf;
+                }
+                Text {
+                    text: Loc.t1("%lld görüntüleme", HubBridge.engagement-views);
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: white;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        // Like.
+        HubButton {
+            enabled: root.shown;
+            glyph: HubBridge.engagement-liked ? "\u{EB52}" : "\u{EB51}";
+            glyph-size: 13px;
+            glyph-color: HubBridge.engagement-liked ? HubColors.heart : white;
+            label: HubBridge.engagement-liked ? Loc.t("Beğenildi") : Loc.t("Beğen");
+            font-weight: 600;
+            pad-x: 10px;
+            pad-y: 4px;
+            clicked => { HubBridge.engagement-like(); }
+        }
+        // Stars (click the current rating to clear it).
+        HorizontalLayout {
+            spacing: 2px;
+            for n in [1, 2, 3, 4, 5]: StarButton {
+                star: n;
+                lit: n <= HubBridge.engagement-rating;
+                glyph-size: 14px;
+                empty-color: #ffffff88;
+                pad-x: 5px;
+                pad-y: 3px;
+                radius: 5px;
+                min-width: 26px;
+                min-height: 26px;
+                label: Loc.t1("%lld yıldız", n);
+                clicked => { HubBridge.engagement-rate(HubBridge.engagement-rating == n ? 0 : n); }
+            }
+        }
+        // "+ Listeye ekle" (menu §4.1 for the open video).
+        Rectangle {
+            width: add.preferred-width;
+            add := HubButton {
+                width: parent.width;
+                enabled: root.shown;
+                glyph: "\u{E710}";
+                glyph-size: 11px;
+                gap: 5px;
+                label: Loc.t("+ Listeye ekle");
+                font-weight: 600;
+                pad-x: 10px;
+                pad-y: 4px;
+                clicked => {
+                    HubBridge.menu-requested("add:player");
+                    menu.show();
+                }
+            }
+            menu := HubMenuFlyout {
+                x: 0;
+                y: add.height + 4px;
+            }
+        }
+    }
+}

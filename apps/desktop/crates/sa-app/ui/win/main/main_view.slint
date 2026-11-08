@@ -1,0 +1,78 @@
+// Main window root grid (win-ui-main §6): title bar 48 (0 in full screen) / command bar (hidden in theater and full
+// screen) / error InfoBar / content grid (explorer column 280 + workspace) / status bar (hidden in full screen).
+// A root FocusScope sees every key first (tunneling, §15) and hands it to Rust (`MainBridge.key-pressed`).
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, AppBridge, Workspace } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { TitleBar } from "title_bar.slint";
+import { CommandBar } from "command_bar.slint";
+import { ExplorerPane } from "explorer_pane.slint";
+import { EditorView } from "editor_view.slint";
+import { PlaylistPanel } from "playlist_panel.slint";
+import { StatusBar } from "status_bar.slint";
+import { InfoBar } from "controls.slint";
+import { HubView } from "../hub/hub_view.slint";
+
+export component MainView inherits Rectangle {
+    property <bool> full: AppBridge.is-full-screen;
+    property <bool> show-explorer: MainBridge.show-file-explorer && !root.full;
+
+    keys := FocusScope {
+        capture-key-pressed(e) => {
+            if (MainBridge.key-pressed(e.text, e.modifiers.shift, e.modifiers.control, e.modifiers.alt, e.modifiers.meta, e.repeat)) {
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            if !root.full: TitleBar { }
+            if !root.full && !AppBridge.is-theater-mode: CommandBar {
+                window-width: MainBridge.window-width;
+            }
+            if MainBridge.error-open: HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-bottom: 10px;
+                InfoBar {
+                    message: MainBridge.error-text;
+                    action-label: Loc.t("Çevrimdışı modu kapat ve indir");
+                    action-visible: MainBridge.go-online-visible;
+                    action => { MainBridge.go-online(); }
+                    closed => { MainBridge.error-closed(); }
+                }
+            }
+
+            // Content grid (§6.4): margin 12,0,12,0 (0 in full screen).
+            HorizontalLayout {
+                vertical-stretch: 1;
+                padding-left: root.full ? 0 : 12px;
+                padding-right: root.full ? 0 : 12px;
+                spacing: root.show-explorer ? 10px : 0;
+                if root.show-explorer: ExplorerPane {
+                    width: Theme.explorer-width;
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    if MainBridge.workspace == Workspace.editor: EditorView { }
+                    if MainBridge.workspace == Workspace.platform: Rectangle {
+                        border-radius: 8px;
+                        background: Theme.card-background;
+                        border-width: 1px;
+                        border-color: Theme.card-stroke;
+                        HubView { }
+                    }
+                    if MainBridge.workspace == Workspace.playlist: PlaylistPanel {
+                        window-width: MainBridge.window-width;
+                    }
+                }
+            }
+
+            if !root.full: StatusBar {
+                window-width: MainBridge.window-width;
+            }
+        }
+    }
+
+    init => { keys.focus(); }
+}

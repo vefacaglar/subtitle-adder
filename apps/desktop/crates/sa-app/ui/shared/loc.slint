@@ -1,0 +1,25 @@
+// Live localization (ARCHITECTURE.md §6.3). Every visible string is `Loc.t("<Turkish key>")`; formatted strings
+// with string arguments use `Loc.t1` / `Loc.t2` (numbers are passed as strings: `%lld` parses them). The functions
+// read `revision`, so every binding re-evaluates when Rust bumps it after a language switch. The callbacks are
+// implemented in Rust by `sa_core::l10n::l` / `l_args` on the platform chain. The catalog-completeness scanner
+// recognizes exactly these three call forms.
+
+export global Loc {
+    in property <int> revision;
+
+    pure callback lookup(int, string) -> string;
+    pure callback lookup1(int, string, string) -> string;
+    pure callback lookup2(int, string, string, string) -> string;
+
+    public pure function t(key: string) -> string {
+        return self.lookup(self.revision, key);
+    }
+
+    public pure function t1(key: string, a: string) -> string {
+        return self.lookup1(self.revision, key, a);
+    }
+
+    public pure function t2(key: string, a: string, b: string) -> string {
+        return self.lookup2(self.revision, key, a, b);
+    }
+}

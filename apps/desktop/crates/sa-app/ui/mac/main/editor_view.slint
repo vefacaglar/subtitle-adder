@@ -1,0 +1,113 @@
+// Editor workspace (mac-ui §7.1): drop zone (radius 16, quaternary 40 %, dashed) when nothing is open; the line
+// editor alone for a subtitle without a video (layout 3); the player alone (layout 0); or a split view (1 = player |
+// editor, 2 = player over editor) with a 1 pt divider (6 pt hit area), initial ratio 5:4, not persisted.
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge } from "../../shared/bridge.slint";
+import { DashedBorder } from "../../shared/dashed_border.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym } from "controls.slint";
+import { PlayerView } from "player.slint";
+import { SentenceEditor } from "sentence_editor.slint";
+
+component DropZone inherits Rectangle {
+    border-radius: 16px;
+    background: MacTheme.quaternary-label.with-alpha(0.4 * 0.1);
+    DashedBorder {
+        stroke: MacTheme.tertiary-label;
+        stroke-width: 1.5px;
+        dash: 7px;
+        gap: 7px;
+        radius: 16px;
+    }
+    VerticalLayout {
+        alignment: center;
+        spacing: 12px;
+        HorizontalLayout {
+            alignment: center;
+            Sym {
+                name: "film.stack";
+                size: 44px;
+                tint: MacTheme.secondary-label;
+            }
+        }
+        Text {
+            text: Loc.t("Videoyu buraya sürükle");
+            font-size: MacTheme.title3-size;
+            color: MacTheme.label;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: Loc.t("ya da araç çubuğundan seç");
+            font-size: MacTheme.body-size;
+            color: MacTheme.secondary-label;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+component Divider inherits Rectangle {
+    in property <bool> vertical-bar;
+    callback dragged(length);
+    Rectangle {
+        x: root.vertical-bar ? (parent.width - 1px) / 2 : 0;
+        y: root.vertical-bar ? 0 : (parent.height - 1px) / 2;
+        width: root.vertical-bar ? 1px : parent.width;
+        height: root.vertical-bar ? parent.height : 1px;
+        background: MacTheme.separator;
+    }
+    TouchArea {
+        mouse-cursor: root.vertical-bar ? col-resize : row-resize;
+        moved => {
+            if (self.pressed) {
+                root.dragged(root.vertical-bar ? self.mouse-x - self.pressed-x : self.mouse-y - self.pressed-y);
+            }
+        }
+    }
+}
+
+export component EditorView inherits Rectangle {
+    property <int> mode: MainBridge.layout-mode;
+    property <float> ratio: 5 / 9;
+    property <int> epoch: MainBridge.layout-epoch;
+    changed epoch => { root.ratio = 5 / 9; }
+    property <length> player-w: root.mode == 1 ? clamp(root.width * root.ratio, 260px, max(260px, root.width - 320px - 1px)) : root.width;
+    property <length> player-h: root.mode == 2 ? clamp(root.height * root.ratio, 180px, max(180px, root.height - 160px - 1px)) : root.height;
+
+    if !MainBridge.has-video && !MainBridge.has-sentences: VerticalLayout {
+        padding: 20px;
+        DropZone { }
+    }
+    if !MainBridge.has-video && MainBridge.has-sentences: SentenceEditor { }
+    if MainBridge.has-video: Rectangle {
+        player := PlayerView {
+            x: 0;
+            y: 0;
+            width: root.player-w;
+            height: root.player-h;
+        }
+        if root.mode == 1: Divider {
+            x: root.player-w - 3px;
+            width: 7px;
+            height: root.height;
+            vertical-bar: true;
+            dragged(d) => { root.ratio = clamp(root.player-w + d, 260px, max(260px, root.width - 321px)) / max(1px, root.width); }
+        }
+        if root.mode == 2: Divider {
+            y: root.player-h - 3px;
+            height: 7px;
+            width: root.width;
+            vertical-bar: false;
+            dragged(d) => { root.ratio = clamp(root.player-h + d, 180px, max(180px, root.height - 161px)) / max(1px, root.height); }
+        }
+        if root.mode == 1: SentenceEditor {
+            x: root.player-w + 1px;
+            width: root.width - root.player-w - 1px;
+            height: root.height;
+        }
+        if root.mode == 2: SentenceEditor {
+            y: root.player-h + 1px;
+            width: root.width;
+            height: root.height - root.player-h - 1px;
+        }
+    }
+}

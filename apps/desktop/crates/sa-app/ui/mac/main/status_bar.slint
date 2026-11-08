@@ -1,0 +1,158 @@
+// Status bar (mac-ui §7.7): status by kind (spinner/bar + label · detail, finished, failed + retry), playback notice
+// with close, model notice, format segmented control (150), visible "Dil" + pop-up (180), "Altyazıyı kaydet" with
+// icon, text-only "Dışa aktar…". Regular-size bordered controls, callout font.
+import { ProgressIndicator } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, Workspace } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, PushButton, PopUpButton, Segmented, SmallSpinner, ToolTip } from "controls.slint";
+
+export component StatusBar inherits Rectangle {
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 10px;
+        // Left part by status kind (0 idle, 1 working, 2 finished, 3 failed).
+        HorizontalLayout {
+            spacing: 6px;
+            horizontal-stretch: 1;
+            if MainBridge.status-kind == 1 && MainBridge.status-fraction >= 0: ProgressIndicator {
+                width: 120px;
+                height: 6px;
+                y: (parent.height - self.height) / 2;
+                progress: clamp(MainBridge.status-fraction, 0, 1);
+            }
+            if MainBridge.status-kind == 1 && MainBridge.status-fraction < 0: SmallSpinner {
+                y: (parent.height - self.height) / 2;
+            }
+            if MainBridge.status-kind == 2: Sym {
+                y: (parent.height - self.height) / 2;
+                name: "checkmark.circle.fill";
+                size: 13px;
+                tint: MacTheme.system-green;
+            }
+            if MainBridge.status-kind == 3: Sym {
+                y: (parent.height - self.height) / 2;
+                name: "exclamationmark.triangle.fill";
+                size: 13px;
+                tint: MacTheme.system-red;
+            }
+            Text {
+                text: MainBridge.status-text;
+                font-size: MacTheme.callout-size;
+                color: MainBridge.status-kind == 0 ? MacTheme.secondary-label : MacTheme.label;
+                vertical-alignment: center;
+                wrap: MainBridge.status-kind == 3 ? word-wrap : no-wrap;
+                overflow: elide;
+                max-height: 32px;
+            }
+            if MainBridge.status-detail != "": Text {
+                text: "· " + MainBridge.status-detail;
+                font-size: MacTheme.callout-size;
+                color: MacTheme.secondary-label;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if MainBridge.retry-visible: PushButton {
+                y: (parent.height - self.height) / 2;
+                label: MainBridge.retry-title;
+                clicked => { MainBridge.retry(); }
+            }
+            if MainBridge.playback-notice != "": HorizontalLayout {
+                spacing: 4px;
+                Sym {
+                    y: (parent.height - self.height) / 2;
+                    name: "exclamationmark.triangle.fill";
+                    size: 10px;
+                    tint: MacTheme.system-red;
+                }
+                pn := Text {
+                    text: MainBridge.playback-notice;
+                    font-size: MacTheme.caption-size;
+                    color: MacTheme.system-red;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Rectangle {
+                    width: 16px;
+                    accessible-role: button;
+                    accessible-label: Loc.t("Kapat");
+                    Sym {
+                        y: (parent.height - self.height) / 2;
+                        name: "xmark.circle.fill";
+                        size: 12px;
+                        tint: MacTheme.secondary-label;
+                    }
+                    ctouch := TouchArea { clicked => { MainBridge.dismiss-playback-notice(); } }
+                    ToolTip { text: Loc.t("Kapat"); show: ctouch.has-hover; }
+                }
+            }
+        }
+        if MainBridge.model-notice != "": Rectangle {
+            HorizontalLayout {
+                spacing: 4px;
+                Sym {
+                    y: (parent.height - self.height) / 2;
+                    name: "info.circle";
+                    size: 10px;
+                    tint: MacTheme.secondary-label;
+                }
+                Text {
+                    text: MainBridge.model-notice;
+                    font-size: MacTheme.caption-size;
+                    color: MacTheme.secondary-label;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            mtouch := TouchArea { }
+            ToolTip {
+                text: Loc.t("Seçili model bu dil için listede yoktu; en doğru uygun model seçildi.");
+                show: mtouch.has-hover;
+            }
+        }
+        if MainBridge.workspace != Workspace.platform: Segmented {
+            y: (parent.height - self.height) / 2;
+            fixed-width: 150px;
+            accessible-name: Loc.t("Biçim");
+            items: [{ title: "SRT", enabled: true }, { title: "VTT", enabled: true }, { title: "JSON", enabled: true }];
+            current-index: MainBridge.format-index;
+            selected(i) => { MainBridge.format-selected(i); }
+        }
+        if MainBridge.workspace == Workspace.editor: HorizontalLayout {
+            width: 180px;
+            spacing: 6px;
+            Text {
+                text: Loc.t("Dil");
+                font-size: MacTheme.callout-size;
+                color: MacTheme.label;
+                vertical-alignment: center;
+            }
+            PopUpButton {
+                y: (parent.height - self.height) / 2;
+                horizontal-stretch: 1;
+                items: [{ title: Loc.t("Orijinal"), enabled: true }, { title: MainBridge.translation-title, enabled: MainBridge.has-translations }];
+                current-index: MainBridge.export-language-index;
+                accessible-name: Loc.t("Dil");
+                tooltip: Loc.t("Dışa aktarılan altyazıda orijinal mi, çeviri mi kullanılsın");
+                selected(i) => { MainBridge.export-language-selected(i); }
+            }
+        }
+        if MainBridge.workspace == Workspace.editor: PushButton {
+            y: (parent.height - self.height) / 2;
+            symbol: "square.and.arrow.down";
+            label: Loc.t("Altyazıyı kaydet");
+            enabled: MainBridge.can-save-subtitle;
+            tooltip: Loc.t("Altyazıyı videonun bulunduğu klasöre videoyla aynı adla kaydet");
+            clicked => { MainBridge.save-subtitle(); }
+        }
+        if MainBridge.workspace == Workspace.editor: PushButton {
+            y: (parent.height - self.height) / 2;
+            label: Loc.t("Dışa aktar…");
+            enabled: MainBridge.can-export;
+            clicked => { MainBridge.export-subtitle(); }
+        }
+    }
+}

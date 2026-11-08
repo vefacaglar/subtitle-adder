@@ -1,0 +1,20 @@
+// The Settings window of the mac tree (mac-ui §3.5, §11), shared by app.slint and preview.slint: title = selected
+// tab's label, not resizable, fixed content size per tab (General / Translation / Models 560×620, Appearance 560×600;
+// the height animates 0.25 s to the new tab's height).
+import { Loc } from "../../shared/loc.slint";
+import { AppBridge, SettingsBridge } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { SettingsView } from "settings_view.slint";
+
+export component SettingsWindow inherits Window {
+    title: SettingsBridge.page == 1 ? Loc.t("Çeviri") : SettingsBridge.page == 2 ? Loc.t("Görünüm") : SettingsBridge.page == 3 ? Loc.t("Modeller") : Loc.t("Genel");
+    property <length> content-height: (SettingsBridge.page == 2 ? 600px : 620px) + (SettingsBridge.draws-title-bar ? 28px : 0px);
+    // A fixed width + height makes the window non-resizable.
+    width: 560px;
+    height: root.content-height;
+    animate height { duration: 250ms; easing: ease-in-out; }
+    background: MacTheme.window-background;
+    default-font-family: AppBridge.ui-font-family;
+
+    SettingsView { }
+}

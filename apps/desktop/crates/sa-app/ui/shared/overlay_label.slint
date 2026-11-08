@@ -1,0 +1,105 @@
+// Subtitle overlay over the video (win-ui-main §13, mac-ui §7.3). Shared, non-styled primitive used by both trees:
+// it fills the player container, fits the video rectangle (aspect-fit, letterboxed) and draws the label at the bottom
+// of that rectangle. Text/size/colors/background come from `OverlayStyle` (pushed by Rust); placement and the shadow
+// copies follow the platform (`mac`).
+
+export component SubtitleOverlay inherits Rectangle {
+    in property <float> aspect: 1.7778;
+    in property <string> text;
+    in property <string> font-family;
+    in property <float> size-fraction: 0.05;
+    in property <color> text-color: white;
+    // 0 box, 1 shadow, 2 outline (unknown stored values arrive as box)
+    in property <int> background-mode;
+    in property <float> background-opacity: 0.6;
+    // macOS placement (bottom max(44, h*0.1), two soft shadows) instead of Windows (max(82, h*0.12), four copies).
+    in property <bool> mac;
+
+    // Fitted video rectangle (win-ui-main §13 / mac-ui §7.2 `videoSize(in:)`).
+    property <float> safe-aspect: root.aspect > 0 ? root.aspect : 1.7778;
+    property <length> fit-w: min(root.width, root.height * root.safe-aspect);
+    property <length> fit-h: root.fit-w / root.safe-aspect;
+    // Font size: max(12, h * fraction) (`OverlayStyle.font_size`).
+    property <length> font-px: max(12px, root.fit-h * clamp(root.size-fraction, 0.03, 0.09));
+    // Outline radius clamp(size * 0.045, 1, 2.5); diagonal = r / sqrt(2).
+    property <length> r: clamp(root.font-px * 0.045, 1px, 2.5px);
+    property <length> d: root.r / 1.41421356;
+    property <length> bottom-margin: root.mac ? max(44px, root.fit-h * 0.1) : max(82px, root.fit-h * 0.12);
+    property <float> shadow-alpha: max(root.background-opacity, 0.5);
+    property <[{dx: length, dy: length, a: float}]> copies:
+        root.background-mode == 2 ? [
+            { dx: -root.r, dy: 0px, a: 1 }, { dx: root.r, dy: 0px, a: 1 }, { dx: 0px, dy: -root.r, a: 1 }, { dx: 0px, dy: root.r, a: 1 },
+            { dx: -root.d, dy: -root.d, a: 1 }, { dx: root.d, dy: -root.d, a: 1 }, { dx: -root.d, dy: root.d, a: 1 }, { dx: root.d, dy: root.d, a: 1 },
+        ] : root.background-mode == 1 ? (root.mac ? [
+            { dx: 0px, dy: 1px, a: root.shadow-alpha }, { dx: 0px, dy: 1.5px, a: root.shadow-alpha * 0.5 },
+            { dx: -0.5px, dy: 0px, a: 0.8 }, { dx: 0.5px, dy: 0px, a: 0.8 }, { dx: 0px, dy: -0.5px, a: 0.6 },
+        ] : [
+            { dx: 0px, dy: 1.5px, a: root.shadow-alpha }, { dx: 0px, dy: 0.8px, a: 0.8 }, { dx: -0.8px, dy: 0px, a: 0.8 },
+            { dx: 0.8px, dy: 0px, a: 0.8 },
+        ]) : [];
+    property <length> max-text-w: max(0px, root.fit-w - 32px - 24px);
+    // At most three lines (Slint has no max-lines): clamp the label height and elide.
+    property <length> max-text-h: root.font-px * 1.34 * 3;
+
+    accessible-role: none;
+
+    area := Rectangle {
+        width: root.fit-w;
+        height: root.fit-h;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        visible: root.text != "";
+
+        box := Rectangle {
+            property <length> text-w: min(measure.preferred-width, root.max-text-w);
+            property <length> text-h: min(label.preferred-height, root.max-text-h);
+            width: self.text-w + 24px;
+            height: self.text-h + 12px;
+            x: (parent.width - self.width) / 2;
+            y: parent.height - root.bottom-margin - self.height;
+            border-radius: 8px;
+            background: root.background-mode == 0 ? rgba(0, 0, 0, clamp(root.background-opacity, 0, 1)) : transparent;
+
+            // Single-line width probe (wrapping text reports the unwrapped width as preferred width).
+            measure := Text {
+                visible: false;
+                text: root.text;
+                font-size: root.font-px;
+                font-weight: 600;
+                font-family: root.font-family;
+                wrap: no-wrap;
+            }
+
+            for c in root.copies: Text {
+                x: 12px + c.dx;
+                y: 6px + c.dy;
+                width: box.text-w;
+                height: box.text-h;
+                text: root.text;
+                font-size: root.font-px;
+                font-weight: 600;
+                font-family: root.font-family;
+                horizontal-alignment: center;
+                vertical-alignment: top;
+                wrap: word-wrap;
+                overflow: elide;
+                color: rgba(0, 0, 0, c.a);
+            }
+            label := Text {
+                x: 12px;
+                y: 6px;
+                width: box.text-w;
+                height: box.text-h;
+                text: root.text;
+                font-size: root.font-px;
+                font-weight: 600;
+                font-family: root.font-family;
+                horizontal-alignment: center;
+                vertical-alignment: top;
+                wrap: word-wrap;
+                overflow: elide;
+                color: root.text-color;
+            }
+        }
+    }
+}

@@ -1,0 +1,525 @@
+// Editor panel (win-ui-main §6.5.5–6.5.6): edit bar, divider, extended-selection line list with keyed rows, the
+// empty state; speaker and row context menus come from Rust (`MainBridge.menu-requested("speaker:<i>" / "row:<i>")`).
+import { ScrollView, ListView, Spinner } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge } from "../../shared/bridge.slint";
+import { SentenceRowData } from "../../shared/main_types.slint";
+import { Theme } from "../theme.slint";
+import { Glyph, ToolButton, MenuFlyout, ToolTip } from "controls.slint";
+
+// Borderless multi-line text box (no Enter newlines: Enter commits; Ctrl+Enter goes to the window shortcut).
+component LineText inherits Rectangle {
+    in property <string> value;
+    in property <string> placeholder;
+    in property <length> font-size: Theme.body-size;
+    in property <brush> text-color: Theme.text-primary;
+    in property <length> max-box-height: 96px;
+    in property <length> pad-x: 6px;
+    in property <length> pad-y: 5px;
+    out property <bool> focused: input.has-focus;
+    callback focus-changed(bool);
+    callback edited(string);
+    callback committed();
+
+    height: min(input.preferred-height + 2 * root.pad-y, root.max-box-height);
+    border-radius: Theme.control-radius;
+    background: input.has-focus ? (Theme.dark ? #1e1e1eb3 : #ffffff) : (touch.has-hover ? Theme.subtle-hover : transparent);
+    clip: true;
+    accessible-role: text-input;
+    accessible-label: root.placeholder;
+    accessible-value: input.text;
+    touch := TouchArea {
+        clicked => { input.focus(); }
+    }
+    keys := FocusScope {
+        capture-key-pressed(e) => {
+            if (input.has-focus && e.text == Key.Return && !e.modifiers.control) {
+                root.committed();
+                return accept;
+            }
+            reject
+        }
+        input := TextInput {
+            x: root.pad-x;
+            y: root.pad-y;
+            width: root.width - 2 * root.pad-x;
+            text: root.value;
+            wrap: word-wrap;
+            single-line: false;
+            font-size: root.font-size;
+            color: root.text-color;
+            selection-background-color: Theme.accent;
+            selection-foreground-color: Theme.text-on-accent;
+            edited => { if (self.has-focus) { root.edited(self.text); } }
+            changed has-focus => { root.focus-changed(self.has-focus); }
+        }
+    }
+    if input.text == "" && !input.has-focus: Text {
+        x: root.pad-x;
+        y: root.pad-y;
+        text: root.placeholder;
+        font-size: root.font-size;
+        color: Theme.text-tertiary;
+    }
+    // Fluent focus underline.
+    if input.has-focus: Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        background: Theme.accent;
+    }
+    // The VM's draft equals what the user typed: only unfocused boxes are refreshed from the model.
+    changed value => {
+        if (!input.has-focus) {
+            input.text = root.value;
+        }
+    }
+}
+
+component SpeakerButton inherits Rectangle {
+    in property <int> index;
+    in property <SentenceRowData> item;
+    min-width: 44px;
+    height: 28px;
+    border-radius: Theme.control-radius;
+    background: touch.pressed ? Theme.subtle-pressed : touch.has-hover ? Theme.subtle-hover : transparent;
+    accessible-role: button;
+    accessible-label: Loc.t("Konuşmacıyı değiştir");
+    HorizontalLayout {
+        padding: 4px;
+        spacing: 6px;
+        alignment: center;
+        if root.item.has-speaker: Rectangle {
+            width: 8px;
+            height: 8px;
+            y: (parent.height - 8px) / 2;
+            border-radius: 4px;
+            background: root.item.speaker-color;
+        }
+        Text {
+            text: root.item.speaker-text;
+            font-size: 12px;
+            vertical-alignment: center;
+            color: Theme.text-primary;
+        }
+    }
+    touch := TouchArea {
+        clicked => {
+            MainBridge.speaker-clicked(root.index);
+            MainBridge.menu-requested("speaker:" + root.index);
+            flyout.show();
+        }
+    }
+    ToolTip {
+        text: Loc.t("Bu satırı söyleyen kişiyi değiştir");
+        show: touch.has-hover && !touch.pressed;
+    }
+    flyout := MenuFlyout {
+        x: 0;
+        y: root.height + 2px;
+        min-menu-width: 200px;
+    }
+}
+
+component LineRow inherits Rectangle {
+    in property <int> index;
+    in property <SentenceRowData> item;
+    in property <bool> shows-speakers;
+    callback context(length /* x */, length /* y */);
+    callback grab-focus();
+    min-height: 40px;
+    accessible-role: list-item;
+    accessible-label: root.item.accessible-label;
+    accessible-item-selected: root.item.is-selected;
+    // Fluent list item visuals: subtle fill on hover/selection, accent pill on the left edge when selected.
+    background: root.item.is-selected ? (touch.has-hover ? Theme.subtle-hover.darker(0.05) : Theme.subtle-hover) : (touch.has-hover ? Theme.subtle-hover : transparent);
+    border-radius: Theme.control-radius;
+    touch := TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.grab-focus();
+                MainBridge.row-pressed(root.index, e.modifiers.control, e.modifiers.shift);
+            } else if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                MainBridge.row-context(root.index);
+                root.context(self.mouse-x, self.mouse-y);
+            }
+        }
+    }
+    if root.item.is-selected: Rectangle {
+        x: 0;
+        width: 3px;
+        height: 16px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+    // Active (playing) line highlight: accent at 16 %, fills the item incl. padding.
+    if root.item.is-active: Rectangle {
+        border-radius: 4px;
+        background: Theme.accent.with-alpha(0.16);
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 10px;
+        VerticalLayout {
+            width: 30px;
+            padding-top: 6px;
+            alignment: start;
+            Text {
+                text: root.item.number;
+                horizontal-alignment: right;
+                font-size: Theme.body-size;
+                color: root.item.is-active ? Theme.accent-text : Theme.text-secondary;
+            }
+        }
+        VerticalLayout {
+            width: 150px;
+            padding-top: 8px;
+            alignment: start;
+            Text {
+                text: root.item.time-text;
+                font-size: 12px;
+                color: Theme.text-secondary;
+            }
+        }
+        if root.shows-speakers: VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: start;
+            SpeakerButton {
+                index: root.index;
+                item: root.item;
+            }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+            LineText {
+                value: root.item.text;
+                placeholder: Loc.t("Cümle");
+                focus-changed(f) => { MainBridge.text-focus(root.index, false, f); MainBridge.editing-changed(f); }
+                edited(t) => { MainBridge.text-edited(root.index, false, t); }
+                committed => { MainBridge.text-commit(root.index, false); }
+            }
+            if root.item.has-translation: HorizontalLayout {
+                spacing: 6px;
+                Glyph {
+                    glyph: "\u{F2B7}";
+                    size: 12px;
+                    color: Theme.text-secondary;
+                    accessible-role: text;
+                    accessible-label: Loc.t("Çeviri");
+                    vertical-alignment: top;
+                    y: 6px;
+                }
+                LineText {
+                    horizontal-stretch: 1;
+                    value: root.item.translation-text;
+                    placeholder: Loc.t("Çeviri");
+                    font-size: 13px;
+                    pad-x: 4px;
+                    pad-y: 4px;
+                    max-box-height: 76px;
+                    text-color: Theme.text-secondary;
+                    focus-changed(f) => { MainBridge.text-focus(root.index, true, f); MainBridge.editing-changed(f); }
+                    edited(t) => { MainBridge.text-edited(root.index, true, t); }
+                    committed => { MainBridge.text-commit(root.index, true); }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    if root.item.is-stale: Rectangle {
+                        width: 17px;
+                        Glyph {
+                            glyph: "\u{E81C}";
+                            size: 13px;
+                            color: Theme.caution;
+                            accessible-role: text;
+                            accessible-label: Loc.t("Çeviri eski");
+                        }
+                        stouch := TouchArea { }
+                        ToolTip {
+                            text: Loc.t("Orijinal metin değişti; çeviri eski olabilir. “Çevir…” ile yenile.");
+                            show: stouch.has-hover;
+                        }
+                    }
+                    if root.item.needs-review: Rectangle {
+                        width: 13px;
+                        Glyph {
+                            glyph: "\u{E7BA}";
+                            size: 13px;
+                            color: Theme.caution;
+                            accessible-role: text;
+                            accessible-label: Loc.t("Çeviriyi kontrol et");
+                        }
+                        rtouch := TouchArea { }
+                        ToolTip {
+                            text: Loc.t("Bu satır çevrilemedi. Seçip yeniden çevirebilir veya elle düzeltebilirsin.");
+                            show: rtouch.has-hover;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component TimingControls inherits HorizontalLayout {
+    in property <string> caption;
+    in property <bool> show-caption;
+    in property <string> value;
+    in property <int> edge;
+    spacing: 2px;
+    if root.show-caption: Text {
+        text: root.caption;
+        color: Theme.text-secondary;
+        vertical-alignment: center;
+        font-size: Theme.body-size;
+    }
+    if root.show-caption: Rectangle { width: 4px; }
+    ToolButton {
+        glyph: "\u{E738}";
+        glyph-size: 12px;
+        subtle: true;
+        pad-x: 7px;
+        pad-y: 7px;
+        enabled: MainBridge.timing-enabled;
+        tooltip: Loc.t1("%@ 0,1 sn geri", root.caption);
+        accessible-name: Loc.t1("%@ 0,1 sn geri", root.caption);
+        clicked => { MainBridge.nudge(root.edge, -0.1); }
+    }
+    Text {
+        min-width: 64px;
+        text: root.value;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-size: Theme.body-size;
+        color: MainBridge.timing-enabled ? Theme.text-primary : Theme.text-disabled;
+    }
+    ToolButton {
+        glyph: "\u{E710}";
+        glyph-size: 12px;
+        subtle: true;
+        pad-x: 7px;
+        pad-y: 7px;
+        enabled: MainBridge.timing-enabled;
+        tooltip: Loc.t1("%@ 0,1 sn ileri", root.caption);
+        accessible-name: Loc.t1("%@ 0,1 sn ileri", root.caption);
+        clicked => { MainBridge.nudge(root.edge, 0.1); }
+    }
+    ToolButton {
+        glyph: "\u{E81D}";
+        glyph-size: 14px;
+        subtle: true;
+        pad-x: 7px;
+        pad-y: 7px;
+        enabled: MainBridge.timing-enabled;
+        tooltip: Loc.t1("%@ zamanını oynatma konumuna ayarla", root.caption);
+        accessible-name: Loc.t1("%@ zamanını oynatma konumuna ayarla", root.caption);
+        clicked => { MainBridge.set-now(root.edge); }
+    }
+}
+
+export component LineEditor inherits Rectangle {
+    border-radius: 8px;
+    background: Theme.card-background;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+    property <bool> labels: root.width >= 720px;
+    property <bool> timing-labels: root.width >= 540px;
+    property <length> menu-x;
+    property <length> menu-y;
+
+    if MainBridge.has-sentences: VerticalLayout {
+        // Edit bar: padding 12,6, column spacing 20.
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 20px;
+            TimingControls {
+                caption: Loc.t("Başlangıç");
+                show-caption: root.timing-labels;
+                value: MainBridge.selected-start-text;
+                edge: 0;
+            }
+            TimingControls {
+                caption: Loc.t("Bitiş");
+                show-caption: root.timing-labels;
+                value: MainBridge.selected-end-text;
+                edge: 1;
+            }
+            HorizontalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                if MainBridge.badge-text != "": Rectangle {
+                    border-radius: 12px;
+                    background: Theme.subtle-hover;
+                    border-width: 1px;
+                    border-color: Theme.card-stroke;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        padding-top: 4px;
+                        padding-bottom: 4px;
+                        spacing: 8px;
+                        Spinner {
+                            width: 14px;
+                            height: 14px;
+                            indeterminate: true;
+                        }
+                        Text {
+                            text: MainBridge.badge-text;
+                            font-size: 12px;
+                            font-weight: 600;
+                            color: Theme.accent-text;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                ToolButton {
+                    glyph: "\u{E7A7}";
+                    glyph-size: 14px;
+                    subtle: true;
+                    pad-x: 7px;
+                    pad-y: 7px;
+                    enabled: MainBridge.can-undo;
+                    tooltip: MainBridge.undo-title + " (Ctrl+Z)";
+                    accessible-name: MainBridge.undo-title;
+                    clicked => { MainBridge.undo(); }
+                }
+                ToolButton {
+                    glyph: "\u{E7A6}";
+                    glyph-size: 14px;
+                    subtle: true;
+                    pad-x: 7px;
+                    pad-y: 7px;
+                    enabled: MainBridge.can-redo;
+                    tooltip: MainBridge.redo-title + " (Ctrl+Y)";
+                    accessible-name: MainBridge.redo-title;
+                    clicked => { MainBridge.redo(); }
+                }
+                Rectangle {
+                    width: 9px;
+                    Rectangle { x: 4px; y: 6px; width: 1px; height: parent.height - 12px; background: Theme.divider; }
+                }
+                ToolButton {
+                    glyph: "\u{E8C6}";
+                    glyph-size: 14px;
+                    label: Loc.t("Böl");
+                    show-label: root.labels;
+                    subtle: true;
+                    pad-x: 9px;
+                    enabled: MainBridge.can-split;
+                    tooltip: Loc.t("Satırı oynatma konumundan ikiye böl");
+                    clicked => { MainBridge.split(); }
+                }
+                ToolButton {
+                    glyph: "\u{F2B7}";
+                    glyph-size: 14px;
+                    subtle: true;
+                    pad-x: 9px;
+                    enabled: MainBridge.can-retranslate;
+                    tooltip: Loc.t("Ctrl veya Shift ile satırları seç, seçilenleri yeniden çevir");
+                    accessible-name: Loc.t("Seçilenleri yeniden çevir");
+                    clicked => { MainBridge.retranslate(); }
+                }
+                ToolButton {
+                    glyph: "\u{E71B}";
+                    glyph-size: 14px;
+                    label: Loc.t("Sonrakiyle birleştir");
+                    show-label: root.labels;
+                    subtle: true;
+                    pad-x: 9px;
+                    enabled: MainBridge.can-merge;
+                    tooltip: Loc.t("Sonrakiyle birleştir");
+                    clicked => { MainBridge.merge(); }
+                }
+                ToolButton {
+                    glyph: "\u{E74D}";
+                    glyph-size: 14px;
+                    label: Loc.t("Sil");
+                    show-label: root.labels;
+                    subtle: true;
+                    pad-x: 9px;
+                    enabled: MainBridge.can-delete;
+                    tooltip: Loc.t("Satırı Sil (Delete)");
+                    clicked => { MainBridge.delete-lines(); }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.divider; }
+        keys := FocusScope {
+            vertical-stretch: 1;
+            changed has-focus => { MainBridge.list-focus-changed(self.has-focus); }
+            key-pressed(e) => {
+                if (e.text == Key.UpArrow) { return MainBridge.list-key("up", e.modifiers.shift) ? accept : reject; }
+                if (e.text == Key.DownArrow) { return MainBridge.list-key("down", e.modifiers.shift) ? accept : reject; }
+                if (e.text == Key.Delete) { return MainBridge.list-key("delete", e.modifiers.shift) ? accept : reject; }
+                if (e.text == " ") { return MainBridge.list-key("space", e.modifiers.shift) ? accept : reject; }
+                reject
+            }
+            list := ListView {
+                accessible-label: Loc.t("Satırlar");
+                for row[i] in MainBridge.rows: VerticalLayout {
+                    padding-top: 2px;
+                    padding-bottom: 2px;
+                    padding-left: 4px;
+                    padding-right: 4px;
+                    LineRow {
+                        index: i;
+                        item: row;
+                        shows-speakers: MainBridge.shows-speakers;
+                        grab-focus => { keys.focus(); }
+                        context(mx, my) => {
+                            keys.focus();
+                            root.menu-x = self.absolute-position.x - root.absolute-position.x + mx;
+                            root.menu-y = self.absolute-position.y - root.absolute-position.y + my;
+                            rowmenu.show();
+                        }
+                    }
+                }
+            }
+            // Auto-follow / programmatic scroll: center row `scroll-row` (rows are ≈ 48 px tall; ListView virtualizes).
+            property <int> epoch: MainBridge.scroll-epoch;
+            changed epoch => {
+                if (MainBridge.scroll-row >= 0) {
+                    list.content-y = min(0px, max(list.visible-height - list.content-height, list.visible-height / 2 - (MainBridge.scroll-row + 0.5) * 48px));
+                }
+            }
+        }
+    }
+
+    // Empty state (no lines).
+    if !MainBridge.has-sentences: VerticalLayout {
+        alignment: center;
+        spacing: 8px;
+        Glyph {
+            glyph: "\u{E7F0}";
+            size: 36px;
+            color: Theme.text-secondary;
+        }
+        Text {
+            text: MainBridge.is-working ? Loc.t("Altyazı üretiliyor…") : Loc.t("Henüz altyazı yok");
+            font-size: Theme.subtitle-size;
+            font-weight: 600;
+            horizontal-alignment: center;
+            color: Theme.text-primary;
+        }
+        if !MainBridge.is-working: Text {
+            text: Loc.t("Araç çubuğundan “Altyazı üret”e bas.");
+            horizontal-alignment: center;
+            color: Theme.text-secondary;
+        }
+    }
+
+    rowmenu := MenuFlyout {
+        x: root.menu-x;
+        y: root.menu-y;
+        min-menu-width: 240px;
+    }
+}

@@ -1,0 +1,584 @@
+{
+  "sourceLanguage": "tr",
+  "strings": {
+    "%@ Hakkında": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Hakkında"
+          }
+        }
+      }
+    },
+    "%@ Uygulamasından Çık": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Uygulamasından Çık"
+          }
+        }
+      }
+    },
+    "%@ Uygulamasını Gizle": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ Uygulamasını Gizle"
+          }
+        }
+      }
+    },
+    "API anahtarı bu Mac'te şifrelenmiş olarak saklanır.": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API key is stored encrypted on this Mac."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API anahtarı bu Mac'te şifrelenmiş olarak saklanır."
+          }
+        }
+      }
+    },
+    "API anahtarı şifrelenmemiş bağlantıyla (http) gönderilmez; adresi https:// ile girin.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API key is not sent over an unencrypted (http) connection; enter the address with https://."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API anahtarı şifrelenmemiş bağlantıyla (http) gönderilmez; adresi https:// ile girin."
+          }
+        }
+      }
+    },
+    "Araç Çubuğunu Gizle": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide Toolbar"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Araç Çubuğunu Gizle"
+          }
+        }
+      }
+    },
+    "Araç Çubuğunu Göster": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Toolbar"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Araç Çubuğunu Göster"
+          }
+        }
+      }
+    },
+    "Ayarlar…": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings…"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ayarlar…"
+          }
+        }
+      }
+    },
+    "Bağlantı kurulamadı.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not connect."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bağlantı kurulamadı."
+          }
+        }
+      }
+    },
+    "Bağlantı reddedildi.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connection refused."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bağlantı reddedildi."
+          }
+        }
+      }
+    },
+    "Büyüt/Küçült": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zoom"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Büyüt/Küçült"
+          }
+        }
+      }
+    },
+    "Diğerlerini Gizle": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide Others"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diğerlerini Gizle"
+          }
+        }
+      }
+    },
+    "Dosya": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dosya"
+          }
+        }
+      }
+    },
+    "Geri Al": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geri Al"
+          }
+        }
+      }
+    },
+    "Geri Al: %@": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Geri Al: %@"
+          }
+        }
+      }
+    },
+    "Görüntü": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Görüntü"
+          }
+        }
+      }
+    },
+    "Güvenli bağlantı kurulamadı.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not establish a secure connection."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Güvenli bağlantı kurulamadı."
+          }
+        }
+      }
+    },
+    "Kayıtlı API anahtarı da silinir.": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The stored API key is removed too."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kayıtlı API anahtarı da silinir."
+          }
+        }
+      }
+    },
+    "Kes": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cut"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kes"
+          }
+        }
+      }
+    },
+    "Kopyala": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kopyala"
+          }
+        }
+      }
+    },
+    "Küçült": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minimize"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Küçült"
+          }
+        }
+      }
+    },
+    "Pencere": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Window"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pencere"
+          }
+        }
+      }
+    },
+    "Servisler": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Services"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Servisler"
+          }
+        }
+      }
+    },
+    "Sunucu bulunamadı.": {
+      "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server not found."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunucu bulunamadı."
+          }
+        }
+      }
+    },
+    "Tam Ekrana Geç": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter Full Screen"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tam Ekrana Geç"
+          }
+        }
+      }
+    },
+    "Tam Ekrandan Çık": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exit Full Screen"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tam Ekrandan Çık"
+          }
+        }
+      }
+    },
+    "Tümünü Göster": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show All"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tümünü Göster"
+          }
+        }
+      }
+    },
+    "Tümünü Seç": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select All"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tümünü Seç"
+          }
+        }
+      }
+    },
+    "Tümünü Öne Getir": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bring All to Front"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tümünü Öne Getir"
+          }
+        }
+      }
+    },
+    "Yapıştır": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yapıştır"
+          }
+        }
+      }
+    },
+    "Yardım": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Help"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yardım"
+          }
+        }
+      }
+    },
+    "Yeni Pencere": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Window"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yeni Pencere"
+          }
+        }
+      }
+    },
+    "Yinele": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Redo"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yinele"
+          }
+        }
+      }
+    },
+    "Yinele: %@": {
+      "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Redo %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yinele: %@"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

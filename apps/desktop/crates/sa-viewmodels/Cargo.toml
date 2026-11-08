@@ -1,0 +1,28 @@
+[package]
+name = "sa-viewmodels"
+description = "View-model core shared by both front ends: SubtitleViewModel (jobs, sessions, playlist, translation, editing, undo), hub, explorer, providers UI logic, PlatformPolicy."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sa-core.workspace = true
+sa-enginekit.workspace = true
+sa-profiles.workspace = true
+sa-sync.workspace = true
+sa-media.workspace = true
+sa-providers.workspace = true
+sa-player.workspace = true
+uuid.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+indexmap.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+sa-core = { workspace = true, features = ["all-catalogs"] }
