@@ -22,6 +22,9 @@ use sa_providers::win::WinProviderManager;
 use sa_sync::wire::{EventKind, StateSyncEvent};
 use sa_sync::{NamedPipeBus, SyncBus, Topic, TopicFilter};
 
+use sa_core::l10n::LocalizedMessage;
+use sa_viewmodels::providers_ui::{ExternalConnectionNotice, ProviderConnectionTester, TestReport};
+
 use crate::settings_window::deps::{ProviderTester, WinOps, WinSettingsOps, WinTester};
 
 /// The `settings` broker topic (win-core §1.4): publish `SettingsUpdated` after each write, reload on others' events.
@@ -97,6 +100,12 @@ impl WinParts {
         Arc::new(WinTester { providers: self.providers.clone(), fetch: self.fetch.clone() })
     }
 
+    /// The toolbar picker's "Yenile" (C# `TestAndFetchModelsAsync(providerId)` without the storing, which the
+    /// picker's `ProvidersModel` does the same way: discovered models, an empty model takes the first).
+    pub fn picker_tester(&self) -> Arc<dyn ProviderConnectionTester> {
+        Arc::new(WinPickerTester { providers: self.providers.clone(), fetch: self.fetch.clone() })
+    }
+
     pub fn settings_ops(&self) -> Arc<dyn WinSettingsOps> {
         Arc::new(WinOps {
             providers: self.providers.clone(),
@@ -128,6 +137,33 @@ impl WinParts {
         bus.dispose();
         self.json_settings.flush();
         self.json_settings.dispose();
+    }
+}
+
+/// Saved-provider tests with the C# messages: `WinProviderManager::test_draft` (raises `IsTesting`), the message shown
+/// verbatim for success and failure alike; a cancelled test reports nothing.
+struct WinPickerTester {
+    providers: Arc<WinProviderManager>,
+    fetch: Arc<dyn HttpFetch>,
+}
+
+impl ProviderConnectionTester for WinPickerTester {
+    fn test(&self, preset_id: &str, base_url: &str, api_key: &str, model: &str, cancel: &CancellationToken) -> TestReport {
+        match self.providers.test_draft(preset_id, base_url, api_key, Some(model), self.fetch.as_ref(), cancel) {
+            Ok(o) => {
+                let message = LocalizedMessage::verbatim(o.message);
+                TestReport {
+                    notice: Some(if o.success { ExternalConnectionNotice::success(message) } else { ExternalConnectionNotice::error(message) }),
+                    models: if o.success { o.models } else { Vec::new() },
+                }
+            }
+            Err(_) => TestReport::default(),
+        }
+    }
+
+    /// C# `_manager.IsTesting`: the manager counts every test, the Settings window's included.
+    fn is_busy(&self) -> bool {
+        self.providers.is_testing()
     }
 }
 

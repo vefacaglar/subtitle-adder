@@ -67,21 +67,21 @@ export component MainWindow inherits Window {
             }
             MenuItem {
                 title: Loc.t("Video aç…");
-                icon: Symbols.image("film", 16px);
+                icon: Symbols.tinted-image("film", 16px, MacTheme.menu-symbol);
                 enabled: MenuBridge.has-main-window && MenuBridge.can-open-video;
                 shortcut: @keys(Control + O);
                 activated => { MenuBridge.open-video(); }
             }
             MenuItem {
                 title: Loc.t("Altyazı üret");
-                icon: Symbols.image("captions.bubble", 16px);
+                icon: Symbols.tinted-image("captions.bubble", 16px, MacTheme.menu-symbol);
                 enabled: MenuBridge.has-main-window && MenuBridge.can-generate;
                 shortcut: @keys(Control + Return);
                 activated => { MenuBridge.generate(); }
             }
             MenuItem {
                 title: Loc.t("Durdur");
-                icon: Symbols.image("stop.fill", 16px);
+                icon: Symbols.tinted-image("stop.fill", 16px, MacTheme.menu-symbol);
                 enabled: MenuBridge.has-main-window && MenuBridge.can-stop;
                 shortcut: @keys(Control + ".");
                 activated => { MenuBridge.stop(); }
@@ -162,7 +162,7 @@ export component MainWindow inherits Window {
             }
             MenuItem {
                 title: Loc.t("Kenar çubuğunu göster / gizle");
-                icon: Symbols.image("sidebar.left", 16px);
+                icon: Symbols.tinted-image("sidebar.left", 16px, MacTheme.menu-symbol);
                 shortcut: @keys(Meta + Control + S);
                 activated => { MenuBridge.toggle-sidebar(); }
             }

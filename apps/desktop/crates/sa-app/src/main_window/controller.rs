@@ -2503,6 +2503,20 @@ fn quick_glyph(k: sa_core::platform::QuickLocationKind) -> char {
 mod tests {
     use super::*;
 
+    /// The real call site, not a vocabulary scan: every quick location's macOS symbol has a vector stand-in.
+    #[test]
+    fn every_quick_location_symbol_has_a_vector_stand_in() {
+        use sa_core::platform::QuickLocationKind as Q;
+        for kind in [Q::Videos, Q::Downloads, Q::Desktop, Q::Home, Q::Drive, Q::Volume] {
+            // Exhaustive: a new kind fails to compile here until it is added to the list above.
+            match kind {
+                Q::Videos | Q::Downloads | Q::Desktop | Q::Home | Q::Drive | Q::Volume => {}
+            }
+            let name = quick_symbol(kind);
+            assert!(crate::symbols::svg::body(name).is_some(), "{kind:?}: no stand-in for {name}");
+        }
+    }
+
     #[test]
     fn a_double_click_toggles_playback_twice_in_total_and_full_screen_once() {
         // Slint: release 1 → clicked; release 2 → clicked, then double-clicked.

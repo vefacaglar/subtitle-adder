@@ -5,6 +5,10 @@ import { Palette } from "std-widgets.slint";
 export global MacTheme {
     // Follows `Palette.color-scheme` (Rust sets it from `appTheme`; System = NSApp effective appearance).
     out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    // NSMenu item icons (`MenuBar` → muda) are plain bitmaps, so a color is baked in. On macOS
+    // `appkit::keep_menu_icons_template` turns them into template images (only the alpha counts, AppKit recolors
+    // them for highlight and disabled); the color shows in software renderings only.
+    out property <color> menu-symbol: dark ? #ffffffd9 : #000000d9;
 
     in-out property <brush> window-background: dark ? #323232 : #ececec;
     in-out property <brush> content-background: dark ? #1e1e1e : #ffffff;

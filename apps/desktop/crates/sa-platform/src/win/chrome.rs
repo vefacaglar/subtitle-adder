@@ -10,8 +10,9 @@
 //!   on hover. Minimize/close and every other control in the title bar stay client area (Slint handles the clicks).
 //!   Because the maximize button is non-client, Slint gets no pointer events over it: the chrome reports hover/press
 //!   through [`WindowChrome::set_caption_hover_handler`] and performs the maximize/restore itself on click.
-//! * Mica (`DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW`, frame extended into the whole client area) is opt-in through
-//!   [`WindowChrome::set_mica`] because it only shows through a transparent Slint background; rounded corners;
+//! * Mica (`DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW`, frame extended into the whole client area) through
+//!   [`WindowChrome::set_mica`], which reports whether DWM draws it: it only shows through a transparent Slint
+//!   background, so the caller makes the background transparent only then; rounded corners;
 //!   immersive dark mode follows the content theme ([`WindowChrome::set_dark`]).
 //! * Size: min size `min_dip × scale` (scale at attach time, like C#), first-run default size centered on the work area,
 //!   restored size persisted in physical px (`mainWindowWidth/Height`).
@@ -22,8 +23,9 @@ use sa_core::settings::SettingsStore;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+    DWMWINDOWATTRIBUTE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
+use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, ScreenToClient};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
@@ -178,6 +180,29 @@ pub struct WindowChrome {
     scale: f64,
 }
 
+/// The frame extension that puts Mica behind the whole client area without DWM's own caption buttons. A "sheet of
+/// glass" (`-1`) or any top margin makes DWM draw its minimize/maximize/close glyphs in the extended frame, and with
+/// the caption turned into client area they show through the transparent Slint title bar under the Slint buttons
+/// (two sets, offset). Extending from the bottom edge by more than any window is tall covers the same client area
+/// and DWM draws no caption buttons there.
+pub fn mica_margins() -> MARGINS {
+    MARGINS { cxLeftWidth: 0, cxRightWidth: 0, cyTopHeight: 0, cyBottomHeight: i16::MAX as i32 }
+}
+
+/// `DWMWA_MICA_EFFECT` (Windows 11 21H2 only; not in the SDK headers).
+const DWMWA_MICA_EFFECT: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(1029);
+
+/// Build 22000+ (`RtlGetVersion` is not subject to the manifest-based version lie of `GetVersionEx`).
+fn is_windows_11() -> bool {
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetVersion(info: *mut OSVERSIONINFOW) -> i32;
+    }
+    let mut info = OSVERSIONINFOW { dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32, ..Default::default() };
+    // SAFETY: `info` is a properly sized OSVERSIONINFOW with its size field set.
+    unsafe { RtlGetVersion(&mut info) == 0 && info.dwMajorVersion >= 10 && info.dwBuildNumber >= 22000 }
+}
+
 fn dpi_of(hwnd: HWND) -> u32 {
     let d = unsafe { GetDpiForWindow(hwnd) };
     if d == 0 { 96 } else { d }
@@ -255,13 +280,24 @@ impl WindowChrome {
         }
     }
 
-    /// Mica behind a transparent Slint background (Windows 11 22H2+; silently ignored elsewhere).
-    pub fn set_mica(&self, on: bool) {
-        let kind = if on { DWMSBT_MAINWINDOW } else { DWMSBT_NONE };
-        let m = if on { MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 } } else { MARGINS::default() };
+    /// Mica behind a transparent Slint background (C# `window.SystemBackdrop = new MicaBackdrop()`):
+    /// `DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW` on Windows 11 22H2+, the older `DWMWA_MICA_EFFECT` on 21H2, with
+    /// the frame extended into the whole client area ([`mica_margins`]: from the bottom edge, never the top). Returns whether DWM draws Mica; `false` (Windows 10, or `on ==
+    /// false`) leaves the frame unextended, and the caller keeps an opaque background (MicaBackdrop's solid fallback).
+    pub fn set_mica(&self, on: bool) -> bool {
+        let hwnd = self.state.hwnd;
         unsafe {
-            let _ = DwmExtendFrameIntoClientArea(self.state.hwnd, &m);
-            let _ = DwmSetWindowAttribute(self.state.hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &kind as *const _ as *const _, 4);
+            let kind = if on { DWMSBT_MAINWINDOW } else { DWMSBT_NONE };
+            let mut ok = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &kind as *const _ as *const _, 4).is_ok();
+            if on && !ok {
+                // Windows 11 21H2 (build 22000): the undocumented attribute 1029 that preceded the backdrop type.
+                let enable: i32 = 1;
+                ok = DwmSetWindowAttribute(hwnd, DWMWA_MICA_EFFECT, &enable as *const _ as *const _, 4).is_ok() && is_windows_11();
+            }
+            let mica = on && ok;
+            let m = if mica { mica_margins() } else { MARGINS::default() };
+            let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
+            mica
         }
     }
 
@@ -490,6 +526,14 @@ mod tests {
         WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
     };
     use windows::core::w;
+
+    #[test]
+    fn mica_extends_the_frame_from_the_bottom_only() {
+        // A sheet of glass (-1) or a top margin makes DWM draw a second set of caption buttons (see mica_margins).
+        let m = mica_margins();
+        assert_eq!((m.cxLeftWidth, m.cxRightWidth, m.cyTopHeight), (0, 0, 0));
+        assert!(m.cyBottomHeight >= 16_000, "taller than any window: the whole client area");
+    }
 
     fn layout() -> CaptionLayout {
         let mut l = CaptionLayout {

@@ -105,6 +105,9 @@ pub fn attach(window: &ui::SettingsWindow, settings: &dyn SettingsStore, on_them
     }
     sync(&chrome, window);
     set_dark(&chrome, window);
+    // Mica like the main window (C# `WindowChrome.Setup` sets it for both); solid where DWM cannot draw it.
+    let mica = crate::main_window::chrome::mica_renderer(window.window()) && chrome.set_mica(true);
+    window.global::<ui::AppBridge>().set_mica_backdrop(mica);
     Some(chrome)
 }
 

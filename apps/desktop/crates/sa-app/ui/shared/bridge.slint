@@ -3,8 +3,8 @@
 // state into `in` properties (diffed, on the UI thread) and handles the callbacks. UI agents extend these globals
 // (one global per area) and document every addition in API.md.
 
-import { MenuEntry, PickerItem, SentenceRowData, QueueRowData, ExplorerRowData } from "main_types.slint";
-export { MenuEntry, PickerItem, SentenceRowData, QueueRowData, ExplorerRowData }
+import { MenuEntry, PickerItem, PickerModelRow, SentenceRowData, QueueRowData, ExplorerRowData } from "main_types.slint";
+export { MenuEntry, PickerItem, PickerModelRow, SentenceRowData, QueueRowData, ExplorerRowData }
 import { HubCardData, HubListData } from "hub_types.slint";
 export { HubCardData, HubListData }
 import { SettingsModelRow, SettingsProviderRow, SettingsChoice } from "settings_types.slint";
@@ -33,6 +33,9 @@ export global AppBridge {
     in property <color> accent-dark2: #003e92;
     in property <color> accent-light2: #60cdff;
     in property <color> accent-light3: #99ebff;
+    // ui-main (Windows): DWM draws Mica behind the window (Windows 11 22H2+), so the window background is
+    // transparent where the WinUI app shows Mica; false = the solid fallback (Windows 10, software renderer).
+    in property <bool> mica-backdrop;
 
     callback open-settings();
     callback close-requested();
@@ -100,6 +103,37 @@ export global MainBridge {
     callback auto-save-toggled(bool);
     callback translation-model-clicked();
     callback profile-clicked();
+
+    // ---- toolbar translation-model picker (Windows flyout win-ui-hub-settings §8; macOS popover mac-ui §6.6).
+    // `translation-model-clicked` asks Rust to open it: Rust fills the state, then bumps `picker-open-epoch` and the
+    // tree shows its flyout/popover; `picker-close-epoch` hides it (a model chosen, "manage", macOS: a job started).
+    in property <int> picker-open-epoch;
+    in property <int> picker-close-epoch;
+    // Clears the search field (provider switched).
+    in property <int> picker-search-reset;
+    in property <[PickerItem]> picker-providers;
+    in property <int> picker-provider-index;
+    in property <[PickerModelRow]> picker-rows;
+    // Shown over the empty list ("" = none).
+    in property <string> picker-empty-text;
+    // The status line under the list ("" = none).
+    in property <string> picker-status;
+    // macOS: "Yenile" exists only while a saved provider is browsed (Windows always shows it).
+    in property <bool> picker-show-refresh;
+    in property <bool> picker-can-refresh;
+    // The row to keep visible (macOS highlight); `picker-scroll-epoch` changes on every request.
+    in property <int> picker-scroll-row: -1;
+    in property <int> picker-scroll-epoch;
+    callback picker-provider-selected(int);
+    callback picker-search-edited(string);
+    callback picker-row-clicked(string);
+    // macOS ↑/↓ (−1 / +1) and Return in the search field or the list.
+    callback picker-move-highlight(int);
+    callback picker-choose-highlighted();
+    callback picker-refresh();
+    callback picker-manage-providers();
+    // The tree closed it itself (Escape).
+    callback picker-closed();
 
     // ---- menus: Rust fills `menu-entries` on `menu-requested(<menu id>)`, the UI shows them, a click reports the id.
     // Menu ids: "model", "speakers", "bulk-language", "queue-language:<row>", "row:<index>", "speaker:<index>",
@@ -626,8 +660,15 @@ export global MenuBridge {
 }
 
 
-// SF Symbols rasterized at runtime on macOS (`NSImage(systemSymbolName:)` → image, cached per name/size); empty
-// images elsewhere. Only the mac tree uses it.
+// SF Symbols (mac tree only; `sa_app::symbols`): on macOS rasterized through AppKit (`NSImage(systemSymbolName:)`),
+// elsewhere (and for names AppKit lacks) the bundled vector stand-ins; cached per name/size/scale.
+// `image` is a template (black + alpha) for `colorize`; `tinted-image` has `color` baked in, for consumers that
+// cannot colorize (NSMenu item icons of the `MenuBar`).
 export global Symbols {
     pure callback image(string /* name */, length /* point size */) -> image;
+    pure callback tinted-image(string /* name */, length /* point size */, color /* tint */) -> image;
+    // The size `image` is shown at: an SF Symbol's own bounds at that point size (wider than tall for e.g.
+    // `captions.bubble`, like `Image(systemName:)`), a square of the point size for the stand-ins.
+    pure callback image-width(string /* name */, length /* point size */) -> length;
+    pure callback image-height(string /* name */, length /* point size */) -> length;
 }

@@ -11,7 +11,7 @@ use objc2::{class, msg_send, sel};
 
 use super::defaults::copy_any_app_value;
 use super::ffi::{array_items, file_url, ns_array, ns_string, responds, rust_string, shared_application};
-use crate::mac_rules::{TitleBarDoubleClick, appearance_name, title_bar_double_click};
+use crate::mac_rules::{ReopenAction, ReopenWindow, TitleBarDoubleClick, appearance_name, reopen_action, title_bar_double_click};
 
 const NS_APPLICATION_ACTIVATION_POLICY_REGULAR: isize = 0;
 const NS_WINDOW_STYLE_MASK_FULL_SCREEN: usize = 1 << 14;
@@ -31,6 +31,49 @@ pub fn prepare_process() {
             let _: () = msg_send![&*app, activateIgnoringOtherApps: true];
         }
     });
+}
+
+/// The first part of AppKit's default Dock-icon click handling (`rapp`): a hidden app is unhidden. Returns whether
+/// it was hidden. Main thread.
+pub fn unhide_if_hidden() -> bool {
+    autoreleasepool(|_| unsafe {
+        let app = shared_application();
+        let hidden: bool = msg_send![&*app, isHidden];
+        if hidden {
+            let none: Option<&AnyObject> = None;
+            let _: () = msg_send![&*app, unhide: none];
+        }
+        hidden
+    })
+}
+
+/// The rest of AppKit's default Dock-icon click handling, which a custom `rapp` handler replaces: with no visible
+/// window the first miniaturized one is deminiaturized ([`reopen_action`]). Returns `true` when no window is left,
+/// so the caller opens a new main window (mac-ui §2.3). Run it after [`unhide_if_hidden`] has taken effect. Main
+/// thread.
+pub fn reopen_existing_windows() -> bool {
+    autoreleasepool(|_| unsafe {
+        let app = shared_application();
+        let none: Option<&AnyObject> = None;
+        let list: Option<Retained<AnyObject>> = msg_send![&*app, windows];
+        let windows = list.map(|l| array_items(&l)).unwrap_or_default();
+        let states: Vec<ReopenWindow> = windows
+            .iter()
+            .map(|w| ReopenWindow {
+                visible: msg_send![&**w, isVisible],
+                miniaturized: msg_send![&**w, isMiniaturized],
+                panel: msg_send![&**w, isKindOfClass: class!(NSPanel)],
+            })
+            .collect();
+        match reopen_action(&states) {
+            ReopenAction::Nothing => false,
+            ReopenAction::Deminiaturize(i) => {
+                let _: () = msg_send![&*windows[i], deminiaturize: none];
+                false
+            }
+            ReopenAction::OpenWindow => true,
+        }
+    })
 }
 
 /// `NSApp.appearance` = nil (system) / Aqua / DarkAqua; affects title bars, menus, alerts, panels.
@@ -281,6 +324,54 @@ pub fn install_special_menus(services: &str, window: &str, help: &str) -> usize 
         }
         n
     })
+}
+
+/// Makes every item icon of the menu bar a template image, like the SwiftUI app's `Button(…, systemImage:)` menu
+/// icons: AppKit then draws it in the item's own label color, white on the selection highlight and dimmed when the
+/// item is disabled. The Slint `MenuBar` (muda) hands its icons over as plain bitmaps and rebuilds items when the
+/// menus change, so the walk runs whenever menu tracking begins (before anything is drawn). Once per process; main
+/// thread.
+pub fn keep_menu_icons_template() {
+    static INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if INSTALLED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let observer = super::notifications::NotificationObserver::app(
+        super::notifications::MENU_DID_BEGIN_TRACKING,
+        Box::new(template_menu_bar_icons),
+    );
+    // Lives as long as the app.
+    std::mem::forget(observer);
+    template_menu_bar_icons();
+}
+
+fn template_menu_bar_icons() {
+    autoreleasepool(|_| unsafe {
+        let app = shared_application();
+        let main: Option<Retained<AnyObject>> = msg_send![&*app, mainMenu];
+        if let Some(main) = main {
+            template_icons(&main);
+        }
+    });
+}
+
+unsafe fn template_icons(menu: &AnyObject) {
+    unsafe {
+        let items: Option<Retained<AnyObject>> = msg_send![menu, itemArray];
+        for item in items.map(|i| array_items(&i)).unwrap_or_default() {
+            let image: Option<Retained<AnyObject>> = msg_send![&*item, image];
+            if let Some(image) = image {
+                let template: bool = msg_send![&*image, isTemplate];
+                if !template {
+                    let _: () = msg_send![&*image, setTemplate: true];
+                }
+            }
+            let sub: Option<Retained<AnyObject>> = msg_send![&*item, submenu];
+            if let Some(sub) = sub {
+                template_icons(&sub);
+            }
+        }
+    }
 }
 
 /// Live system accent color (`NSColor.controlAccentColor` in sRGB) as 0..1 RGBA.

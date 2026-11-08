@@ -198,6 +198,15 @@ impl Drop for Rig {
 // ------------------------------------------------------------------------------------------------ tests
 
 #[test]
+fn the_software_renderer_never_gets_a_transparent_mica_background() {
+    // The renderer that draws the window decides, not SLINT_BACKEND: the software renderer has no per-pixel alpha.
+    let r = rig(false);
+    r.window.show().unwrap();
+    assert!(!sa_app::main_window::chrome::mica_renderer(r.window.window()));
+    assert!(!sa_app::main_window::chrome::mica_renderer(r.window.window()), "asking twice gives the same answer");
+}
+
+#[test]
 fn attaching_pushes_the_initial_state() {
     let r = rig(false);
     let main = r.main();
@@ -447,6 +456,24 @@ fn menus_are_built_on_opening_and_their_ids_act() {
     r.pump();
     assert_eq!(format!("model:{}", r.vm.model()), other);
     assert_eq!(r.main().get_model_title(), sa_core::models::ModelLabel::name(&r.vm.model()));
+}
+
+#[test]
+fn a_single_diarized_speaker_still_shows_the_speaker_column() {
+    // C# `ShowsSpeakers => Speakers.Count > 0` with `CompactSpeakerTitle` "K1"; Swift `showsSpeakers =
+    // !speakers.isEmpty` with "Konuşmacı 1": one speaker is enough (more can be added), only the dash rule needs two.
+    for mac in [false, true] {
+        let r = rig(mac);
+        let json = r.env.touch(
+            "one-speaker.json",
+            r#"[{"id":1,"start":0,"end":2,"text":"Bir.","speaker":0,"words":[]},{"id":2,"start":2,"end":4,"text":"İki.","speaker":0,"words":[]}]"#,
+        );
+        assert!(r.vm.load_subtitle_file(&json));
+        r.pump();
+        assert!(r.main().get_shows_speakers(), "mac={mac}");
+        let expected = if mac { "Konuşmacı 1" } else { "K1" };
+        assert!(r.rows().iter().all(|row| row.has_speaker && row.speaker_text == expected), "mac={mac}");
+    }
 }
 
 #[test]

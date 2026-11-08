@@ -7,6 +7,7 @@ import { MainBridge, AppBridge, Workspace } from "../../shared/bridge.slint";
 import { MacTheme } from "../theme.slint";
 import { Sym, ToolbarButton, MenuButton, PopUpButton, MacMenu, ToolTip } from "controls.slint";
 import { ProfileToolbarButton } from "../hub/profile_popover.slint";
+import { TranslationModelToolbarItem, TranslationModelPopover } from "translation_picker.slint";
 
 export { ToolbarButton }
 
@@ -136,29 +137,8 @@ export component Toolbar inherits Rectangle {
             tooltip: Loc.t("Tüm satırları seçili hedef dile yerel modelle çevir");
             clicked => { MainBridge.translate(); }
         }
-        if root.not-platform && root.first-hidden > 7: ToolbarButton {
-            min-width: 110px;
-            max-width: 220px;
-            enabled: !MainBridge.is-working;
-            accessible-name: Loc.t("Çeviri modeli");
-            tooltip: MainBridge.translation-model-help;
-            clicked => { MainBridge.translation-model-clicked(); }
-            HorizontalLayout {
-                spacing: 4px;
-                if MainBridge.translation-model-kind != "": Sym {
-                    y: (parent.height - self.height) / 2;
-                    name: MainBridge.translation-model-kind;
-                    size: 14px;
-                }
-                Text {
-                    text: MainBridge.translation-model-title;
-                    font-size: MacTheme.body-size;
-                    vertical-alignment: center;
-                    overflow: elide;
-                    color: MacTheme.label;
-                }
-            }
-        }
+        // TranslationModelPickerButton + its popover (translation_picker.slint).
+        if root.not-platform && root.first-hidden > 7: TranslationModelToolbarItem { }
         if root.editor && root.first-hidden > 8: ToolbarButton {
             symbol: "square.and.arrow.down";
             toggled: MainBridge.auto-save;
@@ -197,6 +177,18 @@ export component Toolbar inherits Rectangle {
                 omenu.show();
             }
         }
+    }
+    // The translation-model item chosen from the overflow menu: its popover hangs off the trailing edge (the item
+    // itself is not in the toolbar then).
+    property <int> picker-open-epoch: MainBridge.picker-open-epoch;
+    changed picker-open-epoch => {
+        if (root.not-platform && root.first-hidden <= 7) {
+            opicker.show();
+        }
+    }
+    opicker := TranslationModelPopover {
+        x: max(8px, root.width - 340px - 10px);
+        y: root.height - 6px;
     }
     // A PopupWindow cannot be conditional: the overflow menu hangs off the trailing edge of the toolbar.
     omenu := MacMenu {

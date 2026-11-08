@@ -113,6 +113,10 @@ pub trait MediaPlayerBackend {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeStackInfo {
     pub ffmpeg_avformat_version: String,
+    /// `avcodec_license()` of the libraries this process loaded: `LGPL version 3 or later` for the build the app
+    /// ships (the BtbN LGPL build is configured with `--enable-version3`, so the LGPLv3 terms apply, not 2.1's);
+    /// the engine keeps its own GPL build (`GPL version 3 or later`) in its own folder.
+    pub ffmpeg_license: String,
     pub audio_host: String,
     pub audio_output_device: Option<String>,
 }

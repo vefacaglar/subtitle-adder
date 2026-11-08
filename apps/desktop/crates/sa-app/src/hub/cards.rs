@@ -202,3 +202,36 @@ pub fn apply_rows(model: &VecModel<HubCardData>, rows: Vec<HubCardData>) -> bool
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real call site, not a vocabulary scan: every filter's macOS empty-state symbol has a vector stand-in.
+    #[test]
+    fn every_empty_state_symbol_has_a_vector_stand_in() {
+        let filters = [
+            VideoFeedFilter::All,
+            VideoFeedFilter::History,
+            VideoFeedFilter::Liked,
+            VideoFeedFilter::MostWatched,
+            VideoFeedFilter::TopRated,
+            VideoFeedFilter::CustomList(None),
+        ];
+        for filter in &filters {
+            // Exhaustive: a new filter fails to compile here until it is added to the list above.
+            match filter {
+                VideoFeedFilter::All
+                | VideoFeedFilter::History
+                | VideoFeedFilter::Liked
+                | VideoFeedFilter::MostWatched
+                | VideoFeedFilter::TopRated
+                | VideoFeedFilter::CustomList(_) => {}
+            }
+            for searching in [false, true] {
+                let name = empty_symbol(filter, searching);
+                assert!(crate::symbols::svg::body(name).is_some(), "{filter:?}/{searching}: no stand-in for {name}");
+            }
+        }
+    }
+}

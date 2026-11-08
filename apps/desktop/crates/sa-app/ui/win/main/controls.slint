@@ -388,6 +388,19 @@ export component DropDownButton inherits Rectangle {
     accessible-label: root.accessible-name != "" ? root.accessible-name : root.label;
     accessible-value: root.label;
     accessible-enabled: root.enabled;
+    // UIA Invoke/Expand opens it like a click (WinUI DropDownButton is invokable).
+    accessible-action-default => { root.open(); }
+    function open() {
+        if (!root.enabled) {
+            return;
+        }
+        if (root.custom) {
+            root.custom-clicked();
+        } else {
+            MainBridge.menu-requested(root.menu-id);
+            flyout.show();
+        }
+    }
     property <brush> fg: root.enabled ? Theme.text-primary : Theme.text-disabled;
     HorizontalLayout {
         padding-left: root.pad-x;
@@ -417,14 +430,7 @@ export component DropDownButton inherits Rectangle {
     }
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => {
-            if (root.custom) {
-                root.custom-clicked();
-            } else {
-                MainBridge.menu-requested(root.menu-id);
-                flyout.show();
-            }
-        }
+        clicked => { root.open(); }
     }
     ToolTip {
         text: root.tooltip;
@@ -445,6 +451,11 @@ export component PickerCombo inherits Rectangle {
     in property <string> accessible-name;
     in property <bool> enabled: true;
     callback selected(int);
+    // WinUI ComboBox keyboard: focusable (Tab, or `focus()` from a flyout that opens on it), ↑/↓ select the
+    // previous/next enabled item, Space / Return / Alt+↓ / F4 open the list. The focus ring (FocusVisualPrimaryBrush
+    // 2 px around the control) shows only for keyboard focus, like WinUI.
+    forward-focus: keys;
+    property <bool> keyboard-focus;
     min-height: Theme.control-height;
     border-radius: Theme.control-radius;
     border-width: 1px;
@@ -475,6 +486,47 @@ export component PickerCombo inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         clicked => { popup.show(); }
+    }
+    function step(delta: int) {
+        if (root.items.length == 0) {
+            return;
+        }
+        let start = max(0, root.current-index);
+        if (delta > 0 && start + 1 < root.items.length && root.items[start + 1].enabled) {
+            root.selected(start + 1);
+        } else if (delta < 0 && start > 0 && root.items[start - 1].enabled) {
+            root.selected(start - 1);
+        }
+    }
+    keys := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        focus-gained(reason) => { root.keyboard-focus = reason == FocusReason.tab-navigation; }
+        focus-lost => { root.keyboard-focus = false; }
+        key-pressed(event) => {
+            if (event.text == Key.UpArrow && !event.modifiers.alt) {
+                root.step(-1);
+                return accept;
+            }
+            if (event.text == Key.DownArrow && !event.modifiers.alt) {
+                root.step(1);
+                return accept;
+            }
+            if (event.text == " " || event.text == Key.Return || event.text == Key.F4 || (event.text == Key.DownArrow && event.modifiers.alt)) {
+                popup.show();
+                return accept;
+            }
+            reject
+        }
+    }
+    if keys.has-focus && root.keyboard-focus: Rectangle {
+        x: -3px;
+        y: -3px;
+        width: root.width + 6px;
+        height: root.height + 6px;
+        border-radius: root.border-radius + 3px;
+        border-width: 2px;
+        border-color: Theme.text-primary;
     }
     ToolTip {
         text: root.tooltip;

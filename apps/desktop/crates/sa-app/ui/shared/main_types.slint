@@ -31,6 +31,18 @@ export struct PickerItem {
     enabled: bool,
 }
 
+// A model row of the toolbar translation-model picker (Windows flyout ListView, macOS popover List).
+export struct PickerModelRow {
+    id: string,
+    title: string,
+    // The model translation uses (Windows: selected item; macOS: secondary check mark).
+    current: bool,
+    // macOS: false for a provider that cannot be used (offline, unusable address).
+    enabled: bool,
+    // macOS: the row ↑/↓ move and Return chooses (list selection highlight).
+    highlighted: bool,
+}
+
 // A subtitle line of the editor list (win-ui-main §9.3 `SentenceRow`, mac-ui §7.6). Display-ready, decides nothing.
 export struct SentenceRowData {
     uid: string,

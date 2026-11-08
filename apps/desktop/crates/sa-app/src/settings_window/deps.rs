@@ -234,6 +234,11 @@ pub struct SettingsDeps {
     pub win: Option<Arc<dyn WinSettingsOps>>,
     /// Installed font families (DirectWrite / CTFontManager order); called off the UI thread once per window.
     pub font_families: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    /// The provider test state the toolbar translation pickers use. macOS shares it like the SwiftUI app shares
+    /// `vm.testingProviders` / `vm.providerNotices`: a saved provider's test here disables the picker's "Yenile",
+    /// and a picker refresh's outcome shows on the provider's card. Windows keeps its own (C# `_manager.IsTesting`
+    /// already covers the picker); `None` in tests.
+    pub activity: Option<Rc<sa_viewmodels::providers_ui::ProvidersModel>>,
 }
 
 /// The installed font families for the font pop-ups: DirectWrite's system collection on Windows (sorted,

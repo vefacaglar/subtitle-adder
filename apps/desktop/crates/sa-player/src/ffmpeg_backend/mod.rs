@@ -276,6 +276,7 @@ pub fn probe() -> NativeStackInfo {
     let device = host.default_output_device().and_then(|d| d.description().ok().map(|desc| desc.name().to_owned()));
     NativeStackInfo {
         ffmpeg_avformat_version: format!("{}.{}.{}", v >> 16, (v >> 8) & 0xff, v & 0xff),
+        ffmpeg_license: ffmpeg_next::codec::license().to_owned(),
         audio_host: format!("{:?}", host.id()),
         audio_output_device: device,
     }

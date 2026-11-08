@@ -9,16 +9,21 @@ visibly or behaviorally different from the reference; **missing**: not available
 
 ## How this was checked
 
-* `cargo build --workspace --release` and `cargo test --workspace -j 3` on Windows (1391 passed, 0 failed, 8 ignored), including the
+* Final gate (2026-11-08): `cargo build --workspace --release` and `cargo test --workspace -j 4 --no-fail-fast` on Windows
+  (77 test binaries: 1413 passed, 0 failed, 8 ignored; no fixes were needed), including the
   integration tests `crates/sa-app/tests/app_shell.rs` (the production composition on a temp data folder) and
   `app::win_parts` (temp cleanup). The C# behavior comparisons (`SA_DOTNET_FIXTURES=1`) and real-engine tests
   (`ENGINE_E2E=1`) are opt-in; the area agents ran them.
-* **Windows end to end**, real app (`dist\SubtitleAdder.exe` and the debug build) on a copy of data written by the C#
+* **Windows end to end**, real app (`dist\SubtitleAdder.exe`, restaged by `scripts/stage.ps1` for the final gate; the LGPL
+  FFmpeg is not pinned yet, so the stage used its GPL-DLL fallback for this local run) on a copy of data written by the C#
   app's own classes (`tools/fixtures/E2EData`, driven by `scripts/e2e-data.ps1`), with `SUBTITLE_ADDER_DATA_DIR`
   pointing at the copy. Driven through UI Automation (`scripts/e2e-windows.ps1`): start, Platform tab logged out,
   log in with the C# profile, history, log out, open a Windows-SAPI Turkish TTS clip (file dialog and command line),
   transcribe (whisper `base`), translate (`madlad-3b`), edit a line, undo, export SRT through the save dialog, add an
-  API-key provider, restart, keys still decrypt. Screenshots: `shots/e2e/*.png` (app window only, PrintWindow).
+  API-key provider, restart, keys still decrypt. Screenshots: `shots/e2e/*.png` (app window only, PrintWindow). The final
+  rerun passed every step and check (no plaintext key, C# reader: logged-out use left the history at `views=2`); all 13
+  screenshots were looked at and compared with the C# layout (e.g. the card's `+ Listeye ekle` keeps C#'s plus glyph
+  *and* the `+` in the catalog string).
 * **macOS look** on Windows: the cupertino tree rendered with `sa-shot` (software renderer, `SA_UI_PLATFORM=mac`):
   `shots/mac/*.png`; area agents' renders in `shots/main`, `shots/settings`, `shots/hub-mac-*.png`.
 * Nothing ran on a Mac (see "Unverified on macOS").
@@ -30,12 +35,13 @@ visibly or behaviorally different from the reference; **missing**: not available
 Screenshots (paths relative to `apps/desktop`): `shots/e2e/01-start.png` (empty main window),
 `02-hub-logged-out.png`, `03-hub-history.png`, `04-hub-favorites.png`, `05-hub-after-logout.png`,
 `06-editor-video.png`, `07-translated.png`, `08-edited.png`, `09-undone.png`, `10-export-dialog.png`,
-`11-settings.png`, `12-provider-added.png`, `13-settings-after-restart.png`; cupertino: `shots/mac/main-empty.png`,
+`11-settings.png`, `12-provider-added.png`, `13-settings-after-restart.png`; cupertino (re-rendered for the final gate): `shots/mac/main-empty.png` (no view model: empty pickers),
+`main-empty-toolbar.png` (`--scene empty`: the same window with the toolbar and sidebar filled),
 `main-editor.png`, `main-editor-dark-en.png`, `hub-logged-out.png`, `hub-feed.png`, `settings-general.png`,
-`settings-translation.png`. Compared with mac-ui: unified 52 pt toolbar row with traffic lights, translucent
+`settings-translation.png`, `symbols-light.png`, `symbols-dark.png` (`--window symbols`: every SF Symbol stand-in). Compared with mac-ui: unified 52 pt toolbar row with traffic lights, translucent
 sidebar with "Filmler", centered segmented Player / Platform / Çeviri listesi, editor table (#, time, `Konuşmacı N`,
 text + translation), status bar with the SRT/VTT/JSON segmented control and the Dil pop-up, preferences window with
-icon tabs; the visible differences are the placeholder SF Symbols and the unmeasured settings window size.
+icon tabs; the SF Symbols are drawn by the SVG stand-ins off macOS (`shots/mac/symbols-*.png`); the visible difference left is the unmeasured settings window size.
 
 ## Feature table
 
@@ -46,14 +52,14 @@ icon tabs; the visible differences are the placeholder SF Symbols and the unmeas
 | Startup order (crash log, command line, single instance, settings, associations, language, models, VMs, window, external files) | done (`app::run`, `sa_platform::win::startup`) | done in code (SIGPIPE/activation, appearance, language, temp cleanup, models, coalescer, explorer, hub) | E2E `06-editor-video` (file from the command line) |
 | Single instance: launch with files forwards to the first instance (byte-exact mutex/pipe) | done | n/a (Launch Services) | `sa-platform` tests |
 | Closing the main window quits; shutdown order (size saved, player disposed, broker + settings flushed) | done (`mainWindowWidth/Height` written on close, verified in the E2E copy) | done in code: app stays alive with the menu bar | E2E settings.json after close |
-| Multiple main windows (⌘N, shared VM/explorer/hub) | n/a | done in code (`MainWindowHooks::new_window` → `AppShell::open_window`); Dock reopen with no window: **missing** (`OpenDocumentsHandler::set_reopen_handler` not wired) | — |
+| Multiple main windows (⌘N, shared VM/explorer/hub) | n/a | done in code (`MainWindowHooks::new_window` → `AppShell::open_window`); Dock reopen: done in code (`rapp` handler: unhide, then one main-queue turn later deminiaturize, else `AppShell::reopen_main_window`; a miniaturized window never counts as visible; rule `mac_rules::reopen_action` tested); a Finder open / Dock drop with no window left opens a main window for the files (`AppShell::open_external_files`; close → reopen → open tested through the real close path in `tests/app_shell.rs`) | the AppKit side (`handle_reopen`, `unhide:` timing) is unverified without a Mac |
 | Custom title bar, caption buttons, Snap Layouts, saved/centered size | done (`MainChrome`, `WindowChrome`) | n/a | `shots/e2e/01-start.png` |
-| Mica backdrop | **missing** (`WindowChrome::set_mica` exists, not enabled) | n/a | — |
+| Mica backdrop | done: main + Settings windows (`DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_MAINWINDOW`, 21H2 attribute 1029; the frame is extended from the bottom edge only, `win::chrome::mica_margins`, because a sheet of glass made DWM draw a second set of caption buttons under the Slint ones; the Slint background turns transparent only while DWM draws Mica and the window's own renderer has per-pixel alpha, `main_window::chrome::mica_renderer`, so the software renderer, also as winit's fallback, keeps the solid background) | n/a | live run: with the bottom-only extension DWM draws no caption glyphs of its own (with `-1` it drew a full set, `shots/picker/live-mica-video.png`); `DWMWA_SYSTEMBACKDROP_TYPE = 2` read back. Not yet seen on screen: the Slint title bar over Mica after this change and Mica's look itself (transparency effects off on the dev machine; the display was off during the last check, so the GPU window did not paint) |
 | Unified toolbar title bar, traffic lights | n/a | done in code (`winit_attributes` through `BackendSelector`) | `shots/mac/main-empty.png` (stand-in traffic lights) |
 | Real NSMenu menu bar (App/File/Edit/View/Window/Help, live relabel) | n/a | done in code (Slint `MenuBar`); standard app-menu roles via AppKit: done in code | — |
 | Theme `appTheme` live (System/Light/Dark) | done (main window + Settings) | done in code (+ `NSApp.appearance`) | `shots/e2e/*` (light from the data) |
 | UI font `appFontFamily` | done (startup only, like C#) | done in code (live) | — |
-| Icons | done (Segoe Fluent Icons) | **differs**: SF Symbols are placeholder rings until the AppKit rasterizer is wired | `shots/mac/*` |
+| Icons | done (Segoe Fluent Icons) | done in code: SF Symbols via AppKit (`NSImage(systemSymbolName:)`, template + `colorize`, shown at the symbol's own bounds like `Image(systemName:)`, `Symbols.image-width/height`); menu bar icons are made template images when menu tracking begins (`appkit::keep_menu_icons_template`), so AppKit recolors them for highlight and disabled items; off macOS and as fallback the bundled SVG stand-ins. Coverage: a source scan for symbol names plus exhaustive tests of the Rust symbol tables (`quick_symbol`, `empty_symbol`) | `shots/mac/symbols-light.png`, `symbols-dark.png`, `shots/mac/*`; the AppKit bitmaps' baseline and the menu icon look are unverified without a Mac |
 | Accent color from the system | done (UISettings) | done in code (NSColor) | — |
 | File associations (HKCU self-registration, Settings card) | done (skipped when `fileAssociationsDisabled`) | n/a (Info.plist) | `sa-platform` C# compare |
 | Crash log `%TEMP%\SubtitleAdder-crash.log` | done | n/a | — |
@@ -63,11 +69,12 @@ icon tabs; the visible differences are the placeholder SF Symbols and the unmeas
 
 | Feature | Windows (W) | macOS (M) | Evidence |
 |---|---|---|---|
-| Toolbar (Video seç, Altyazı aç, language/model/speakers/target/translation-model pickers, Çevir…, Otomatik kaydet, profile, settings, Altyazı üret, Komple çevir) and responsive collapse | done | done | `shots/e2e/01-start.png`, `07-translated.png`; `shots/main/*` |
-| Toolbar translation-model picker (flyout / popover with providers) | **missing**: the button opens Settings on the providers page (`general` / `translation`) | **missing** (same fallback) | — |
+| Toolbar (Video seç, Altyazı aç, language/model/speakers/target/translation-model pickers, Çevir…, Otomatik kaydet, profile, settings, Altyazı üret, Komple çevir) and responsive collapse | done; the left tools keep their natural widths and what does not fit is clipped at the edge (WinUI StackPanel), e.g. `Çevir…` at the default 1240 px with lines; **differs**: when the `Otomatik kaydet` CheckBox holds keyboard focus (after a command-line open), Slint's fluent focus border is drawn over the end of its label (`kaydet` touches the border) instead of around it as in WinUI | done | `shots/e2e/01-start.png`, `07-translated.png`; `shots/main/*`; `shots/picker/before-win-editor.png` vs `win-editor.png` |
+| Toolbar translation-model picker (flyout / popover with providers) | done (`main_window::translation_picker`, `ui/win/main/translation_picker.slint`: provider combo that activates the provider, search, 240 px list with the selected model, empty text, 36 px status with the test message, Yenile (ignored while any connection test runs, C# `IsTesting`) / manage → Settings `general`; the flyout focuses the provider combo, which has the ComboBox keys; every close, light dismiss included, calls `Close()` and cancels a running refresh request) | done (`ui/mac/main/translation_picker.slint`: provider pop-up that only browses, focused search with ↑/↓/Return/Esc, check mark + highlight, disabled rows and block reason when offline/unusable, `Modeller yenilenemedi: …`, Yenile only for a provider, manage → Settings `translation`; also from the `»` overflow item); test flags and notices are shared app-wide (`vm.testingProviders` / `vm.providerNotices`): one `ProvidersModel` for every window's picker, which the Settings providers page also reports its tests to (`SettingsDeps::activity`); a finished refresh moves the highlight to the current row | `tests/translation_picker.rs` (both trees), `sa-viewmodels/tests/providers.rs`; `shots/picker/*` |
 | Workspaces Player / Platform / Çeviri listesi (count badge) | done | done | E2E shots |
 | Empty state, drop target | done | done | `shots/e2e/01-start.png` |
 | Editor rows, speaker chips, translation sub-line, stale marker, needs-review marker | done | done | `07-translated.png`, `08-edited.png` |
+| Speaker separation default on (`diarizeSpeakers`, absent = true on both; C# `GetBool ?? true`, Swift `as? Bool ?? true`); one diarized speaker still shows the column (`K1` W / `Konuşmacı 1` M, as C# `Speakers.Count > 0` and Swift `!speakers.isEmpty`; the dash rule needs two) | done | done | `vm_settings::defaults_match_macos`, `main_window::a_single_diarized_speaker_still_shows_the_speaker_column` |
 | Edit text, Enter commits, undo/redo with C# button titles (`Metni Değiştir İşlemini Geri Al`) | done | done in code (Edit-menu titles) | `08-edited.png`, `09-undone.png` |
 | Split / merge / delete / timing ±0.1 s / set to now | done | done | `sa-app` tests |
 | Keyboard shortcuts (Space, arrows, M, F, F11, E, Esc, Ctrl+…/⌘…) | done | **differs**: non-Latin keyboard layouts do not fall back to the QWERTY position for M/F/E (Slint passes no hardware key code) | `sa-app` tests |
@@ -104,7 +111,9 @@ icon tabs; the visible differences are the placeholder SF Symbols and the unmeas
 | Lists, add-to-list menu, delete, rename (macOS) | done | done; **differs**: list counts include files missing on disk | `shots/hub-*` |
 | Hub card like-button pink tint, middle-truncated folder line | n/a | **differs** (no tint; end truncation) | `shots/hub-mac-feed.png` |
 | Profile popover closes on a second click of the toolbar button | n/a | unverified | — |
+| Login while a video is open: the open video is adopted for the engagement bar (likes, stars, lists; zero counts when the profile has no record of it) without recording a view or progress (C# `OpenVideoProvider` → `AdoptOpenVideoForNewSession`; Swift `playerVideo` + `recordingGeneration`) | done | done | `sa-viewmodels/tests/hub.rs` `login_while_a_video_is_open_…` (fake store now returns no stats for unknown videos, like both real stores) |
 | Explorer sidebar: quick locations, transient listing of an opened video's folder, index search only logged in, no `explorerLastFolder` | done | done | `06-editor-video.png` |
+| Explorer startup: the launch folder (Videos / Movies) is listed and indexed once at startup, no crawl, whether or not the sidebar is shown and logged in or not (C# `FileExplorerPane.OnLoaded` → `RefreshAsync`: WinUI raises `Loaded` for the Collapsed pane, checked with a WinUI 1.8 probe; Swift `ContentView.task { explorer.start() }`) | done | done | `sa-viewmodels/tests/explorer.rs` `the_launch_folder_is_indexed_at_startup_…` |
 
 ### Settings, providers, keys
 
@@ -130,15 +139,16 @@ icon tabs; the visible differences are the placeholder SF Symbols and the unmeas
 
 ## Unverified on macOS (nothing was compiled for, or run on, a Mac)
 
-* `sa-app`, `sa-player` (cpal/CoreAudio), `sa-platform` (objc2) and anything depending on `ring` could not be
-  cross-checked here (ARCHITECTURE §11); only the pure crates passed `cargo check --target aarch64-apple-darwin`.
-  The new CI job `desktop (macos-26)` is the first real build.
+* Every crate type-checks for macOS: `scripts/check-macos.sh` = `cargo check --target aarch64-apple-darwin
+  --workspace --all-targets` (ring's build script overridden, ffmpeg-sys-next bindgen against stand-in libc headers;
+  ARCHITECTURE §11). Nothing was linked or run for macOS; the CI job `desktop (macos-26)` is the first real build.
+  Objective-C message signatures (`msg_send!`) are only checked at runtime.
 * The whole macOS branch of `app::run`: `MacShell::prepare_process`, `BackendSelector` with the winit attributes,
   `UserDefaultsSettingsStore`, `MacProfileStore` (kqueue watcher, flock, fsync), `MacMediaIndex` with the
   CoreFoundation lister, `MacProviderStore` + `KeyFileProtector` (0600), the Apple Event open-documents handler,
   `run_event_loop_until_quit` (app alive without windows), ⌘N multi-window.
 * Menu bar (Slint `MenuBar` → NSMenu), standard app-menu roles, Edit-menu undo titles, ⌘ shortcuts.
-* SF Symbols rasterizer (placeholders are drawn today), NSAlert sheets, NSColorPanel, NSSavePanel/NSOpenPanel via rfd.
+* SF Symbols rasterizer output (size/baseline of the AppKit bitmaps, menu icon look), Dock reopen, NSAlert sheets, NSColorPanel, NSSavePanel/NSOpenPanel via rfd.
 * FFmpeg + CoreAudio playback, the preview fallback, AV1/WMV decoders in the macOS FFmpeg build (Homebrew).
 * Window frame restore (`mainWindowFrame`), native full screen tracking, traffic-light placement, toolbar drag and
   `AppleActionOnDoubleClick`.
@@ -149,10 +159,19 @@ icon tabs; the visible differences are the placeholder SF Symbols and the unmeas
 
 ## Other known gaps
 
-* FFmpeg build licensing: the staged DLLs come from the BtbN **GPL** shared build (same as the engine); ARCHITECTURE
-  §11 asks for LGPL builds in a release.
-* No toolbar translation-model picker (see above); the area agent's `TranslationModelPickerModel` exists in
-  `sa-viewmodels` without a UI.
-* C# `OpenVideoProvider` (adopting the open video after a login for likes/ratings without recording progress) is not
-  wired.
+* FFmpeg build licensing (Windows): `stage.ps1` and `package-desktop-windows.ps1` put the BtbN **LGPL** shared build
+  (`engine\scripts\fetch-runtime.ps1 -Only ffmpeg-lgpl` → `engine\.runtime\ffmpeg-lgpl`, same autobuild as
+  the engine's GPL SDK) next to `SubtitleAdder.exe`; the engine folder keeps its GPL DLLs (libx264 for `preview`).
+  The app still compiles against the GPL SDK headers/import libraries (identical API and DLL names). Both scripts
+  run `SubtitleAdder.exe --probe` on a PATH without FFmpeg and require `ffmpeg license: LGPL…`. Next to both DLL
+  sets the build's own `LICENSE.txt` ships as `FFmpeg-LICENSE.txt` with an `FFmpeg-NOTICE.txt` (what the DLLs are,
+  where their source and build scripts are; `engine\scripts\ffmpeg-notice.ps1`). The BtbN builds use
+  `--enable-version3`, so the app's DLLs are LGPL **v3** or later. **Open:** the LGPL asset (80.4 MB) is not
+  downloaded yet, so its SHA-256 is not pinned (`@LGPL_SHA256@` in `fetch-runtime.ps1`): the package script stops
+  with a clear error, `stage.ps1` falls back to the GPL DLLs with a warning for local runs, and playback with the LGPL
+  DLLs is not verified. macOS: `FFMPEG_LGPL_DIR` names the LGPL dylibs the player bundles (FFMPEG_DIR stays the
+  engine's GPL build and the build headers); without it the package bundles FFMPEG_DIR's and warns. Its license files
+  ship in `Contents/Resources/FFmpeg` (the engine's next to its dylibs).
 * `rustfmt`/`clippy` are not installed in this toolchain; nothing was linted.
+* `scripts/check-macos.sh` type-checks the macOS code from Windows/Linux (a local tool; CI builds and tests on a real
+  macOS runner).

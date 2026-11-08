@@ -6,6 +6,7 @@ import { MainBridge, AppBridge, Workspace } from "../../shared/bridge.slint";
 import { Theme } from "../theme.slint";
 import { Glyph, ToolButton, ToggleGlyph, DropDownButton, PickerCombo, BarSeparator, ToolTip } from "controls.slint";
 import { ProfileStatusButton } from "../hub/profile_button.slint";
+import { TranslationModelButton } from "translation_picker.slint";
 
 component FolderTab inherits Rectangle {
     in property <string> glyph;
@@ -137,30 +138,9 @@ component LeftTools inherits HorizontalLayout {
         tooltip: MainBridge.target-help;
         selected(i) => { MainBridge.target-selected(i); }
     }
-    DropDownButton {
-        width: root.compact ? 180px : 220px;
-        custom: true;
-        enabled: !MainBridge.is-working;
-        accessible-name: Loc.t("Çeviri modeli");
-        tooltip: MainBridge.translation-model-title;
-        custom-clicked => { MainBridge.translation-model-clicked(); }
-        HorizontalLayout {
-            spacing: 6px;
-            horizontal-stretch: 1;
-            if MainBridge.translation-model-kind != "": Glyph {
-                glyph: "\u{E968}";
-                size: 14px;
-                color: Theme.accent-text;
-            }
-            Text {
-                text: MainBridge.translation-model-title;
-                font-size: Theme.body-size;
-                vertical-alignment: center;
-                overflow: elide;
-                horizontal-stretch: 1;
-                color: MainBridge.is-working ? Theme.text-disabled : Theme.text-primary;
-            }
-        }
+    // TranslationModelButton + its flyout (translation_picker.slint).
+    TranslationModelButton {
+        compact: root.compact;
     }
     if root.single && MainBridge.has-sentences: ToolButton {
         glyph: "\u{F2B7}";
@@ -183,6 +163,8 @@ component RightActions inherits HorizontalLayout {
         padding-right: 2px;
         CheckBox {
             text: Loc.t("Otomatik kaydet");
+            // WinUI CheckBox content uses the body font (the std CheckBox would fall back to the window default).
+            font-size: Theme.body-size;
             checked: MainBridge.auto-save;
             accessible-description: Loc.t("Çeviri bittiğinde çevrilmiş altyazıyı otomatik olarak videonun klasörüne kaydet");
             toggled => { MainBridge.auto-save-toggled(self.checked); }
@@ -241,11 +223,22 @@ export component CommandBar inherits Rectangle {
         spacing: 8px;
         HorizontalLayout {
             spacing: 8px;
-            LeftTools {
+            // `LeftToolsPanel` is a horizontal StackPanel in a star column: every item keeps its desired width and
+            // whatever does not fit is clipped at the cell's edge (WinUI layout clip), nothing is squeezed.
+            Rectangle {
                 horizontal-stretch: 1;
-                single: root.single;
-                compact: root.compact;
-                hide-translate-label: root.window-width < 1180px;
+                min-width: 0;
+                height: tools.preferred-height;
+                clip: true;
+                tools := LeftTools {
+                    x: 0;
+                    y: 0;
+                    width: self.preferred-width;
+                    height: parent.height;
+                    single: root.single;
+                    compact: root.compact;
+                    hide-translate-label: root.window-width < 1180px;
+                }
             }
             if root.wide: RightActions {
                 single: root.single;

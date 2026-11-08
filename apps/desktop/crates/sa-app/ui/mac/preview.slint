@@ -6,6 +6,7 @@ import { AppBridge, MainBridge, HubBridge, ExplorerBridge, SettingsBridge, MenuB
 import { MacTheme } from "theme.slint";
 import { MainView } from "main/main_view.slint";
 import { SettingsWindow } from "settings/settings_window.slint";
+import { Sym } from "main/controls.slint";
 
 export { SettingsWindow }
 export { Loc, AppBridge, MainBridge, HubBridge, ExplorerBridge, SettingsBridge, MenuBridge, Symbols, Workspace, Palette }
@@ -32,5 +33,34 @@ export component MainWindow inherits Window {
         Rectangle { width: 12px; height: 12px; border-radius: 6px; background: #ff5f57; }
         Rectangle { width: 12px; height: 12px; border-radius: 6px; background: #febc2e; }
         Rectangle { width: 12px; height: 12px; border-radius: 6px; background: #28c840; }
+    }
+}
+
+// Look check of every symbol (`sa-shot --window symbols`): each name at 24, 16 and 12 pt, label tint.
+export component SymbolGallery inherits Window {
+    in property <[string]> names;
+    in property <int> columns: 6;
+    background: MacTheme.window-background;
+    default-font-family: AppBridge.ui-font-family;
+    for name[i] in root.names: Rectangle {
+        x: mod(i, root.columns) * 196px + 8px;
+        y: floor(i / root.columns) * 44px + 8px;
+        width: 190px;
+        height: 40px;
+        border-radius: 6px;
+        background: MacTheme.control-background;
+        Sym { x: 6px; y: 8px; name: name; size: 24px; }
+        Sym { x: 36px; y: 12px; name: name; size: 16px; }
+        Sym { x: 58px; y: 14px; name: name; size: 12px; }
+        Text {
+            x: 76px;
+            width: 110px;
+            height: parent.height;
+            vertical-alignment: center;
+            text: name;
+            font-size: 10px;
+            color: MacTheme.secondary-label;
+            wrap: word-wrap;
+        }
     }
 }

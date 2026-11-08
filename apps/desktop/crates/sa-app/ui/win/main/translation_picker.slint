@@ -1,0 +1,240 @@
+// Toolbar translation-model picker, Windows (win-ui-hub-settings §8; C# `TranslationModelPicker.xaml`): a
+// DropDownButton whose Flyout (BottomEdgeAlignedLeft) holds a 340 px stack, spacing 10: provider ComboBox with header,
+// search TextBox, a 240 px single-select ListView with an overlaid empty text, a 36 px status line (12 px, wrap +
+// ellipsis) and the `Yenile` / `API sağlayıcılarını yönet…` buttons. Rust (`main_window::translation_picker`) decides
+// everything; the flyout only shows `MainBridge.picker-*` and reports clicks.
+import { ListView } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, PickerModelRow } from "../../shared/bridge.slint";
+import { Theme } from "../theme.slint";
+import { Glyph, ToolButton, DropDownButton, PickerCombo, ToolTip } from "controls.slint";
+
+// ListViewItem: min height 40, radius 4, margin 4,2; hover = SubtleFillColorSecondary; the selected item keeps that
+// fill and shows the 3×16 accent pill at its leading edge. The title is ellipsized with the title as tooltip.
+component ModelRow inherits Rectangle {
+    in property <PickerModelRow> entry;
+    callback clicked();
+    height: 44px;
+    accessible-role: list-item;
+    accessible-label: root.entry.title;
+    accessible-item-selected: root.entry.current;
+    accessible-action-default => { root.clicked(); }
+    item := Rectangle {
+        x: 4px;
+        y: 2px;
+        width: parent.width - 8px;
+        height: parent.height - 4px;
+        border-radius: 4px;
+        background: touch.pressed ? Theme.subtle-pressed : (touch.has-hover || root.entry.current) ? Theme.subtle-hover : transparent;
+        if root.entry.current: Rectangle {
+            x: 0;
+            y: (parent.height - self.height) / 2;
+            width: 3px;
+            height: 16px;
+            border-radius: 1.5px;
+            background: Theme.accent;
+        }
+        Text {
+            x: 12px;
+            width: parent.width - 24px;
+            text: root.entry.title;
+            font-size: Theme.body-size;
+            vertical-alignment: center;
+            overflow: elide;
+            color: Theme.text-primary;
+        }
+    }
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    ToolTip {
+        text: root.entry.title;
+        show: touch.has-hover && !touch.pressed;
+    }
+}
+
+export component TranslationModelFlyout inherits PopupWindow {
+    close-policy: close-on-click-outside;
+    property <int> close-epoch: MainBridge.picker-close-epoch;
+    changed close-epoch => { root.close(); }
+    property <int> search-reset: MainBridge.picker-search-reset;
+    changed search-reset => { search.text = ""; }
+
+    // FlyoutPresenter: AcrylicInAppFill fallback, OverlayCornerRadius 8, padding 16,15,16,17, shadow.
+    Rectangle {
+        background: Theme.flyout-background;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.flyout-stroke;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #00000040;
+        width: 340px + 32px;
+        keys := FocusScope {
+            // Esc light-dismisses the flyout like WinUI (the opener reports every close, see `flyout-open`).
+            capture-key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    root.close();
+                    return accept;
+                }
+                reject
+            }
+            // A WinUI flyout focuses its first focusable control: the provider ComboBox.
+            init => { provider-combo.focus(); }
+            VerticalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 15px;
+                padding-bottom: 17px;
+                spacing: 10px;
+                // ComboBox header (ComboBoxHeaderMargin 0,0,0,8).
+                VerticalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: Loc.t("Çeviri sağlayıcısı");
+                        font-size: Theme.body-size;
+                        color: Theme.text-primary;
+                    }
+                    provider-combo := PickerCombo {
+                        items: MainBridge.picker-providers;
+                        current-index: MainBridge.picker-provider-index;
+                        accessible-name: Loc.t("Çeviri sağlayıcısı");
+                        selected(i) => { MainBridge.picker-provider-selected(i); }
+                    }
+                }
+                // WinUI TextBox (32 px, 14 px text and placeholder, accent underline when focused). Not the std
+                // LineEdit: its placeholder renders at 12 px even with `font-size` set.
+                Rectangle {
+                    height: 32px;
+                    border-radius: Theme.control-radius;
+                    border-width: 1px;
+                    border-color: Theme.control-stroke;
+                    background: search.has-focus ? (Theme.dark ? #1e1e1eb3 : #ffffff) : Theme.control-fill;
+                    accessible-role: text-input;
+                    accessible-label: Loc.t("Model ara…");
+                    accessible-value: search.text;
+                    accessible-placeholder-text: Loc.t("Model ara…");
+                    search := TextInput {
+                        x: 11px;
+                        width: parent.width - 22px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        single-line: true;
+                        font-size: Theme.body-size;
+                        color: Theme.text-primary;
+                        accessible-role: none;
+                        edited => { MainBridge.picker-search-edited(self.text); }
+                    }
+                    if search.text == "": Text {
+                        x: 11px;
+                        width: parent.width - 22px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        text: Loc.t("Model ara…");
+                        font-size: Theme.body-size;
+                        overflow: elide;
+                        color: Theme.text-secondary;
+                        accessible-role: none;
+                    }
+                    if search.has-focus: Rectangle {
+                        y: parent.height - 2px;
+                        height: 2px;
+                        background: Theme.accent;
+                    }
+                }
+                Rectangle {
+                    height: 240px;
+                    ListView {
+                        accessible-label: Loc.t("Çeviri modeli");
+                        for row in MainBridge.picker-rows: ModelRow {
+                            entry: row;
+                            clicked => { MainBridge.picker-row-clicked(row.id); }
+                        }
+                    }
+                    if MainBridge.picker-empty-text != "": Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        text: MainBridge.picker-empty-text;
+                        font-size: Theme.body-size;
+                        color: Theme.text-primary;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    height: 36px;
+                    text: MainBridge.picker-status;
+                    font-size: 12px;
+                    color: Theme.text-primary;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    ToolButton {
+                        label: Loc.t("Yenile");
+                        enabled: MainBridge.picker-can-refresh;
+                        clicked => { MainBridge.picker-refresh(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    ToolButton {
+                        label: Loc.t("API sağlayıcılarını yönet…");
+                        clicked => { MainBridge.picker-manage-providers(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// `TranslationModelButton` (DropDownButton width 220, 180 compact; content stretched; disabled while working;
+// tooltip = the model name; name `Çeviri modeli`): the external-provider glyph U+E968 in AccentTextFillColorPrimary
+// and the ellipsized title. A click asks Rust to open; Rust answers with `picker-open-epoch`.
+export component TranslationModelButton inherits Rectangle {
+    in property <bool> compact;
+    width: root.compact ? 180px : 220px;
+    property <int> open-epoch: MainBridge.picker-open-epoch;
+    changed open-epoch => { flyout.show(); }
+    DropDownButton {
+        width: parent.width;
+        height: parent.height;
+        custom: true;
+        enabled: !MainBridge.is-working;
+        accessible-name: Loc.t("Çeviri modeli");
+        tooltip: MainBridge.translation-model-title;
+        custom-clicked => { MainBridge.translation-model-clicked(); }
+        HorizontalLayout {
+            spacing: 6px;
+            horizontal-stretch: 1;
+            if MainBridge.translation-model-kind != "": Glyph {
+                glyph: "\u{E968}";
+                size: 14px;
+                color: Theme.accent-text;
+            }
+            Text {
+                text: MainBridge.translation-model-title;
+                font-size: Theme.body-size;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+                color: MainBridge.is-working ? Theme.text-disabled : Theme.text-primary;
+            }
+        }
+    }
+    // BottomEdgeAlignedLeft; a flyout that would leave the window is shifted left to fit (WinUI constrains popups
+    // to the window's bounds).
+    property <length> flyout-width: 340px + 32px;
+    flyout := TranslationModelFlyout {
+        x: min(0px, MainBridge.window-width - root.flyout-width - root.absolute-position.x);
+        y: root.height + 4px;
+    }
+    // C# `TranslationModelFlyout_Closed` → `TranslationPicker.Close()` for every way the flyout goes: light dismiss
+    // (a click outside), Esc, a chosen model, "API sağlayıcılarını yönet…" (revision++, the refresh is cancelled).
+    property <bool> flyout-open: flyout.is-open;
+    changed flyout-open => {
+        if (!self.flyout-open) {
+            MainBridge.picker-closed();
+        }
+    }
+}

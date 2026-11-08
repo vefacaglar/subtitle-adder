@@ -379,6 +379,15 @@ impl SettingsModel {
             let ui = ui.clone();
             subs.push(LanguageState::shared().subscribe(move |_| key.post(&ui, |m| m.on_language_changed())));
         }
+        if let Some(activity) = self.mac_activity() {
+            // A picker's test flags and notices show on the provider cards.
+            let ui = ui.clone();
+            subs.push(activity.subscribe(Box::new(move |change| {
+                if change == sa_viewmodels::providers_ui::ProvidersChange::Tests {
+                    key.post(&ui, |m| m.changed());
+                }
+            })));
+        }
         if self.flavor == Flavor::Mac {
             // `settingsTab` is read live: another window storing it switches the tab.
             let ui = ui.clone();
@@ -923,10 +932,40 @@ impl SettingsModel {
     }
 
     fn forget_tests(&self, id: Uuid) {
-        let mut st = self.state.borrow_mut();
-        st.test_ids.remove(&id);
-        st.testing.remove(&id);
-        st.notices.remove(&id);
+        let was_testing = {
+            let mut st = self.state.borrow_mut();
+            st.test_ids.remove(&id);
+            st.notices.remove(&id);
+            st.testing.remove(&id)
+        };
+        if let Some(activity) = self.mac_activity() {
+            if was_testing {
+                activity.end_external_test(id, None);
+            }
+            activity.set_notice(id, None);
+        }
+    }
+
+    /// macOS: the provider test state shared with the toolbar pickers ([`SettingsDeps::activity`]).
+    fn mac_activity(&self) -> Option<&Rc<sa_viewmodels::providers_ui::ProvidersModel>> {
+        if self.flavor == Flavor::Mac { self.deps.activity.as_ref() } else { None }
+    }
+
+    /// A provider card's notice: on macOS the shared one when the pickers share the state.
+    fn provider_notice(&self, st: &State, id: Uuid) -> Option<Notice> {
+        match self.mac_activity() {
+            Some(activity) => activity.notice(id).map(|n| Notice { text: n.text(), is_error: n.is_error }),
+            None => st.notices.get(&id).cloned(),
+        }
+    }
+
+    fn shared_notice(notice: &Notice) -> sa_viewmodels::providers_ui::ExternalConnectionNotice {
+        let message = sa_core::l10n::LocalizedMessage::verbatim(notice.text.clone());
+        if notice.is_error {
+            sa_viewmodels::providers_ui::ExternalConnectionNotice::error(message)
+        } else {
+            sa_viewmodels::providers_ui::ExternalConnectionNotice::success(message)
+        }
     }
 
     /// The key part of a provider row's summary. Windows reads the manager's in-memory key slots synchronously like the
@@ -971,11 +1010,16 @@ impl SettingsModel {
         let Some(p) = self.provider(id) else { return };
         if self.flavor == Flavor::Mac && self.offline_blocks(&p.base_url) {
             self.forget_tests(id);
-            self.state.borrow_mut().notices.insert(
-                id,
-                Notice { text: sa_core::l("Çevrimdışı mod açık: internetteki sağlayıcılara bağlanılmaz."), is_error: true },
-            );
+            let notice = Notice { text: sa_core::l("Çevrimdışı mod açık: internetteki sağlayıcılara bağlanılmaz."), is_error: true };
+            if let Some(activity) = self.mac_activity() {
+                activity.set_notice(id, Some(Self::shared_notice(&notice)));
+            }
+            self.state.borrow_mut().notices.insert(id, notice);
             self.changed();
+            return;
+        }
+        // macOS: one test per provider at a time, wherever it was started (a picker's "Yenile" included).
+        if self.mac_activity().is_some_and(|a| a.is_testing(id)) {
             return;
         }
         let test_id = {
@@ -989,6 +1033,9 @@ impl SettingsModel {
             st.testing.insert(id);
             t
         };
+        if let Some(activity) = self.mac_activity() {
+            activity.begin_external_test(id);
+        }
         self.changed();
         let tester = self.deps.tester.clone();
         let cancel = self.cancel.child();
@@ -1014,6 +1061,9 @@ impl SettingsModel {
             st.testing.remove(&id);
         }
         let Some(o) = outcome else {
+            if let Some(activity) = self.mac_activity() {
+                activity.end_external_test(id, None);
+            }
             self.changed();
             return;
         };
@@ -1027,7 +1077,11 @@ impl SettingsModel {
             }
             // macOS: ignore an answer for a provider that is gone or whose address changed meanwhile.
             Flavor::Mac => {
-                if current.is_some_and(|p| p.base_url == tested_url) {
+                let valid = current.is_some_and(|p| p.base_url == tested_url);
+                if let Some(activity) = self.mac_activity() {
+                    activity.end_external_test(id, valid.then(|| Self::shared_notice(&notice)));
+                }
+                if valid {
                     self.state.borrow_mut().notices.insert(id, notice);
                 }
             }
@@ -1676,7 +1730,8 @@ impl SettingsModel {
             .iter()
             .map(|p| {
                 let preset_name = p.preset().name(None);
-                let notice = st.notices.get(&p.id);
+                let notice = self.provider_notice(&st, p.id);
+                let notice = notice.as_ref();
                 ProviderRowView {
                     id: p.id.to_string(),
                     name: p.name.clone(),
@@ -1684,7 +1739,7 @@ impl SettingsModel {
                     preset_name,
                     summary: format!("{} · {}", p.base_url, self.key_caption(p.id)),
                     is_active: active == Some(p.id),
-                    is_testing: st.testing.contains(&p.id),
+                    is_testing: st.testing.contains(&p.id) || self.mac_activity().is_some_and(|a| a.is_testing(p.id)),
                     model: p.model.clone(),
                     models: p.available_models(mac),
                     notice_text: notice.map(|n| n.text.clone()).unwrap_or_default(),

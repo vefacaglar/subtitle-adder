@@ -25,6 +25,7 @@ pub const WINDOW_WILL_CLOSE: &str = "NSWindowWillCloseNotification";
 pub const WINDOW_DID_ENTER_FULL_SCREEN: &str = "NSWindowDidEnterFullScreenNotification";
 pub const WINDOW_DID_EXIT_FULL_SCREEN: &str = "NSWindowDidExitFullScreenNotification";
 pub const COLOR_PANEL_COLOR_DID_CHANGE: &str = "NSColorPanelColorDidChangeNotification";
+pub const MENU_DID_BEGIN_TRACKING: &str = "NSMenuDidBeginTrackingNotification";
 
 /// One registration; dropping it removes the observer.
 pub struct NotificationObserver {

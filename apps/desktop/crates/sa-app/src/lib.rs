@@ -32,9 +32,11 @@ pub fn select_catalog_chain() {
 /// Prints what the native stack reports (FFmpeg, audio host, SQLite) — the `--probe` switch.
 pub fn probe_native_stack() -> String {
     let info = sa_player::ffmpeg_backend::probe();
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut out = format!(
-        "ui tree: {UI_TREE} ({UI_STYLE})\nffmpeg avformat: {}\naudio host: {}\naudio output: {}\n",
+        "ui tree: {UI_TREE} ({UI_STYLE})\nffmpeg avformat: {}\nffmpeg license: {}\naudio host: {}\naudio output: {}\n",
         info.ffmpeg_avformat_version,
+        info.ffmpeg_license,
         info.audio_host,
         info.audio_output_device.as_deref().unwrap_or("(none)")
     );

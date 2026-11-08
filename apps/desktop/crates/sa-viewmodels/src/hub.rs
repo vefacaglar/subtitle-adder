@@ -688,6 +688,24 @@ impl Inner {
     }
 }
 
+/// Engagement of a video the profile has no record of: no views, not liked, no stars.
+fn unrecorded_stats(path: &Path) -> VideoUserStats {
+    VideoUserStats {
+        content_fingerprint: None,
+        video_path: path.to_string_lossy().into_owned(),
+        file_name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        directory_path: path.parent().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        view_count: 0,
+        is_liked: false,
+        rating: 0,
+        last_position_seconds: 0.0,
+        duration_seconds: 0.0,
+        last_watched_at: None,
+        updated_at: Ticks::MIN,
+        thumbnail: None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_snapshot(
     store: &dyn sa_profiles::ProfileStore,
@@ -715,9 +733,12 @@ fn build_snapshot(
         return snap;
     }
     snap.counts = store.totals();
-    if let Some(v) = &player_video
-        && let Some(stats) = store.stats(v, FingerprintMode::Compute)
-    {
+    if let Some(v) = &player_video {
+        // The video open in the player always gets the bar while a profile is logged in, even one the profile has
+        // no record of yet: a login while a video is open adopts that video for likes, ratings and lists (C#
+        // `AdoptOpenVideoForNewSession` via `OpenVideoProvider`, `stats?.ViewCount ?? 0`; Swift `EngagementSnapshot`
+        // with `stats?.viewCount ?? 0`). Whether its playback is recorded is `recording_generation`'s business.
+        let stats = store.stats(v, FingerprintMode::Compute).unwrap_or_else(|| unrecorded_stats(v));
         let ids = store.lists_containing(v);
         snap.engagement = Some((v.clone(), stats, ids));
     }

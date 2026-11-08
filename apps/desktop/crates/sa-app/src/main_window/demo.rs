@@ -4,7 +4,7 @@
 
 use slint::{Color, ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
-use crate::ui::{AppBridge, ExplorerBridge, ExplorerRowData, MainBridge, MainWindow, MenuEntry, PickerItem, QueueRowData, SentenceRowData, Workspace};
+use crate::ui::{AppBridge, ExplorerBridge, ExplorerRowData, MainBridge, MainWindow, MenuEntry, PickerItem, PickerModelRow, QueueRowData, SentenceRowData, Workspace};
 
 fn l(key: &str) -> SharedString {
     sa_core::l10n::l(key).into()
@@ -57,8 +57,53 @@ fn row(n: i32, t: &str, text: &str, speaker: Option<i32>, tr: Option<&str>, acti
     }
 }
 
+/// The open translation-model picker: `picker-local` (on-device models of the fallback catalog), `picker-provider`
+/// (a cloud provider's models after a refresh, external glyph on the button), `picker-empty` (a search without hits).
+fn fill_picker(w: &MainWindow, scene: &str, mac: bool) {
+    let main = w.global::<MainBridge>();
+    let provider = scene == "picker-provider";
+    let providers = [sa_core::l10n::l("Yerel modeller (Cihaz üzerinde)"), "OpenRouter".to_owned(), "LM Studio (Ofis)".to_owned()];
+    main.set_picker_providers(picker(&providers.iter().map(|t| (t.as_str(), true)).collect::<Vec<_>>()));
+    main.set_picker_provider_index(if provider { 1 } else { 0 });
+    let rows: Vec<PickerModelRow> = if scene == "picker-empty" {
+        Vec::new()
+    } else if provider {
+        ["deepseek/deepseek-v4-flash", "google/gemma-4-12b-it", "meta-llama/llama-4-scout", "openai/gpt-5-mini", "qwen/qwen3.5-9b"]
+            .iter()
+            .map(|m| PickerModelRow { id: (*m).into(), title: (*m).into(), current: *m == "google/gemma-4-12b-it", enabled: true, highlighted: *m == "google/gemma-4-12b-it" })
+            .collect()
+    } else {
+        sa_core::models::fallback_models()
+            .iter()
+            .filter(|m| m.is_translation())
+            .map(|m| {
+                let title = if mac { sa_core::models::ModelLabel::translation_menu_title(m) } else { sa_core::models::ModelLabel::menu_title(m) };
+                PickerModelRow { id: m.id.clone().into(), title: title.into(), current: m.id == "madlad-3b", enabled: true, highlighted: m.id == "madlad-3b" }
+            })
+            .collect()
+    };
+    main.set_picker_rows(ModelRc::new(VecModel::from(rows)));
+    main.set_picker_empty_text(if scene == "picker-empty" { l("Aramayla eşleşen model yok.") } else { SharedString::new() });
+    main.set_picker_status(if provider { "Bağlantı başarılı: 5 model bulundu.".into() } else { SharedString::new() });
+    main.set_picker_show_refresh(!mac || provider);
+    main.set_picker_can_refresh(provider);
+    if provider {
+        main.set_translation_model_title(if mac { "OpenRouter: google/gemma-4-12b-it".into() } else { "OpenRouter: google/gemma-4-12b-it".into() });
+        main.set_translation_model_kind("cloud".into());
+    }
+    // Opens once the window is laid out (the flyout's position follows the button).
+    let weak = w.as_weak();
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        if let Some(w) = weak.upgrade() {
+            let main = w.global::<MainBridge>();
+            main.set_picker_open_epoch(main.get_picker_open_epoch() + 1);
+        }
+    });
+}
+
 /// Fills the window for `scene`: `empty`, `editor`, `editor-side`, `editor-player`, `subtitles-only`, `working`,
-/// `error`, `playlist`, `playlist-empty`, `platform`, `full-screen`, `theater`.
+/// `error`, `playlist`, `playlist-empty`, `platform`, `full-screen`, `theater`, `picker-local`, `picker-provider`,
+/// `picker-empty`.
 pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
     let app = w.global::<AppBridge>();
     let main = w.global::<MainBridge>();
@@ -246,6 +291,7 @@ pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
             }
         }
         "platform" => main.set_workspace(Workspace::Platform),
+        "picker-local" | "picker-provider" | "picker-empty" => fill_picker(w, scene, mac),
         "menu" => {
             main.set_menu_entries(ModelRc::new(VecModel::from(vec![
                 MenuEntry { id: "a".into(), title: "large-v3 · hazır".into(), checkable: true, checked: true, radio: true, enabled: true, ..Default::default() },

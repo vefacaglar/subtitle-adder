@@ -1,0 +1,220 @@
+// Toolbar translation-model picker, macOS (mac-ui §6.6; SwiftUI `TranslationModelPickerButton` +
+// `TranslationModelPopover`): a toolbar button with the optional `cloud`/`network` symbol and the model title (min 110,
+// max 220 pt) that opens a 340 pt popover (padding 12, spacing 10) below it: provider pop-up (label hidden), rounded
+// search field (focused; ↑/↓ move the highlight, Return chooses it, Esc closes), a 240 pt plain list (title ≤ 2
+// lines, secondary check mark on the current model, disabled rows of a blocked provider, selection = highlight), the
+// one-line caption status and `Yenile` (only while a provider is browsed) / `API sağlayıcılarını yönet…`.
+// Rust (`main_window::translation_picker`) decides everything; the popover only shows `MainBridge.picker-*`.
+import { ListView } from "std-widgets.slint";
+import { Loc } from "../../shared/loc.slint";
+import { MainBridge, PickerModelRow } from "../../shared/bridge.slint";
+import { MacTheme } from "../theme.slint";
+import { Sym, ToolbarButton, PushButton, PopUpButton, ToolTip } from "controls.slint";
+import { PopoverSurface, RoundedField } from "../hub/hub_controls.slint";
+
+// Row height used to keep the highlight visible (a one-line row of the plain list).
+global PickerMetrics {
+    out property <length> row-height: 24px;
+}
+
+component PopoverRow inherits Rectangle {
+    in property <PickerModelRow> entry;
+    callback clicked();
+    min-height: PickerMetrics.row-height;
+    accessible-role: button;
+    accessible-label: root.entry.title;
+    accessible-item-selected: root.entry.current;
+    accessible-enabled: root.entry.enabled;
+    accessible-action-default => { if (root.entry.enabled) { root.clicked(); } }
+    // `List(selection:)` in a popover whose search field has focus: the unemphasized (gray) selection, inset 5 pt.
+    Rectangle {
+        border-radius: 5px;
+        background: root.entry.highlighted && root.entry.enabled ? MacTheme.unemphasized-selection : transparent;
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 6px;
+        Text {
+            text: root.entry.title;
+            font-size: MacTheme.body-size;
+            color: root.entry.enabled ? MacTheme.label : MacTheme.tertiary-label;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            overflow: elide;
+            // `.lineLimit(2)`.
+            max-height: 2 * 16px;
+            horizontal-stretch: 1;
+        }
+        if root.entry.current: Sym {
+            y: (parent.height - self.height) / 2;
+            name: "checkmark";
+            size: 12px;
+            tint: MacTheme.secondary-label;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.entry.enabled;
+        clicked => { root.clicked(); }
+    }
+    ToolTip {
+        text: root.entry.title;
+        show: touch.has-hover && !touch.pressed;
+    }
+}
+
+export component TranslationModelPopover inherits PopupWindow {
+    close-policy: close-on-click-outside;
+    property <int> close-epoch: MainBridge.picker-close-epoch;
+    changed close-epoch => { root.close(); }
+    property <int> search-reset: MainBridge.picker-search-reset;
+    changed search-reset => { search.text = ""; }
+    // A job started elsewhere (a shortcut, the queue): the choice would change the model under it.
+    property <bool> working: MainBridge.is-working;
+    changed working => {
+        if (root.working) {
+            root.close();
+            MainBridge.picker-closed();
+        }
+    }
+    property <int> scroll-epoch: MainBridge.picker-scroll-epoch;
+    changed scroll-epoch => {
+        if (MainBridge.picker-scroll-row >= 0) {
+            let top = MainBridge.picker-scroll-row * PickerMetrics.row-height;
+            if (top < -list.content-y) {
+                list.content-y = -top;
+            } else if (top + PickerMetrics.row-height > -list.content-y + list.visible-height) {
+                list.content-y = -(top + PickerMetrics.row-height - list.visible-height);
+            }
+        }
+    }
+
+    PopoverSurface {
+        // `.padding(12).frame(width: 340)`.
+        width: 340px;
+        VerticalLayout {
+            padding: 12px;
+            spacing: 10px;
+            PopUpButton {
+                items: MainBridge.picker-providers;
+                current-index: MainBridge.picker-provider-index;
+                accessible-name: Loc.t("Çeviri sağlayıcısı");
+                selected(i) => { MainBridge.picker-provider-selected(i); }
+            }
+            FocusScope {
+                height: search.height;
+                capture-key-pressed(event) => {
+                    if (event.text == Key.UpArrow) {
+                        MainBridge.picker-move-highlight(-1);
+                        return accept;
+                    }
+                    if (event.text == Key.DownArrow) {
+                        MainBridge.picker-move-highlight(1);
+                        return accept;
+                    }
+                    if (event.text == Key.Escape) {
+                        root.close();
+                        MainBridge.picker-closed();
+                        return accept;
+                    }
+                    reject
+                }
+                search := RoundedField {
+                    placeholder: Loc.t("Model ara…");
+                    accessible-name: Loc.t("Model ara…");
+                    edited(text) => { MainBridge.picker-search-edited(text); }
+                    accepted => { MainBridge.picker-choose-highlighted(); }
+                    init => { self.focus(); }
+                }
+            }
+            Rectangle {
+                height: 240px;
+                list := ListView {
+                    accessible-label: Loc.t("Çeviri modeli");
+                    for row in MainBridge.picker-rows: PopoverRow {
+                        entry: row;
+                        clicked => { MainBridge.picker-row-clicked(row.id); }
+                    }
+                }
+                if MainBridge.picker-empty-text != "": Text {
+                    x: 16px;
+                    width: parent.width - 32px;
+                    text: MainBridge.picker-empty-text;
+                    font-size: MacTheme.body-size;
+                    color: MacTheme.secondary-label;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            // `Text(statusText ?? " ")`: keeps its height; caption, secondary, one line, tooltip = the full text.
+            status := Text {
+                text: MainBridge.picker-status == "" ? " " : MainBridge.picker-status;
+                font-size: MacTheme.caption-size;
+                color: MacTheme.secondary-label;
+                overflow: elide;
+                status-touch := TouchArea { }
+                ToolTip {
+                    text: MainBridge.picker-status;
+                    show: status-touch.has-hover;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                if MainBridge.picker-show-refresh: PushButton {
+                    symbol: "arrow.clockwise";
+                    label: Loc.t("Yenile");
+                    enabled: MainBridge.picker-can-refresh;
+                    clicked => { MainBridge.picker-refresh(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                PushButton {
+                    label: Loc.t("API sağlayıcılarını yönet…");
+                    clicked => { MainBridge.picker-manage-providers(); }
+                }
+            }
+        }
+    }
+}
+
+// The toolbar button: disabled while working, accessibility label `Çeviri modeli`, tooltip = the help text. A click
+// asks Rust to open the popover; Rust answers with `picker-open-epoch`.
+export component TranslationModelToolbarItem inherits Rectangle {
+    property <int> open-epoch: MainBridge.picker-open-epoch;
+    changed open-epoch => { popover.show(); }
+    width: max(110px, min(220px, button.preferred-width));
+    height: button.preferred-height;
+    button := ToolbarButton {
+        width: parent.width;
+        enabled: !MainBridge.is-working;
+        accessible-name: Loc.t("Çeviri modeli");
+        tooltip: MainBridge.translation-model-help;
+        clicked => { MainBridge.translation-model-clicked(); }
+        HorizontalLayout {
+            spacing: 4px;
+            alignment: start;
+            if MainBridge.translation-model-kind != "": Sym {
+                y: (parent.height - self.height) / 2;
+                name: MainBridge.translation-model-kind;
+                size: 14px;
+            }
+            Text {
+                text: MainBridge.translation-model-title;
+                font-size: MacTheme.body-size;
+                vertical-alignment: center;
+                overflow: elide;
+                color: MacTheme.label;
+            }
+        }
+    }
+    // `.popover(arrowEdge: .bottom)`: below the button, centered on it, kept inside the window.
+    property <length> popover-width: 340px;
+    property <length> centered-x: (root.width - root.popover-width) / 2;
+    popover := TranslationModelPopover {
+        x: max(8px - root.absolute-position.x,
+            min(root.centered-x, MainBridge.window-width - 8px - root.popover-width - root.absolute-position.x));
+        y: root.height + 6px;
+    }
+}

@@ -11,7 +11,7 @@ use slint::ComponentHandle;
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, WindowAdapter};
 
-use sa_app::app::{AppOptions, AppShell};
+use sa_app::app::{AppOptions, AppShell, AppWindow};
 use sa_app::ui::{HubBridge, MainBridge, Workspace};
 use sa_core::dispatch::{QueueDispatcher, UiDispatcher};
 use sa_player::{LoadGeneration, MediaPlayerBackend, MediaSource, PlayerEvent, VideoFrame};
@@ -83,6 +83,8 @@ fn the_production_composition_runs_on_a_temp_data_folder_and_shows_the_sign_in_c
         player: Some(Box::new(|| Box::new(NullPlayer(0)) as Box<dyn MediaPlayerBackend>)),
         native_chrome: false,
         startup_side_effects: false,
+        // macOS lifetime on every target: closing the last window keeps the app (and this test) running.
+        last_window_quits: false,
     });
     assert_eq!(app.data_dir, data);
     let w = app.open_window().expect("main window");
@@ -111,6 +113,31 @@ fn the_production_composition_runs_on_a_temp_data_folder_and_shows_the_sign_in_c
     assert!(w.window.global::<HubBridge>().get_shows_auth_card());
     assert_eq!(w.window.global::<HubBridge>().get_cards().row_count(), 0);
 
+    // Dock reopen (the macOS `rapp` handler posts this when no window is left): an open window is reused, and with
+    // every window closed a new main window opens, sharing the view models.
+    app.reopen_main_window();
+    assert_eq!(app.windows.borrow().len(), 1, "an open window is shown, not duplicated");
+    assert!(Rc::ptr_eq(&app.windows.borrow()[0], &w));
+    close_through_the_title_bar(&w);
+    assert!(app.windows.borrow().is_empty(), "the closed window left the list");
+    assert!(!w.window.window().is_visible());
+    app.reopen_main_window();
+    assert_eq!(app.windows.borrow().len(), 1, "a new main window after the last one closed");
+    let reopened = app.windows.borrow()[0].clone();
+    assert!(!Rc::ptr_eq(&reopened, &w));
+    assert!(reopened.window.window().is_visible());
+
+    // Finder / a drop on the Dock icon with no window left opens a main window for the files (SwiftUI
+    // `handlesExternalEvents`), instead of loading them into a view model nobody sees.
+    close_through_the_title_bar(&reopened);
+    assert!(app.windows.borrow().is_empty());
+    app.open_external_files(vec![dir.path().join("missing.mp4")]);
+    assert_eq!(app.windows.borrow().len(), 1, "an external open with no window opens one");
+    assert!(app.windows.borrow()[0].window.window().is_visible());
+    assert!(!Rc::ptr_eq(&app.windows.borrow()[0], &reopened));
+    app.open_external_files(vec![dir.path().join("missing.mp4")]);
+    assert_eq!(app.windows.borrow().len(), 1, "with a window open, the files go to it");
+
     app.shutdown();
     // The C#-compatible files exist in the injected folder only.
     assert!(data.join("profiles.json").is_file());
@@ -119,6 +146,11 @@ fn the_production_composition_runs_on_a_temp_data_folder_and_shows_the_sign_in_c
         assert!(data.join("profiles.db").is_file());
         assert!(data.join("settings.json").is_file() || !data.join("settings.json").exists());
     }
+}
+
+/// The window's close button: the real `on_close_requested` → `window_closing` path.
+fn close_through_the_title_bar(w: &AppWindow) {
+    w.window.window().dispatch_event(slint::platform::WindowEvent::CloseRequested);
 }
 
 use slint::Model as _;

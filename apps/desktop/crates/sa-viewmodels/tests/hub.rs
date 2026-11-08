@@ -357,6 +357,82 @@ fn engagement_bar_is_visible_only_logged_in_with_a_video_open() {
 }
 
 #[test]
+fn login_while_a_video_is_open_enables_likes_for_it_but_records_no_watch_or_progress() {
+    // C# `WatchHistoryPrivacyTests.LoginWhileAVideoIsOpen_EnablesLikesForIt_ButRecordsNoWatchOrProgress`
+    // (`OpenVideoProvider` → `AdoptOpenVideoForNewSession`) and the Swift equivalent (`playerVideo` keeps its
+    // engagement after a login, `recordingGeneration` stays nil): the open video, never seen by the profile, gets the
+    // bar with zero counts; a like is stored, no view and no position.
+    for policy in [sa_viewmodels::PlatformPolicy::windows(), sa_viewmodels::PlatformPolicy::mac()] {
+        let _l = LanguageScope::new(policy.catalog_chain, UiLanguage::Tr);
+        let env = Env::new(policy);
+        env.profiles.st.lock().users.push(("alice".into(), "pass123".into()));
+        let open = env.touch("media/open_before_login.mp4", "v");
+        let h = hub(&env);
+        h.player_video_changed(Some(&open), true);
+        h.report_playback(PlaybackReport::Opened { duration: 100.0 });
+        settle(&env, &h);
+        assert!(!h.engagement().visible, "logged out: no bar");
+        h.login("alice", SecretString::new("pass123"), false);
+        settle(&env, &h);
+        let e = h.engagement();
+        assert!(e.visible, "the open video is adopted by the new session");
+        assert_eq!((e.view_count, e.is_liked, e.rating), (0, false, 0));
+        h.report_playback(PlaybackReport::Paused { position: 42.0 });
+        settle(&env, &h);
+        assert!(env.profiles.stats_of("alice", &open).is_none(), "no watch, no progress");
+        h.toggle_like_for(&open);
+        settle(&env, &h);
+        let stats = env.profiles.stats_of("alice", &open).expect("the like is stored");
+        assert!(stats.is_liked);
+        assert_eq!(stats.view_count, 0);
+        assert_eq!(stats.last_position_seconds, 0.0);
+        assert!(h.engagement().is_liked);
+        h.set_rating(4);
+        settle(&env, &h);
+        assert_eq!(env.profiles.stats_of("alice", &open).unwrap().rating, 4);
+        assert_eq!(env.profiles.st.lock().progress_writes, 0);
+        h.logout();
+        assert!(!h.engagement().visible);
+        settle(&env, &h);
+        assert_eq!(env.profiles.st.lock().logged_out_io, 0);
+    }
+}
+
+#[test]
+fn a_profile_switch_never_carries_the_previous_profiles_engagement_over() {
+    // The open video is liked, rated and in a list for alice; bob has no record of it. When bob's session replaces
+    // alice's (a login over the open session), bob's bar starts from zero instead of showing alice's like, stars and
+    // list check marks (the snapshot without stats used to leave the old engagement in place).
+    for policy in [sa_viewmodels::PlatformPolicy::windows(), sa_viewmodels::PlatformPolicy::mac()] {
+        let _l = LanguageScope::new(policy.catalog_chain, UiLanguage::Tr);
+        let env = Env::new(policy);
+        env.profiles.st.lock().users.push(("alice".into(), "pass123".into()));
+        env.profiles.st.lock().users.push(("bob".into(), "pass456".into()));
+        let open = env.touch("media/shared.mp4", "v");
+        let h = hub(&env);
+        h.login("alice", SecretString::new("pass123"), false);
+        settle(&env, &h);
+        h.player_video_changed(Some(&open), true);
+        settle(&env, &h);
+        h.toggle_like_for(&open);
+        h.set_rating(5);
+        h.create_list_and_add(&open);
+        settle(&env, &h);
+        let a = h.engagement();
+        assert!(a.visible && a.is_liked && a.rating == 5, "{a:?}");
+        assert_eq!(a.list_ids.len(), 1, "{a:?}");
+        h.login("bob", SecretString::new("pass456"), false);
+        settle(&env, &h);
+        assert!(env.profiles.stats_of("bob", &open).is_none(), "bob never saw the video");
+        let b = h.engagement();
+        assert!(b.visible, "the open video gets bob's bar");
+        assert_eq!((b.view_count, b.is_liked, b.rating), (0, false, 0), "{b:?}");
+        assert!(b.list_ids.is_empty(), "{b:?}");
+        assert!(!h.is_in_list(&a.list_ids[0], &open));
+    }
+}
+
+#[test]
 fn text_helpers() {
     let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
     assert_eq!(duration_text(65.9, HubDateFormat::DotNetGeneral), "01:05");

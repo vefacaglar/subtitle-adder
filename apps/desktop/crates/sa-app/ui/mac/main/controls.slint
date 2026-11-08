@@ -11,8 +11,9 @@ export component Sym inherits Image {
     in property <string> name;
     in property <length> size: 16px;
     in property <brush> tint: MacTheme.label;
-    width: root.size;
-    height: root.size;
+    // The symbol's natural bounds at this point size, like `Image(systemName:)` with `.font(.system(size:))`.
+    width: Symbols.image-width(root.name, root.size);
+    height: Symbols.image-height(root.name, root.size);
     source: Symbols.image(root.name, root.size);
     colorize: root.tint;
     image-fit: contain;

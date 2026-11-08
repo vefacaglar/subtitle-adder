@@ -149,6 +149,34 @@ fn sidebar_visibility_defaults_on_and_persists() {
 }
 
 #[test]
+fn the_launch_folder_is_indexed_at_startup_even_with_the_sidebar_hidden_but_not_crawled() {
+    // Both originals list (and index) the launch folder at startup whatever `showFileExplorer` says: C#
+    // `FileExplorerPane.OnLoaded` → `RefreshAsync` (WinUI raises `Loaded` for the Collapsed pane too; checked with a
+    // WinUI 1.8 probe) → `NavigateCoreAsync(initial, crawl: false)` → `ScanDirectoryAsync`; Swift
+    // `ContentView.task { explorer.start() }` (the window's root, not the sidebar) → `runScan(crawl: false)`. Neither
+    // crawls below it, and neither needs a profile (a file browser, UNIFIED §3.10).
+    for policy in [sa_viewmodels::PlatformPolicy::windows(), sa_viewmodels::PlatformPolicy::mac()] {
+        use sa_media::MediaIndex;
+        let _l = LanguageScope::new(policy.catalog_chain, UiLanguage::Tr);
+        let env = Env::new(policy);
+        tree(&env);
+        movies_quick(&env);
+        env.settings.set_bool(keys::SHOW_FILE_EXPLORER, false);
+        let m = FileExplorerModel::new(env.services());
+        assert!(!m.is_sidebar_visible());
+        assert_eq!(env.index.scans.load(std::sync::atomic::Ordering::SeqCst), 0, "the constructor touches nothing");
+        m.start();
+        env.eventually("initial folder", || m.current_folder() == Some(env.path("lib/Movies")));
+        idle(&env, &m);
+        assert_eq!(env.index.scans.load(std::sync::atomic::Ordering::SeqCst), 1, "exactly the launch folder");
+        assert!(env.index.cached_snapshot(&env.path("lib/Movies")).is_some());
+        assert!(env.index.cached_snapshot(&env.path("lib/Movies/Series")).is_none(), "no crawl at startup");
+        assert!(env.index.cached_snapshot(&env.path("lib/Other")).is_none());
+        assert!(env.index.transient_scans.lock().is_empty());
+    }
+}
+
+#[test]
 fn a_missing_folder_reports_not_found() {
     let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
     let env = Env::win();

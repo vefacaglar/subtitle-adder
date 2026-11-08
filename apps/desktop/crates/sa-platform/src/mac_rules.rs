@@ -159,6 +159,43 @@ pub fn hex_from_components(rgb: [f64; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}", c(rgb[0]), c(rgb[1]), c(rgb[2]))
 }
 
+/// One `NSApp.windows` entry as the Dock reopen handling sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReopenWindow {
+    /// `isVisible` (on screen; a closed window is not). A miniaturized window is never counted as visible, whatever
+    /// AppKit reports here.
+    pub visible: bool,
+    /// `isMiniaturized` (in the Dock).
+    pub miniaturized: bool,
+    /// An `NSPanel` (color panel, alerts): AppKit hides panels when the app deactivates, so they never count as a
+    /// window the user could return to.
+    pub panel: bool,
+}
+
+/// What a Dock-icon click (`'aevt','rapp'`) does once a hidden app is unhidden.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReopenAction {
+    /// A window is visible: nothing (activation already brought the app to the front).
+    Nothing,
+    /// No window is visible but this one (index into the list) is in the Dock: deminiaturize it.
+    Deminiaturize(usize),
+    /// No window left: open a new main window.
+    OpenWindow,
+}
+
+/// AppKit's default reopen handling as a SwiftUI `WindowGroup` app gets it (mac-ui §2.3): with a visible window
+/// nothing happens; otherwise the first miniaturized window comes back; with none left a new main window opens.
+pub fn reopen_action(windows: &[ReopenWindow]) -> ReopenAction {
+    let regular = || windows.iter().enumerate().filter(|(_, w)| !w.panel);
+    if regular().any(|(_, w)| w.visible && !w.miniaturized) {
+        return ReopenAction::Nothing;
+    }
+    match regular().find(|(_, w)| w.miniaturized) {
+        Some((i, _)) => ReopenAction::Deminiaturize(i),
+        None => ReopenAction::OpenWindow,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +288,25 @@ mod tests {
         assert_eq!(thumbnail_seconds(f64::NAN), 0.0);
         assert_eq!(pixel_extent(13.2, 2.0), 27);
         assert_eq!(pixel_extent(0.0, 2.0), 1);
+    }
+
+    #[test]
+    fn dock_reopen_opens_a_window_only_when_none_is_left() {
+        let visible = ReopenWindow { visible: true, ..Default::default() };
+        let mini = ReopenWindow { miniaturized: true, ..Default::default() };
+        let closed = ReopenWindow::default();
+        let panel = ReopenWindow { visible: true, panel: true, ..Default::default() };
+        assert_eq!(reopen_action(&[]), ReopenAction::OpenWindow);
+        assert_eq!(reopen_action(&[closed, closed]), ReopenAction::OpenWindow);
+        assert_eq!(reopen_action(&[panel]), ReopenAction::OpenWindow);
+        assert_eq!(reopen_action(&[closed, visible]), ReopenAction::Nothing);
+        assert_eq!(reopen_action(&[mini, visible]), ReopenAction::Nothing);
+        assert_eq!(reopen_action(&[closed, panel, mini, mini]), ReopenAction::Deminiaturize(2));
+        let mini_panel = ReopenWindow { miniaturized: true, panel: true, ..Default::default() };
+        assert_eq!(reopen_action(&[mini_panel]), ReopenAction::OpenWindow);
+        // A window in the Dock that AppKit still reports as visible is not on screen: it comes back.
+        let mini_visible = ReopenWindow { visible: true, miniaturized: true, ..Default::default() };
+        assert_eq!(reopen_action(&[mini_visible]), ReopenAction::Deminiaturize(0));
+        assert_eq!(reopen_action(&[closed, mini_visible, visible]), ReopenAction::Nothing);
     }
 }

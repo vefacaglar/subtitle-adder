@@ -16,7 +16,8 @@ export component MainWindow inherits Window {
     preferred-height: 840px;
     min-width: 760px;
     min-height: 580px;
-    background: Theme.window-background;
+    // Mica shows through wherever no element paints (WinUI: no Background on the root grid).
+    background: AppBridge.mica-backdrop ? transparent : Theme.window-background;
     default-font-family: AppBridge.ui-font-family;
 
     MainView { }
@@ -29,7 +30,8 @@ export component SettingsWindow inherits Window {
     preferred-height: 760px;
     min-width: 640px;
     min-height: 520px;
-    background: Theme.window-background;
+    // Mica shows through wherever no element paints (WinUI: no Background on the root grid).
+    background: AppBridge.mica-backdrop ? transparent : Theme.window-background;
     default-font-family: AppBridge.ui-font-family;
 
     SettingsView { }

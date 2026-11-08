@@ -6,6 +6,7 @@
 //!   (transport texts/ratios), [`player`] (player controller over `MediaPlayerBackend`), [`rows`] (keyed row
 //!   models, selection), [`menus`] (menu builders), [`status`] (error bar, playback notice), [`input`] (keys, drops).
 //! * [`chrome`] — native window chrome (Windows caption/Snap/size persistence, macOS unified title bar attributes).
+//! * [`translation_picker`] — the toolbar translation-model flyout (Windows) / popover (macOS).
 //! * [`demo`] fills the bridges with representative content for `sa-shot` look checks.
 
 pub mod chrome;
@@ -18,6 +19,7 @@ pub mod menus;
 pub mod player;
 pub mod rows;
 pub mod status;
+pub mod translation_picker;
 pub mod transport;
 
 pub use controller::{MainWindowController, MainWindowDeps, MainWindowHooks, PreviewMaker};

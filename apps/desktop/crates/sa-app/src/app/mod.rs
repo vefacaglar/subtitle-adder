@@ -45,6 +45,7 @@ use sa_viewmodels::uiref::UiKey;
 use sa_viewmodels::{AppServices, PlatformPolicy, SubtitleViewModel};
 
 use crate::hub::{HubFlavor, HubPresenter, HubServices};
+use crate::main_window::translation_picker::{PickerDeps, TranslationPickerPresenter};
 use crate::main_window::{MainWindowController, MainWindowDeps, MainWindowHooks, PreviewMaker};
 use crate::settings_window::{SettingsDeps, SettingsWindowHost};
 use crate::ui::{self, HubBridge, MainWindow};
@@ -68,6 +69,9 @@ pub struct AppOptions {
     /// Windows: start the background startup work (temp cleanup, file-association self-registration, provider
     /// model refresh). Off in tests.
     pub startup_side_effects: bool,
+    /// Closing the last main window quits (Windows, win-ui-main §1.5). Off on macOS, where the app keeps its menu
+    /// bar and a Dock click or an opened file brings a main window back (mac-ui §2.3).
+    pub last_window_quits: bool,
 }
 
 impl AppOptions {
@@ -79,6 +83,7 @@ impl AppOptions {
             player: None,
             native_chrome: true,
             startup_side_effects: true,
+            last_window_quits: !cfg!(target_os = "macos"),
         }
     }
 }
@@ -88,6 +93,8 @@ pub struct AppWindow {
     pub window: MainWindow,
     pub controller: Rc<MainWindowController>,
     pub hub: HubPresenter,
+    /// The toolbar translation-model flyout (Windows) / popover (macOS).
+    pub picker: Rc<TranslationPickerPresenter>,
 }
 
 /// The process-wide parts (shared by every main window and the Settings window).
@@ -116,6 +123,9 @@ pub struct AppShell {
     pub win: win_parts::WinParts,
     player: Option<PlayerFactory>,
     native_chrome: bool,
+    last_window_quits: bool,
+    /// The provider test state shared by every picker and the Settings window.
+    picker_providers: Rc<sa_viewmodels::providers_ui::ProvidersModel>,
     key: Cell<Option<UiKey<AppShell>>>,
     subs: RefCell<Vec<Subscription>>,
     shut_down: Cell<bool>,
@@ -238,6 +248,17 @@ impl AppShell {
             }));
         }
 
+        // One provider test state for every window's translation picker and the Settings window (macOS
+        // `vm.testingProviders` / `vm.providerNotices` on the shared view model). Saved-provider tests of the picker's
+        // "Yenile": Windows = `WinProviderManager::test_draft` (C# messages, `IsTesting`); macOS = EngineKit's
+        // `test_connection` with the SwiftUI notices.
+        #[cfg(windows)]
+        let picker_tester = win.picker_tester();
+        #[cfg(not(windows))]
+        let picker_tester: Arc<dyn sa_viewmodels::providers_ui::ProviderConnectionTester> =
+            sa_viewmodels::providers_ui::EngineKitConnectionTester::new(Arc::new(sa_enginekit::external_llm::UreqFetch));
+        let picker_providers = Rc::new(sa_viewmodels::providers_ui::ProvidersModel::with_tester(services.clone(), picker_tester));
+
         let settings_host = SettingsWindowHost::new(SettingsDeps {
             settings: settings.clone(),
             ui: ui.clone(),
@@ -258,6 +279,7 @@ impl AppShell {
             #[cfg(not(windows))]
             win: None,
             font_families: crate::settings_window::deps::system_font_families(),
+            activity: Some(picker_providers.clone()),
         });
 
         let app = Rc::new(AppShell {
@@ -285,6 +307,8 @@ impl AppShell {
             win,
             player: options.player,
             native_chrome: options.native_chrome,
+            last_window_quits: options.last_window_quits,
+            picker_providers,
             key: Cell::new(None),
             subs: RefCell::new(Vec::new()),
             shut_down: Cell::new(false),
@@ -314,10 +338,7 @@ impl AppShell {
         #[cfg(not(windows))]
         {
             // mac-ui §2.2: the active local provider's models are fetched 500 ms after the window appears.
-            let providers = Rc::new(sa_viewmodels::providers_ui::ProvidersModel::with_tester(
-                self.services.clone(),
-                sa_viewmodels::providers_ui::EngineKitConnectionTester::new(Arc::new(sa_enginekit::external_llm::UreqFetch)),
-            ));
+            let providers = self.picker_providers.clone();
             slint::Timer::single_shot(Duration::from_millis(500), move || providers.refresh_active_provider_models_if_needed());
         }
     }
@@ -330,7 +351,16 @@ impl AppShell {
         crate::loc::follow_language_changes(window.as_weak());
         apply_theme(&window, self.appearance.theme());
 
-        let hooks = self.hooks(&window);
+        let picker = self.translation_picker(&window);
+        let mut hooks = self.hooks(&window);
+        {
+            let p = Rc::downgrade(&picker);
+            hooks.translation_model_clicked = Some(Rc::new(move || {
+                if let Some(p) = p.upgrade() {
+                    p.open();
+                }
+            }));
+        }
         let deps = MainWindowDeps {
             vm: self.vm.clone(),
             explorer: Some(self.explorer.clone()),
@@ -358,7 +388,7 @@ impl AppShell {
                 }
             });
         }
-        let entry = Rc::new(AppWindow { window, controller, hub });
+        let entry = Rc::new(AppWindow { window, controller, hub, picker });
         {
             // The window's close button / Alt+F4 / ⌘W.
             let key = self.ui_key();
@@ -393,23 +423,39 @@ impl AppShell {
         return Box::new(sa_player::ffmpeg_backend::FfmpegPlayer::new());
     }
 
-    fn hooks(self: &Rc<Self>, window: &MainWindow) -> MainWindowHooks {
+    /// The window's translation-model picker over the app-wide `ProvidersModel` (the platform's connection tester;
+    /// test flags and notices shared with the other windows and Settings); "API sağlayıcılarını yönet…" opens
+    /// Settings on the providers page (Windows `general`, macOS `translation`).
+    fn translation_picker(self: &Rc<Self>, window: &MainWindow) -> Rc<TranslationPickerPresenter> {
         let key = self.ui_key();
         let page = match self.policy.settings_manage_providers_page {
             sa_viewmodels::policy::SettingsPage::Translation => "translation",
             _ => "general",
         };
+        let providers = self.picker_providers.clone();
+        TranslationPickerPresenter::attach(
+            window,
+            PickerDeps {
+                services: self.services.clone(),
+                catalog: self.catalog.clone(),
+                vm: self.vm.clone(),
+                providers,
+                manage_providers: Rc::new(move || {
+                    if let Some(app) = key.get() {
+                        let _ = app.settings_host.show(Some(page));
+                    }
+                }),
+            },
+        )
+    }
+
+    fn hooks(self: &Rc<Self>, window: &MainWindow) -> MainWindowHooks {
+        let key = self.ui_key();
         let weak = window.as_weak();
         MainWindowHooks {
             open_settings: Some(Rc::new(move || {
                 if let Some(app) = key.get() {
                     let _ = app.settings_host.show(None);
-                }
-            })),
-            // No in-window translation-model picker yet: the button opens the provider settings (PARITY.md).
-            translation_model_clicked: Some(Rc::new(move || {
-                if let Some(app) = key.get() {
-                    let _ = app.settings_host.show(Some(page));
                 }
             })),
             profile_clicked: Some(Rc::new(move || {
@@ -469,8 +515,29 @@ impl AppShell {
         }
     }
 
-    /// Opens files from the command line, a second instance or Finder in the key (first) window.
-    pub fn open_external_files(&self, paths: Vec<PathBuf>) {
+    /// macOS Dock reopen with no window left (mac-ui §2.3): shows an open main window that is not on screen, or opens
+    /// a new one like File ▸ New Window.
+    pub fn reopen_main_window(self: &Rc<Self>) {
+        let existing = self.windows.borrow().first().cloned();
+        match existing {
+            Some(w) => {
+                let _ = w.window.show();
+            }
+            None => {
+                if let Ok(w) = self.open_window() {
+                    let _ = self.show_window(&w);
+                }
+            }
+        }
+    }
+
+    /// Opens files from the command line, a second instance or Finder in the key (first) window. On macOS with no
+    /// window left (Finder, a drop on the Dock icon) a new main window opens for them, like the SwiftUI
+    /// `WindowGroup` with `handlesExternalEvents`.
+    pub fn open_external_files(self: &Rc<Self>, paths: Vec<PathBuf>) {
+        if self.windows.borrow().is_empty() && !self.last_window_quits {
+            self.reopen_main_window();
+        }
         let first = self.windows.borrow().first().cloned();
         match first {
             Some(w) => {
@@ -485,7 +552,7 @@ impl AppShell {
     fn window_closing(&self, w: &Rc<AppWindow>) {
         w.controller.detach();
         self.windows.borrow_mut().retain(|x| !Rc::ptr_eq(x, w));
-        if self.windows.borrow().is_empty() && !cfg!(target_os = "macos") {
+        if self.windows.borrow().is_empty() && self.last_window_quits {
             // Windows: closing the main window quits (win-ui-main §1.5); macOS keeps the menu bar alive.
             self.settings_host.close();
             let _ = slint::quit_event_loop();
@@ -620,7 +687,21 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
         c
     };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let _external = {
+        use sa_core::platform::ExternalOpenSource;
+        let mut source = sa_platform::mac::open_documents::OpenDocumentsHandler::install();
+        let _ = source.acquire_or_forward(&[]);
+        install_external_sink(&mut source, &app);
+        // Menu bar icons behave like SwiftUI's template `systemImage` icons (highlight, disabled).
+        sa_platform::mac::appkit::keep_menu_icons_template();
+        // Dock-icon click with no window left opens one (mac-ui §2.3); unhide/deminiaturize happen in the handler.
+        let key = app.ui_key();
+        let ui = app.ui.clone();
+        source.set_reopen_handler(Box::new(move || key.post(&ui, |app| app.reopen_main_window())));
+        source
+    };
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _external = {
         let mut source = sa_platform::external_open_source();
         let _ = source.acquire_or_forward(&[]);

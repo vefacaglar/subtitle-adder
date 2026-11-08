@@ -4,7 +4,8 @@
 //!   caption buttons, Snap Layouts on the maximize button (non-client, so its hover/press comes back through
 //!   `AppBridge.maximize-hover`), rounded corners, frame dark mode following the content theme, min size 760×580 DIP,
 //!   saved size (`mainWindowWidth/Height`, physical px, written on close only when restored) clamped to the work area
-//!   and centered on it. In full screen the title bar row is 0, so nothing is reported as caption.
+//!   and centered on it. In full screen the title bar row is 0, so nothing is reported as caption. Mica behind the
+//!   window where DWM supports it (`AppBridge.mica-backdrop` makes the Slint background transparent).
 //! * macOS (mac-ui §3.2, ARCHITECTURE §6.6): transparent title bar + full-size content view with a hidden title, so the
 //!   52 pt toolbar is the unified title bar; set through the winit window attributes before the window exists
 //!   ([`winit_attributes`], for `slint::BackendSelector::with_winit_window_attributes_hook`).
@@ -28,6 +29,19 @@ pub fn winit_attributes(attrs: winit::window::WindowAttributes) -> winit::window
     #[cfg(not(target_os = "macos"))]
     {
         attrs
+    }
+}
+
+/// Whether the renderer that really draws `window` delivers per-pixel alpha, which Mica needs. femtovg (OpenGL)
+/// does; the software renderer presents through GDI, where a transparent pixel is black. The software renderer is
+/// what `SLINT_BACKEND=winit-software` / `winit-sw` selects, and also what winit falls back to when the GPU renderer
+/// cannot be created (no usable OpenGL, e.g. in some VMs or RDP sessions), so the environment cannot tell: the
+/// window's renderer is asked instead. Only the GPU renderers support a rendering notifier; the probe leaves a no-op
+/// one installed (nothing else in the app uses it). Call after the window was shown.
+pub fn mica_renderer(window: &slint::Window) -> bool {
+    match window.set_rendering_notifier(|_, _| {}) {
+        Ok(()) | Err(slint::SetRenderingNotifierError::AlreadySet) => true,
+        Err(_) => false,
     }
 }
 
@@ -149,6 +163,10 @@ mod win {
         }
         chrome.sync(window);
         chrome.sync_theme(window);
+        // C# `window.SystemBackdrop = new MicaBackdrop()`: the Slint background turns transparent only where DWM
+        // really draws Mica (Windows 11); elsewhere it stays the solid fallback color.
+        let mica = super::mica_renderer(window.window()) && chrome.chrome.set_mica(true);
+        window.global::<AppBridge>().set_mica_backdrop(mica);
         Some(chrome)
     }
 }

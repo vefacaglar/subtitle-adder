@@ -621,6 +621,24 @@ pub struct FakeProfiles {
     subs: Subscribers<ProfileChange>,
 }
 
+/// What the feed shows for a discovered (or listed) video the profile has no record of.
+fn blank_stats(path: &Path) -> VideoUserStats {
+    VideoUserStats {
+        content_fingerprint: None,
+        video_path: path.to_string_lossy().into_owned(),
+        file_name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        directory_path: path.parent().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        view_count: 0,
+        is_liked: false,
+        rating: 0,
+        last_position_seconds: 0.0,
+        duration_seconds: 0.0,
+        last_watched_at: None,
+        updated_at: Ticks::MIN,
+        thumbnail: None,
+    }
+}
+
 fn k(p: &Path) -> String {
     p.to_string_lossy().to_lowercase()
 }
@@ -799,20 +817,8 @@ impl ProfileStore for FakeProfiles {
             self.st.lock().logged_out_io += 1;
             return None;
         }
-        Some(self.entry(path).unwrap_or_else(|| VideoUserStats {
-            content_fingerprint: None,
-            video_path: path.to_string_lossy().into_owned(),
-            file_name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-            directory_path: path.parent().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-            view_count: 0,
-            is_liked: false,
-            rating: 0,
-            last_position_seconds: 0.0,
-            duration_seconds: 0.0,
-            last_watched_at: None,
-            updated_at: Ticks::MIN,
-            thumbnail: None,
-        }))
+        // Like `WinProfileStore` / `MacProfileStore`: a video the profile has no record of has no stats.
+        self.entry(path)
     }
     fn stats_fast_in_memory(&self, path: &Path) -> Option<VideoUserStats> {
         self.entry(path)
@@ -917,7 +923,7 @@ impl ProfileStore for FakeProfiles {
             for l in self.lists().into_iter().filter(|l| &l.id == id) {
                 for p in l.video_paths {
                     if !items.iter().any(|i| i.video_path.to_lowercase() == p.to_lowercase()) {
-                        items.push(self.stats(Path::new(&p), FingerprintMode::Compute).expect("stats"));
+                        items.push(self.entry(Path::new(&p)).unwrap_or_else(|| blank_stats(Path::new(&p))));
                     }
                 }
             }
@@ -925,7 +931,7 @@ impl ProfileStore for FakeProfiles {
         if query.filter == VideoFeedFilter::All {
             for d in &query.discovered {
                 if !items.iter().any(|i| i.video_path.to_lowercase() == k(d)) {
-                    items.push(self.stats(d, FingerprintMode::Compute).expect("stats"));
+                    items.push(self.entry(d).unwrap_or_else(|| blank_stats(d)));
                 }
             }
         }

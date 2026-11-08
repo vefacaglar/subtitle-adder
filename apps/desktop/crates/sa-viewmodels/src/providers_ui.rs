@@ -9,8 +9,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use sa_core::cancel::CancellationToken;
 use sa_core::l;
@@ -131,6 +132,12 @@ pub struct TestReport {
 /// Runs a connection test (blocking; called on a worker thread).
 pub trait ProviderConnectionTester: Send + Sync {
     fn test(&self, preset_id: &str, base_url: &str, api_key: &str, model: &str, cancel: &CancellationToken) -> TestReport;
+
+    /// A connection test of the backend behind this tester is running anywhere in the app, not only through this
+    /// model (Windows: C# `TranslationProviderManager.IsTesting`, which also counts the Settings window's tests).
+    fn is_busy(&self) -> bool {
+        false
+    }
 }
 
 /// The offline notice (cloud providers are not contacted while offline).
@@ -436,6 +443,8 @@ struct PState {
     key_epochs: HashMap<Uuid, i64>,
     notices: HashMap<Uuid, ExternalConnectionNotice>,
     testing: HashSet<Uuid>,
+    /// Tests the Settings window runs itself ([`ProvidersModel::begin_external_test`]).
+    external_testing: HashSet<Uuid>,
     test_ids: HashMap<Uuid, Uuid>,
     test_tokens: HashMap<Uuid, CancellationToken>,
     loads_started: bool,
@@ -446,7 +455,8 @@ struct PInner {
     tester: Arc<dyn ProviderConnectionTester>,
     key: Cell<Option<UiKey<PInner>>>,
     st: RefCell<PState>,
-    handlers: RefCell<Vec<Rc<dyn Fn(ProvidersChange)>>>,
+    /// With a liveness flag for handlers registered through [`ProvidersModel::subscribe`].
+    handlers: RefCell<Vec<(Option<Arc<AtomicBool>>, Rc<dyn Fn(ProvidersChange)>)>>,
     after_test: RefCell<Vec<(Uuid, Box<dyn FnOnce()>)>>,
     subs: RefCell<Vec<Subscription>>,
 }
@@ -457,7 +467,11 @@ impl PInner {
     }
 
     fn notify(&self, c: ProvidersChange) {
-        let hs: Vec<Rc<dyn Fn(ProvidersChange)>> = self.handlers.borrow().clone();
+        let hs: Vec<Rc<dyn Fn(ProvidersChange)>> = {
+            let mut all = self.handlers.borrow_mut();
+            all.retain(|(alive, _)| alive.as_ref().is_none_or(|a| a.load(Ordering::SeqCst)));
+            all.iter().map(|(_, h)| h.clone()).collect()
+        };
         for h in hs {
             h(c);
         }
@@ -620,6 +634,7 @@ impl ProvidersModel {
                 key_epochs: HashMap::new(),
                 notices: HashMap::new(),
                 testing: HashSet::new(),
+                external_testing: HashSet::new(),
                 test_ids: HashMap::new(),
                 test_tokens: HashMap::new(),
                 loads_started: false,
@@ -653,7 +668,15 @@ impl ProvidersModel {
     }
 
     pub fn on_change(&self, handler: Box<dyn Fn(ProvidersChange)>) {
-        self.inner.handlers.borrow_mut().push(Rc::from(handler));
+        self.inner.handlers.borrow_mut().push((None, Rc::from(handler)));
+    }
+
+    /// Like [`Self::on_change`], but only while the returned subscription lives (a Settings window that comes and
+    /// goes).
+    pub fn subscribe(&self, handler: Box<dyn Fn(ProvidersChange)>) -> Subscription {
+        let alive = Arc::new(AtomicBool::new(true));
+        self.inner.handlers.borrow_mut().push((Some(alive.clone()), Rc::from(handler)));
+        Subscription::new(move || alive.store(false, Ordering::SeqCst))
     }
 
     /// Runs once after the next saved-provider test of `id` applied its result (the picker's refresh uses it).
@@ -831,7 +854,68 @@ impl ProvidersModel {
     }
 
     pub fn is_testing(&self, id: Uuid) -> bool {
-        self.inner.st.borrow().testing.contains(&id)
+        let st = self.inner.st.borrow();
+        st.testing.contains(&id) || st.external_testing.contains(&id)
+    }
+
+    /// Cancels the running saved-provider test of `id`: the request is cancelled, a late answer is dropped (nothing
+    /// is stored) and the `once_after_test` handlers run now.
+    pub fn cancel_test(&self, id: Uuid) {
+        let had = {
+            let mut st = self.inner.st.borrow_mut();
+            let had = st.test_ids.remove(&id).is_some();
+            st.testing.remove(&id);
+            if let Some(t) = st.test_tokens.remove(&id) {
+                t.cancel();
+            }
+            had
+        };
+        if had {
+            self.inner.notify(ProvidersChange::Tests);
+            Self::finish_test(&self.inner, id);
+        }
+    }
+
+    /// Any connection test of the tester's backend runs anywhere in the app ([`ProviderConnectionTester::is_busy`]).
+    pub fn is_tester_busy(&self) -> bool {
+        self.inner.tester.is_busy()
+    }
+
+    /// The Settings window started its own test of `id` (macOS: `vm.testingProviders` is shared, so the picker's
+    /// "Yenile" waits for it). The previous notice is about an earlier test and goes.
+    pub fn begin_external_test(&self, id: Uuid) {
+        {
+            let mut st = self.inner.st.borrow_mut();
+            st.external_testing.insert(id);
+            st.notices.remove(&id);
+        }
+        self.inner.notify(ProvidersChange::Tests);
+    }
+
+    /// The Settings window's test of `id` ended; `notice` (if any) is its outcome, shown by both the Settings card
+    /// and the picker (macOS `vm.providerNotices`).
+    pub fn end_external_test(&self, id: Uuid, notice: Option<ExternalConnectionNotice>) {
+        {
+            let mut st = self.inner.st.borrow_mut();
+            st.external_testing.remove(&id);
+            if let Some(n) = notice {
+                st.notices.insert(id, n);
+            }
+        }
+        self.inner.notify(ProvidersChange::Tests);
+    }
+
+    /// Sets (or with `None` clears) the notice of `id` without a test (the Settings window's offline notice, a
+    /// forgotten test after an edit).
+    pub fn set_notice(&self, id: Uuid, notice: Option<ExternalConnectionNotice>) {
+        {
+            let mut st = self.inner.st.borrow_mut();
+            match notice {
+                Some(n) => st.notices.insert(id, n),
+                None => st.notices.remove(&id),
+            };
+        }
+        self.inner.notify(ProvidersChange::Tests);
     }
 
     /// Tests a saved provider (mac-viewmodels §6.4): offline-blocked cloud servers are not contacted; the key comes
@@ -839,9 +923,15 @@ impl ProvidersModel {
     /// for a superseded test, a removed provider, an edited address or a changed key are dropped. On success the
     /// discovered models are stored and an empty model takes the first.
     pub fn test_saved(&self, id: Uuid) {
+        self.test_saved_gated(id, true);
+    }
+
+    /// [`Self::test_saved`]; `offline_gate == false` contacts the server even in offline mode (the Windows picker's
+    /// "Yenile": C# `TestAndFetchModelsAsync` has no offline check).
+    fn test_saved_gated(&self, id: Uuid, offline_gate: bool) {
         let inner = &self.inner;
         let Some(provider) = inner.provider(id) else { return };
-        if inner.offline_blocks_server(&provider.base_url) {
+        if offline_gate && inner.offline_blocks_server(&provider.base_url) {
             inner.forget_tests(id);
             inner.st.borrow_mut().notices.insert(id, offline_notice());
             inner.notify(ProvidersChange::Tests);
@@ -1022,17 +1112,53 @@ struct PickerState {
     highlighted: Option<String>,
     status: Option<LocalizedMessage>,
     refreshing: bool,
+    /// The provider this picker's running refresh tests.
+    refresh_id: Option<Uuid>,
     epoch: i64,
 }
 
+type PickerHandler = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
 /// Toolbar translation-model picker (Windows flyout / macOS popover with `browsedProviderID`; mac-viewmodels §9,
-/// win-ui-hub-settings §8).
+/// win-ui-hub-settings §8). The two apps differ (UNIFIED.md §17, KEEP each):
+///
+/// * Windows (C# `TranslationModelPicker` + `TranslationModelSelection`): the provider combo **activates** the provider
+///   it shows; rows are never disabled; the status line shows only the last refresh's message (verbatim, also for a
+///   failed test); "Yenile" is enabled for any provider; the selected row is the provider's `Model` / the
+///   `translationModel` setting.
+/// * macOS (`TranslationModelPickerModel.swift`): browsing does not change what translates; rows of a blocked provider
+///   (offline, unusable address) are disabled with the reason in the status line; a failed refresh reads
+///   `Modeller yenilenemedi: <reason>`; ↑/↓/Return move and choose the highlight.
 pub struct TranslationModelPickerModel {
     svc: AppServices,
     catalog: Rc<ModelCatalog>,
     providers: Rc<ProvidersModel>,
     host: Rc<dyn PickerHost>,
     st: Rc<RefCell<PickerState>>,
+    changed: PickerHandler,
+}
+
+/// A [`TranslationModelPickerModel`] held weakly (late test answers must not keep a closed picker alive).
+struct WeakPicker {
+    svc: AppServices,
+    catalog: Weak<ModelCatalog>,
+    providers: Weak<ProvidersModel>,
+    host: Weak<dyn PickerHost>,
+    st: Weak<RefCell<PickerState>>,
+    changed: Weak<RefCell<Option<Rc<dyn Fn()>>>>,
+}
+
+impl WeakPicker {
+    fn upgrade(&self) -> Option<TranslationModelPickerModel> {
+        Some(TranslationModelPickerModel {
+            svc: self.svc.clone(),
+            catalog: self.catalog.upgrade()?,
+            providers: self.providers.upgrade()?,
+            host: self.host.upgrade()?,
+            st: self.st.upgrade()?,
+            changed: self.changed.upgrade()?,
+        })
+    }
 }
 
 /// macOS model ordering (`model_first`, lowercase sort) vs Windows (OrdinalIgnoreCase).
@@ -1042,31 +1168,54 @@ fn picker_is_mac(svc: &AppServices) -> bool {
 
 impl TranslationModelPickerModel {
     pub fn new(services: AppServices, catalog: Rc<ModelCatalog>, providers: Rc<ProvidersModel>, host: Rc<dyn PickerHost>) -> Self {
-        let browsed = providers.active_external_provider().map(|p| p.id);
         let picker = Self {
             svc: services,
             catalog,
             providers,
             host,
             st: Rc::new(RefCell::new(PickerState {
-                browsed,
+                browsed: None,
                 search: String::new(),
                 highlighted: None,
                 status: None,
                 refreshing: false,
+                refresh_id: None,
                 epoch: 0,
             })),
+            changed: Rc::new(RefCell::new(None)),
         };
+        picker.st.borrow_mut().browsed = picker.initial_browsed();
         picker.reset_highlight();
         picker
+    }
+
+    fn is_mac(&self) -> bool {
+        picker_is_mac(&self.svc)
+    }
+
+    /// macOS `vm.activeExternalProvider?.id` (a provider with an unusable address lists the local models); Windows
+    /// `manager.ActiveProviderId`.
+    fn initial_browsed(&self) -> Option<Uuid> {
+        if self.is_mac() {
+            self.providers.active_external_provider().map(|p| p.id)
+        } else {
+            self.providers.active_provider_id()
+        }
+    }
+
+    /// Called after state changes that do not come from a call of the UI (a refresh that finished). One handler; the
+    /// presenter re-reads everything it shows.
+    pub fn set_on_change(&self, handler: Box<dyn Fn()>) {
+        *self.changed.borrow_mut() = Some(Rc::from(handler));
     }
 
     /// The popover/flyout opens: browse the active provider, clear search and status.
     pub fn open(&self) {
         self.abandon_refresh();
+        let browsed = self.initial_browsed();
         {
             let mut st = self.st.borrow_mut();
-            st.browsed = self.providers.active_external_provider().map(|p| p.id).or(self.providers.active_provider_id());
+            st.browsed = browsed;
             st.search.clear();
             st.status = None;
         }
@@ -1083,10 +1232,21 @@ impl TranslationModelPickerModel {
         self.st.borrow().browsed
     }
 
+    /// The browsed provider still exists (macOS shows "Yenile" only then).
+    pub fn has_browsed_profile(&self) -> bool {
+        self.browsed_profile().is_some()
+    }
+
     pub fn provider_choices(&self) -> Vec<ProviderChoice> {
         let mut v = vec![ProviderChoice { id: None, name: l!("Yerel modeller (Cihaz üzerinde)") }];
         v.extend(self.svc.providers.providers().into_iter().map(|p| ProviderChoice { id: Some(p.id), name: p.name }));
         v
+    }
+
+    /// Index of the browsed provider in [`Self::provider_choices`] (`-1` when it is not listed).
+    pub fn provider_index(&self) -> i32 {
+        let browsed = self.st.borrow().browsed;
+        self.provider_choices().iter().position(|c| c.id == browsed).map(|i| i as i32).unwrap_or(-1)
     }
 
     fn browsed_profile(&self) -> Option<TranslationProviderProfile> {
@@ -1094,32 +1254,34 @@ impl TranslationModelPickerModel {
         self.svc.providers.providers().into_iter().find(|p| p.id == id)
     }
 
-    /// Switches the browsed provider. Windows: selecting a provider in the flyout activates it at once (a removed
-    /// provider is refused). macOS: browsing only.
+    /// Switches the browsed provider. Windows: selecting a provider in the flyout activates it at once (C#
+    /// `SelectProvider`: a removed provider is refused, nothing is tested). macOS: browsing only.
     pub fn browse(&self, provider: Option<Uuid>) -> bool {
         if let Some(id) = provider
             && !self.svc.providers.providers().iter().any(|p| p.id == id)
         {
             return false;
         }
+        // Re-choosing the shown provider changes nothing (WinUI raises no SelectionChanged for it).
         if self.st.borrow().browsed == provider {
             return true;
         }
         self.abandon_refresh();
+        if !self.is_mac() {
+            self.svc.providers.set_active(provider);
+        }
         {
             let mut st = self.st.borrow_mut();
             st.browsed = provider;
             st.search.clear();
             st.status = None;
         }
-        if !picker_is_mac(&self.svc) {
-            self.providers.activate(provider);
-        }
         self.reset_highlight();
         true
     }
 
-    /// The store changed: a browsed provider that is gone falls back to on-device with `Bu sağlayıcı artık yok.`.
+    /// The store changed (macOS `providersChanged`): a browsed provider that is gone falls back to on-device with
+    /// `Bu sağlayıcı artık yok.`.
     pub fn providers_changed(&self) {
         let gone = self.st.borrow().browsed.is_some() && self.browsed_profile().is_none();
         if gone {
@@ -1153,7 +1315,7 @@ impl TranslationModelPickerModel {
 
     /// Model names of a provider (discovered + model, or the suggestions; trimmed, distinct, sorted).
     pub fn model_names(&self, provider: &TranslationProviderProfile) -> Vec<String> {
-        sa_providers::selection::provider_models_for(provider, picker_is_mac(&self.svc)).into_iter().map(|c| c.id).collect()
+        sa_providers::selection::provider_models_for(provider, self.is_mac()).into_iter().map(|c| c.id).collect()
     }
 
     fn block_reason(&self, p: &TranslationProviderProfile) -> Option<LocalizedMessage> {
@@ -1168,6 +1330,7 @@ impl TranslationModelPickerModel {
 
     fn all_rows(&self) -> Vec<PickerRow> {
         let browsed = self.st.borrow().browsed;
+        let mac = self.is_mac();
         match browsed {
             None => {
                 let active = self.svc.providers.active_provider_id();
@@ -1177,8 +1340,9 @@ impl TranslationModelPickerModel {
                     .iter()
                     .map(|m| PickerRow {
                         id: m.id.clone(),
-                        title: if picker_is_mac(&self.svc) { ModelLabel::translation_menu_title(m) } else { ModelLabel::menu_title(m) },
-                        is_current: active.is_none() && m.id == current,
+                        title: if mac { ModelLabel::translation_menu_title(m) } else { ModelLabel::menu_title(m) },
+                        // Windows: `SelectedItem` = the model equal to `vm.TranslationModel`.
+                        is_current: (!mac || active.is_none()) && m.id == current,
                         is_enabled: true,
                     })
                     .collect()
@@ -1186,12 +1350,13 @@ impl TranslationModelPickerModel {
             Some(_) => {
                 let Some(p) = self.browsed_profile() else { return Vec::new() };
                 let active = self.svc.providers.active_provider_id() == Some(p.id);
-                let enabled = !picker_is_mac(&self.svc) || self.block_reason(&p).is_none();
+                let enabled = !mac || self.block_reason(&p).is_none();
                 let model = p.model.trim().to_lowercase();
                 self.model_names(&p)
                     .into_iter()
                     .map(|n| PickerRow {
-                        is_current: active && n.to_lowercase() == model,
+                        // Windows: the provider's `Model` (ordinal); macOS: the active provider's model, any case.
+                        is_current: if mac { active && n.to_lowercase() == model } else { n == p.model },
                         title: n.clone(),
                         id: n,
                         is_enabled: enabled,
@@ -1223,9 +1388,14 @@ impl TranslationModelPickerModel {
         }
     }
 
+    /// The line under the list. macOS: the refresh state/outcome, else why the provider can't be chosen from.
+    /// Windows: only the last refresh (`StatusText`, cleared by `LoadModels`).
     pub fn status_text(&self) -> Option<String> {
         if let Some(s) = &self.st.borrow().status {
             return Some(s.text());
+        }
+        if !self.is_mac() {
+            return None;
         }
         self.browsed_profile().and_then(|p| self.block_reason(&p)).map(|m| m.text())
     }
@@ -1237,10 +1407,12 @@ impl TranslationModelPickerModel {
         match browsed {
             Some(_) => {
                 let Some(p) = self.browsed_profile() else {
-                    self.providers_changed();
+                    if self.is_mac() {
+                        self.providers_changed();
+                    }
                     return false;
                 };
-                if picker_is_mac(&self.svc) && self.block_reason(&p).is_some() {
+                if self.is_mac() && self.block_reason(&p).is_some() {
                     return false;
                 }
                 if !self.model_names(&p).iter().any(|n| n == model_id) {
@@ -1307,58 +1479,102 @@ impl TranslationModelPickerModel {
         self.st.borrow().refreshing
     }
 
+    /// macOS: a saved provider that can be asked, not while a test of it runs. Windows: `RefreshButton.IsEnabled` =
+    /// a provider is browsed (and no refresh of this panel is running).
     pub fn can_refresh(&self) -> bool {
         let Some(p) = self.browsed_profile() else { return false };
-        !self.st.borrow().refreshing && !self.providers.is_testing(p.id) && self.block_reason(&p).is_none()
+        if self.st.borrow().refreshing {
+            return false;
+        }
+        if !self.is_mac() {
+            return true;
+        }
+        !self.providers.is_testing(p.id) && self.block_reason(&p).is_none()
+    }
+
+    fn downgrade(&self) -> WeakPicker {
+        WeakPicker {
+            svc: self.svc.clone(),
+            catalog: Rc::downgrade(&self.catalog),
+            providers: Rc::downgrade(&self.providers),
+            host: Rc::downgrade(&self.host),
+            st: Rc::downgrade(&self.st),
+            changed: Rc::downgrade(&self.changed),
+        }
     }
 
     /// "Yenile": tests the browsed provider; a late answer after a switch or close is dropped and never selects a
-    /// provider on the user's behalf.
+    /// provider on the user's behalf. Windows: ignored while any connection test runs (C# `_manager.IsTesting`, the
+    /// Settings window's included); the status is the test's own message (C# `result.Message`); offline mode does
+    /// not block the request (C# has no check there). macOS: when it ends the highlight moves to the current row
+    /// (`finishRefresh` → `resetHighlight()`).
     pub fn refresh(&self) {
         if !self.can_refresh() {
             return;
         }
         let Some(p) = self.browsed_profile() else { return };
+        let mac = self.is_mac();
+        if !mac && (self.providers.is_testing(p.id) || self.providers.is_tester_busy()) {
+            return;
+        }
         let mine = {
             let mut st = self.st.borrow_mut();
             st.epoch += 1;
             st.refreshing = true;
+            st.refresh_id = Some(p.id);
             st.status = Some(LocalizedMessage::key("Modeller yenileniyor…"));
             st.epoch
         };
         self.providers.clear_notice(p.id);
-        let st = Rc::downgrade(&self.st);
-        let providers = Rc::downgrade(&self.providers);
+        let weak = self.downgrade();
         let id = p.id;
         self.providers.once_after_test(id, Box::new(move || {
-            let (Some(st), Some(providers)) = (st.upgrade(), providers.upgrade()) else { return };
-            let mut s = st.borrow_mut();
-            if s.epoch != mine {
-                return;
+            let Some(picker) = weak.upgrade() else { return };
+            {
+                let mut s = picker.st.borrow_mut();
+                if s.epoch != mine {
+                    return;
+                }
+                s.refreshing = false;
+                s.refresh_id = None;
             }
-            s.refreshing = false;
-            let notice = providers.notice(id);
-            if s.browsed != Some(id) || notice.is_none() {
-                s.status = None;
-                return;
+            // Swift `finishRefresh`: the answer counts only while that provider is still browsed and still saved.
+            let still_browsed = picker.st.borrow().browsed == Some(id) && picker.browsed_profile().is_some();
+            let status = match picker.providers.notice(id) {
+                Some(notice) if still_browsed => Some(if notice.is_error && mac {
+                    let inner = notice.message.clone();
+                    LocalizedMessage::new(format!("refresh-failed:{}", inner.id()), move || {
+                        l!("Modeller yenilenemedi: %@", inner.text())
+                    })
+                } else {
+                    notice.message
+                }),
+                _ => None,
+            };
+            picker.st.borrow_mut().status = status;
+            if mac {
+                picker.reset_highlight();
             }
-            let notice = notice.expect("notice");
-            s.status = Some(if notice.is_error {
-                let inner = notice.message.clone();
-                LocalizedMessage::new(format!("refresh-failed:{}", inner.id()), move || {
-                    l!("Modeller yenilenemedi: %@", inner.text())
-                })
-            } else {
-                notice.message
-            });
+            let handler = picker.changed.borrow().clone();
+            if let Some(h) = handler {
+                h();
+            }
         }));
-        self.providers.test_saved(id);
+        self.providers.test_saved_gated(id, mac);
     }
 
+    /// Drops a refresh under way and cancels its request (C# `Close()`: revision++ and the token is cancelled; Swift
+    /// `abandonRefresh` cancels the task): a late answer neither shows nor stores discovered models.
     fn abandon_refresh(&self) {
-        let mut st = self.st.borrow_mut();
-        st.epoch += 1;
-        st.refreshing = false;
+        let running = {
+            let mut st = self.st.borrow_mut();
+            st.epoch += 1;
+            st.refreshing = false;
+            st.refresh_id.take()
+        };
+        if let Some(id) = running {
+            self.providers.cancel_test(id);
+        }
     }
 
     /// Re-reads after a refresh or store change (highlight follows).

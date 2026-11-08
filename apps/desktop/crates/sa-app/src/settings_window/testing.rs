@@ -386,6 +386,7 @@ pub fn fake_deps_with(ui: Arc<dyn UiDispatcher>, fonts: Vec<String>, ui_language
         tester: tester.clone(),
         win: Some(win.clone()),
         font_families: Arc::new(move || fonts.clone()),
+        activity: None,
     };
     Fakes { deps, settings, vm, providers, tester, win }
 }

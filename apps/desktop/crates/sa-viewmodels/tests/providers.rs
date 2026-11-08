@@ -595,3 +595,237 @@ fn picker_help_text_and_symbol() {
     add(&env, provider("lan", "LAN", "http://10.0.0.2:1234", "", false), None, true);
     assert_eq!(picker.button_symbol(), Some("network"));
 }
+
+// ----- Windows picker (C# `TranslationModelPicker` + `TranslationModelSelection`)
+
+#[test]
+fn windows_picker_activates_the_provider_it_shows_and_never_disables_rows() {
+    let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    env.settings.set_bool(keys::OFFLINE_MODE, true);
+    let mut p = provider("openrouter", "OR", "https://openrouter.ai/api/v1", "cloud-a", false);
+    p.discovered_models = vec!["cloud-b".into(), "cloud-a".into()];
+    let pid = add(&env, p, Some("sk"), false);
+    let (vm, catalog) = env.vm();
+    let vm = Rc::new(vm);
+    let providers = Rc::new(ProvidersModel::new(env.services()));
+    let picker = TranslationModelPickerModel::new(env.services(), catalog, providers, Rc::new(Host(vm.clone())));
+    picker.open();
+    assert_eq!(picker.browsed_provider(), None);
+    assert_eq!(picker.provider_index(), 0);
+    assert!(!picker.can_refresh(), "Yenile needs a provider");
+    assert!(picker.browse(Some(pid)));
+    assert_eq!(env.providers.st.lock().active, Some(pid), "the combo activates the provider");
+    assert_eq!(picker.provider_index(), 1);
+    let rows = picker.picker_rows();
+    assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["cloud-a", "cloud-b"]);
+    assert!(rows.iter().all(|r| r.is_enabled), "offline never disables a Windows row");
+    assert!(rows.iter().any(|r| r.id == "cloud-a" && r.is_current), "selected = the provider's model");
+    assert_eq!(picker.status_text(), None, "no block reason in the Windows status line");
+    assert!(picker.can_refresh());
+    assert!(picker.select("cloud-b"));
+    assert_eq!(env.providers.st.lock().providers[0].model, "cloud-b");
+    assert!(picker.browse(None));
+    assert_eq!(env.providers.st.lock().active, None, "local models deactivate the provider");
+    picker.open();
+    assert_eq!(picker.browsed_provider(), None);
+}
+
+#[test]
+fn windows_picker_opens_on_the_active_provider_even_with_an_unusable_address() {
+    let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let pid = add(&env, provider("custom", "X", "   ", "m", false), None, true);
+    let (vm, catalog) = env.vm();
+    let providers = Rc::new(ProvidersModel::new(env.services()));
+    let picker = TranslationModelPickerModel::new(env.services(), catalog.clone(), providers, Rc::new(Host(Rc::new(vm))));
+    picker.open();
+    assert_eq!(picker.browsed_provider(), Some(pid), "C#: provider id = manager.ActiveProviderId");
+    let menv = Env::mac();
+    add(&menv, provider("custom", "X", "   ", "m", false), None, true);
+    let (mvm, mcatalog) = menv.vm();
+    let mp = Rc::new(ProvidersModel::new(menv.services()));
+    let mpicker = TranslationModelPickerModel::new(menv.services(), mcatalog, mp, Rc::new(Host(Rc::new(mvm))));
+    mpicker.open();
+    assert_eq!(mpicker.browsed_provider(), None, "macOS: activeExternalProvider needs a usable address");
+}
+
+#[test]
+fn windows_picker_refresh_shows_the_test_message_verbatim_and_ignores_offline_mode() {
+    let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    env.settings.set_bool(keys::OFFLINE_MODE, true);
+    let fetch = FakeFetch::new(Ok((500, "{}".into())));
+    add(&env, provider("openai", "OpenAI", "https://api.openai.com/v1", "m", false), Some("sk"), true);
+    let (vm, catalog) = env.vm();
+    let providers = Rc::new(model_with(&env, fetch.clone()));
+    let picker = Rc::new(TranslationModelPickerModel::new(env.services(), catalog, providers, Rc::new(Host(Rc::new(vm)))));
+    let changes = Rc::new(std::cell::Cell::new(0));
+    {
+        let c = changes.clone();
+        picker.set_on_change(Box::new(move || c.set(c.get() + 1)));
+    }
+    picker.open();
+    assert!(picker.can_refresh());
+    picker.refresh();
+    assert_eq!(picker.status_text().as_deref(), Some("Modeller yenileniyor…"));
+    assert!(!picker.can_refresh(), "disabled while refreshing");
+    env.eventually("refreshed", || !picker.is_refreshing());
+    assert_eq!(changes.get(), 1, "the presenter hears about the finished refresh");
+    assert!(!fetch.requests.lock().is_empty(), "C# tests the provider even in offline mode");
+    let status = picker.status_text().expect("status");
+    assert!(!status.starts_with("Modeller yenilenemedi"), "{status}");
+    assert!(picker.can_refresh());
+    // A refresh abandoned by closing the flyout leaves no status behind.
+    picker.refresh();
+    picker.close();
+    env.eventually("finished", || fetch.requests.lock().len() >= 2);
+    env.ui.run_until(std::time::Duration::from_millis(100), || false);
+    assert_eq!(picker.status_text(), None);
+}
+
+/// A tester whose global "a test runs somewhere" flag is set by the test, and whose request can be held until it is
+/// cancelled (it then still answers with models, like a late HTTP response).
+struct GateTester {
+    busy: std::sync::atomic::AtomicBool,
+    hold: std::sync::atomic::AtomicBool,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl GateTester {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { busy: false.into(), hold: false.into(), calls: 0.into() })
+    }
+}
+
+impl ProviderConnectionTester for GateTester {
+    fn test(&self, _preset: &str, _url: &str, _key: &str, _model: &str, cancel: &CancellationToken) -> TestReport {
+        use std::sync::atomic::Ordering;
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        while self.hold.load(Ordering::SeqCst) && !cancel.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let message = sa_core::l10n::LocalizedMessage::verbatim("ok".to_owned());
+        TestReport { notice: Some(ExternalConnectionNotice::success(message)), models: vec!["late-model".into()] }
+    }
+    fn is_busy(&self) -> bool {
+        self.busy.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[test]
+fn windows_picker_refresh_is_ignored_while_any_connection_test_runs() {
+    use std::sync::atomic::Ordering;
+    let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    add(&env, provider("openai", "OpenAI", "https://api.openai.com/v1", "m", false), Some("sk"), true);
+    let (vm, catalog) = env.vm();
+    let tester = GateTester::new();
+    let providers = Rc::new(ProvidersModel::with_tester(env.services(), tester.clone()));
+    let picker = TranslationModelPickerModel::new(env.services(), catalog, providers, Rc::new(Host(Rc::new(vm))));
+    picker.open();
+    // C# `if (... || _manager.IsTesting) return;`: a test in the Settings window blocks the click, the button stays
+    // enabled (C# never disables it for that).
+    tester.busy.store(true, Ordering::SeqCst);
+    assert!(picker.can_refresh());
+    picker.refresh();
+    assert!(!picker.is_refreshing());
+    assert_eq!(picker.status_text(), None);
+    env.ui.run_until(std::time::Duration::from_millis(50), || false);
+    assert_eq!(tester.calls.load(Ordering::SeqCst), 0, "no second request");
+    tester.busy.store(false, Ordering::SeqCst);
+    picker.refresh();
+    assert!(picker.is_refreshing());
+    env.eventually("refreshed", || !picker.is_refreshing());
+    assert_eq!(tester.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn closing_the_picker_mid_refresh_cancels_the_request_and_stores_nothing() {
+    use std::sync::atomic::Ordering;
+    let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let pid = add(&env, provider("openai", "OpenAI", "https://api.openai.com/v1", "", false), Some("sk"), true);
+    let (vm, catalog) = env.vm();
+    let tester = GateTester::new();
+    tester.hold.store(true, Ordering::SeqCst);
+    let providers = Rc::new(ProvidersModel::with_tester(env.services(), tester.clone()));
+    let picker = TranslationModelPickerModel::new(env.services(), catalog, providers.clone(), Rc::new(Host(Rc::new(vm))));
+    picker.open();
+    picker.refresh();
+    env.eventually("request sent", || tester.calls.load(Ordering::SeqCst) == 1);
+    assert!(providers.is_testing(pid));
+    // C# `Close()`: revision++ and the request's token is cancelled.
+    picker.close();
+    assert!(!providers.is_testing(pid), "the test is gone at once");
+    assert!(!picker.is_refreshing());
+    // The cancelled request still answers (with models): nothing of it is stored or shown.
+    env.ui.run_until(std::time::Duration::from_millis(200), || false);
+    let stored = env.providers.st.lock().providers[0].clone();
+    assert!(stored.discovered_models.is_empty(), "{:?}", stored.discovered_models);
+    assert_eq!(stored.model, "");
+    assert_eq!(providers.notice(pid), None);
+    assert_eq!(picker.status_text(), None);
+}
+
+#[test]
+fn mac_picker_refresh_highlights_the_current_row_when_it_ends() {
+    let _l = LanguageScope::new(CatalogChain::Mac, UiLanguage::Tr);
+    let env = Env::mac();
+    env.settings.set_bool(keys::OFFLINE_MODE, false);
+    let fetch = FakeFetch::new(Ok((200, MODELS_JSON.into())));
+    // No model and nothing discovered yet: the browsed provider has no rows and nothing is highlighted.
+    let pid = add(&env, provider("custom", "Sunucu", "https://llm.example.com/v1", "", false), Some("sk"), true);
+    let (vm, catalog) = env.vm();
+    let providers = Rc::new(model_with(&env, fetch));
+    let picker = TranslationModelPickerModel::new(env.services(), catalog, providers, Rc::new(Host(Rc::new(vm))));
+    picker.open();
+    assert_eq!(picker.browsed_provider(), Some(pid));
+    assert!(picker.picker_rows().is_empty());
+    assert_eq!(picker.highlighted_id(), None);
+    picker.refresh();
+    env.eventually("refreshed", || !picker.is_refreshing());
+    // The test stored the models and made the first one the provider's model: Swift `finishRefresh` →
+    // `resetHighlight()` highlights that current row, so Return chooses it.
+    let current = env.providers.st.lock().providers[0].model.clone();
+    assert!(!current.is_empty());
+    assert!(picker.picker_rows().iter().any(|r| r.id == current && r.is_current));
+    assert_eq!(picker.highlighted_id(), Some(current));
+    assert!(picker.choose_highlighted());
+}
+
+#[test]
+fn a_settings_test_holds_the_mac_refresh_and_its_outcome_reaches_the_picker() {
+    let _l = LanguageScope::new(CatalogChain::Mac, UiLanguage::Tr);
+    let env = Env::mac();
+    env.settings.set_bool(keys::OFFLINE_MODE, false);
+    let pid = add(&env, provider("openai", "OpenAI", "https://api.openai.com/v1", "m", false), Some("sk"), true);
+    let (vm, catalog) = env.vm();
+    let providers = Rc::new(ProvidersModel::new(env.services()));
+    let picker = TranslationModelPickerModel::new(env.services(), catalog, providers.clone(), Rc::new(Host(Rc::new(vm))));
+    picker.open();
+    assert!(picker.can_refresh());
+    let changes = Rc::new(std::cell::Cell::new(0));
+    let sub = {
+        let c = changes.clone();
+        providers.subscribe(Box::new(move |change| {
+            if change == ProvidersChange::Tests {
+                c.set(c.get() + 1);
+            }
+        }))
+    };
+    // Swift `canRefresh`: `!vm.testingProviders.contains(provider.id)`, whoever tests it.
+    providers.begin_external_test(pid);
+    assert!(providers.is_testing(pid));
+    assert!(!picker.can_refresh());
+    let message = sa_core::l10n::LocalizedMessage::verbatim("Bağlantı başarılı".to_owned());
+    providers.end_external_test(pid, Some(ExternalConnectionNotice::success(message)));
+    assert!(!providers.is_testing(pid));
+    assert!(picker.can_refresh());
+    assert_eq!(providers.notice(pid).map(|n| n.text()).as_deref(), Some("Bağlantı başarılı"));
+    assert_eq!(changes.get(), 2);
+    drop(sub);
+    providers.set_notice(pid, None);
+    assert_eq!(changes.get(), 2, "a dropped subscription hears nothing");
+    assert_eq!(providers.notice(pid), None);
+}

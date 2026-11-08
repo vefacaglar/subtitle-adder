@@ -3,8 +3,11 @@
 //! launching, so ours is installed right away **and** again on `NSApplicationWillFinishLaunchingNotification`
 //! (after AppKit's, before the cold-launch `odoc` is dispatched). Every file URL goes through a
 //! [`CoalescingDelivery`] (250 ms quiet / 1 s max); batches that arrive before the sink is set are replayed in order.
-//! A reopen handler ('aevt','rapp': Dock click) is available for "open a window when none is left" (mac-ui §2.3).
+//! The reopen handler ('aevt','rapp': Dock click, [`OpenDocumentsHandler::set_reopen_handler`]) does AppKit's default
+//! part (unhide, deminiaturize, `appkit::reopen_existing_windows`) and asks the app for a new main window when none is
+//! left, like a SwiftUI `WindowGroup` (mac-ui §2.3).
 
+use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -75,9 +78,29 @@ extern "C-unwind" fn handle_open_documents(_this: *mut AnyObject, _sel: Sel, eve
 }
 
 extern "C-unwind" fn handle_reopen(_this: *mut AnyObject, _sel: Sel, _event: *mut AnyObject, _reply: *mut AnyObject) {
-    if let Some(f) = REOPEN.lock().as_ref() {
+    // This handler replaces AppKit's, so its default part (unhide, deminiaturize) runs here first. `unhide:` does not
+    // promise that the windows are back on screen when it returns, so after an unhide the window check waits one
+    // main-queue turn; otherwise a hidden app with a window would look windowless and get a second main window.
+    if super::appkit::unhide_if_hidden() {
+        unsafe { dispatch_async_f(std::ptr::addr_of!(_dispatch_main_q).cast(), std::ptr::null_mut(), finish_reopen) };
+    } else {
+        finish_reopen(std::ptr::null_mut());
+    }
+}
+
+/// Deminiaturizes a window, or asks the app for a new main window when none is left (main thread).
+extern "C" fn finish_reopen(_context: *mut c_void) {
+    if super::appkit::reopen_existing_windows()
+        && let Some(f) = REOPEN.lock().as_ref()
+    {
         f();
     }
+}
+
+// libdispatch (libSystem): `dispatch_get_main_queue()` is the address of `_dispatch_main_q`.
+unsafe extern "C" {
+    static _dispatch_main_q: c_void;
+    fn dispatch_async_f(queue: *const c_void, context: *mut c_void, work: extern "C" fn(*mut c_void));
 }
 
 extern "C-unwind" fn will_finish_launching(this: *mut AnyObject, _sel: Sel, _note: *mut AnyObject) {
@@ -158,8 +181,9 @@ impl OpenDocumentsHandler {
         Self { _private: () }
     }
 
-    /// Dock-icon click (`rapp`): `f` runs on the main thread; the app opens a main window when none is left.
-    /// Replaces AppKit's default reopen handling.
+    /// Dock-icon click (`rapp`): replaces AppKit's reopen handling. A hidden app is unhidden and a miniaturized
+    /// window comes back when none is visible; `f` runs (main thread, inside the Apple Event dispatch) only when no
+    /// window is left, and opens a new main window.
     pub fn set_reopen_handler(&self, f: Box<dyn Fn() + Send>) {
         *REOPEN.lock() = Some(f);
         autoreleasepool(|_| unsafe { register_handlers(handler_object()) });
