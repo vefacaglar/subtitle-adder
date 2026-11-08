@@ -32,6 +32,14 @@ pub fn should_register_on_launch(exe: &Path, file_associations_disabled: Option<
     exe.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(EXE_NAME)) && file_associations_disabled != Some(true)
 }
 
+/// True for instances that must never take over the user's file associations: a test/tool instance pointed at
+/// another data folder (`SUBTITLE_ADDER_DATA_DIR`), or an exe running straight from a cargo target folder
+/// (`<target>\{debug,release}\SubtitleAdder.exe`, recognizable by the sibling `.fingerprint` folder), whose path
+/// changes with every target dir. Staged (`apps\desktop\dist`) and packaged builds still register, like the C# app.
+pub fn is_scratch_instance(exe: &Path, data_dir_override: bool) -> bool {
+    data_dir_override || exe.parent().is_some_and(|dir| dir.join(".fingerprint").is_dir())
+}
+
 /// `<app dir>\Assets\AppIcon.ico` (the window icon and the registered icon).
 pub fn icon_path() -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
@@ -59,7 +67,8 @@ impl FileAssociationRegistrar {
     /// Registers on a worker thread when [`should_register_on_launch`]; every error is swallowed.
     pub fn register_on_launch_in_background(file_associations_disabled: Option<bool>) {
         let Ok(exe) = std::env::current_exe() else { return };
-        if should_register_on_launch(&exe, file_associations_disabled) {
+        let data_dir_override = std::env::var_os(sa_core::platform::DATA_DIR_ENV).is_some_and(|v| !v.is_empty());
+        if should_register_on_launch(&exe, file_associations_disabled) && !is_scratch_instance(&exe, data_dir_override) {
             let _ = std::thread::Builder::new().name("sa-file-associations".into()).spawn(|| {
                 let _ = FileAssociationRegistrar::new().register();
             });
@@ -320,6 +329,16 @@ mod tests {
         assert!(should_register_on_launch(Path::new(r"C:\a\subtitleadder.EXE"), Some(false)));
         assert!(!should_register_on_launch(Path::new(r"C:\a\SubtitleAdder.exe"), Some(true)));
         assert!(!should_register_on_launch(Path::new(r"C:\a\sa-app.exe"), None));
+    }
+
+    #[test]
+    fn test_instances_and_cargo_target_builds_never_register() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("SubtitleAdder.exe");
+        assert!(!is_scratch_instance(&exe, false), "a staged or packaged exe registers");
+        assert!(is_scratch_instance(&exe, true), "SUBTITLE_ADDER_DATA_DIR marks a test instance");
+        std::fs::create_dir(dir.path().join(".fingerprint")).unwrap();
+        assert!(is_scratch_instance(&exe, false), "an exe inside a cargo target folder");
     }
 
     #[test]
