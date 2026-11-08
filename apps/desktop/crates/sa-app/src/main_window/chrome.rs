@@ -37,8 +37,13 @@ pub fn winit_attributes(attrs: winit::window::WindowAttributes) -> winit::window
 /// what `SLINT_BACKEND=winit-software` / `winit-sw` selects, and also what winit falls back to when the GPU renderer
 /// cannot be created (no usable OpenGL, e.g. in some VMs or RDP sessions), so the environment cannot tell: the
 /// window's renderer is asked instead. Only the GPU renderers support a rendering notifier; the probe leaves a no-op
-/// one installed (nothing else in the app uses it). Call after the window was shown.
-pub fn mica_renderer(window: &slint::Window) -> bool {
+/// one installed. A window that already has a notifier passes what installing it said as `known` instead: setting
+/// another one would replace it (femtovg keeps only the last), which would switch off the main window's GPU video
+/// path (`video_gl`). Call after the window was shown.
+pub fn mica_renderer(window: &slint::Window, known: Option<bool>) -> bool {
+    if let Some(gpu) = known {
+        return gpu;
+    }
     match window.set_rendering_notifier(|_, _| {}) {
         Ok(()) | Err(slint::SetRenderingNotifierError::AlreadySet) => true,
         Err(_) => false,
@@ -133,7 +138,8 @@ mod win {
 
     /// Attaches the chrome after the window was shown (placement from the saved size, icon, hover of the maximize
     /// button, theme); `None` without a native window.
-    pub fn attach(window: &MainWindow, settings: &dyn SettingsStore) -> Option<Rc<MainChrome>> {
+    /// `gpu_renderer`: whether the window's renderer is a GPU one, when already known (see `mica_renderer`).
+    pub fn attach(window: &MainWindow, settings: &dyn SettingsStore, gpu_renderer: Option<bool>) -> Option<Rc<MainChrome>> {
         let hwnd = hwnd_of(window)?;
         let chrome = Rc::new(MainChrome { chrome: WindowChrome::attach(hwnd, MAIN_MIN_DIP) });
         chrome.chrome.place(saved_size(settings, MAIN_SIZE_KEY), MAIN_DEFAULT_DIP);
@@ -165,7 +171,7 @@ mod win {
         chrome.sync_theme(window);
         // C# `window.SystemBackdrop = new MicaBackdrop()`: the Slint background turns transparent only where DWM
         // really draws Mica (Windows 11); elsewhere it stays the solid fallback color.
-        let mica = super::mica_renderer(window.window()) && chrome.chrome.set_mica(true);
+        let mica = super::mica_renderer(window.window(), gpu_renderer) && chrome.chrome.set_mica(true);
         window.global::<AppBridge>().set_mica_backdrop(mica);
         Some(chrome)
     }

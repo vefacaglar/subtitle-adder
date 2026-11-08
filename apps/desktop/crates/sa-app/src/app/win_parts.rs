@@ -263,6 +263,12 @@ impl MediaPlayerBackend for CachedPlayer {
     fn failure_kind(&self) -> Option<FailureKind> {
         self.inner.failure_kind()
     }
+    fn set_planar_output(&mut self, planar: bool) {
+        self.inner.set_planar_output(planar)
+    }
+    fn diagnostics(&self) -> Option<String> {
+        self.inner.diagnostics()
+    }
 }
 
 /// `CleanupTempDirectory()` on a worker at startup (win-viewmodels §17).

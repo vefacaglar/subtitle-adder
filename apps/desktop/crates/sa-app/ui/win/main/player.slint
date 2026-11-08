@@ -153,7 +153,10 @@ component TransportHud inherits Rectangle {
                 border-color: !root.can-play ? #ffffff18 : ptouch.has-hover ? #ffffff4c : #ffffff28;
                 accessible-role: button;
                 accessible-label: MainBridge.is-playing ? "Pause" : "Play";
+                // Centered in the circle; the play triangle is nudged 1.5 px right (FontIcon Margin 1.5,0,0,0).
                 Glyph {
+                    width: parent.width;
+                    height: parent.height;
                     x: MainBridge.is-playing ? 0 : 1.5px;
                     glyph: MainBridge.is-playing ? "\u{E769}" : "\u{E768}";
                     size: 14px;

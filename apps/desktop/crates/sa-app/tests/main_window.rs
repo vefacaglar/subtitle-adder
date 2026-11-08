@@ -202,8 +202,20 @@ fn the_software_renderer_never_gets_a_transparent_mica_background() {
     // The renderer that draws the window decides, not SLINT_BACKEND: the software renderer has no per-pixel alpha.
     let r = rig(false);
     r.window.show().unwrap();
-    assert!(!sa_app::main_window::chrome::mica_renderer(r.window.window()));
-    assert!(!sa_app::main_window::chrome::mica_renderer(r.window.window()), "asking twice gives the same answer");
+    assert!(!sa_app::main_window::chrome::mica_renderer(r.window.window(), None));
+    assert!(!sa_app::main_window::chrome::mica_renderer(r.window.window(), None), "asking twice gives the same answer");
+    // A window whose notifier is already installed passes what installing it said (asking again would replace it).
+    assert!(sa_app::main_window::chrome::mica_renderer(r.window.window(), Some(true)));
+}
+
+#[test]
+fn without_a_gpu_renderer_the_video_surface_stays_off() {
+    // The testing backend has no rendering notifier: the controller keeps the RGBA path.
+    let r = rig(false);
+    let surface = sa_app::main_window::video_gl::VideoSurface::for_main_window(&r.window);
+    assert!(!surface.installed());
+    assert!(!surface.available());
+    assert_eq!(surface.uploads(), 0);
 }
 
 #[test]

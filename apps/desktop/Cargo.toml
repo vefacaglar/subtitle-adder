@@ -13,6 +13,8 @@ members = [
     "crates/sa-app",
 ]
 default-members = ["crates/sa-app"]
+# Patched third-party crates (see `[patch.crates-io]`); not members of this workspace.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -52,6 +54,9 @@ slint-build = "=1.18.1"
 rfd = { version = "=0.18.0", default-features = false, features = ["xdg-portal"] }
 # Already in the graph through slint/winit/rfd; named directly so dialogs can be parented to a Slint window.
 raw-window-handle = "=0.6.2"
+# Already in the graph through femtovg; the GPU video path (YUV planes -> RGB shader, borrowed texture) uses it
+# in the window's rendering notifier.
+glow = "=0.18.0"
 
 # Media
 ffmpeg-next = { version = "=8.1.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
@@ -101,6 +106,12 @@ core-foundation = "=0.10.1"
 
 # Tests
 tempfile = "=3.27.0"
+
+# Slint's winit backend 1.18.1 with one fix in `frame_throttle.rs` (marked "Subtitle Adder patch"): its redraw timer
+# drew every requested frame twice and paced at `1000 / refresh` whole milliseconds (3 ms at 280 Hz). Everything else
+# is the published crate unchanged; drop the patch once upstream fixes the throttle.
+[patch.crates-io]
+i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
 
 [profile.release]
 lto = "thin"

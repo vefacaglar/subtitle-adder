@@ -39,6 +39,8 @@ sa-viewmodels.workspace = true
 sa-player = { workspace = true, features = ["ffmpeg"] }
 sa-platform.workspace = true
 slint.workspace = true
+# GPU video path (`main_window/video_gl.rs`): OpenGL calls in the rendering notifier.
+glow.workspace = true
 rfd.workspace = true
 image.workspace = true
 parking_lot.workspace = true

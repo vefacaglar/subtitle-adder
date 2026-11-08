@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use ffmpeg_next::ffi;
 
+use crate::{PlanarFormat, PlanarImage, PlaneInfo, PlaneLayout, YuvMatrix};
+
 /// Display geometry of a stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Geometry {
@@ -224,6 +226,91 @@ impl Converter {
             self.recycle(&out);
             Some((ow, oh, out))
         }
+    }
+}
+
+/// The planar layout of a decoder pixel format the UI can convert on the GPU (`None`: convert to RGBA here).
+/// The second value says whether the format implies full range (the deprecated `yuvj*` formats).
+pub(crate) fn planar_format(format: c_int) -> Option<(PlanarFormat, bool)> {
+    use ffi::AVPixelFormat as F;
+    let planar = |bits: u8, shift: (u8, u8)| PlanarFormat { layout: PlaneLayout::Planar, bits, msb_aligned: false, chroma_shift: shift };
+    let semi = |bits: u8, msb: bool| PlanarFormat { layout: PlaneLayout::SemiPlanar, bits, msb_aligned: msb, chroma_shift: (1, 1) };
+    if format < 0 {
+        return None;
+    }
+    let f: F = unsafe { std::mem::transmute::<c_int, F>(format) };
+    Some(match f {
+        F::AV_PIX_FMT_YUV420P => (planar(8, (1, 1)), false),
+        F::AV_PIX_FMT_YUVJ420P => (planar(8, (1, 1)), true),
+        F::AV_PIX_FMT_YUV422P => (planar(8, (1, 0)), false),
+        F::AV_PIX_FMT_YUVJ422P => (planar(8, (1, 0)), true),
+        F::AV_PIX_FMT_YUV444P => (planar(8, (0, 0)), false),
+        F::AV_PIX_FMT_YUVJ444P => (planar(8, (0, 0)), true),
+        F::AV_PIX_FMT_YUV420P10LE => (planar(10, (1, 1)), false),
+        F::AV_PIX_FMT_YUV422P10LE => (planar(10, (1, 0)), false),
+        F::AV_PIX_FMT_YUV444P10LE => (planar(10, (0, 0)), false),
+        F::AV_PIX_FMT_YUV420P12LE => (planar(12, (1, 1)), false),
+        F::AV_PIX_FMT_YUV422P12LE => (planar(12, (1, 0)), false),
+        F::AV_PIX_FMT_YUV444P12LE => (planar(12, (0, 0)), false),
+        F::AV_PIX_FMT_NV12 => (semi(8, false), false),
+        F::AV_PIX_FMT_P010LE => (semi(10, true), false),
+        F::AV_PIX_FMT_P012LE => (semi(12, true), false),
+        F::AV_PIX_FMT_P016LE => (semi(16, true), false),
+        _ => return None,
+    })
+}
+
+/// The YUV → RGB matrix of a frame: its colorspace, else BT.709 for HD and BT.601 for SD (as the RGBA path).
+pub(crate) unsafe fn frame_matrix(frame: *const ffi::AVFrame) -> YuvMatrix {
+    unsafe {
+        match (*frame).colorspace {
+            ffi::AVColorSpace::AVCOL_SPC_BT709 => YuvMatrix::Bt709,
+            ffi::AVColorSpace::AVCOL_SPC_BT2020_NCL | ffi::AVColorSpace::AVCOL_SPC_BT2020_CL => YuvMatrix::Bt2020,
+            ffi::AVColorSpace::AVCOL_SPC_BT470BG | ffi::AVColorSpace::AVCOL_SPC_SMPTE170M | ffi::AVColorSpace::AVCOL_SPC_FCC => {
+                YuvMatrix::Bt601
+            }
+            _ if (*frame).height >= 720 => YuvMatrix::Bt709,
+            _ => YuvMatrix::Bt601,
+        }
+    }
+}
+
+/// Describes the planes of `owner` (a software frame) for the GPU, or `None` when its format or layout is not one
+/// the UI converts (negative strides, unknown formats). `props` is the frame the color properties are read from
+/// (the hardware frame when `owner` is its download).
+pub(crate) unsafe fn planar_image(owner: Box<dyn Send + Sync>, frame: *const ffi::AVFrame, props: *const ffi::AVFrame, geo: Geometry) -> Option<PlanarImage> {
+    unsafe {
+        let (format, forced_full) = planar_format((*frame).format)?;
+        let (w, h) = ((*frame).width, (*frame).height);
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let (w, h) = (w as u32, h as u32);
+        let sb = if format.bits > 8 { 2usize } else { 1 };
+        let (sx, sy) = format.chroma_shift;
+        let cw = (w + (1 << sx) - 1) >> sx;
+        let ch = (h + (1 << sy) - 1) >> sy;
+        let mut planes: [Option<(*const u8, PlaneInfo)>; 3] = [None; 3];
+        let count = if format.layout == PlaneLayout::Planar { 3 } else { 2 };
+        for (i, plane) in planes.iter_mut().enumerate().take(count) {
+            let data = (*frame).data[i];
+            let stride = (*frame).linesize[i];
+            if data.is_null() || stride <= 0 {
+                return None;
+            }
+            let (pw, rows, comps) = match (i, format.layout) {
+                (0, _) => (w, h, 1),
+                (_, PlaneLayout::Planar) => (cw, ch, 1),
+                (_, PlaneLayout::SemiPlanar) => (cw, ch, 2),
+            };
+            let row_bytes = pw as usize * comps * sb;
+            if (stride as usize) < row_bytes {
+                return None;
+            }
+            *plane = Some((data as *const u8, PlaneInfo { width: pw, rows, stride: stride as usize, row_bytes }));
+        }
+        let full_range = forced_full || (*props).color_range == ffi::AVColorRange::AVCOL_RANGE_JPEG;
+        Some(PlanarImage::new(format, (w, h), frame_matrix(props), full_range, geo.quarter_turns % 4, planes, owner))
     }
 }
 

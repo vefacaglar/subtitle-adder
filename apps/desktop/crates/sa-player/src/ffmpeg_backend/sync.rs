@@ -50,6 +50,11 @@ struct ClockState {
     last: f64,
     /// Audio master: the clock has been anchored to the device since the last start/jump (later anchors only slew).
     audio_synced: bool,
+    /// Audio master with a picture: until the first anchor after a start or jump the clock runs on the wall clock
+    /// and the audio output skips what is already past ([`Clock::audio_start_at`]), instead of holding the frame on
+    /// screen for the device's output latency (a visible 2-4 frame freeze after every seek and resume). Without a
+    /// picture nothing is skipped: the clock waits for the device.
+    lead_with_video: bool,
 }
 
 impl ClockState {
@@ -58,6 +63,15 @@ impl ClockState {
     }
 
     fn value_at(&mut self, t: Instant) -> f64 {
+        let v = self.peek_at(t);
+        if self.running() {
+            self.last = v;
+        }
+        v
+    }
+
+    /// The clock at `t` without moving the monotonic floor (`t` may lie in the future).
+    fn peek_at(&self, t: Instant) -> f64 {
         if !self.running() {
             return self.anchor_pts;
         }
@@ -73,8 +87,12 @@ impl ClockState {
         if v < self.last {
             v = self.last;
         }
-        self.last = v;
         v
+    }
+
+    /// The cap while the audio output drives the clock but has not anchored it since the last start/jump.
+    fn unsynced_cap(&self) -> Option<f64> {
+        (self.audio_master && !self.lead_with_video).then_some(self.anchor_pts)
     }
 
     fn reanchor(&mut self, now: Instant) {
@@ -105,6 +123,7 @@ impl Clock {
                 cap: None,
                 last: start,
                 audio_synced: false,
+                lead_with_video: false,
             }),
         }
     }
@@ -121,15 +140,16 @@ impl Clock {
         self.s.lock().audio_master
     }
 
-    /// The source opened: the clock may run from now on.
-    pub fn set_ready(&self, audio_master: bool) {
+    /// The source opened: the clock may run from now on. `has_video`: see `lead_with_video`.
+    pub fn set_ready(&self, audio_master: bool, has_video: bool) {
         let mut s = self.s.lock();
         let now = Instant::now();
         s.anchor_at = now;
         s.ready = true;
         s.audio_master = audio_master;
+        s.lead_with_video = has_video;
         s.audio_synced = false;
-        s.cap = if audio_master { Some(s.anchor_pts) } else { None };
+        s.cap = s.unsynced_cap();
     }
 
     pub fn set_playing(&self, playing: bool) {
@@ -141,9 +161,9 @@ impl Clock {
         s.reanchor(now);
         s.playing = playing;
         s.audio_synced = false;
-        if playing && s.audio_master {
-            // Wait for the audio callback to anchor the clock.
-            s.cap = Some(s.anchor_pts);
+        if playing {
+            // Until the audio callback anchors the clock: see `lead_with_video`.
+            s.cap = s.unsynced_cap();
         }
     }
 
@@ -155,7 +175,7 @@ impl Clock {
         s.last = pts;
         s.held = hold;
         s.audio_synced = false;
-        s.cap = if s.audio_master { Some(pts) } else { None };
+        s.cap = s.unsynced_cap();
     }
 
     /// The first frame after open/seek is on screen.
@@ -166,9 +186,15 @@ impl Clock {
         }
         s.held = false;
         s.anchor_at = Instant::now();
-        if s.audio_master {
-            s.cap = Some(s.anchor_pts);
-        }
+        s.cap = s.unsynced_cap();
+    }
+
+    /// Audio master, before the first anchor since a start or jump, with a picture (`lead_with_video`): the media
+    /// time the clock will show at `heard_at`. The output skips samples before it, so the device starts in step with
+    /// the picture. `None` otherwise (play everything).
+    pub fn audio_start_at(&self, heard_at: Instant) -> Option<f64> {
+        let s = self.s.lock();
+        (s.audio_master && s.lead_with_video && s.running() && !s.audio_synced).then(|| s.peek_at(heard_at))
     }
 
     /// Audio master: the sample at `pts` is heard at `heard_at`; the samples written end at `end_pts`.
@@ -232,7 +258,7 @@ impl Clock {
         s.reanchor(now);
         s.audio_master = on;
         s.audio_synced = false;
-        s.cap = if on { Some(s.anchor_pts) } else { None };
+        s.cap = s.unsynced_cap();
     }
 
     pub fn set_speed(&self, speed: f64) {
@@ -253,7 +279,7 @@ mod tests {
         c.set_playing(true);
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(c.now(), 5.0, "not ready");
-        c.set_ready(false);
+        c.set_ready(false, true);
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(c.now(), 5.0, "held");
         c.release();
@@ -269,11 +295,12 @@ mod tests {
     #[test]
     fn audio_master_is_capped_by_the_written_samples() {
         let c = Clock::new(0.0);
-        c.set_ready(true);
+        c.set_ready(true, false);
         c.release();
         c.set_playing(true);
         std::thread::sleep(Duration::from_millis(20));
-        assert_eq!(c.now(), 0.0, "waits for audio");
+        assert_eq!(c.now(), 0.0, "without a picture it waits for audio");
+        assert_eq!(c.audio_start_at(Instant::now()), None, "and nothing is skipped");
         c.audio_anchor(1.0, Instant::now(), 1.01);
         std::thread::sleep(Duration::from_millis(40));
         assert!((c.now() - 1.01).abs() < 1e-9, "capped");
@@ -285,7 +312,7 @@ mod tests {
     #[test]
     fn small_device_wobble_is_slewed_and_large_errors_snap() {
         let c = Clock::new(0.0);
-        c.set_ready(true);
+        c.set_ready(true, false);
         c.release();
         c.set_playing(true);
         let t0 = Instant::now();
@@ -309,9 +336,35 @@ mod tests {
     }
 
     #[test]
+    fn with_a_picture_the_clock_runs_until_the_audio_anchors_it_and_the_audio_starts_in_step() {
+        let c = Clock::new(2.0);
+        c.set_ready(true, true);
+        c.release();
+        c.set_playing(true);
+        std::thread::sleep(Duration::from_millis(30));
+        let v = c.now();
+        assert!(v > 2.02 && v < 2.5, "runs on the wall clock: {v}");
+        // The first callback is heard 40 ms from now: the output starts at the clock's value then.
+        let heard = Instant::now() + Duration::from_millis(40);
+        let start = c.audio_start_at(heard).expect("unsynced");
+        assert!(start > v + 0.035 && start < v + 0.2, "{start} vs {v}");
+        assert!(c.now() < start, "peeking ahead does not move the clock");
+        c.audio_anchor(start, heard, start + 0.01);
+        assert_eq!(c.audio_start_at(heard), None, "synced: nothing more is skipped");
+        // A jump (seek) starts over; a pause and resume too.
+        c.jump(7.0, true);
+        c.release();
+        assert!(c.audio_start_at(Instant::now()).is_some());
+        c.audio_anchor(7.0, Instant::now(), 7.5);
+        c.set_playing(false);
+        c.set_playing(true);
+        assert!(c.audio_start_at(Instant::now()).is_some());
+    }
+
+    #[test]
     fn clock_is_monotonic_across_anchors() {
         let c = Clock::new(0.0);
-        c.set_ready(true);
+        c.set_ready(true, false);
         c.release();
         c.set_playing(true);
         c.audio_anchor(2.0, Instant::now(), 3.0);

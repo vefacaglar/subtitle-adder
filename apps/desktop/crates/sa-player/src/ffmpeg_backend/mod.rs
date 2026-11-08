@@ -1,8 +1,9 @@
 //! FFmpeg + cpal backend (feature `ffmpeg`).
 //!
-//! Threads per loaded source: demux, video decode (+ swscale to RGBA), presenter, audio decode (+ swresample) and
-//! the audio output (cpal callback fed by a ring of resampled samples); see [`session`]. The UI-side frame handoff is
-//! "latest frame wins" with `PlayerEvent::FrameReady` coalesced (at most one pending until `latest_frame`).
+//! Threads per loaded source: demux, video decode (hardware or software, see [`hw`]; then the YUV planes for the GPU
+//! or swscale to RGBA), presenter, audio decode (+ swresample) and the audio output (cpal callback fed by a ring of
+//! resampled samples); see [`session`]. The UI-side frame handoff is "latest frame wins" with
+//! `PlayerEvent::FrameReady` coalesced (at most one pending until `latest_frame`).
 //!
 //! A/V sync: the audio clock (the sample being heard, from the device's playback timestamp) is the master; without
 //! an audio stream or device a monotonic wall clock is used. The clock snaps to the device after every start or seek
@@ -17,6 +18,7 @@
 //! the current position. A source that stops being readable mid-playback posts `Failed`, not `Ended`.
 
 mod audio;
+mod hw;
 mod io;
 mod session;
 mod sync;
@@ -38,11 +40,14 @@ pub struct PlayerOptions {
     /// Play audio through the default output device. Off: audio is ignored and the wall clock is master (tests,
     /// machines without an output device behave the same way automatically).
     pub audio_output: bool,
+    /// Decode video in hardware (D3D11VA / VideoToolbox) when the stream allows it, with a software fallback.
+    /// `SUBTITLE_ADDER_HWDEC=0` turns it off process-wide.
+    pub hardware_decoding: bool,
 }
 
 impl Default for PlayerOptions {
     fn default() -> Self {
-        Self { audio_output: true }
+        Self { audio_output: true, hardware_decoding: true }
     }
 }
 
@@ -57,6 +62,10 @@ pub struct PlaybackStats {
     pub dropped_late: u64,
     /// Frames so late they were skipped before conversion.
     pub dropped_decoder: u64,
+    /// Frames the hardware decoder produced.
+    pub hardware: u64,
+    /// Frames handed over as YUV planes.
+    pub planar: u64,
 }
 
 impl PlaybackStats {
@@ -86,7 +95,8 @@ impl FfmpegPlayer {
     pub fn with_options(options: PlayerOptions) -> Self {
         let _ = ffmpeg_next::init();
         ffmpeg_next::util::log::set_level(ffmpeg_next::util::log::Level::Error);
-        Self { shared: Arc::new(PlayerShared::new()), session: None, options, rate: 1.0, probe: None, load_failure: None }
+        let shared = Arc::new(PlayerShared::new(options.hardware_decoding));
+        Self { shared, session: None, options, rate: 1.0, probe: None, load_failure: None }
     }
 
     /// `load` plus the buffered-stream probe that drives `buffered_ratio` (Windows VideoCache playback).
@@ -97,6 +107,11 @@ impl FfmpegPlayer {
         self.probe = None;
         self.load_failure = None;
         let Some(source) = source else { return generation };
+        if self.options.hardware_decoding {
+            // The first load creates the GPU decoding device while the demuxer opens the source (not at startup:
+            // the driver costs ~80 MB that an app showing no video should not pay).
+            hw::warm_up();
+        }
         let source_id = NEXT_SOURCE_ID.fetch_add(1, Ordering::Relaxed);
         if !self.shared.gate.try_activate_source(generation, Some(source_id)) {
             return generation;
@@ -162,6 +177,8 @@ impl FfmpegPlayer {
             presented: s.stats.presented.load(Ordering::Relaxed),
             dropped_late: s.stats.dropped_late.load(Ordering::Relaxed),
             dropped_decoder: s.stats.dropped_decoder.load(Ordering::Relaxed),
+            hardware: s.stats.hardware.load(Ordering::Relaxed),
+            planar: s.stats.planar.load(Ordering::Relaxed),
         }
     }
 
@@ -257,6 +274,19 @@ impl MediaPlayerBackend for FfmpegPlayer {
 
     fn failure_kind(&self) -> Option<FailureKind> {
         self.session.as_ref().and_then(|s| s.info.lock().failure).or(self.load_failure)
+    }
+
+    fn set_planar_output(&mut self, planar: bool) {
+        self.shared.planar.store(planar, Ordering::Relaxed);
+    }
+
+    fn diagnostics(&self) -> Option<String> {
+        self.session.as_ref()?;
+        let s = self.stats();
+        Some(format!(
+            "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={}",
+            s.decoded, s.hardware, s.planar, s.presented, s.dropped_late, s.dropped_decoder
+        ))
     }
 
     fn dispose(&mut self) {

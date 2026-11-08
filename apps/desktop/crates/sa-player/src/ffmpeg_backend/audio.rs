@@ -330,6 +330,9 @@ pub(crate) fn fill(ctl: &Control, out: &mut [f32], channels: usize, heard_at: In
     let serial = ctl.serial.load(Ordering::Acquire);
     let gain = if ctl.player.muted.load(Ordering::Relaxed) { 0.0 } else { f64::from_bits(ctl.player.volume.load(Ordering::Relaxed)) as f32 };
     let frames_wanted = out.len() / channels;
+    // First callback since a start or seek of a source with a picture: start at the clock (`Clock::audio_start_at`).
+    let skip_to = ctl.clock.audio_start_at(heard_at);
+    let mut skipped = 0usize;
     let mut written = 0usize;
     let mut first_pts: Option<f64> = None;
     let mut end_pts = 0.0;
@@ -344,6 +347,22 @@ pub(crate) fn fill(ctl: &Control, out: &mut [f32], channels: usize, heard_at: In
                 ring.frames = ring.frames.saturating_sub(left);
                 ring.chunks.pop_front();
                 continue;
+            }
+            if let Some(to) = skip_to
+                && written == 0
+                && chunk.frame_dur > 0.0
+            {
+                let at = chunk.pts + (chunk.pos / channels) as f64 * chunk.frame_dur;
+                if at < to {
+                    let avail = (chunk.samples.len() - chunk.pos) / channels;
+                    let n = (((to - at) / chunk.frame_dur).ceil() as usize).min(avail);
+                    chunk.pos += n * channels;
+                    skipped += n;
+                    if chunk.pos >= chunk.samples.len() {
+                        ring.chunks.pop_front();
+                        continue;
+                    }
+                }
             }
             let avail = (chunk.samples.len() - chunk.pos) / channels;
             let take = avail.min(frames_wanted - written);
@@ -362,7 +381,7 @@ pub(crate) fn fill(ctl: &Control, out: &mut [f32], channels: usize, heard_at: In
                 ring.chunks.pop_front();
             }
         }
-        ring.frames = ring.frames.saturating_sub(written);
+        ring.frames = ring.frames.saturating_sub(written + skipped);
         if ring.chunks.is_empty() && ring.eof_serial == Some(serial) {
             finished = true;
         }
@@ -384,11 +403,11 @@ mod tests {
     use crate::ffmpeg_backend::session::PlayerShared;
 
     fn running_control() -> Arc<Control> {
-        let player = Arc::new(PlayerShared::new());
+        let player = Arc::new(PlayerShared::new(false));
         let g = player.gate.begin_load();
         player.gate.try_activate_source(g, Some(1));
         let ctl = Control::new(player, g, 1, true, 1.0);
-        ctl.clock.set_ready(true);
+        ctl.clock.set_ready(true, true);
         ctl.clock.release();
         ctl
     }
@@ -447,6 +466,25 @@ mod tests {
         fill(&ctl, &mut out, 2, Instant::now());
         assert_eq!(out, [0.0; 4]);
         assert_eq!(ctl.audio_ring.state.lock().frames, 2, "kept for when the first frame is on screen");
+    }
+
+    #[test]
+    fn the_first_fill_after_a_start_skips_what_the_picture_has_already_passed() {
+        let ctl = running_control();
+        let serial = ctl.serial.load(Ordering::Acquire);
+        // The clock runs from 0; the first samples are heard 10 ms (480 frames) after the callback.
+        push(&ctl, serial, 0.0, (0..2000).map(|i| (i / 2) as f32).collect());
+        let mut out = [0.0f32; 8];
+        let heard = Instant::now() + Duration::from_millis(10);
+        fill(&ctl, &mut out, 2, heard);
+        let first = out[0] as usize;
+        assert!((480..600).contains(&first), "starts near 10 ms: frame {first}");
+        assert_eq!(out[2] as usize, first + 1, "contiguous from there");
+        assert_eq!(ctl.audio_ring.state.lock().frames, 1000 - first - 4);
+        // Synced now: the next callback continues without skipping.
+        let mut out = [0.0f32; 2];
+        fill(&ctl, &mut out, 2, Instant::now() + Duration::from_millis(30));
+        assert_eq!(out[0] as usize, first + 4);
     }
 
     #[test]

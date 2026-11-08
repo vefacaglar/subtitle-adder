@@ -39,6 +39,7 @@ use super::player::{PlayerController, PlayerFlavor, PlayerOutput, SourceFactory}
 use super::rows::{fill_if_changed, sync_keyed};
 use super::status::{ErrorBar, bridge_fraction, mac_playback_notice, status_kind_index};
 use super::transport::{TransportInput, scrub_target, synchronize, windows_wheel_volume};
+use super::video_gl::VideoSurface;
 use crate::ui::{self, AppBridge, ExplorerBridge, ExplorerRowData, MainBridge, MainWindow, MenuBridge, MenuEntry, PickerItem, QueueRowData, SentenceRowData};
 
 /// Converts the engine `preview` command into a playable copy (macOS fallback; runs on a worker thread).
@@ -93,7 +94,12 @@ struct UiState {
     explorer_folders: Vec<bool>,
     language_codes: Vec<&'static str>,
     target_codes: Vec<&'static str>,
+    /// RGBA path: the buffer `video-frame` shows, and the one shown before it (written next, so the copy never
+    /// has to copy-on-write a buffer the bridge still holds).
     frame: Option<SharedPixelBuffer<Rgba8Pixel>>,
+    spare_frame: Option<SharedPixelBuffer<Rgba8Pixel>>,
+    /// What the player was last told about planar output (the GPU video path is up).
+    planar_output: bool,
     last_layout: Option<(LayoutFlags, bool, bool)>,
     /// The ids `menu-entries` currently shows (`overflow` items map back to toolbar actions).
     overflow_items: Vec<usize>,
@@ -115,6 +121,7 @@ pub struct MainWindowController {
     preview: Option<PreviewMaker>,
     hooks: MainWindowHooks,
     player: RefCell<PlayerController>,
+    video: Rc<VideoSurface>,
     hud: RefCell<HudState>,
     error_bar: RefCell<ErrorBar>,
     drops: RefCell<DropBatcher>,
@@ -126,6 +133,8 @@ pub struct MainWindowController {
     target_items: Rc<VecModel<PickerItem>>,
     menu_entries: Rc<VecModel<MenuEntry>>,
     timer: slint::Timer,
+    /// `SUBTITLE_ADDER_PLAYER_STATS=1`: player counters on stderr once a second (diagnostics).
+    stats: Option<Cell<Instant>>,
     key: Cell<Option<UiKey<MainWindowController>>>,
     disposed: Cell<bool>,
     /// Windows: the attached native chrome and the accent watcher (`attach_native_chrome`).
@@ -223,6 +232,7 @@ impl MainWindowController {
             preview: deps.preview,
             hooks: deps.hooks,
             player: RefCell::new(player),
+            video: VideoSurface::for_main_window(window),
             hud: RefCell::new(HudState::new(if mac { HudFlavor::Mac } else { HudFlavor::Windows })),
             error_bar: RefCell::new(ErrorBar::default()),
             drops: RefCell::new(DropBatcher::default()),
@@ -234,6 +244,7 @@ impl MainWindowController {
             target_items: Rc::new(VecModel::default()),
             menu_entries: Rc::new(VecModel::default()),
             timer: slint::Timer::default(),
+            stats: std::env::var_os("SUBTITLE_ADDER_PLAYER_STATS").filter(|v| v == "1").map(|_| Cell::new(Instant::now())),
             key: Cell::new(None),
             disposed: Cell::new(false),
             #[cfg(windows)]
@@ -279,6 +290,8 @@ impl MainWindowController {
         self.player.borrow_mut().set_event_sink(Box::new(move |ev| {
             key.post(&ui, move |c| c.on_player_event(ev));
         }));
+        let weak = self.weak();
+        self.video.set_trace_clock(Box::new(move || Some(weak.upgrade()?.player.try_borrow().ok()?.backend_position())));
     }
 
     fn wire_view_models(self: &Rc<Self>) {
@@ -345,6 +358,15 @@ impl MainWindowController {
         }
         self.player.borrow_mut().tick();
         self.drain_player();
+        if let Some(last) = &self.stats {
+            if last.get().elapsed() >= Duration::from_secs(1) {
+                last.set(Instant::now());
+                if let Some(line) = self.player.borrow().diagnostics() {
+                    let (uploads, renders, gpu) = (self.video.uploads(), self.video.renders(), self.video.available());
+                    eprintln!("[player-stats] {line} gpu={gpu} uploaded={uploads} renders={renders}");
+                }
+            }
+        }
         if self.hud.borrow_mut().poll(Instant::now()) {
             self.sync_hud();
         }
@@ -434,7 +456,12 @@ impl MainWindowController {
             p.set_sentences(self.vm.sentences());
         }
         self.drain_player();
-        self.st.borrow_mut().frame = None;
+        {
+            let mut st = self.st.borrow_mut();
+            st.frame = None;
+            st.spare_frame = None;
+        }
+        self.video.clear();
         if let Some(w) = self.win() {
             w.global::<MainBridge>().set_video_frame(slint::Image::default());
         }
@@ -515,14 +542,43 @@ impl MainWindowController {
         });
     }
 
+    /// Shows the newest frame. Planar frames go to the GPU path (uploaded and converted at render time; nothing is
+    /// copied here); RGBA frames (no GPU path: the software renderer, tests) are copied into a pixel buffer.
     fn present_frame(&self) {
+        let gpu = self.video.available();
+        self.sync_planar_output(gpu);
         let frame = self.player.borrow_mut().latest_frame();
         let Some(frame) = frame else { return };
+        if frame.planar.is_some() {
+            if gpu {
+                {
+                    let mut st = self.st.borrow_mut();
+                    st.frame = None;
+                    st.spare_frame = None;
+                }
+                self.video.submit(frame);
+            }
+            // Otherwise the GPU path just went away: the next frames arrive as RGBA.
+            return;
+        }
         let Some(w) = self.win() else { return };
-        let reuse = self.st.borrow_mut().frame.take();
+        self.video.clear();
+        let reuse = self.st.borrow_mut().spare_frame.take();
         let buf = frame_to_buffer(&frame, reuse);
         w.global::<MainBridge>().set_video_frame(slint::Image::from_rgba8(buf.clone()));
-        self.st.borrow_mut().frame = Some(buf);
+        let mut st = self.st.borrow_mut();
+        st.spare_frame = st.frame.replace(buf);
+    }
+
+    /// Asks the player for planar frames exactly while the GPU path is up.
+    fn sync_planar_output(&self, gpu: bool) {
+        let changed = {
+            let mut st = self.st.borrow_mut();
+            std::mem::replace(&mut st.planar_output, gpu) != gpu
+        };
+        if changed {
+            self.player.borrow_mut().set_planar_output(gpu);
+        }
     }
 
     /// win-ui-main §10.6: toggle without a loaded video plays the first candidate.
@@ -1682,7 +1738,8 @@ impl MainWindowController {
             if self.native.borrow().is_some() {
                 return;
             }
-            let Some(chrome) = super::chrome::attach(&w, &*self.settings) else { return };
+            // The video surface owns the rendering notifier; whether installing it worked says GPU or software.
+            let Some(chrome) = super::chrome::attach(&w, &*self.settings, Some(self.video.installed())) else { return };
             self.apply_accent(sa_platform::win::accent::AccentPalette::current());
             let key = self.key.get().expect("registered");
             let ui = self.ui_dispatcher.clone();
@@ -1758,6 +1815,7 @@ impl MainWindowController {
     }
 
     fn set_full_screen(&self, on: bool) {
+        let tmpdbg0 = Instant::now();
         self.st.borrow_mut().full_screen = on;
         match &self.hooks.set_full_screen {
             Some(h) => h(on),
@@ -1767,9 +1825,11 @@ impl MainWindowController {
                 }
             }
         }
+        let tmpdbg1 = Instant::now();
         self.sync_layout(true);
         self.sync_toolbar();
         self.sync_native_chrome();
+        eprintln!("[player] TMPDBG fullscreen {on}: set {:?} sync {:?}", tmpdbg1 - tmpdbg0, tmpdbg1.elapsed());
     }
 
     fn leave_full_screen_or_theater(&self) {
@@ -2527,10 +2587,10 @@ mod tests {
 
     #[test]
     fn frames_are_copied_row_by_row_when_strided() {
-        let frame = VideoFrame { width: 2, height: 2, stride: 12, pts: 0.0, rgba: Arc::new((0..24).collect()) };
+        let frame = VideoFrame::from_rgba(2, 2, 12, 0.0, Arc::new((0..24).collect()));
         let buf = frame_to_buffer(&frame, None);
         assert_eq!(buf.as_bytes(), &[0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18, 19]);
-        let tight = VideoFrame { width: 2, height: 1, stride: 8, pts: 0.0, rgba: Arc::new((0..8).collect()) };
+        let tight = VideoFrame::from_rgba(2, 1, 8, 0.0, Arc::new((0..8).collect()));
         let reused = frame_to_buffer(&tight, Some(SharedPixelBuffer::new(2, 1)));
         assert_eq!(reused.as_bytes(), &[0, 1, 2, 3, 4, 5, 6, 7]);
     }

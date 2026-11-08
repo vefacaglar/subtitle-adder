@@ -46,7 +46,7 @@ fn jitter(samples: &[(Instant, f64)]) -> (f64, f64, f64) {
 fn measure(c: Clip, fps: f64, audio: bool, play_for: Duration) -> Option<Report> {
     let path = common::clip(c)?;
     let (tx, rx) = crossbeam_channel::unbounded::<PlayerEvent>();
-    let mut p = FfmpegPlayer::with_options(PlayerOptions { audio_output: audio });
+    let mut p = FfmpegPlayer::with_options(PlayerOptions { audio_output: audio, ..PlayerOptions::default() });
     p.set_volume(0.0);
     p.set_event_sink(Box::new(move |e| {
         let _ = tx.send(e);
@@ -176,7 +176,7 @@ fn seek_latency_1080p() {
             return;
         };
         let (tx, rx) = crossbeam_channel::unbounded::<PlayerEvent>();
-        let mut p = FfmpegPlayer::with_options(PlayerOptions { audio_output: false });
+        let mut p = FfmpegPlayer::with_options(PlayerOptions { audio_output: false, ..PlayerOptions::default() });
         p.set_event_sink(Box::new(move |e| {
             let _ = tx.send(e);
         }));

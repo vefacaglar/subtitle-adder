@@ -222,6 +222,17 @@ impl PlayerController {
     pub fn latest_frame(&mut self) -> Option<VideoFrame> {
         self.backend.latest_frame()
     }
+    /// Planar (GPU-converted) frames instead of RGBA (`MediaPlayerBackend::set_planar_output`).
+    pub fn set_planar_output(&mut self, planar: bool) {
+        self.backend.set_planar_output(planar);
+    }
+    pub fn diagnostics(&self) -> Option<String> {
+        self.backend.diagnostics()
+    }
+    /// The backend's own clock right now (diagnostics; `current_time` is the last tick's).
+    pub fn backend_position(&self) -> f64 {
+        self.backend.position()
+    }
     /// The engine preview copy in use (macOS; deleted by the owner when replaced).
     pub fn preview_file(&self) -> Option<&Path> {
         self.preview_file.as_deref()

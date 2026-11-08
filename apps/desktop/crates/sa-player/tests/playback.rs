@@ -17,7 +17,7 @@ use sa_player::{FailureKind, MediaPlayerBackend, MediaSource, PlayerEvent};
 const T: Duration = Duration::from_secs(10);
 
 fn quiet() -> FfmpegPlayer {
-    FfmpegPlayer::with_options(PlayerOptions { audio_output: false })
+    FfmpegPlayer::with_options(PlayerOptions { audio_output: false, ..PlayerOptions::default() })
 }
 
 fn opened(rec: &Recorder, g: i32) -> (f64, Option<(u32, u32)>) {
@@ -147,6 +147,32 @@ fn pause_freezes_the_clock_and_play_resumes_from_there() {
     assert!(now > at + 0.15 && now < at + 0.6, "{at} → {now}");
 }
 
+/// A burst of seeks (a slider drag, a held arrow key): every request is reported at once, the seeks requested
+/// while one is still decoding wait for it instead of cancelling it, and the newest one wins.
+#[test]
+fn a_burst_of_seeks_reports_each_target_and_lands_on_the_last() {
+    let path = clip_or_skip!(Clip::SmallH264);
+    let rec = Recorder::default();
+    let mut p = quiet();
+    rec.attach(&mut p);
+    let g = p.load(Some(MediaSource::File(path)), false);
+    opened(&rec, g);
+    frame_where(&mut p, T, |_| true).expect("first frame");
+    let targets: Vec<f64> = (0..20).map(|i| 0.1 + 0.13 * i as f64).collect();
+    for &t in &targets {
+        p.seek(t);
+        assert_eq!(p.position(), t, "the position shows the newest target at once");
+    }
+    let last = *targets.last().unwrap();
+    let f = frame_where(&mut p, T, |f| (f.pts - last).abs() < 0.04).expect("frame at the last target");
+    assert!(f.pts + 1.0 / 60.0 >= last, "{} for {last}", f.pts);
+    // Nothing else is pending: the position stays on the last target and no later frame replaces it.
+    assert_eq!(p.position(), last);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(p.latest_frame().is_none_or(|f| (f.pts - last).abs() < 0.04));
+    assert_eq!(p.position(), last);
+}
+
 #[test]
 fn seeking_while_playing_continues_from_the_target() {
     let path = clip_or_skip!(Clip::SmallH264);
@@ -175,8 +201,10 @@ fn double_speed_plays_twice_as_fast() {
     let mut p = quiet();
     rec.attach(&mut p);
     p.set_rate(2.0);
-    let started = Instant::now();
     let g = p.load(Some(MediaSource::File(path)), true);
+    // Timed from the open: the first load of a process may wait for the hardware decoding device.
+    opened(&rec, g);
+    let started = Instant::now();
     assert!(rec.wait_for(0, T, is_ended(g)).is_some());
     let took = started.elapsed().as_secs_f64();
     assert!(took > 1.3 && took < 2.4, "took {took}");
@@ -772,4 +800,117 @@ fn an_empty_file_fails_the_same_way_through_either_file_path() {
         kinds.push(p.failure_kind());
     }
     assert_eq!(kinds, [Some(FailureKind::UnsupportedFormat); 2]);
+}
+
+fn player(hardware: bool, planar: bool) -> FfmpegPlayer {
+    let mut p = FfmpegPlayer::with_options(PlayerOptions { audio_output: false, hardware_decoding: hardware });
+    p.set_planar_output(planar);
+    p
+}
+
+/// The first frame of a paused load.
+fn first_frame(p: &mut FfmpegPlayer, path: &std::path::Path) -> sa_player::VideoFrame {
+    let rec = Recorder::default();
+    rec.attach(p);
+    let g = p.load(Some(MediaSource::File(path.to_path_buf())), false);
+    opened(&rec, g);
+    frame_where(p, T, |_| true).expect("first frame")
+}
+
+/// BT.601 limited range, as swscale converts SD frames.
+fn bt601(y: u8, u: u8, v: u8) -> [f32; 3] {
+    let y = (y as f32 - 16.0) * 255.0 / 219.0;
+    let (u, v) = ((u as f32 - 128.0) * 255.0 / 224.0, (v as f32 - 128.0) * 255.0 / 224.0);
+    [y + 1.402 * v, y - 0.344136 * u - 0.714136 * v, y + 1.772 * u]
+}
+
+/// Planar output hands over the decoder's planes (software: zero-copy; hardware: the one NV12 download); converted
+/// with the frame's matrix they give the same picture as the RGBA path.
+#[test]
+fn planar_output_hands_over_planes_that_convert_to_the_rgba_picture() {
+    let path = clip_or_skip!(Clip::SmallH264);
+    let reference = first_frame(&mut player(false, false), &path);
+    assert!(reference.planar.is_none());
+    for hardware in [false, true] {
+        let mut p = player(hardware, true);
+        let f = first_frame(&mut p, &path);
+        let img = f.planar.clone().unwrap_or_else(|| panic!("hardware={hardware}: planar frame"));
+        assert!(f.rgba.is_empty());
+        assert_eq!((f.width, f.height, f.pts), (320, 240, reference.pts));
+        assert_eq!((img.coded_width, img.coded_height, img.bits, img.chroma_shift, img.quarter_turns), (320, 240, 8, (1, 1), 0));
+        assert_eq!(img.matrix, sa_player::YuvMatrix::Bt601);
+        let stats = p.stats();
+        assert!(stats.planar >= 1);
+        if !hardware {
+            assert_eq!((stats.hardware, img.layout), (0, sa_player::PlaneLayout::Planar));
+        } else if stats.hardware > 0 {
+            assert_eq!(img.layout, sa_player::PlaneLayout::SemiPlanar, "hardware frames are NV12");
+        }
+        let (yp, yi) = img.plane(0).expect("luma");
+        assert_eq!((yi.width, yi.rows), (320, 240));
+        let mut worst = 0f32;
+        for y in (0..240).step_by(7) {
+            for x in (0..320).step_by(5) {
+                let luma = yp[y * yi.stride + x];
+                let (cx, cy) = (x / 2, y / 2);
+                let (u, v) = match img.layout {
+                    sa_player::PlaneLayout::SemiPlanar => {
+                        let (c, ci) = img.plane(1).expect("chroma");
+                        (c[cy * ci.stride + cx * 2], c[cy * ci.stride + cx * 2 + 1])
+                    }
+                    sa_player::PlaneLayout::Planar => {
+                        let (u, ui) = img.plane(1).expect("u");
+                        let (v, vi) = img.plane(2).expect("v");
+                        (u[cy * ui.stride + cx], v[cy * vi.stride + cx])
+                    }
+                };
+                let rgb = bt601(luma, u, v);
+                let o = (y * 320 + x) * 4;
+                for k in 0..3 {
+                    worst = worst.max((rgb[k].clamp(0.0, 255.0) - reference.rgba[o + k] as f32).abs());
+                }
+            }
+        }
+        // swscale rounds and interpolates chroma differently; a wrong plane or stride is off by far more.
+        assert!(worst <= 24.0, "hardware={hardware}: worst channel difference {worst}");
+        p.dispose();
+    }
+}
+
+#[test]
+fn planar_frames_carry_the_rotation_and_the_shown_size() {
+    let path = clip_or_skip!(Clip::SmallRotated);
+    let f = first_frame(&mut player(true, true), &path);
+    let img = f.planar.expect("planar");
+    assert_eq!((f.width, f.height), (240, 320));
+    // `-display_rotation 90` is counter-clockwise: three clockwise quarter turns, as the RGBA path rotates.
+    assert_eq!((img.coded_width, img.coded_height, img.quarter_turns), (320, 240, 3));
+}
+
+/// 10-bit HEVC: P010 from the hardware decoder (high bits) or yuv420p10le from software (low bits).
+#[test]
+fn ten_bit_frames_arrive_as_sixteen_bit_planes() {
+    let path = clip_or_skip!(Clip::Hd60Hevc10);
+    for hardware in [false, true] {
+        let mut p = player(hardware, true);
+        let f = first_frame(&mut p, &path);
+        let img = f.planar.expect("planar");
+        assert_eq!((img.bits, img.sample_bytes()), (10, 2), "hardware={hardware}");
+        assert_eq!(img.msb_aligned, img.layout == sa_player::PlaneLayout::SemiPlanar);
+        let (y, yi) = img.plane(0).expect("luma");
+        assert_eq!(yi.row_bytes, 1920 * 2);
+        // Limited-range luma of the test pattern stays inside 64..=940 (10-bit), wherever the bits sit.
+        let shift = if img.msb_aligned { 6 } else { 0 };
+        let sample = |i: usize| (u16::from_le_bytes([y[i], y[i + 1]]) >> shift) as u32;
+        assert!((0..1920).step_by(37).all(|x| (64..=940).contains(&sample(540 * yi.stride + x * 2))), "hardware={hardware}");
+        p.dispose();
+    }
+}
+
+#[test]
+fn without_hardware_decoding_nothing_is_decoded_on_the_gpu() {
+    let path = clip_or_skip!(Clip::SmallH264);
+    let mut p = player(false, false);
+    first_frame(&mut p, &path);
+    assert_eq!(p.stats().hardware, 0);
 }

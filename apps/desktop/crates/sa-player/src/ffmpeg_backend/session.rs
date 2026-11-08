@@ -1,5 +1,5 @@
-//! One loaded source: the demux thread (opens the input, then reads packets), the video decode thread (decode +
-//! RGBA conversion), the presenter thread (shows frames when the master clock reaches them, drops late ones, detects
+//! One loaded source: the demux thread (opens the input, then reads packets), the video decode thread (hardware or
+//! software decode, then either the planes for the GPU or an RGBA conversion), the presenter thread (shows frames when the master clock reaches them, drops late ones, detects
 //! the end), the audio decode thread (decode + resample into the ring) and the audio output thread (cpal).
 //!
 //! Seeks bump `serial`; every queued packet, frame and audio chunk carries the serial it was produced for, and
@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ffmpeg_next::codec;
 use ffmpeg_next::ffi;
@@ -18,6 +18,7 @@ use ffmpeg_next::{Packet, Rational};
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use super::audio::{self, AudioChunk, AudioRing, DeviceFormat, Resampler};
+use super::hw::{self, Download, OwnedFrame};
 use super::io::{self, OpenFailure, OpenedInput};
 use super::sync::{Clock, Notify};
 use super::video::{self, Converter, StreamLayout};
@@ -32,11 +33,22 @@ pub(crate) struct PlayerShared {
     pub muted: AtomicBool,
     pub sink: RwLock<Option<Sink>>,
     pub gate: PlayerSessionGate,
+    /// Hand frames over as YUV planes (the UI converts them on the GPU) instead of RGBA.
+    pub planar: AtomicBool,
+    /// Decode in hardware when the stream allows it.
+    pub hardware: AtomicBool,
 }
 
 impl PlayerShared {
-    pub fn new() -> Self {
-        Self { volume: AtomicU64::new(1.0f64.to_bits()), muted: AtomicBool::new(false), sink: RwLock::new(None), gate: PlayerSessionGate::new() }
+    pub fn new(hardware: bool) -> Self {
+        Self {
+            volume: AtomicU64::new(1.0f64.to_bits()),
+            muted: AtomicBool::new(false),
+            sink: RwLock::new(None),
+            gate: PlayerSessionGate::new(),
+            planar: AtomicBool::new(false),
+            hardware: AtomicBool::new(hardware),
+        }
     }
 }
 
@@ -47,6 +59,10 @@ pub(crate) struct Stats {
     pub presented: AtomicU64,
     pub dropped_late: AtomicU64,
     pub dropped_decoder: AtomicU64,
+    /// Frames that came out of the hardware decoder.
+    pub hardware: AtomicU64,
+    /// Frames handed over as YUV planes.
+    pub planar: AtomicU64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -67,6 +83,8 @@ const FRAME_QUEUE: usize = 4;
 const AUDIO_RING_SECONDS: f64 = 0.3;
 /// Waits up to this long before a due frame use a precise sleep instead of the condvar.
 const PRECISE_WAIT: f64 = 0.02;
+/// How long a seek in flight may hold back the seeks requested after it (`Control::request_seek`).
+const MAX_SEEK_DEFERRAL: Duration = Duration::from_millis(1500);
 
 struct PacketItem {
     serial: u64,
@@ -165,6 +183,10 @@ pub(crate) struct Control {
     seek_req: Mutex<Option<(f64, u64)>>,
     seek_target: Mutex<(u64, f64)>,
     force_show: AtomicBool,
+    /// The newest seek requested while the previous one had no frame on screen yet (see `request_seek`).
+    deferred_seek: Mutex<Option<f64>>,
+    /// When the seek in flight was started.
+    seek_started: Mutex<Instant>,
     pub clock: Clock,
     pub info: Mutex<Info>,
     start_time: Mutex<f64>,
@@ -207,6 +229,8 @@ impl Control {
             seek_req: Mutex::new(None),
             seek_target: Mutex::new((1, 0.0)),
             force_show: AtomicBool::new(true),
+            deferred_seek: Mutex::new(None),
+            seek_started: Mutex::new(Instant::now()),
             clock: Clock::new(0.0),
             info: Mutex::new(Info::default()),
             start_time: Mutex::new(0.0),
@@ -266,8 +290,11 @@ impl Control {
         }
     }
 
-    /// Duration-clamped position.
+    /// Duration-clamped position (the newest requested target while a seek waits, see `request_seek`).
     pub fn position(&self) -> f64 {
+        if let Some(t) = *self.deferred_seek.lock() {
+            return t;
+        }
         let p = self.clock.now();
         let d = self.info.lock().duration;
         let p = if p.is_finite() { p.max(0.0) } else { 0.0 };
@@ -325,6 +352,27 @@ impl Control {
         } else {
             seconds.max(0.0)
         };
+        {
+            // A seek whose frame is not on screen yet finishes first, and only the newest of the seeks requested
+            // meanwhile runs after it (`run_deferred_seek`): a stream of seeks (dragging the slider, a held arrow
+            // key) then shows a frame for every seek the decoder completes, instead of cancelling each one before
+            // it shows anything (a frozen picture for the whole drag). A seek stuck for longer gives way.
+            let mut deferred = self.deferred_seek.lock();
+            let (has_video, opened) = {
+                let i = self.info.lock();
+                (i.has_video, i.opened)
+            };
+            if has_video
+                && opened
+                && self.force_show.load(Ordering::Acquire)
+                && self.seek_started.lock().elapsed() < MAX_SEEK_DEFERRAL
+            {
+                *deferred = Some(target);
+                return;
+            }
+            *deferred = None;
+            *self.seek_started.lock() = Instant::now();
+        }
         let serial = self.serial.fetch_add(1, Ordering::AcqRel) + 1;
         *self.seek_target.lock() = (serial, target);
         // Flush before the demuxer can see the request (it is published last): flushing afterwards could drop the
@@ -352,6 +400,14 @@ impl Control {
         // Last: everything above is in place before the demuxer acts on the request.
         *self.seek_req.lock() = Some((target, serial));
         self.wake_all();
+    }
+
+    /// After the frame (or the end) of a seek is shown: runs the seek requested meanwhile, if any.
+    fn run_deferred_seek(&self) {
+        let next = self.deferred_seek.lock().take();
+        if let Some(t) = next {
+            self.request_seek(t);
+        }
     }
 
     fn seek_target_for(&self, serial: u64) -> f64 {
@@ -401,12 +457,51 @@ pub(crate) fn spawn(ctl: Arc<Control>, source: MediaSource, audio_output: bool) 
     std::thread::Builder::new().name("player-demux".into()).spawn(move || demux_main(ctl, source, audio_output))
 }
 
+/// The video stream's decoder and what it was opened from (the software fallback reopens it).
+pub(crate) struct VideoTrack {
+    dec: codec::decoder::Video,
+    /// The decoder was set up for hardware decoding.
+    hw: bool,
+    params: codec::Parameters,
+    tb: Rational,
+    layout: StreamLayout,
+    frame_dur: f64,
+}
+
 struct Streams {
-    video: Option<(usize, codec::decoder::Video, Rational, StreamLayout, f64)>,
+    video: Option<(usize, VideoTrack)>,
     audio: Option<(usize, codec::decoder::Audio, Rational)>,
 }
 
-fn open_streams(input: &mut OpenedInput) -> Result<Streams, OpenFailure> {
+/// Frame threads for software decoding (FFmpeg's automatic count is cores + 1; more than 8 only costs memory).
+fn software_threads() -> usize {
+    std::thread::available_parallelism().map_or(0, |n| (n.get() + 1).min(8))
+}
+
+/// Opens the video decoder: in hardware when `hardware` and the stream suit it (single-threaded; the GPU does the
+/// work), else in software with frame threads. Returns the decoder and whether it was set up for hardware.
+fn open_video_decoder(params: &codec::Parameters, tb: Rational, hardware: bool) -> Result<(codec::decoder::Video, bool), ffmpeg_next::Error> {
+    if hardware {
+        let mut cctx = codec::context::Context::from_parameters(params.clone())?;
+        let attached = unsafe {
+            (*cctx.as_mut_ptr()).pkt_timebase = tb.into();
+            let codec = ffi::avcodec_find_decoder((*params.as_ptr()).codec_id);
+            hw::suitable(codec, params.as_ptr()) && hw::attach(cctx.as_mut_ptr())
+        };
+        if attached {
+            cctx.set_threading(codec::threading::Config { kind: codec::threading::Type::Frame, count: 1 });
+            if let Ok(dec) = cctx.decoder().video() {
+                return Ok((dec, true));
+            }
+        }
+    }
+    let mut cctx = codec::context::Context::from_parameters(params.clone())?;
+    unsafe { (*cctx.as_mut_ptr()).pkt_timebase = tb.into() };
+    cctx.set_threading(codec::threading::Config { kind: codec::threading::Type::Frame, count: software_threads() });
+    Ok((cctx.decoder().video()?, false))
+}
+
+fn open_streams(input: &mut OpenedInput, hardware: bool) -> Result<Streams, OpenFailure> {
     let ictx = input.input();
     let vbest = ictx.streams().best(ffmpeg_next::media::Type::Video).map(|s| s.index());
     // Skip cover art ("attached pictures"): it is a single still, not a video track.
@@ -429,12 +524,10 @@ fn open_streams(input: &mut OpenedInput) -> Result<Streams, OpenFailure> {
         };
         let rotation = unsafe { video::stream_rotation(s.as_ptr()) };
         let unsupported = |e: ffmpeg_next::Error| OpenFailure::new(e.to_string(), io::classify(e));
-        let mut cctx = codec::context::Context::from_parameters(s.parameters()).map_err(unsupported)?;
-        unsafe { (*cctx.as_mut_ptr()).pkt_timebase = tb.into() };
-        cctx.set_threading(codec::threading::Config { kind: codec::threading::Type::Frame, count: 0 });
+        let params = s.parameters().clone();
         // A video track without a decoder fails the load (the macOS player then tries the engine preview), as
         // Media Foundation and AVFoundation do.
-        let dec = cctx.decoder().video().map_err(|e| match e {
+        let (dec, hw) = open_video_decoder(&params, tb, hardware).map_err(|e| match e {
             ffmpeg_next::Error::Other { .. } | ffmpeg_next::Error::Unknown => {
                 OpenFailure::new(ffmpeg_next::Error::DecoderNotFound.to_string(), FailureKind::UnsupportedFormat)
             }
@@ -446,7 +539,7 @@ fn open_streams(input: &mut OpenedInput) -> Result<Streams, OpenFailure> {
             let p = (*(*st).codecpar).sample_aspect_ratio;
             StreamLayout { rotation, container_sar: (c.num, c.den), codec_sar: (p.num, p.den) }
         };
-        out.video = Some((i, dec, tb, layout, fps.clamp(1.0 / 240.0, 1.0)));
+        out.video = Some((i, VideoTrack { dec, hw, params, tb, layout, frame_dur: fps.clamp(1.0 / 240.0, 1.0) }));
     }
     if let Some(i) = audio_index {
         let s = ictx.stream(i).expect("audio stream");
@@ -475,7 +568,7 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
     if ctl.stopped() {
         return;
     }
-    let streams = match open_streams(&mut input) {
+    let streams = match open_streams(&mut input, ctl.player.hardware.load(Ordering::Relaxed)) {
         Ok(s) => s,
         Err(failure) => {
             fail(&ctl, failure);
@@ -531,7 +624,7 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
         i.duration = duration;
         i.has_video = has_video;
         i.has_audio_output = device.is_some();
-        i.natural = streams.video.as_ref().map(|v| v.3.geometry(v.1.width(), v.1.height(), None).display_size());
+        i.natural = streams.video.as_ref().map(|(_, v)| v.layout.geometry(v.dec.width(), v.dec.height(), None).display_size());
     }
     // A seek requested before the source opened is clamped now.
     let pending = *ctl.seek_req.lock();
@@ -540,15 +633,15 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
             ctl.request_seek(duration);
         }
     }
-    ctl.clock.set_ready(device.is_some());
+    ctl.clock.set_ready(device.is_some(), has_video);
     if !has_video {
         ctl.force_show.store(false, Ordering::Release);
         ctl.clock.release();
     }
     let video_index = streams.video.as_ref().map(|v| v.0);
-    if let Some((_, dec, tb, layout, fps)) = streams.video {
+    if let Some((_, track)) = streams.video {
         let c = ctl.clone();
-        if let Ok(h) = std::thread::Builder::new().name("player-video".into()).spawn(move || video_main(c, dec, tb, layout, fps)) {
+        if let Ok(h) = std::thread::Builder::new().name("player-video".into()).spawn(move || video_main(c, track)) {
             handles.push(h);
         }
     }
@@ -711,8 +804,9 @@ fn seconds(ts: i64, tb: Rational, start: f64) -> f64 {
     ts as f64 * f64::from(tb) - start
 }
 
-fn video_main(ctl: Arc<Control>, mut dec: codec::decoder::Video, tb: Rational, layout: StreamLayout, frame_dur: f64) {
-    let mut conv = Converter::new();
+fn video_main(ctl: Arc<Control>, track: VideoTrack) {
+    let VideoTrack { mut dec, hw: mut hw_decoder, params, tb, layout, frame_dur } = track;
+    let mut out = FrameOutput { conv: Converter::new(), download: Download::default() };
     let start = ctl.start_time();
     let mut serial = 0u64;
     let mut target = 0.0;
@@ -752,11 +846,22 @@ fn video_main(ctl: Arc<Control>, mut dec: codec::decoder::Video, tb: Rational, l
                 continue;
             }
         }
+        let mut fall_back = false;
         loop {
             match dec.receive_frame(&mut f) {
                 Ok(()) => {
                     ctl.stats.decoded.fetch_add(1, Ordering::Relaxed);
                     let raw = unsafe { f.as_ptr() };
+                    if hw_decoder {
+                        if unsafe { hw::is_hw_format((*raw).format) } {
+                            ctl.stats.hardware.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // The decoder could not use the GPU for this stream after all (it is single-threaded
+                            // then): reopen it in software with frame threads.
+                            fall_back = true;
+                            break;
+                        }
+                    }
                     let ts = unsafe { (*raw).best_effort_timestamp };
                     let pts = if ts != ffi::AV_NOPTS_VALUE { seconds(ts, tb, start) } else { next_pts };
                     let dur = unsafe {
@@ -770,21 +875,28 @@ fn video_main(ctl: Arc<Control>, mut dec: codec::decoder::Video, tb: Rational, l
                         continue;
                     }
                     if emitted && ctl.clock.is_running() && pts + dur < ctl.clock.now() - 0.02 {
-                        // Hopelessly late: don't spend a conversion on it.
+                        // Hopelessly late: don't spend a download or conversion on it.
                         ctl.stats.dropped_decoder.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
-                    if !push_converted(&ctl, &mut conv, raw, layout, serial, pts, dur) {
-                        if ctl.stopped() {
-                            return;
+                    match push_frame(&ctl, &mut out, raw, layout, serial, pts, dur) {
+                        Pushed::Queued => {
+                            emitted = true;
+                            has_skipped = false;
                         }
-                        if ctl.serial.load(Ordering::Acquire) != serial {
+                        Pushed::Skipped => {
+                            if ctl.stopped() {
+                                return;
+                            }
+                            if ctl.serial.load(Ordering::Acquire) != serial {
+                                break;
+                            }
+                        }
+                        Pushed::DownloadFailed => {
+                            fall_back = true;
                             break;
                         }
-                        continue;
                     }
-                    emitted = true;
-                    has_skipped = false;
                 }
                 Err(ffmpeg_next::Error::Eof) => {
                     if !emitted {
@@ -793,7 +905,7 @@ fn video_main(ctl: Arc<Control>, mut dec: codec::decoder::Video, tb: Rational, l
                             let raw = unsafe { last_skipped.as_ptr() };
                             let ts = unsafe { (*raw).best_effort_timestamp };
                             let pts = if ts != ffi::AV_NOPTS_VALUE { seconds(ts, tb, start) } else { target };
-                            if push_converted(&ctl, &mut conv, raw, layout, serial, pts, frame_dur) {
+                            if push_frame(&ctl, &mut out, raw, layout, serial, pts, frame_dur) == Pushed::Queued {
                                 emitted = true;
                             }
                         }
@@ -805,22 +917,83 @@ fn video_main(ctl: Arc<Control>, mut dec: codec::decoder::Video, tb: Rational, l
                 Err(_) => break, // EAGAIN (needs input) or a decode error
             }
         }
+        if fall_back {
+            eprintln!("[player] hardware decoding failed for this stream; decoding in software");
+            let Ok((sw, _)) = open_video_decoder(&params, tb, false) else {
+                eprintln!("[player] software video decoder unavailable");
+                return;
+            };
+            dec = sw;
+            hw_decoder = false;
+            f = frame::Video::empty();
+            last_skipped = frame::Video::empty();
+            has_skipped = false;
+            // Decode again from the keyframe before where playback stands (the new decoder starts without one).
+            let at = if emitted { ctl.position() } else { target };
+            ctl.request_seek(at);
+        }
     }
 }
 
-/// Converts and queues a frame; waits while the queue is full. False when the frame was not queued (stop, seek,
-/// conversion failure).
-fn push_converted(ctl: &Control, conv: &mut Converter, raw: *const ffi::AVFrame, layout: StreamLayout, serial: u64, pts: f64, dur: f64) -> bool {
+/// Per-thread conversion state of the video decode thread.
+struct FrameOutput {
+    conv: Converter,
+    download: Download,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pushed {
+    Queued,
+    /// Not queued: stop, seek, or a conversion failure.
+    Skipped,
+    /// A hardware frame could not be downloaded (the decoder falls back to software).
+    DownloadFailed,
+}
+
+fn empty_rgba() -> Arc<Vec<u8>> {
+    static EMPTY: std::sync::OnceLock<Arc<Vec<u8>>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(Vec::new())).clone()
+}
+
+/// Downloads (hardware frames), describes the planes (planar output) or converts to RGBA, and queues a frame; waits
+/// while the queue is full.
+fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, layout: StreamLayout, serial: u64, pts: f64, dur: f64) -> Pushed {
     let geo = unsafe {
         let r = (*raw).sample_aspect_ratio;
         layout.geometry((*raw).width.max(1) as u32, (*raw).height.max(1) as u32, Some((r.num, r.den)))
     };
-    let Some((w, h, rgba)) = (unsafe { conv.convert(raw, geo) }) else { return false };
-    let frame = VideoFrame { width: w, height: h, stride: w * 4, pts, rgba };
+    let mut downloaded: Option<Arc<OwnedFrame>> = None;
+    let mut src = raw;
+    if unsafe { hw::is_hw_format((*raw).format) } {
+        let Some(d) = (unsafe { out.download.download(raw) }) else { return Pushed::DownloadFailed };
+        src = d.0;
+        downloaded = Some(d);
+    }
+    let mut frame = None;
+    if ctl.player.planar.load(Ordering::Relaxed) && video::planar_format(unsafe { (*src).format }).is_some() {
+        let owner: Option<Box<dyn Send + Sync>> = match downloaded {
+            Some(d) => Some(Box::new(d)),
+            None => unsafe { OwnedFrame::reference(raw) }.map(|r| Box::new(r) as Box<dyn Send + Sync>),
+        };
+        if let Some(owner) = owner {
+            if let Some(img) = unsafe { video::planar_image(owner, src, raw, geo) } {
+                let (w, h) = geo.display_size();
+                ctl.stats.planar.fetch_add(1, Ordering::Relaxed);
+                frame = Some(VideoFrame { width: w, height: h, stride: 0, pts, rgba: empty_rgba(), planar: Some(Arc::new(img)) });
+            }
+        }
+    }
+    let frame = match frame {
+        Some(f) => f,
+        None => {
+            let Some((w, h, rgba)) = (unsafe { out.conv.convert(src, geo) }) else { return Pushed::Skipped };
+            VideoFrame::from_rgba(w, h, w * 4, pts, rgba)
+        }
+    };
     let mut q = ctl.frames.items.lock();
     loop {
         if ctl.stopped() || ctl.serial.load(Ordering::Acquire) != serial {
-            return false;
+            return Pushed::Skipped;
         }
         if q.len() < FRAME_QUEUE {
             break;
@@ -830,7 +1003,7 @@ fn push_converted(ctl: &Control, conv: &mut Converter, raw: *const ffi::AVFrame,
     q.push_back(FrameItem::Frame(DecodedFrame { serial, pts, duration: dur, frame }));
     drop(q);
     ctl.wake.notify();
-    true
+    Pushed::Queued
 }
 
 fn present_main(ctl: Arc<Control>) {
@@ -853,6 +1026,7 @@ fn present_main(ctl: Arc<Control>) {
                     if ctl.serial.load(Ordering::Acquire) == serial && ctl.force_show.swap(false, Ordering::AcqRel) {
                         ctl.publish(f);
                         ctl.clock.release();
+                        ctl.run_deferred_seek();
                     }
                 }
                 Some(FrameItem::Eof { .. }) => {
@@ -861,6 +1035,7 @@ fn present_main(ctl: Arc<Control>) {
                     if ctl.serial.load(Ordering::Acquire) == serial && ctl.force_show.swap(false, Ordering::AcqRel) {
                         ctl.video_eof.store(true, Ordering::Release);
                         ctl.clock.release();
+                        ctl.run_deferred_seek();
                     }
                 }
                 None => {
