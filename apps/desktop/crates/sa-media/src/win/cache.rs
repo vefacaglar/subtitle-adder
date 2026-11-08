@@ -148,8 +148,13 @@ impl VideoCacheStore {
 
     /// `cache_dir` = `%LOCALAPPDATA%\SubtitleAdder\VideoCache` in production. `max_bytes` overrides the 20 GiB default
     /// when > 0. Purges the legacy layout once, in the background.
+    /// A blank `cache_dir` is [`Self::default_directory`] (C# `IsNullOrWhiteSpace(cacheDirectory)`).
     pub fn new(cache_dir: PathBuf, keys: VaultKeyProvider, max_bytes: Option<i64>) -> Arc<Self> {
-        let cache_dir = std::path::absolute(&cache_dir).unwrap_or(cache_dir);
+        let cache_dir = if cache_dir.as_os_str().to_string_lossy().trim().is_empty() {
+            Self::default_directory()
+        } else {
+            std::path::absolute(&cache_dir).unwrap_or(cache_dir)
+        };
         let store = Arc::new_cyclic(|me| Self {
             cache_dir,
             keys,
@@ -350,7 +355,8 @@ impl VideoCacheStore {
         paths
             .iter()
             .enumerate()
-            .filter(|(_, p)| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() == expected))
+            // `FileInfo.Exists && Length`: the entry itself, a link is not followed (its own length never matches).
+            .filter(|(_, p)| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file() && m.len() == expected))
             .map(|(i, _)| i as i64)
             .collect()
     }

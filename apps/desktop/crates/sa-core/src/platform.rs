@@ -71,6 +71,21 @@ pub trait FileAssociations: Send + Sync {
     fn open_default_apps_settings(&self);
 }
 
+/// Environment variable that replaces the app data folder (`%LOCALAPPDATA%\SubtitleAdder` /
+/// `~/Library/Application Support/SubtitleAdder`) with another folder. For end-to-end tests and tools that must never
+/// touch the user's real data; unset or blank means the platform default.
+pub const DATA_DIR_ENV: &str = "SUBTITLE_ADDER_DATA_DIR";
+
+/// The [`DATA_DIR_ENV`] folder (absolute), when set to a non-blank value.
+pub fn data_dir_override() -> Option<PathBuf> {
+    let raw = std::env::var_os(DATA_DIR_ENV)?;
+    if raw.to_string_lossy().trim().is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(raw);
+    Some(std::path::absolute(&path).unwrap_or(path))
+}
+
 /// The OS services.
 pub trait PlatformShell: Send + Sync {
     /// `%LOCALAPPDATA%\SubtitleAdder` / `~/Library/Application Support/SubtitleAdder`.

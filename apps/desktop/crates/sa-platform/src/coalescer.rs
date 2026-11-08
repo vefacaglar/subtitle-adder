@@ -4,8 +4,9 @@
 //! received is handed over at once, in arrival order and without repeats.
 //!
 //! [`ExternalOpenCoalescer`] is the pure timing logic, driven by the caller's clock. [`CoalescingDelivery`] runs it on
-//! a timer thread and delivers to a sink that may be set later (a cold launch with files): batches completed before
-//! the sink exists are kept and replayed as one batch, as the Swift `ExternalOpenDelegate.waiting` list does.
+//! a timer thread and delivers to a sink that may be set later (a cold launch with files): paths that arrived before
+//! the sink exists are kept and fed through the coalescer again when it is set, as the Swift
+//! `ExternalOpenDelegate.waiting` list is replayed into the new `ExternalOpenCoalescer`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -57,6 +58,18 @@ impl ExternalOpenCoalescer {
         self.deadline = Some(now + delay(self.quiet, self.max_wait, now.saturating_duration_since(first)));
     }
 
+    /// Feeds `paths` received earlier (before the sink existed) in again, ahead of what is pending, and restarts the
+    /// quiet period like [`Self::add`].
+    pub fn replay(&mut self, paths: Vec<PathBuf>, now: Instant) {
+        let pending = std::mem::take(&mut self.pending);
+        self.add(paths, now);
+        for p in pending {
+            if !self.pending.contains(&p) {
+                self.pending.push(p);
+            }
+        }
+    }
+
     /// When the current batch is due (`None` when nothing is pending).
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
@@ -90,6 +103,8 @@ struct DeliveryState {
     waiting: Vec<PathBuf>,
     shutdown: bool,
     timer_running: bool,
+    /// A delivery is running the sink (outside the lock).
+    delivering: bool,
 }
 
 /// A coalescer on its own timer thread. `receive` may be called from any thread (the macOS Apple Event handler runs
@@ -115,6 +130,7 @@ impl CoalescingDelivery {
                     waiting: Vec::new(),
                     shutdown: false,
                     timer_running: false,
+                    delivering: false,
                 }),
                 Condvar::new(),
             )),
@@ -132,30 +148,35 @@ impl CoalescingDelivery {
             return;
         }
         st.coalescer.add(paths, Instant::now());
-        if !st.timer_running {
-            st.timer_running = true;
-            let shared = self.shared.clone();
-            let spawned = std::thread::Builder::new().name("sa-external-open".into()).spawn(move || timer_loop(shared));
-            if spawned.is_err() {
-                st.timer_running = false;
-            }
-        }
+        self.ensure_timer(&mut st);
         cv.notify_all();
     }
 
-    /// Sets the sink; anything that arrived before is delivered now as one batch (no repeats, arrival order).
-    pub fn set_sink(&self, mut sink: Sink) {
-        let (lock, _) = &*self.shared;
-        loop {
-            let mut st = lock.lock();
-            // A batch may complete while the sink runs: keep draining until nothing waits.
-            let waiting = std::mem::take(&mut st.waiting);
-            if waiting.is_empty() {
-                st.sink = Some(sink);
-                return;
-            }
-            drop(st);
-            sink(waiting);
+    /// Sets the sink. Anything that arrived before is fed through the coalescer again, ahead of any path still
+    /// pending (Swift: setting `ExternalOpenDelegate.coalescer` replays the waiting URLs with `receive`), so it is
+    /// delivered one quiet period later as one batch together with the rest of a request still arriving.
+    pub fn set_sink(&self, sink: Sink) {
+        let (lock, cv) = &*self.shared;
+        let mut st = lock.lock();
+        st.sink = Some(sink);
+        let waiting = std::mem::take(&mut st.waiting);
+        if waiting.is_empty() || st.shutdown {
+            return;
+        }
+        st.coalescer.replay(waiting, Instant::now());
+        self.ensure_timer(&mut st);
+        cv.notify_all();
+    }
+
+    fn ensure_timer(&self, st: &mut DeliveryState) {
+        if st.timer_running {
+            return;
+        }
+        st.timer_running = true;
+        let shared = self.shared.clone();
+        let spawned = std::thread::Builder::new().name("sa-external-open".into()).spawn(move || timer_loop(shared));
+        if spawned.is_err() {
+            st.timer_running = false;
         }
     }
 
@@ -176,25 +197,34 @@ impl CoalescingDelivery {
     }
 }
 
+/// Hands `batch` to the sink, or keeps it until the sink is set. The sink runs outside the lock; a batch completed
+/// while it runs (a `flush` racing the timer) waits in `waiting` and is handed over by the running delivery right
+/// after, so nothing is stranded until the next event.
 fn deliver(shared: &Arc<(Mutex<DeliveryState>, Condvar)>, batch: Vec<PathBuf>) {
     let (lock, _) = &**shared;
     let mut st = lock.lock();
-    match st.sink.take() {
-        Some(mut sink) => {
-            drop(st);
-            sink(batch);
-            let mut st = lock.lock();
-            if st.sink.is_none() {
-                st.sink = Some(sink);
-            }
+    for p in batch {
+        if !st.waiting.contains(&p) {
+            st.waiting.push(p);
         }
-        None => {
-            for p in batch {
-                if !st.waiting.contains(&p) {
-                    st.waiting.push(p);
-                }
-            }
+    }
+    if st.delivering {
+        return;
+    }
+    let Some(mut sink) = st.sink.take() else { return };
+    st.delivering = true;
+    loop {
+        let next = std::mem::take(&mut st.waiting);
+        if next.is_empty() {
+            break;
         }
+        drop(st);
+        sink(next);
+        st = lock.lock();
+    }
+    st.delivering = false;
+    if st.sink.is_none() {
+        st.sink = Some(sink);
     }
 }
 
@@ -293,15 +323,34 @@ mod tests {
         let got = Arc::new(Mutex::new(Vec::<Vec<PathBuf>>::new()));
         let g = got.clone();
         d.set_sink(Box::new(move |b| g.lock().push(b)));
-        assert_eq!(*got.lock(), vec![vec![p("/a.mp4"), p("/b.mp4")]]);
-        d.receive(vec![p("/c.mp4")]);
+        // Replayed through the coalescer (Swift `ExternalOpenDelegate.coalescer didSet`): nothing is handed over
+        // synchronously, and the rest of a request that is still arriving joins the same batch.
+        assert!(got.lock().is_empty());
+        d.receive(vec![p("/c.mp4"), p("/a.mp4")]);
+        wait_for(&got, 1);
+        assert_eq!(*got.lock(), vec![vec![p("/a.mp4"), p("/b.mp4"), p("/c.mp4")]]);
         d.receive(vec![p("/d.mp4")]);
+        d.receive(vec![p("/e.mp4")]);
+        wait_for(&got, 2);
+        assert_eq!(got.lock()[1], vec![p("/d.mp4"), p("/e.mp4")]);
+        d.shutdown();
+    }
+
+    #[test]
+    fn replayed_paths_go_ahead_of_pending_ones() {
+        let t0 = Instant::now();
+        let mut c = ExternalOpenCoalescer::new();
+        c.add(vec![p("/late.mp4"), p("/b.mp4")], t0);
+        c.replay(vec![p("/a.mp4"), p("/b.mp4")], t0 + Duration::from_millis(10));
+        assert_eq!(c.deadline(), Some(t0 + Duration::from_millis(260)));
+        assert_eq!(c.flush(), Some(vec![p("/a.mp4"), p("/b.mp4"), p("/late.mp4")]));
+    }
+
+    fn wait_for(got: &Arc<Mutex<Vec<Vec<PathBuf>>>>, n: usize) {
         let deadline = Instant::now() + Duration::from_secs(2);
-        while got.lock().len() < 2 && Instant::now() < deadline {
+        while got.lock().len() < n && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(got.lock()[1], vec![p("/c.mp4"), p("/d.mp4")]);
-        d.shutdown();
     }
 
     #[test]
@@ -313,6 +362,28 @@ mod tests {
         d.receive(vec![p("/x.mp4")]);
         d.flush();
         assert_eq!(*got.lock(), vec![vec![p("/x.mp4")]]);
+        d.shutdown();
+    }
+
+    #[test]
+    fn a_batch_completed_while_the_sink_runs_is_handed_over_right_after() {
+        let d = CoalescingDelivery::new(Duration::from_secs(10), Duration::from_secs(10));
+        let got = Arc::new(Mutex::new(Vec::<Vec<PathBuf>>::new()));
+        let g = got.clone();
+        let d2 = d.clone();
+        let reentered = Arc::new(Mutex::new(false));
+        let r = reentered.clone();
+        d.set_sink(Box::new(move |b| {
+            g.lock().push(b);
+            // A second batch completes while this delivery is still in the sink.
+            if !std::mem::replace(&mut *r.lock(), true) {
+                d2.receive(vec![p("/late.mp4")]);
+                d2.flush();
+            }
+        }));
+        d.receive(vec![p("/first.mp4")]);
+        d.flush();
+        assert_eq!(*got.lock(), vec![vec![p("/first.mp4")], vec![p("/late.mp4")]]);
         d.shutdown();
     }
 }

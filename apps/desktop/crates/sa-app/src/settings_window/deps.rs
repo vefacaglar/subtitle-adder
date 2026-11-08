@@ -236,6 +236,21 @@ pub struct SettingsDeps {
     pub font_families: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
 }
 
+/// The installed font families for the font pop-ups: DirectWrite's system collection on Windows (sorted,
+/// case-insensitive, C# `SystemFonts`), `NSFontManager.availableFontFamilies` order on macOS. Call it on the UI
+/// (main) thread: AppKit's font manager is read here once, the returned closure only hands out copies.
+pub fn system_font_families() -> Arc<dyn Fn() -> Vec<String> + Send + Sync> {
+    #[cfg(windows)]
+    return Arc::new(|| sa_platform::win::fonts::families().to_vec());
+    #[cfg(target_os = "macos")]
+    {
+        let list = sa_platform::mac::appkit::font_families();
+        return Arc::new(move || list.clone());
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    return Arc::new(Vec::new);
+}
+
 #[cfg(windows)]
 mod win_impl {
     use super::*;

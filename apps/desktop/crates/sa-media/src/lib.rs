@@ -63,6 +63,21 @@ pub trait MediaIndex: Send + Sync {
     /// A subtitle was saved next to a video: refresh its sidecar badge (only for a folder already indexed; the
     /// Windows refresh stays in memory, so opening a video never rewrites the index file).
     fn invalidate_sidecar(&self, video_path: &Path);
+    /// Lists a folder without touching the index, in memory or on disk (Windows `ScanDirectoryTransientAsync`: the
+    /// folder of a video that was merely opened). Default: [`MediaIndex::scan`] (macOS has no such mode).
+    fn scan_transient(&self, dir: &Path, cancel: &CancellationToken) -> ScanResult {
+        self.scan(dir, cancel)
+    }
+    /// Rescans a folder and updates only the in-memory index, never the file (Windows
+    /// `RefreshDirectoryInMemoryAsync`). Default: [`MediaIndex::scan`].
+    fn refresh_in_memory(&self, dir: &Path, cancel: &CancellationToken) -> ScanResult {
+        self.scan(dir, cancel)
+    }
+    /// Whether the folder is already recorded in the index (Windows `IsDirectoryIndexed`). Default: a cached
+    /// listing exists.
+    fn is_directory_indexed(&self, dir: &Path) -> bool {
+        self.cached_snapshot(dir).is_some()
+    }
 }
 
 /// `formatted_size` of index rows (win-media §1.6, .NET `0.#` / `0.##` invariant formats; macOS uses

@@ -1,6 +1,7 @@
 //! Interop with the C# app's real `StateSyncBroker` (linked read-only into `tools/fixtures/BrokerInterop`): both
 //! hosting directions, events both ways, `W:`/`A:` lines both ways, CurrentUserOnly (F6) on both sides, slot-file
-//! counting across runtimes, hosting takeover, STJ round trips of Rust-written JSON and the default scope.
+//! counting across runtimes, hosting takeover, resend order, STJ round trips of Rust-written JSON, the default scope
+//! and `StreamReader.ReadLine` framing.
 //!
 //! The fixture is built with `dotnet build -c Release` on first use. Without a .NET SDK the tests print SKIPPED and
 //! pass, unless `SA_SYNC_REQUIRE_CSHARP=1` is set.
@@ -669,4 +670,138 @@ fn topic_matching_equals_ordinal_ignore_case() {
     cs.send("quit");
     cs.expect("CS-BYE", READY);
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+/// The pipe readers (client loop and server sessions) split and decode a byte stream into exactly the lines .NET's
+/// `StreamReader(UTF8, detectEncodingFromByteOrderMarks: false, 4096).ReadLine` produces, and skip exactly the lines
+/// `string.IsNullOrWhiteSpace` skips, however the bytes are chunked by the pipe.
+#[test]
+fn line_framing_and_blank_lines_match_stream_reader() {
+    use base64::Engine as _;
+    use sa_sync::lines::{LineDecoder, is_blank};
+
+    let Some(exe) = fixture() else { return };
+    let mut cs = CSharp::start(&exe, &test_scope("interop-lines"));
+    cs.expect("CS-READY", READY);
+
+    let mut corpus: Vec<Vec<u8>> = vec![
+        b"a\nb\r\nc\rd".to_vec(),
+        b"\xEF\xBB\xBFhello\n".to_vec(),
+        b"\xEF\xBB\xBF\xEF\xBB\xBFx\n".to_vec(),
+        b"\xEF\xBBx\ny".to_vec(),
+        b"\xEF\xBB".to_vec(),
+        b"\xEF".to_vec(),
+        b"\xEF\xBB\xBF".to_vec(),
+        b"\xEF\xBB\xBF\n".to_vec(),
+        b"x\xEF\xBB\xBFy\n".to_vec(),
+        b"\r\n\r\n\n\r\r".to_vec(),
+        b"\n".to_vec(),
+        b"\r".to_vec(),
+        b"\xE2\x82\n\xAC".to_vec(),
+        b"\xC0\xAF|\xED\xA0\x80|\xF4\x90\x80\x80|\xFF|\xE2\x82\xF0\x9F\x98\n".to_vec(),
+        "\u{1F600} emoji \u{15F}\u{11F}\u{131}\n".as_bytes().to_vec(),
+        b" \t\n\xC2\xA0\n\xC2\x85\n\xE2\x80\x8B\n\xE1\xA0\x8E\n\xE3\x80\x80\n\x1C\x1D\x1E\x1F\n\xE2\x80\xA8\n\x0B\x0C\n\x00\n".to_vec(),
+        b"\xE2\x80\x80\xE2\x80\x8A\xE2\x80\xAF\xE2\x81\x9F\xE1\x9A\x80\xE2\x80\xA9\n\xEF\xBB\xBF\n\xE2\x81\xA0\n".to_vec(),
+        Vec::new(),
+        b"last line without terminator".to_vec(),
+        b"trailing cr\r".to_vec(),
+        b"abc\xF0\x9F\r\n".to_vec(),
+        b"\xF0\x9F\x98".to_vec(),
+        b"W:{}\r\nA:{}\n{\"kind\":1}".to_vec(),
+    ];
+    // StreamReader buffer boundaries (4096 bytes): a CR LF and a multibyte char straddling them.
+    let mut straddle_crlf = vec![b'x'; 4095];
+    straddle_crlf.extend_from_slice(b"\r\nnext\n");
+    corpus.push(straddle_crlf);
+    let mut straddle_char = vec![b'y'; 4095];
+    straddle_char.extend_from_slice("\u{15F}\u{1F600}\rz".as_bytes());
+    corpus.push(straddle_char);
+    let mut with_bom = b"\xEF\xBB\xBF".to_vec();
+    with_bom.extend(std::iter::repeat_n(b'q', 5000));
+    with_bom.extend_from_slice(b"\r\r\n");
+    corpus.push(with_bom);
+
+    let mut mismatches = Vec::new();
+    for bytes in &corpus {
+        cs.send(&format!("readlines {}", base64::engine::general_purpose::STANDARD.encode(bytes)));
+        let reply = cs.expect("CS-LINES", READY);
+        let expected: Vec<(String, bool)> = serde_json::from_str::<Vec<serde_json::Value>>(&reply)
+            .unwrap()
+            .into_iter()
+            .map(|v| (v["t"].as_str().unwrap().to_owned(), v["b"].as_bool().unwrap()))
+            .collect();
+        for chunk in [1usize, 2, 3, 5, 4096, usize::MAX] {
+            let mut decoder = LineDecoder::new();
+            let mut out = Vec::new();
+            for part in bytes.chunks(chunk.min(bytes.len().max(1))) {
+                decoder.push(part, &mut out).unwrap();
+            }
+            out.extend(decoder.finish_stream());
+            let rust: Vec<(String, bool)> = out
+                .into_iter()
+                .map(|l| {
+                    let blank = is_blank(&l);
+                    (l, blank)
+                })
+                .collect();
+            if rust != expected {
+                mismatches.push(format!("{bytes:?} (chunks of {chunk})\n   C#:   {expected:?}\n   Rust: {rust:?}"));
+            }
+        }
+    }
+    cs.send("quit");
+    cs.expect("CS-BYE", READY);
+    assert!(mismatches.is_empty(), "{} framing mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
+}
+
+/// Unacknowledged write requests are resent to a C# host as `W:` lines in submission order (C#
+/// `PendingWritesInSubmissionOrder`), executed there once each, and the host's `A:` acks clear them on the Rust side.
+#[test]
+fn pending_writes_reach_a_csharp_host_in_submission_order_and_its_acks_clear_them() {
+    let Some(exe) = fixture() else { return };
+    let scope = test_scope("interop-resend");
+    let mut cs = CSharp::start(&exe, &scope);
+    assert_eq!(cs.expect("CS-READY", READY), "true leader=true");
+
+    let bus = NamedPipeBus::new(Some(&scope));
+    bus.set_data_worker_factory(fake_factory());
+    assert!(bus.wait_until_ready(READY));
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("profiles.db");
+    let _ = bus.data_worker_store(&db);
+    let store =
+        common::created_stores().lock().iter().find(|s| s.path == std::path::absolute(&db).unwrap()).unwrap().clone();
+    // This process's store holds its copies, so only the C# host's acks can complete the requests.
+    store.hold.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let kinds =
+        [WriteKind::UpsertVideo, WriteKind::UpsertWatchProgress, WriteKind::ReplaceAllVideosAndProgress, WriteKind::RetagOwner];
+    let mut ids = Vec::new();
+    for i in 0..24 {
+        let mut r = StateSyncWriteRequest::new("rust-manager", &db.to_string_lossy(), kinds[i % kinds.len()]);
+        r.request_id = format!("{:08x}{i:02}", (i as u32).wrapping_mul(2_654_435_761));
+        ids.push(r.request_id.clone());
+        bus.submit_write_request(r);
+    }
+    assert_eq!(bus.pending_write_request_count(), ids.len());
+    bus.resend_pending_write_requests();
+    let mut executed = Vec::new();
+    while executed.len() < ids.len() {
+        let line = cs.expect("CS-EXEC", READY);
+        let id = line.split_whitespace().nth(1).unwrap().to_owned();
+        if line.contains("dup=false") {
+            executed.push(id);
+        }
+    }
+    assert_eq!(executed, ids, "the C# host executed the resent requests in submission order");
+    assert!(
+        wait_until(3000, || bus.pending_write_request_count() == 0),
+        "{} requests still pending after the C# acks",
+        bus.pending_write_request_count()
+    );
+
+    cs.send("quit");
+    assert_eq!(cs.expect("CS-BYE", READY), "closed=false");
+    bus.dispose();
+    assert!(bus.closed_engine_on_dispose());
 }

@@ -47,9 +47,11 @@ component PrefTab inherits Rectangle {
 }
 
 export component SettingsView inherits Rectangle {
+    // Tab row (2 + 50 + 6) and its separator, below the title bar; the window adds it to the tab content height.
+    out property <length> tab-bar-height: 2px + 50px + 6px + 1px;
     VerticalLayout {
         // Unified title bar + toolbar.
-        Rectangle {
+        bar := Rectangle {
             background: MacTheme.toolbar-background;
             VerticalLayout {
                 if SettingsBridge.draws-title-bar: Rectangle {
@@ -107,18 +109,23 @@ export component SettingsView inherits Rectangle {
             }
         }
         Rectangle { height: 1px; background: MacTheme.separator; }
-        // Grouped form of the selected tab (20 pt scene padding).
-        scroller := ScrollView {
+        // `.scenePadding()` (20 pt) around the 560-wide tab content; inside it the grouped form scrolls with its own
+        // 20 pt content margins.
+        VerticalLayout {
             vertical-stretch: 1;
-            content-width: self.visible-width;
-            content-height: body.preferred-height;
-            body := VerticalLayout {
-                width: scroller.visible-width;
-                padding: 20px;
-                if SettingsBridge.page == 0: GeneralTab { }
-                if SettingsBridge.page == 1: TranslationTab { }
-                if SettingsBridge.page == 2: AppearanceTab { }
-                if SettingsBridge.page == 3: ModelsTab { }
+            padding: 20px;
+            scroller := ScrollView {
+                vertical-stretch: 1;
+                content-width: self.visible-width;
+                content-height: body.preferred-height;
+                body := VerticalLayout {
+                    width: scroller.visible-width;
+                    padding: 20px;
+                    if SettingsBridge.page == 0: GeneralTab { }
+                    if SettingsBridge.page == 1: TranslationTab { }
+                    if SettingsBridge.page == 2: AppearanceTab { }
+                    if SettingsBridge.page == 3: ModelsTab { }
+                }
             }
         }
     }
@@ -128,12 +135,17 @@ export component SettingsView inherits Rectangle {
         scroller.content-y = 0;
     }
 
+    // A sheet makes the window modal (the tab bar too).
+    if SettingsBridge.form-open || SettingsBridge.confirm-open: TouchArea { }
+    // Sheets slide out under the toolbar.
     if SettingsBridge.form-open: ProviderEditorSheet {
+        y: bar.height + 1px;
         width: root.width;
-        height: root.height;
+        height: root.height - bar.height - 1px;
     }
     if SettingsBridge.confirm-open: AlertSheet {
+        y: bar.height + 1px;
         width: root.width;
-        height: root.height;
+        height: root.height - bar.height - 1px;
     }
 }

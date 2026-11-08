@@ -171,6 +171,89 @@ switch (cmd)
         }
         break;
     }
+    case "stream-trace":
+    {
+        // stream-trace <dir> <length> <chunk> <maxCached> <ops>: plays <dir>\video.bin (Pattern(length)) through a
+        // BufferedVideoStream over a MemoryStream (ownsStream false: synchronous SSD writes, no read-ahead) with the
+        // C# EncryptedVideoCacheStore in <dir>\VideoCache and a profile alice/pass123 in <dir>\profiles.json. Ops
+        // (comma-separated): sN seek to N, eN seek to length-N, cN seek by N from the current position, rN read N bytes
+        // (prints r|count|sha256 of the bytes, first 16 hex), q (prints the stream state and the buffered ratio bits
+        // at 0, 0.25, 0.5, 0.99, NaN and 2), x dispose and reopen, o log out, l log in, f (prints files|count|used of
+        // the cache folder).
+        var dir = Path.GetFullPath(args[1]);
+        var length = int.Parse(args[2]);
+        var chunk = int.Parse(args[3]);
+        var maxCached = int.Parse(args[4]);
+        var raw = Pattern(length);
+        var video = Path.Combine(dir, "video.bin");
+        File.WriteAllBytes(video, raw);
+        using var broker = NewBroker();
+        using var manager = new LocalProfileManager(Path.Combine(dir, "profiles.json"), broker);
+        if (!manager.Register("alice", "pass123")) throw new Exception("register failed");
+        var store = new EncryptedVideoCacheStore(Path.Combine(dir, "VideoCache"), manager, 1L << 30);
+        BufferedVideoStream Open() => new(new MemoryStream(raw, writable: false), ownsStream: false, chunkSizeBytes: chunk,
+            maxCachedChunks: maxCached, readAheadChunks: 0, cacheStore: store, filePath: video);
+        var stream = Open();
+        foreach (var op in args[5].Split(','))
+        {
+            var n = op.Length > 1 ? long.Parse(op[1..]) : 0;
+            switch (op[0])
+            {
+                case 's': stream.Seek(n, SeekOrigin.Begin); break;
+                case 'e': stream.Seek(-n, SeekOrigin.End); break;
+                case 'c': stream.Seek(n, SeekOrigin.Current); break;
+                case 'r':
+                {
+                    var buffer = new byte[n];
+                    var got = stream.Read(buffer, 0, (int)n);
+                    Console.WriteLine($"r|{got}|{Hex(SHA256.HashData(buffer.AsSpan(0, got)))[..16]}");
+                    break;
+                }
+                case 'q':
+                {
+                    var bits = string.Join("|", new[] { 0.0, 0.25, 0.5, 0.99, double.NaN, 2.0 }
+                        .Select(p => BitConverter.DoubleToInt64Bits(stream.GetBufferedRatio(p)).ToString()));
+                    Console.WriteLine($"q|{stream.Position}|{stream.UnderlyingReadCount}|{stream.UnderlyingBytesRead}|{stream.EncryptedCacheReadCount}|{stream.CachedChunkCount}|{bits}");
+                    break;
+                }
+                case 'x': stream.Dispose(); stream = Open(); break;
+                case 'o': manager.Logout(); store.EndStaleSessions(); break;
+                case 'l': if (!manager.Login("alice", "pass123")) throw new Exception("login failed"); break;
+                case 'f':
+                {
+                    var cacheDir = Path.Combine(dir, "VideoCache");
+                    var count = Directory.Exists(cacheDir) ? Directory.EnumerateFiles(cacheDir, "*.vcache", SearchOption.AllDirectories).Count() : 0;
+                    Console.WriteLine($"f|{count}|{store.GetTotalUsedBytes()}");
+                    break;
+                }
+                default: throw new Exception("unknown stream op: " + op);
+            }
+        }
+        stream.Dispose();
+        break;
+    }
+    case "format-size":
+    {
+        // format-size <bytes>...: MediaLibraryIndex.FormatFileSize per argument.
+        foreach (var a in args.Skip(1)) Console.WriteLine(MediaLibraryIndex.FormatFileSize(long.Parse(a)));
+        break;
+    }
+    case "mime":
+    {
+        // mime <path>...: BufferedVideoStream.GetMimeType per argument.
+        foreach (var a in args.Skip(1)) Console.WriteLine(BufferedVideoStream.GetMimeType(a));
+        break;
+    }
+    case "badge":
+    {
+        // badge <ext|-null>...: IndexedMediaFile.SidecarBadge with a sidecar of that extension ("-null" = null).
+        foreach (var a in args.Skip(1))
+        {
+            var f = new IndexedMediaFile("C:\\a.mp4", "a.mp4", "C:\\", 1, default, true, a == "-null" ? null : a, default);
+            Console.WriteLine(f.SidecarBadge ?? "(none)");
+        }
+        break;
+    }
     case "probe":
     {
         foreach (var p in new[] { @"\\server\share\dir", @"\\server\share", @"\\?\C:\x", @"\\?\UNC\srv\sh\x", @"C:\", @"C:", @"C:\a\" })

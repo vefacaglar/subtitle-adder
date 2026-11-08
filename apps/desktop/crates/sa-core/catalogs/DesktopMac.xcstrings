@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "tr",
   "strings": {
+    "Listeye eklemek için giriş yapın": {
+      "comment": "Added by the Rust desktop app (hub add-to-list menu while logged out; same text as the Windows catalog).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in to add to a list"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listeye eklemek için giriş yapın"
+          }
+        }
+      }
+    },
     "%@ Hakkında": {
       "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
       "localizations": {
@@ -222,6 +239,23 @@
         }
       }
     },
+    "Duraklat": {
+      "comment": "Added by the Rust desktop app (mac-ui section 7.4, player control bar).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Duraklat"
+          }
+        }
+      }
+    },
     "Geri Al": {
       "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
       "localizations": {
@@ -392,6 +426,57 @@
         }
       }
     },
+    "Ses düzeyi": {
+      "comment": "Added by the Rust desktop app (mac-ui section 7.4, player control bar).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Volume"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ses düzeyi"
+          }
+        }
+      }
+    },
+    "Sesi aç": {
+      "comment": "Added by the Rust desktop app (mac-ui section 7.4, player control bar).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unmute"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sesi aç"
+          }
+        }
+      }
+    },
+    "Sesi kapat": {
+      "comment": "Added by the Rust desktop app (mac-ui section 7.4, player control bar).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mute"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sesi kapat"
+          }
+        }
+      }
+    },
     "Sunucu bulunamadı.": {
       "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
       "localizations": {
@@ -490,6 +575,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "Tümünü Öne Getir"
+          }
+        }
+      }
+    },
+    "Video": {
+      "comment": "Added by the Rust desktop app (mac-ui section 7.4, player control bar).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video"
+          }
+        }
+      }
+    },
+    "Video konumu": {
+      "comment": "Added by the Rust desktop app (mac-ui section 7.4, player control bar).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video position"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video konumu"
+          }
+        }
+      }
+    },
+    "Video önizlemesi hazırlanıyor…": {
+      "comment": "Added by the Rust desktop app (mac-ui section 7.4, player control bar).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing video preview…"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video önizlemesi hazırlanıyor…"
           }
         }
       }

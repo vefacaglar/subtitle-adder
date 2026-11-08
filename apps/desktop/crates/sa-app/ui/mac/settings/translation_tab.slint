@@ -38,7 +38,7 @@ component ModelsMenu inherits Rectangle {
             min-width: 220px;
             background: MacTheme.menu-background;
             border-radius: 6px;
-            border-width: 0.5px;
+            border-width: 1phx;
             border-color: MacTheme.menu-border;
             drop-shadow-blur: 14px;
             drop-shadow-offset-y: 5px;
@@ -119,6 +119,11 @@ export { NoticeLabel }
 component ProviderRowView inherits VerticalLayout {
     in property <SettingsProviderRow> item;
     in-out property <string> model-text: root.item.model;
+    // `.onChange(of: provider.model)`: typing breaks the binding above, so a stored change is copied in again.
+    property <string> stored-model: root.item.model;
+    changed stored-model => {
+        root.model-text = root.stored-model;
+    }
     spacing: 6px;
     padding-top: 4px + 7px;
     padding-bottom: 4px + 7px;

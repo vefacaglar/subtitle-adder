@@ -8,6 +8,8 @@
 //! passes `Some("general")` on Windows and `Some("translation")` on macOS, `PlatformPolicy::settings_manage_providers_page`),
 //! and `host.close()` when the main window closes.
 
+#[cfg(all(windows, sa_ui = "win"))]
+mod chrome;
 pub mod deps;
 pub mod host;
 pub mod model;

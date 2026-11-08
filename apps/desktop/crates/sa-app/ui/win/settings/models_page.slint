@@ -87,6 +87,7 @@ component ModelCard inherits CardFrame {
             if !root.item.is-deleting && root.item.shows-delete: GlyphButton {
                 glyph: "\u{E74D}";
                 label: Loc.t("Sil…");
+                tooltip: root.item.delete-help;
                 enabled: root.item.can-delete;
                 clicked => { SettingsBridge.model-delete(root.item.id); }
             }

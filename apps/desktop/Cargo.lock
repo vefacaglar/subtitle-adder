@@ -4837,6 +4837,7 @@ dependencies = [
 name = "sa-platform"
 version = "0.1.0"
 dependencies = [
+ "block2 0.6.2",
  "chrono",
  "core-foundation 0.10.1",
  "image",
@@ -4847,7 +4848,9 @@ dependencies = [
  "regex",
  "rfd",
  "sa-core",
+ "serde_json",
  "tempfile",
+ "unicode-normalization",
  "windows",
 ]
 
@@ -4860,6 +4863,7 @@ dependencies = [
  "ffmpeg-next",
  "parking_lot",
  "sa-core",
+ "serde_json",
  "tempfile",
 ]
 

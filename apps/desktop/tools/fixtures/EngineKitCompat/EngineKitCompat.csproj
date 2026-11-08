@@ -9,6 +9,8 @@
       tracker <cases.json>   feeds stage sequences to DownloadPhaseTracker; one JSON line per case
       decode <lines.txt>     EngineEvent.Decode on every line; one JSON line per input line
       graphemes <lines.txt>  StringInfo.LengthInTextElements of every JSON string line
+      client <fake> <cases>  runs the real EngineClient against the Rust scripted fake engine (one script per case)
+                             and prints each outcome: value or EngineException kind + message, stream events
     Build: dotnet build -c Release (bin/ and obj/ stay under this folder and are git-ignored).
     Used by crates/sa-enginekit/tests/csharp_compat.rs (opt-in: SA_DOTNET_FIXTURES=1).
   -->
@@ -18,7 +20,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Real cultures: the localized client messages format numbers in tr-TR / en. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
     <NoWarn>$(NoWarn);CS1591;CS8618;CS0618</NoWarn>
     <WinEngineKit>..\..\..\..\windows\src\EngineKit</WinEngineKit>
     <MacSources>..\..\..\..\macos\Sources</MacSources>

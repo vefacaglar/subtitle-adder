@@ -42,8 +42,10 @@ fn starts_with_ci(s: &str, prefix: &str) -> bool {
     s.len() >= prefix.len() && s.is_char_boundary(prefix.len()) && s[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
+/// .NET `Contains(needle, OrdinalIgnoreCase)`: a non-ASCII character never matches an ASCII one (the Kelvin sign is
+/// not `k`, as `to_lowercase` would make it).
 fn contains_ci(s: &str, needle: &str) -> bool {
-    s.to_lowercase().contains(&needle.to_lowercase())
+    fold_case(s).contains(&fold_case(needle))
 }
 
 /// The six cloud presets' addresses and host names (win-providers §3.8).
@@ -137,10 +139,105 @@ fn dotnet_absolute_path(path: &str) -> String {
     if joined.is_empty() { "/".to_owned() } else if joined.starts_with('/') { joined } else { format!("/{joined}") }
 }
 
-/// .NET `Uri.Host` as the C# app shows it in the test message: lower-cased, IPv6 literals in brackets.
-fn dotnet_host_label(host: &str) -> String {
-    let lower = host.to_ascii_lowercase();
-    if lower.contains(':') { format!("[{lower}]") } else { lower }
+/// What the C# tests take from `Uri.TryCreate(url, UriKind.Absolute, out uri) && uri.Host != ""` for an `http(s)://`
+/// address: `Some(uri.Host)` (the host label of the success message), else `None` ("enter a valid address").
+/// Emulates the .NET rules (verified against the C# code by `tests/csharp_behavior.rs`):
+///
+/// * the authority ends at the first `/`, `?` or `#`; a `\` inside it, more than one `@`, an empty host, a port that
+///   is not all digits or above 65535 make the address invalid (an empty port is the default one);
+/// * `[v6]` (an optional `%zone` dropped) → `[canonical v6]`; text after `]` that is not a port is ignored;
+/// * an inet_aton-style IPv4 (1–4 parts, decimal, `0x` hex or `0` octal) → the dotted quad (`127.1` → `127.0.0.1`);
+/// * otherwise a host name: labels of ASCII letters, digits, `-`, `_` or any non-ASCII character, none empty except
+///   a single trailing dot; lower-cased (invariant, one-to-one mappings only) only when it has an ASCII capital.
+pub(crate) fn dotnet_uri_host(url: &str) -> Option<String> {
+    let url = url.trim();
+    let rest = if starts_with_ci(url, "http://") {
+        &url[7..]
+    } else if starts_with_ci(url, "https://") {
+        &url[8..]
+    } else {
+        return None;
+    };
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    if authority.contains('\\') || authority.matches('@').count() > 1 {
+        return None;
+    }
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let port_ok = |p: &str| {
+        let significant = p.trim_start_matches('0');
+        p.bytes().all(|b| b.is_ascii_digit()) && significant.len() <= 5 && significant.parse::<u32>().map_or(true, |v| v <= 65535)
+    };
+    if let Some(inner) = hostport.strip_prefix('[') {
+        let close = inner.find(']')?;
+        let addr = inner[..close].split('%').next().unwrap_or("");
+        let ip: std::net::Ipv6Addr = addr.parse().ok()?;
+        if let Some(port) = inner[close + 1..].strip_prefix(':')
+            && !port_ok(port)
+        {
+            return None;
+        }
+        return Some(format!("[{ip}]"));
+    }
+    let (host, port) = hostport.rsplit_once(':').unwrap_or((hostport, ""));
+    if host.is_empty() || !port_ok(port) {
+        return None;
+    }
+    if let Some(v4) = inet_aton(host) {
+        return Some(v4.to_string());
+    }
+    let labels = host.strip_suffix('.').unwrap_or(host);
+    let label_ok = |l: &str| {
+        !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_') || (!c.is_ascii() && !c.is_control()))
+    };
+    if !labels.split('.').all(label_ok) {
+        return None;
+    }
+    if !host.bytes().any(|b| b.is_ascii_uppercase()) {
+        return Some(host.to_owned());
+    }
+    Some(
+        host.chars()
+            .map(|c| {
+                let mut lower = c.to_lowercase();
+                match (lower.next(), lower.next()) {
+                    (Some(l), None) => l,
+                    _ => c,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// The .NET (and inet_aton) IPv4 forms: 1–4 dot-separated parts, each decimal, `0x` hex or `0`-prefixed octal; the
+/// last part fills the remaining bytes. `None` when the text is not such an address (it is then a host name).
+fn inet_aton(host: &str) -> Option<std::net::Ipv4Addr> {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
+    }
+    let mut values = Vec::with_capacity(parts.len());
+    for part in &parts {
+        let (digits, radix) = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+            (hex, 16)
+        } else if part.len() > 1 && part.starts_with('0') {
+            (&part[1..], 8)
+        } else {
+            (*part, 10)
+        };
+        if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+            return None;
+        }
+        values.push(u64::from_str_radix(digits, radix).ok()?);
+    }
+    let (last, head) = values.split_last()?;
+    if head.iter().any(|v| *v > 255) || *last >= 1u64 << (8 * (5 - values.len())) {
+        return None;
+    }
+    let mut n: u64 = *last;
+    for (i, v) in head.iter().enumerate() {
+        n |= v << (8 * (3 - i));
+    }
+    Some(std::net::Ipv4Addr::from(n as u32))
 }
 
 /// GET endpoints tried for model discovery (deduplicated case-insensitively).
@@ -359,10 +456,10 @@ impl HttpFetch for DeadlineFetch<'_> {
     }
 }
 
-/// `.local` resolution of the test: `(resolved URL, host label)`. Without a key the cached address and the /24
-/// scan are tried after DNS; with one only DNS (engine rule).
-fn resolve_dot_local(raw: &str, has_key: bool, cancel: &CancellationToken) -> (String, String) {
-    let host = parse_url(raw).map(|p| dotnet_host_label(p.host)).unwrap_or_default();
+/// `.local` resolution of the test: `(resolved URL, host label)`, `host` being the .NET host of `raw`
+/// ([`dotnet_uri_host`]). Without a key the cached address and the /24 scan are tried after DNS; with one only DNS
+/// (engine rule).
+fn resolve_dot_local(raw: &str, host: String, has_key: bool, cancel: &CancellationToken) -> (String, String) {
     if !ends_with_ci(&host, ".local") {
         return (raw.to_owned(), host);
     }
@@ -394,15 +491,13 @@ pub(crate) fn test_provider(
     if !starts_with_ci(&raw, "http://") && !starts_with_ci(&raw, "https://") {
         raw = format!("http://{raw}");
     }
-    if parse_url(&raw).is_none_or(|p| p.host.is_empty()) {
-        return Ok(invalid());
-    }
+    let Some(host) = dotnet_uri_host(&raw) else { return Ok(invalid()) };
     let key = api_key.trim();
-    let (resolved, host_label) = resolve_dot_local(&raw, !key.is_empty(), cancel);
+    let (resolved, host_label) = resolve_dot_local(&raw, host.clone(), !key.is_empty(), cancel);
     if cancel.is_cancelled() {
         return Err(TestCancelled);
     }
-    if !key.is_empty() && ExternalLlmServer::is_insecure_key_destination(&resolved) {
+    if !key.is_empty() && is_insecure_key_destination(&resolved, &host) {
         return Ok(ProviderTestOutcome::failure(ExternalLlmServer::insecure_key_message(), suggested));
     }
 
@@ -480,6 +575,18 @@ pub(crate) fn test_provider(
     Ok(ProviderTestOutcome { success: true, message, models: merged })
 }
 
+/// The engine's key rule on the address a test is about to call: plain `http://` to a host outside the local network.
+/// The host is the canonical one of `resolved` (`127.1` is loopback), or the typed address's .NET host when the HTTP
+/// stack's parser cannot read it (a non-ASCII name, a space in the path): such an address is refused rather than
+/// waved through.
+fn is_insecure_key_destination(resolved: &str, typed_host: &str) -> bool {
+    if !starts_with_ci(resolved.trim(), "http://") {
+        return false;
+    }
+    let host = dotnet_uri_host(resolved).unwrap_or_else(|| typed_host.to_owned());
+    !ExternalLlmServer::is_local_network_host(&host)
+}
+
 /// Transport errors are shown on one line and never carry the key.
 fn single_line(text: &str, api_key: &str) -> String {
     let mut t = text.replace(['\r', '\n'], " ");
@@ -505,9 +612,9 @@ pub fn test_lan_server(
     };
     // C#: the host label and `.local` resolution only when the address parses; otherwise the requests are still
     // made (and fail), with an empty label.
-    let (resolved, host_label) = match parse_url(&base) {
-        Some(p) if !p.host.is_empty() => resolve_dot_local(&base, false, cancel),
-        _ => (base.clone(), String::new()),
+    let (resolved, host_label) = match dotnet_uri_host(&base) {
+        Some(host) => resolve_dot_local(&base, host, false, cancel),
+        None => (base.clone(), String::new()),
     };
     if cancel.is_cancelled() {
         return Err(TestCancelled);
@@ -647,8 +754,14 @@ mod tests {
         assert!(!is_opencode_go_url("https://opencode.ai/zen/go/v1#"));
         assert_eq!(dotnet_absolute_path(""), "/");
         assert_eq!(dotnet_absolute_path("/a/./b/../c/."), "/a/c/");
-        assert_eq!(dotnet_host_label("API.OpenAI.com"), "api.openai.com");
-        assert_eq!(dotnet_host_label("::1"), "[::1]");
+        assert_eq!(dotnet_uri_host("https://API.OpenAI.com/v1").as_deref(), Some("api.openai.com"));
+        assert_eq!(dotnet_uri_host("http://[0:0::1]:8080").as_deref(), Some("[::1]"));
+        assert_eq!(dotnet_uri_host("http://127.1").as_deref(), Some("127.0.0.1"));
+        assert_eq!(dotnet_uri_host("http://ŞİRKET.test/v1").as_deref(), Some("şİrket.test"));
+        assert_eq!(dotnet_uri_host("http://École").as_deref(), Some("École"));
+        for invalid in ["http://", "http://h:65536", "http://h..x", "http://%41", "http://a@b@h", r"http://h\x", "ftp://h"] {
+            assert_eq!(dotnet_uri_host(invalid), None, "{invalid}");
+        }
         assert_eq!(take_utf16_units("ab😀c", 3), "ab");
         assert_eq!(take_utf16_units("ab😀c", 4), "ab😀");
     }

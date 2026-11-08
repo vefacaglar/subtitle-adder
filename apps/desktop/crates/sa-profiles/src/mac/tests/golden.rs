@@ -3,9 +3,9 @@
 //! and hash vectors computed independently (Python `hashlib`/`hmac`) for the picture-cache names and the content
 //! fingerprint. They pin the formats so a change that would make the Swift app's files unreadable shows up here.
 //!
-//! Unverifiable without a Mac: Apple's exact key order for keys that differ only in letter case (`rememberMe` vs
-//! `rememberedUsername` — byte order is used here, as in the spec) and its number formatting for very small or very
-//! large doubles. Both readers ignore key order and accept either number form.
+//! Key order follows Foundation's `JSONWriter` `.sortedKeys` (`.numeric, .caseInsensitive, .forcedOrdering`), so
+//! `rememberedUsername` precedes `rememberMe`. Unverifiable without a Mac: Apple's number formatting for very small
+//! or very large doubles. Both readers ignore key order and accept either number form.
 
 use sa_core::secrets::SecretKey32;
 
@@ -43,7 +43,7 @@ fn profiles_json_is_written_in_the_apple_pretty_layout() {
             },
         ],
     };
-    let expected = "{\n  \"lastUsername\" : \"Ayşe\",\n  \"profiles\" : [\n    {\n      \"createdAtUtc\" : \"2026-04-30T05:00:00.1234567+00:00\",\n      \"encryptedVaultBase64\" : \"ab/cd+ef==\",\n      \"iterations\" : 100000,\n      \"passwordHashBase64\" : \"aGFzaA==\",\n      \"saltBase64\" : \"AAECAwQFBgcICQoLDA0ODw==\",\n      \"username\" : \"Ayşe\"\n    },\n    {\n      \"createdAtUtc\" : \"2026-04-30T08:00:00.0000000+00:00\",\n      \"iterations\" : 100000,\n      \"passwordHashBase64\" : \"aGFzaA==\",\n      \"saltBase64\" : \"c2FsdHNhbHRzYWx0c2FsdA==\",\n      \"username\" : \"Zed\"\n    }\n  ],\n  \"rememberMe\" : true,\n  \"rememberedUsername\" : \"Ayşe\",\n  \"version\" : 2\n}";
+    let expected = "{\n  \"lastUsername\" : \"Ayşe\",\n  \"profiles\" : [\n    {\n      \"createdAtUtc\" : \"2026-04-30T05:00:00.1234567+00:00\",\n      \"encryptedVaultBase64\" : \"ab/cd+ef==\",\n      \"iterations\" : 100000,\n      \"passwordHashBase64\" : \"aGFzaA==\",\n      \"saltBase64\" : \"AAECAwQFBgcICQoLDA0ODw==\",\n      \"username\" : \"Ayşe\"\n    },\n    {\n      \"createdAtUtc\" : \"2026-04-30T08:00:00.0000000+00:00\",\n      \"iterations\" : 100000,\n      \"passwordHashBase64\" : \"aGFzaA==\",\n      \"saltBase64\" : \"c2FsdHNhbHRzYWx0c2FsdA==\",\n      \"username\" : \"Zed\"\n    }\n  ],\n  \"rememberedUsername\" : \"Ayşe\",\n  \"rememberMe\" : true,\n  \"version\" : 2\n}";
     assert_eq!(document::encode_profiles(&doc), expected);
     // An empty table is Apple's empty-array form.
     let empty = ProfilesDocument { remember_me: false, last_username: None, remembered_username: None, profiles: vec![] };

@@ -424,3 +424,36 @@ impl WorkerHub {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WriteKind;
+
+    /// C# `PendingWritesInSubmissionOrder`: resends, flush pushes and dispose hand-offs replay requests in the order
+    /// they were submitted (a watch recorded before "clear history" is never applied after it), whatever the ids.
+    #[test]
+    fn pending_writes_replay_in_submission_order_and_keep_the_first_entry_per_id() {
+        let p = PendingWrites::default();
+        let mut ids = Vec::new();
+        for i in 0..300 {
+            let mut r = StateSyncWriteRequest::new("s", "db", WriteKind::UpsertVideo);
+            r.request_id = format!("{:08x}", (i as u32).wrapping_mul(2_654_435_761));
+            ids.push(r.request_id.clone());
+            p.insert(&r);
+        }
+        let mut dup = StateSyncWriteRequest::new("s", "db", WriteKind::DeleteVideo);
+        dup.request_id = ids[5].clone();
+        p.insert(&dup);
+        let order: Vec<StateSyncWriteRequest> = p.in_submission_order();
+        assert_eq!(order.iter().map(|r| r.request_id.clone()).collect::<Vec<_>>(), ids);
+        assert_eq!(order[5].kind, "UpsertVideo", "an existing id keeps its first entry (TryAdd)");
+
+        p.apply_ack(&StateSyncWriteAck::new(&ids[0], false, false, Some("x".into())));
+        assert_eq!(p.len(), 300, "a failed ack keeps the request pending");
+        p.apply_ack(&StateSyncWriteAck::new(&ids[0], true, false, None));
+        p.apply_ack(&StateSyncWriteAck::new("", true, false, None));
+        assert_eq!(p.len(), 299);
+        assert_eq!(p.in_submission_order()[0].request_id, ids[1]);
+    }
+}

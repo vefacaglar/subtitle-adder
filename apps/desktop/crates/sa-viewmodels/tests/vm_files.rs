@@ -323,3 +323,21 @@ fn json_import_review_markers_follow_the_platform() {
         }
     }
 }
+
+#[test]
+fn windows_reopening_an_empty_session_looks_for_a_new_sidecar() {
+    // `OpenVideo`: a session without lines or status is reset and its sidecar searched again.
+    let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let (vm, _c) = env.vm();
+    let a = env.touch("w/a.mp4", "v");
+    let b = env.touch("w/b.mp4", "v");
+    vm.open_video(Some(a.clone()));
+    env.pump();
+    assert!(vm.sentences().is_empty());
+    vm.open_video(Some(b));
+    env.touch("w/a.srt", SRT);
+    vm.open_video(Some(a));
+    env.eventually("sidecar on reopen", || vm.sentences().len() == 2);
+    assert_eq!(vm.status(), JobStatus::Finished);
+}

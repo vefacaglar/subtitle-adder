@@ -223,6 +223,16 @@ impl Session {
         }
         if !language.is_empty() { Some(language.to_owned()) } else { self.detected_language.clone() }
     }
+    /// Windows `OpenVideo` restore test, negated: nothing worth restoring (no lines, translations, status, background
+    /// translation, loaded file or job).
+    pub fn is_blank(&self) -> bool {
+        self.sentences.is_empty()
+            && self.translations.is_empty()
+            && self.status == JobStatus::Idle
+            && !self.is_async_translating
+            && self.loaded_subtitle.is_none()
+            && self.job.is_none()
+    }
     pub fn has_content(&self) -> bool {
         !self.sentences.is_empty() || self.job.is_some() || self.is_working()
     }

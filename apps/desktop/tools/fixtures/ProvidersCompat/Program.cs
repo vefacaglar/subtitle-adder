@@ -2,7 +2,7 @@
 // Every output line is one JSON array, so strings with any characters survive the trip.
 //
 //   pure <file>        one JSON array per input line: [op, args...]; prints [line number, result]. Ops: endpoints,
-//                      chat, opencode, cloud, merge, parse, normalize, mask, available, picker, error, preset
+//                      chat, opencode, cloud, merge, parse, normalize, mask, available, picker, error, preset, uri
 //   load <dir>         loads every file of <dir> (ordinal name order) with a fresh TranslationProviderManager and prints
 //                      [name, active index | null, [[id | "*", name, presetId, baseUrl, apiKey, model, async, models]...]]
 //                      ("*" = an id the file did not contain, i.e. a fresh random one)
@@ -62,6 +62,10 @@ switch (cmd)
                 "picker" => Picker(a[1].GetString()!, a[2].GetString()!, Strs(a[3])),
                 "error" => ProviderError(a[1].GetInt32(), a[2].GetString()!, Str(a[3])),
                 "preset" => TranslationProviderManager.GetPreset(Str(a[1])).Id,
+                // What the connection tests take from `Uri.TryCreate(s, Absolute)`: valid with a non-empty Host, and
+                // that Host (the test message's host label).
+                "uri" => Uri.TryCreate(a[1].GetString()!, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host)
+                    ? uri.Host : null,
                 var other => throw new InvalidOperationException("unknown pure op " + other),
             };
             Emit(n++, result);

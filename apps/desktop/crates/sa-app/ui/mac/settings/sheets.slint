@@ -21,7 +21,7 @@ component SheetFrame inherits Rectangle {
         height: root.sheet-height;
         background: MacTheme.window-background;
         border-radius: 10px;
-        border-width: 0.5px;
+        border-width: 1phx;
         border-color: MacTheme.menu-border;
         drop-shadow-blur: 30px;
         drop-shadow-offset-y: 10px;
@@ -139,6 +139,7 @@ export component ProviderEditorSheet inherits SheetFrame {
                                     text <=> SettingsBridge.form-model;
                                     placeholder: Loc.t("Model seçin veya yazın (örn. glm-5, gpt-4o-mini)");
                                     accessible-name: Loc.t("Model");
+                                    plain: true;
                                     edited(t) => { SettingsBridge.form-model-edited(t); }
                                 }
                                 ModelsMenu {

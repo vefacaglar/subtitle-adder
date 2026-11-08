@@ -114,7 +114,8 @@ pub fn list(path: &str, now: i64) -> ScanResult {
     let Ok(read) = std::fs::read_dir(path) else { return ScanResult::Unreadable };
     let mut entries = Vec::new();
     for entry in read {
-        let Ok(entry) = entry else { continue };
+        // `contentsOfDirectory` fails as a whole when reading the folder fails part way: keep the cached entry.
+        let Ok(entry) = entry else { return ScanResult::Unreadable };
         let name = entry.file_name();
         let Some(name) = name.to_str().map(str::to_owned) else { continue };
         if name.starts_with('.') {

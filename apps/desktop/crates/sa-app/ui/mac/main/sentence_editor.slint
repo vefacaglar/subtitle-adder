@@ -141,6 +141,8 @@ component TableRow inherits Rectangle {
     accessible-role: list-item;
     accessible-label: root.item.accessible-label;
     accessible-item-selected: root.sel;
+    // VoiceOver / automation select (NSTableView row parity): a plain click.
+    accessible-action-default => { MainBridge.row-pressed(root.index, false, false); }
     border-radius: 5px;
     background: root.emph ? MacTheme.control-accent : root.sel ? MacTheme.unemphasized-selection : transparent;
     touch := TouchArea {

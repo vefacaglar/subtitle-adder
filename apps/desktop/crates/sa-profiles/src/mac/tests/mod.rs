@@ -16,6 +16,7 @@ use super::{Clock, MacProfileStore, MacProfileStoreOptions, StoreExtras, dates, 
 use crate::{ProfileChange, Ticks};
 
 mod crypto;
+mod csharp_interop;
 mod file_format;
 mod file_safety;
 mod fingerprint;

@@ -17,6 +17,11 @@
                                    logs alice in again; prints index|listed|sha256(plaintext) per chunk
       script <dir> <file>          runs a media-index script (ops listed in Program.cs) with the C# MediaLibraryIndex
       identity <path> <len> <cs>   prints EncryptedVideoCacheStore.ComputeVideoIdentity
+      stream-trace <dir> <len> <cs> <maxCached> <ops>
+                                   plays a pattern video through BufferedVideoStream + the C# cache (ops in Program.cs:
+                                   seeks, reads, state/ratio dumps, reopen, logout/login, cache file counts)
+      format-size <n>...  mime <path>...  badge <ext|-null>...
+                                   FormatFileSize, GetMimeType, IndexedMediaFile.SidecarBadge per argument
       probe                        prints .NET path rules (GetPathRoot, NormalizeDirectoryPath)
     Build: dotnet build -c Release (bin/ and obj/ stay under this folder and are git-ignored).
     Used by crates/sa-media/tests/csharp_compat.rs (opt-in: SA_DOTNET_FIXTURES=1).

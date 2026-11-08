@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use sa_core::platform::{QuickLocation, QuickLocationKind};
+use sa_core::platform::{AlertButtonRole, QuickLocation, QuickLocationKind};
 
 /// Swift `ExplorerPaths.volumeRoot(of:)`: `/Volumes/<name>` for a path below a mounted-volume folder, `None` for
 /// everything else (including `/Volumes` itself).
@@ -11,8 +11,14 @@ pub fn volume_root(path: &str) -> Option<String> {
     (parts.len() >= 2 && parts[0] == "Volumes").then(|| format!("/Volumes/{}", parts[1]))
 }
 
-/// LibraryKit `MediaPath.normalized`: an absolute, standardized path without a trailing slash (`/` stays).
+/// LibraryKit `MediaPath.normalized`: `URL(fileURLWithPath:).standardizedFileURL.path` in Unicode NFC
+/// (`precomposedStringWithCanonicalMapping`): an absolute, standardized path without a trailing slash (`/` stays);
+/// `""` for an empty path.
 pub fn normalized(path: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    if path.is_empty() {
+        return String::new();
+    }
     let mut out: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {
@@ -23,7 +29,8 @@ pub fn normalized(path: &str) -> String {
             p => out.push(p),
         }
     }
-    if out.is_empty() { "/".into() } else { format!("/{}", out.join("/")) }
+    let joined = if out.is_empty() { "/".to_owned() } else { format!("/{}", out.join("/")) };
+    joined.nfc().collect()
 }
 
 /// A mounted volume as `NSFileManager.mountedVolumeURLs` reports it.
@@ -127,6 +134,31 @@ pub fn pixel_extent(points: f64, scale: f64) -> usize {
     ((points * scale).ceil() as usize).max(1)
 }
 
+/// `NSAlertFirstButtonReturn` (1000): the first added button.
+pub const ALERT_FIRST_BUTTON_RETURN: isize = 1000;
+
+/// An `NSModalResponse` of an alert with `count` buttons → the button index (`None` for anything else).
+pub fn alert_button_index(response: isize, count: usize) -> Option<usize> {
+    let i = response.checked_sub(ALERT_FIRST_BUTTON_RETURN)?;
+    (i >= 0 && (i as usize) < count).then_some(i as usize)
+}
+
+/// The key equivalent an alert button needs beyond AppKit's defaults (the first button already answers Return):
+/// Esc for the cancel role, whatever its title (AppKit only maps Esc to a button titled "Cancel").
+pub fn alert_key_equivalent(role: AlertButtonRole) -> Option<&'static str> {
+    match role {
+        AlertButtonRole::Cancel => Some("\u{1b}"),
+        AlertButtonRole::Default | AlertButtonRole::Destructive => None,
+    }
+}
+
+/// An sRGB color (0..1 components) as `#RRGGBB` (the overlay text color setting, mac-ui §11.3; the panel shows no
+/// opacity, so alpha is ignored).
+pub fn hex_from_components(rgb: [f64; 3]) -> String {
+    let c = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02X}{:02X}{:02X}", c(rgb[0]), c(rgb[1]), c(rgb[2]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +176,9 @@ mod tests {
         assert_eq!(normalized("/Users/me/Movies/"), "/Users/me/Movies");
         assert_eq!(normalized("/Users/me/./x/../Movies"), "/Users/me/Movies");
         assert_eq!(normalized("/"), "/");
+        assert_eq!(normalized(""), "");
+        // Decomposed names (as some volumes report them) compare equal to the precomposed form.
+        assert_eq!(normalized("/Volumes/Mu\u{308}zik/"), "/Volumes/M\u{fc}zik");
     }
 
     #[test]
@@ -192,6 +227,19 @@ mod tests {
         assert_eq!(title_bar_double_click(Some("Minimize"), None), TitleBarDoubleClick::Minimize);
         assert_eq!(title_bar_double_click(Some("None"), Some(true)), TitleBarDoubleClick::None);
         assert_eq!(title_bar_double_click(None, Some(true)), TitleBarDoubleClick::Minimize);
+    }
+
+    #[test]
+    fn alert_responses_and_keys() {
+        assert_eq!(alert_button_index(1000, 2), Some(0));
+        assert_eq!(alert_button_index(1001, 2), Some(1));
+        assert_eq!(alert_button_index(1002, 2), None);
+        assert_eq!(alert_button_index(-1000, 2), None);
+        assert_eq!(alert_button_index(0, 2), None);
+        assert_eq!(alert_key_equivalent(AlertButtonRole::Cancel), Some("\u{1b}"));
+        assert_eq!(alert_key_equivalent(AlertButtonRole::Destructive), None);
+        assert_eq!(hex_from_components([1.0, 0.5, 0.0]), "#FF8000");
+        assert_eq!(hex_from_components([-1.0, 2.0, 0.2]), "#00FF33");
     }
 
     #[test]

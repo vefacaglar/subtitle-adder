@@ -202,3 +202,34 @@ fn a_background_job_snapshots_its_settings_at_request_time() {
     b.finish();
     t.finish();
 }
+
+#[test]
+fn windows_a_failed_batch_is_left_to_the_final_pass_and_later_batches_still_go() {
+    // C# `TranslatePartialBatchExternallyAsync`: the failure is logged ("final pass will retry") and the pump goes on.
+    let (_l, env, vm) = setup(sa_viewmodels::PlatformPolicy::windows(), true);
+    vm.open_video(Some(env.touch("a.mp4", "v")));
+    vm.generate_and_translate();
+    let t = env.next(CallKind::Transcribe);
+    t.send(EngineEvent::Partial { language: "tr".into(), sentences: lines(14) });
+    let b = env.next(CallKind::Translate);
+    b.fail(sa_core::engine_types::EngineError::Failed("down".into()));
+    env.eventually("logged", || {
+        env.diagnostics.lines().into_iter().any(|(_, m)| m.contains("Background batch failed; final pass will retry: "))
+    });
+    let diag: Vec<String> = env.diagnostics.lines().into_iter().map(|(_, m)| m).collect();
+    assert!(!diag.iter().any(|m| m.contains("Satır numarası")), "no line text logged");
+    t.send(EngineEvent::Partial { language: "tr".into(), sentences: lines(30) });
+    let next = env.next(CallKind::Translate);
+    let requested = ids(&next.record.sentences);
+    assert!(requested.contains(&13) && requested.contains(&28), "the next stable lines go in the background: {requested:?}");
+    assert!(!requested.contains(&5), "the failed batch waits for the final pass");
+    answer(&next, "en");
+    env.eventually("applied", || vm.translations().len() >= 16);
+    t.result("tr", "", lines(30));
+    let rest = env.next(CallKind::Translate);
+    let rest_ids = ids(&rest.record.sentences);
+    assert!(rest_ids.contains(&1) && rest_ids.contains(&12), "the final pass retries the failed lines: {rest_ids:?}");
+    answer(&rest, "en");
+    env.eventually("finished", || vm.status() == JobStatus::Finished && !vm.is_working());
+    assert_eq!(vm.translations().len(), 30);
+}

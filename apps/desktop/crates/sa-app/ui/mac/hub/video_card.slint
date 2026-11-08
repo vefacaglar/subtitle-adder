@@ -44,7 +44,8 @@ export component VideoCard inherits Rectangle {
                 height: 108px;
                 border-radius: 8px;
                 clip: true;
-                background: MacTheme.quaternary-fill.with-alpha(0.18);
+                // `Rectangle().fill(.quaternary)` = quaternary label color.
+                background: MacTheme.quaternary-label;
                 accessible-role: button;
                 accessible-label: Loc.t("Oynat");
                 if root.card.has-thumbnail: Image {
@@ -114,20 +115,29 @@ export component VideoCard inherits Rectangle {
                     show: title-touch.has-hover && !title-touch.pressed;
                 }
             }
-            if root.card.folder != "": HorizontalLayout {
-                spacing: 4px;
-                Sym {
-                    y: (parent.height - self.height) / 2;
-                    name: "folder";
-                    size: 10px;
-                    tint: MacTheme.secondary-label;
+            if root.card.folder != "": Rectangle {
+                height: folder-row.preferred-height;
+                folder-row := HorizontalLayout {
+                    spacing: 4px;
+                    Sym {
+                        y: (parent.height - self.height) / 2;
+                        name: "folder";
+                        size: 10px;
+                        tint: MacTheme.secondary-label;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.card.folder;
+                        font-size: MacTheme.caption-size;
+                        color: MacTheme.secondary-label;
+                        overflow: elide;
+                    }
                 }
-                Text {
-                    horizontal-stretch: 1;
-                    text: root.card.folder;
-                    font-size: MacTheme.caption-size;
-                    color: MacTheme.secondary-label;
-                    overflow: elide;
+                folder-touch := TouchArea { }
+                // `.help(card.directoryPath)`.
+                ToolTip {
+                    text: root.card.directory;
+                    show: folder-touch.has-hover;
                 }
             }
             if root.shows-history: Text {

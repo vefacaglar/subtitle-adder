@@ -970,6 +970,33 @@ fn reads_a_file_the_windows_app_wrote() {
     assert_eq!(names(&index.all_files(usize::MAX)), ["zeta.mp4", "alpha.mkv"]);
 }
 
+/// `JSONDecoder` skips a byte order mark and reads UTF-16/UTF-32 announced by one; broken text is unusable.
+#[test]
+fn a_byte_order_mark_is_skipped_and_announces_the_encoding() {
+    let b = Sandbox::new();
+    let json = "{\"version\":1,\"updatedAtUtc\":\"2026-01-02T03:04:05.000Z\",\"directories\":[{\"directoryPath\":\"/Şarkı\",\
+                \"subdirectories\":[],\"mediaFiles\":[{\"directoryPath\":\"/Şarkı\",\"fileName\":\"ı.mp4\",\"fullPath\":\
+                \"/Şarkı/ı.mp4\",\"hasSidecarSubtitle\":false,\"indexedAtUtc\":\"2026-01-02T03:04:05.000Z\",\
+                \"lastWriteTimeUtc\":\"2026-01-02T03:04:05.000Z\",\"sidecarExtension\":null,\"sizeBytes\":1}],\
+                \"scannedAtUtc\":\"2026-01-02T03:04:05.000Z\"}]}";
+    let utf16le: Vec<u8> = [0xFF, 0xFE].into_iter().chain(json.encode_utf16().flat_map(u16::to_le_bytes)).collect();
+    let utf16be: Vec<u8> = [0xFE, 0xFF].into_iter().chain(json.encode_utf16().flat_map(u16::to_be_bytes)).collect();
+    let utf32le: Vec<u8> = [0xFF, 0xFE, 0, 0].into_iter().chain(json.chars().flat_map(|c| (c as u32).to_le_bytes())).collect();
+    let utf8bom: Vec<u8> = [0xEF, 0xBB, 0xBF].into_iter().chain(json.bytes()).collect();
+    for bytes in [json.as_bytes().to_vec(), utf8bom, utf16le, utf16be, utf32le] {
+        std::fs::write(b.index_file(), &bytes).unwrap();
+        assert_eq!(names(&b.index().cached_directory(&pb("/Şarkı"))), ["ı.mp4"], "{:02X?}", &bytes[..4]);
+    }
+    let mut broken = json.as_bytes().to_vec();
+    broken.insert(40, 0xC3);
+    let mut odd: Vec<u8> = [0xFF, 0xFE].into_iter().chain(json.encode_utf16().flat_map(u16::to_le_bytes)).collect();
+    odd.push(b'}');
+    for bytes in [broken, odd] {
+        std::fs::write(b.index_file(), &bytes).unwrap();
+        assert_eq!(b.index().total_indexed_files(), 0);
+    }
+}
+
 #[test]
 fn unusable_files_start_an_empty_index_that_the_next_scan_rewrites() {
     let b = Sandbox::new();

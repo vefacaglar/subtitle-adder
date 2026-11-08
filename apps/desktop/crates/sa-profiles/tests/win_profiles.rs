@@ -1624,3 +1624,35 @@ fn search_query_matches_whole_query_or_every_token() {
     assert!(!m(&v, "sezon 3"));
     assert!(m(&v, "- . _"), "no tokens = match");
 }
+
+/// C# `EnsureSyncedIfChangedLocked`: a header written by another manager of the same file in this process (the
+/// process-wide write generation moved) is reread before a logged-out mutator gives up, so a remembered session
+/// that manager created is restored here and the call records, exactly like the C# app. Without the generation
+/// check the early "logged out" return would skip the resync.
+#[test]
+fn logged_out_mutator_rereads_a_header_another_manager_of_this_process_wrote() {
+    let env = Env::new();
+    let video = env.file("same_process.mp4", &[7u8; 4096]);
+    // Two unrelated scopes: no broker event reaches the other manager, only the shared generation does.
+    let other = mgr(&env.profiles(), &scoped(&format!("gen-b-{}", guid())));
+    other.register_user("ayse", "pw-ayse", false).expect("register without remember-me");
+    let quiet = mgr(&env.profiles(), &scoped(&format!("gen-a-{}", guid())));
+    assert!(!quiet.is_logged_in(), "the header holds no remembered session");
+    assert!(quiet.record_watch_with(&video, 1.0, 10.0, None, None).is_none(), "nothing to restore yet");
+
+    other.register_user("emre", "pw-2026", true).expect("register with remember-me");
+    assert!(other.flush_pending_writes(FLUSH));
+    assert!(!quiet.is_logged_in(), "no event reached this manager");
+
+    let s = quiet.record_watch_with(&video, 2.0, 10.0, None, None).expect("restored session records");
+    assert_eq!(s.view_count, 1);
+    assert!(quiet.is_logged_in());
+    assert_eq!(quiet.current_username().as_deref(), Some("emre"));
+
+    // Logged out here: the early return applies again, and logout always wins over later remembered logins.
+    quiet.logout_user();
+    assert!(quiet.record_watch_with(&video, 3.0, 10.0, None, None).is_none());
+    other.login_user("emre", "pw-2026", true).expect("login elsewhere");
+    assert!(quiet.record_watch_with(&video, 3.0, 10.0, None, None).is_none(), "logout always wins in this manager");
+    assert!(!quiet.is_logged_in());
+}

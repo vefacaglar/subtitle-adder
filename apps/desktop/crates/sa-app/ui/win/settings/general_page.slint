@@ -124,6 +124,7 @@ export component GeneralPage inherits VerticalLayout {
                 GlyphButton {
                     glyph: "\u{E895}";
                     label: Loc.t("Bağlantıyı test et");
+                    tooltip: Loc.t("Sunucuya ping at ve modelleri getir");
                     enabled: SettingsBridge.lan-enabled && !SettingsBridge.lan-busy;
                     clicked => { SettingsBridge.lan-test(); }
                 }

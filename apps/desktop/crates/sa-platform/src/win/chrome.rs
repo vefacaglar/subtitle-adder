@@ -35,7 +35,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SM_CXICON, SM_CXPADDEDBORDER, SM_CXSMICON, SM_CYFRAME, SW_MAXIMIZE, SW_RESTORE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetWindowPos, ShowWindow, WM_GETMINMAXINFO, WM_MOUSEMOVE,
     WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
-    WM_NCMOUSEMOVE, WM_SETICON, WM_SYSCOMMAND, WS_THICKFRAME,
+    WM_NCMOUSEMOVE, WM_SETICON, WM_SETTINGCHANGE, WM_SYSCOMMAND, WM_THEMECHANGED, WS_THICKFRAME, WM_DWMCOLORIZATIONCOLORCHANGED,
 };
 
 use super::wide::Wide;
@@ -115,10 +115,18 @@ pub fn hit_test(layout: &CaptionLayout, x: i32, y: i32, maximized: bool, top_bor
 /// Initial outer size and position (win-ui-main §4.1): a saved size (both > 0) at least the minimum, else the
 /// default; each clamped to the work area, centered in it.
 pub fn compute_placement(saved: Option<(u32, u32)>, min_dip: (u32, u32), default_dip: (u32, u32), scale: f64, work: Rect) -> Rect {
-    let min_w = (min_dip.0 as f64 * scale) as i32;
-    let min_h = (min_dip.1 as f64 * scale) as i32;
+    // C# `(int)(minWidth * scale)`: truncated physical pixels.
+    let min_px = ((min_dip.0 as f64 * scale) as i32, (min_dip.1 as f64 * scale) as i32);
+    compute_placement_px(saved, min_px, default_dip, scale, work)
+}
+
+/// [`compute_placement`] with the minimum already in physical pixels (the chrome keeps the value it computed at
+/// attach time, so no DIP round trip can change it by a pixel).
+pub fn compute_placement_px(saved: Option<(u32, u32)>, min_px: (i32, i32), default_dip: (u32, u32), scale: f64, work: Rect) -> Rect {
+    let (min_w, min_h) = min_px;
     let (w, h) = match saved {
-        Some((w, h)) if w > 0 && h > 0 => ((w as i32).max(min_w), (h as i32).max(min_h)),
+        // Settings ints are 32-bit in C#; anything larger is clamped by the work area below anyway.
+        Some((w, h)) if w > 0 && h > 0 => ((w.min(i32::MAX as u32) as i32).max(min_w), (h.min(i32::MAX as u32) as i32).max(min_h)),
         _ => ((default_dip.0 as f64 * scale) as i32, (default_dip.1 as f64 * scale) as i32),
     };
     let w = w.min(work.2);
@@ -148,6 +156,7 @@ struct State {
     hover: Cell<CaptionHover>,
     tracking: Cell<bool>,
     hover_handler: RefCell<Option<Box<dyn Fn(CaptionHover)>>>,
+    system_change_handler: RefCell<Option<Box<dyn Fn()>>>,
     attached: Cell<bool>,
 }
 
@@ -190,6 +199,7 @@ impl WindowChrome {
             hover: Cell::new(CaptionHover::None),
             tracking: Cell::new(false),
             hover_handler: RefCell::new(None),
+            system_change_handler: RefCell::new(None),
             attached: Cell::new(false),
         });
         unsafe {
@@ -230,6 +240,13 @@ impl WindowChrome {
         *self.state.hover_handler.borrow_mut() = Some(handler);
     }
 
+    /// Called on the UI thread when the system theme, accent or other settings change (`WM_SETTINGCHANGE`,
+    /// `WM_THEMECHANGED`, `WM_DWMCOLORIZATIONCOLORCHANGED`): re-read the accent palette and, for `appTheme = system`,
+    /// the theme, then re-apply the caption colors (win-ui-main §4.1, §5).
+    pub fn set_system_change_handler(&self, handler: Box<dyn Fn()>) {
+        *self.state.system_change_handler.borrow_mut() = Some(handler);
+    }
+
     /// Light/dark: immersive dark mode for the frame, border and Mica tint (the caption glyphs are Slint's).
     pub fn set_dark(&self, dark: bool) {
         let v: i32 = dark as i32;
@@ -265,9 +282,8 @@ impl WindowChrome {
 
     /// Centers on the work area at the saved size (or the default size on first run), win-ui-main §4.1.
     pub fn place(&self, size_physical: Option<(u32, u32)>, default_dip: (u32, u32)) {
-        let min_dip = ((self.state.min_px.0 as f64 / self.scale) as u32, (self.state.min_px.1 as f64 / self.scale) as u32);
         let work = self.work_area();
-        let (x, y, w, h) = compute_placement(size_physical, min_dip, default_dip, self.scale, work);
+        let (x, y, w, h) = compute_placement_px(size_physical, self.state.min_px, default_dip, self.scale, work);
         unsafe {
             let _ = SetWindowPos(self.state.hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
         }
@@ -441,6 +457,14 @@ unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             }
             unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
+        WM_SETTINGCHANGE | WM_THEMECHANGED | WM_DWMCOLORIZATIONCOLORCHANGED => {
+            if let Ok(h) = state.system_change_handler.try_borrow()
+                && let Some(f) = h.as_ref()
+            {
+                f();
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
         WM_GETMINMAXINFO => unsafe {
             let r = DefSubclassProc(hwnd, msg, wparam, lparam);
             let info = &mut *(lparam.0 as *mut MINMAXINFO);
@@ -502,6 +526,12 @@ mod tests {
         assert_eq!(compute_placement(Some((500, 400)), MAIN_MIN_DIP, MAIN_DEFAULT_DIP, 1.0, work), (580, 230, 760, 580));
         assert_eq!(compute_placement(Some((1400, 900)), MAIN_MIN_DIP, MAIN_DEFAULT_DIP, 1.0, (100, 50, 1000, 700)), (100, 50, 1000, 700));
         assert_eq!(compute_placement(Some((0, 900)), MAIN_MIN_DIP, MAIN_DEFAULT_DIP, 1.0, work), (340, 100, 1240, 840));
+        // 175 %: the minimum is (int)(760 * 1.75) = 1330 px, never a pixel less after a DIP round trip.
+        let wide = (0, 0, 3840, 2100);
+        assert_eq!(compute_placement(Some((100, 100)), MAIN_MIN_DIP, MAIN_DEFAULT_DIP, 1.75, wide), (1255, 542, 1330, 1015));
+        assert_eq!(compute_placement_px(Some((100, 100)), (1330, 1015), MAIN_DEFAULT_DIP, 1.75, wide), (1255, 542, 1330, 1015));
+        // A huge saved size is clamped to the work area, not wrapped negative.
+        assert_eq!(compute_placement(Some((u32::MAX, u32::MAX)), MAIN_MIN_DIP, MAIN_DEFAULT_DIP, 1.0, work), (0, 0, 1920, 1040));
     }
 
     #[test]
@@ -585,6 +615,12 @@ mod tests {
             assert!(chrome.is_maximized());
             assert_eq!(chrome.restored_size(), None);
             SendMessageW(hwnd, WM_MOUSEMOVE, None, None);
+            let changes = std::rc::Rc::new(Cell::new(0));
+            let c2 = changes.clone();
+            chrome.set_system_change_handler(Box::new(move || c2.set(c2.get() + 1)));
+            SendMessageW(hwnd, WM_SETTINGCHANGE, None, None);
+            SendMessageW(hwnd, WM_THEMECHANGED, None, None);
+            assert_eq!(changes.get(), 2);
             assert_eq!(
                 *hovers.borrow(),
                 vec![CaptionHover::MaximizeHover, CaptionHover::MaximizePressed, CaptionHover::MaximizeHover, CaptionHover::None]

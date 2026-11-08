@@ -746,6 +746,26 @@ fn a_translation_run_copies_its_trace_lines_before_the_stderr_file_is_deleted() 
 }
 
 #[test]
+fn the_configured_key_is_redacted_from_the_trace_even_without_a_usable_address() {
+    // Swift redacts `launchSettings.externalLLM.apiKey` whether or not the engine received it.
+    let mut f = Fake::tr(
+        "drain\nerr [translation] {\"event\": \"request_failed\", \"note\": \" sk-unused \"}\nout {\"event\": \"translation\", \"language\": \"en\", \"sentences\": []}",
+    );
+    f.client.copy_translation_trace = true;
+    f.client.launch_settings = Some(EngineLaunchSettings {
+        offline: false,
+        external_llm: Some(ExternalLlm { url: "   ".into(), model: "m".into(), api_key: " sk-unused\n".into() }),
+    });
+    f.client.base_environment = Some(without_external_vars());
+    let (_, error) = collect(f.client.translate(&sentences(), "en", None, "madlad-3b", &no_cancel()));
+    assert_eq!(error, None);
+    assert_eq!(
+        f.sink.lines.lock().clone(),
+        vec![("engine".to_owned(), "[translation] {\"event\": \"request_failed\", \"note\": \" [redacted] \"}".to_owned())]
+    );
+}
+
+#[test]
 fn other_commands_do_not_copy_stderr() {
     let mut f = Fake::tr("err [translation] {\"event\": \"request\"}\nout {\"event\": \"stage\", \"stage\": \"transcribing\", \"fraction\": 1}");
     f.client.copy_translation_trace = true;

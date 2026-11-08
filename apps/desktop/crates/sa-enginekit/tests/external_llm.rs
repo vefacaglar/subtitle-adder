@@ -539,7 +539,13 @@ fn stub_server(table: Vec<(&'static str, u16, &'static str)>) -> (String, Arc<Mu
             let path = head.split_whitespace().nth(1).unwrap_or("").to_owned();
             recorded.lock().push(head);
             let (status, text) = table.iter().find(|(p, _, _)| *p == path).map_or((404, "no"), |(_, s, b)| (*s, *b));
-            let _ = write!(stream, "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len());
+            // A 3xx entry's body is the redirect target.
+            let location = if (300..400).contains(&status) { format!("Location: {text}\r\n") } else { String::new() };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\n{location}Content-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                text.len()
+            );
             let _ = stream.flush();
         }
     });
@@ -560,6 +566,50 @@ fn the_ureq_fetch_returns_the_status_instead_of_failing() {
     assert!(head.contains("user-agent: subtitleadder/1.0"), "{head}");
     let (base, _) = stub_server(vec![("/api/tags", 200, r#"{"models": [{"name": "m1"}]}"#)]);
     assert_eq!(S::test_connection(&base, "", "", None, &UreqFetch, &cancel).models(), ["m1"]);
+}
+
+#[cfg(feature = "ureq-fetch")]
+#[test]
+fn the_key_follows_a_redirect_on_the_same_host_only() {
+    // Same host (another path): URLSession and reqwest keep `Authorization`.
+    let (target, target_heads) = stub_server(vec![("/v1/models", 200, r#"{"data": [{"id": "m1"}]}"#)]);
+    let leaked: &'static str = Box::leak(format!("{target}/v1/models").into_boxed_str());
+    let (base, _) = stub_server(vec![("/old/models", 307, leaked)]);
+    let cancel = CancellationToken::new();
+    let (status, _) = UreqFetch.fetch(S::request(&format!("{base}/old/models"), "GET", "sk-1", None), &cancel).unwrap();
+    assert_eq!(status, 200);
+    let head = target_heads.lock()[0].to_ascii_lowercase();
+    assert!(head.contains("authorization: bearer sk-1"), "{head}");
+
+    // Another host: the key is dropped. 127.0.0.2 is a separate loopback host on Windows and Linux (not bindable on
+    // a stock macOS, where this half is skipped).
+    let Ok(other) = TcpListener::bind("127.0.0.2:0") else { return };
+    let other_port = other.local_addr().unwrap().port();
+    let other_heads = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorded = Arc::clone(&other_heads);
+    std::thread::spawn(move || {
+        for stream in other.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                head.push_str(&line);
+            }
+            recorded.lock().push(head);
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+        }
+    });
+    let leaked: &'static str = Box::leak(format!("http://127.0.0.2:{other_port}/v1/models").into_boxed_str());
+    let (base, _) = stub_server(vec![("/away", 302, leaked)]);
+    let (status, _) = UreqFetch.fetch(S::request(&format!("{base}/away"), "GET", "sk-1", None), &cancel).unwrap();
+    assert_eq!(status, 200);
+    let head = other_heads.lock()[0].to_ascii_lowercase();
+    assert!(!head.contains("authorization"), "{head}");
+    assert!(head.contains("user-agent: subtitleadder/1.0"), "{head}");
 }
 
 #[cfg(feature = "ureq-fetch")]

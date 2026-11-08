@@ -651,8 +651,8 @@ mod ureq_fetch {
     use super::*;
 
     /// Default `ureq` fetcher: one shared agent per scheme family (no cookies, no cache), 8 s timeout, status codes
-    /// returned rather than raised, `Authorization` never forwarded on a redirect, https requests never downgraded to
-    /// http on a redirect, bodies capped at 8 MiB.
+    /// returned rather than raised, `Authorization` kept only on a redirect to the same host (never onto plain http),
+    /// https requests never downgraded to http on a redirect, bodies capped at 8 MiB.
     pub struct UreqFetch;
 
     impl UreqFetch {
@@ -664,6 +664,9 @@ mod ureq_fetch {
                     .timeout_global(Some(TIMEOUT))
                     .http_status_as_error(false)
                     .https_only(https_only)
+                    // Like URLSession / reqwest (mac-enginekit §7.7): the key follows a redirect on the same host
+                    // (never onto plain http) and is dropped for any other host.
+                    .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
                     .build()
                     .into()
             };

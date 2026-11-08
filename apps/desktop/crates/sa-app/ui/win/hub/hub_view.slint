@@ -79,7 +79,8 @@ component ListsBar inherits Rectangle {
                         text-color: list.selected ? white : HubColors.list-pill-text;
                         clicked => { HubBridge.list-selected(list.id); }
                     }
-                    if list.selected: HubPill {
+                    // A default-styled WinUI Button (no explicit colors), Content "×".
+                    if list.selected: HubButton {
                         label: "×";
                         font-size: 12px;
                         font-weight: 700;
@@ -88,10 +89,8 @@ component ListsBar inherits Rectangle {
                         radius: 12px;
                         min-width: 24px;
                         min-height: 24px;
-                        fill: HubColors.list-pill-inactive;
-                        hover-fill: HubColors.pill-inactive-hover;
-                        text-color: HubColors.list-pill-text;
                         tooltip: Loc.t("Listeyi sil");
+                        accessible-name: Loc.t("Listeyi sil");
                         clicked => { HubBridge.list-delete(list.id); }
                     }
                 }
@@ -226,7 +225,9 @@ export component HubView inherits Rectangle {
                     }
                 }
             }
-            if !HubBridge.shows-auth-card && HubBridge.cards.length == 0: VerticalLayout {
+            // The feed loads off the UI thread (the C# app built it synchronously, so it never showed an empty
+            // state for a feed that was still loading): nothing is shown until the first snapshot arrives.
+            if !HubBridge.shows-auth-card && HubBridge.cards.length == 0 && !HubBridge.shows-loading: VerticalLayout {
                 alignment: center;
                 padding: 24px;
                 spacing: 6px;

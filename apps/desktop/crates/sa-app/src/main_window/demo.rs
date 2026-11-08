@@ -207,7 +207,7 @@ pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
             main.set_error_text(sa_core::l10n::l_args("Video oynatılamadı: %@", &[sa_core::l10n::Arg::Str("MF_E_UNSUPPORTED_FORMAT (0xC00D36C4)".into())]).into());
             main.set_go_online_visible(true);
             main.set_status_kind(3);
-            main.set_status_text(l("En doğru indirilmemiş. Çevrimdışı mod açıkken model indirilemez."));
+            main.set_status_text(sa_core::l10n::l_args("%@ indirilmemiş. Çevrimdışı mod açıkken model indirilemez.", &[sa_core::l10n::Arg::Str("En doğru".into())]).into());
             main.set_retry_visible(true);
             main.set_retry_title(l("Çevrimdışı modu kapat ve indir"));
             main.set_model_notice(l("Seçili model bu dil için listede yoktu; en doğru uygun model seçildi."));

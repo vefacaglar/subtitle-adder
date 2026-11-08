@@ -158,9 +158,11 @@ impl SubtitleFormat {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EngineModel {
     pub id: String,
-    #[serde(default = "default_kind")]
+    /// Absent or JSON `null` → `"transcription"` (C# init setter, Swift `decodeIfPresent ?? default`).
+    #[serde(default = "default_kind", deserialize_with = "kind_or_default")]
     pub kind: String,
-    #[serde(default = "default_backend")]
+    /// Absent or JSON `null` → `"whisper"`.
+    #[serde(default = "default_backend", deserialize_with = "backend_or_default")]
     pub backend: String,
     /// `None` (or JSON null) = every language.
     #[serde(default)]
@@ -180,6 +182,12 @@ fn default_kind() -> String {
 }
 fn default_backend() -> String {
     "whisper".into()
+}
+fn kind_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_else(default_kind))
+}
+fn backend_or_default<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_else(default_backend))
 }
 
 impl EngineModel {

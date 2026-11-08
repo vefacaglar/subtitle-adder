@@ -87,8 +87,8 @@ export component AuthForm inherits VerticalLayout {
     user := LineEdit {
         placeholder-text: Loc.t("Kullanıcı adı");
         accessible-label: Loc.t("Kullanıcı adı");
+        // (WinUI: Enter in the username box does nothing; only the password box signs in.)
         enabled: !HubBridge.is-authenticating;
-        accepted => { pw.focus(); }
     }
     pw := LineEdit {
         input-type: password;

@@ -314,7 +314,8 @@ impl PlayerController {
                 if generation != self.backend_generation || self.current_path.is_none() {
                     return;
                 }
-                if self.flavor == PlayerFlavor::Mac && self.failure_reported {
+                // `itemReady`: `guard failure == nil` (a dismissed notice does not keep a ready item from playing).
+                if self.flavor == PlayerFlavor::Mac && self.failure.is_some() {
                     return;
                 }
                 self.has_media = true;
@@ -512,7 +513,8 @@ impl PlayerController {
 
     /// `seek(by:)` (current time is the requested target while settling, so held arrows accumulate).
     pub fn seek_by(&mut self, delta: f64) {
-        if self.current_path.is_none() {
+        // macOS `guard player.currentItem != nil`: there is no item while the engine preview is prepared.
+        if self.current_path.is_none() || self.preparing_preview {
             return;
         }
         self.seek(self.current_time + delta);
@@ -1013,6 +1015,38 @@ mod tests {
         let g = r.state.borrow().generation;
         r.player.handle_event(PlayerEvent::Failed { generation: g, message: "".into() });
         assert_eq!(r.player.failure(), Some(&PlaybackFailure::Unknown));
+    }
+
+    #[test]
+    fn mac_arrow_seeks_do_nothing_while_the_preview_is_prepared_and_a_dismissed_notice_does_not_block_playback() {
+        let mut r = rig(PlayerFlavor::Mac);
+        r.state.borrow_mut().failure = Some(FailureKind::UnsupportedFormat);
+        r.player.load(Some(Path::new("/clip.wmv")), false);
+        let g = r.state.borrow().generation;
+        r.player.handle_event(PlayerEvent::Failed { generation: g, message: "x".into() });
+        let generation = r
+            .player
+            .take_outputs()
+            .into_iter()
+            .find_map(|o| if let PlayerOutput::PreparePreview { generation, .. } = o { Some(generation) } else { None })
+            .expect("preview requested");
+        // `seek(by:)` has no item to act on (Swift `guard player.currentItem != nil`).
+        r.player.seek_by(5.0);
+        r.player.preview_ready(generation, Ok(PathBuf::from("/tmp/p.mp4")));
+        r.open(20.0);
+        assert!(r.state.borrow().seeks.is_empty(), "no seek was queued while preparing");
+
+        // A failure the user dismissed does not keep a later ready item from starting (`guard failure == nil`).
+        let mut r = rig(PlayerFlavor::Mac);
+        r.state.borrow_mut().failure = Some(FailureKind::Io);
+        r.player.load(Some(Path::new("/a.mp4")), true);
+        let g = r.state.borrow().generation;
+        r.player.handle_event(PlayerEvent::Failed { generation: g, message: "x".into() });
+        r.player.dismiss_failure();
+        r.player.play();
+        r.open(10.0);
+        assert!(r.player.has_media());
+        assert_eq!(r.state.borrow().plays, 1);
     }
 
     #[test]

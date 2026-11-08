@@ -26,6 +26,9 @@ use sa_core::cancel::CancellationToken;
 use super::cache::{CacheSession, VideoCacheStore};
 use super::fsio::FILE_FLAG_SEQUENTIAL_SCAN;
 
+/// `Io::pos` when the source position is not known (never a chunk start).
+const UNKNOWN_POSITION: u64 = u64::MAX;
+
 /// A readable, seekable byte source.
 pub trait ReadSeek: Read + Seek + Send {}
 impl<T: Read + Seek + Send> ReadSeek for T {}
@@ -446,7 +449,10 @@ impl Inner {
                 let Some(inner) = io.inner.as_mut() else {
                     return Ok(Chunk { data: Arc::from(Vec::new()), len: 0, tick: 0 });
                 };
+                // C# compares with the live `Position`; after a failed seek or read the tracked position is unknown,
+                // so the next load seeks again.
                 if io.pos != start as u64 {
+                    io.pos = UNKNOWN_POSITION;
                     io.pos = inner.seek(SeekFrom::Start(start as u64))?;
                 }
                 while got < expected {
@@ -457,7 +463,10 @@ impl Inner {
                             io.pos += n as u64;
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            io.pos = UNKNOWN_POSITION;
+                            return Err(e);
+                        }
                     }
                 }
                 self.underlying_read_count.fetch_add(1, Ordering::AcqRel);

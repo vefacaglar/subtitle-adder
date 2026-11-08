@@ -4,7 +4,7 @@ import { Button, ComboBox, Slider, LineEdit } from "std-widgets.slint";
 import { Loc } from "../../shared/loc.slint";
 import { SettingsBridge } from "../../shared/bridge.slint";
 import { Theme } from "../theme.slint";
-import { SettingsCard, CardCombo, SectionHeader, SecondaryText } from "controls.slint";
+import { SettingsCard, CardCombo, SectionHeader, SecondaryText, ToolTip } from "controls.slint";
 
 // OverlayLabel (§6.3.1) at a fixed video height: semibold, centered, wrap; box / shadow / outline.
 export component PreviewLabel inherits Rectangle {
@@ -252,6 +252,10 @@ export component AppearancePage inherits VerticalLayout {
                 Rectangle { width: 4px; }
             }
             color-touch := TouchArea { clicked => { flyout.show(); } }
+            ToolTip {
+                text: Loc.t("Yazı rengini seç");
+                show: color-touch.has-hover && !color-touch.pressed;
+            }
             flyout := ColorFlyout {
                 x: color-button.width - 300px;
                 y: color-button.height + 4px;

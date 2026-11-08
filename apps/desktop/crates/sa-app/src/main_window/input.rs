@@ -178,14 +178,14 @@ mod tests {
     #[test]
     fn windows_routing_table() {
         let f = ShortcutFocus::default();
-        let k = |t: &str| to_key_input(&key(t), false);
-        assert_eq!(resolve_windows_key(&k(" "), &f), Some(WindowsKeyAction::Player(PlayerShortcut::TogglePlayback)));
-        assert_eq!(resolve_windows_key(&k(F11), &ShortcutFocus { is_editing_text: true, ..f }), Some(WindowsKeyAction::Player(PlayerShortcut::ToggleFullScreen)));
-        assert_eq!(resolve_windows_key(&k("m"), &ShortcutFocus { is_editing_text: true, ..f }), None);
+        let key_in = |t: &str| to_key_input(&key(t), false);
+        assert_eq!(resolve_windows_key(&key_in(" "), &f), Some(WindowsKeyAction::Player(PlayerShortcut::TogglePlayback)));
+        assert_eq!(resolve_windows_key(&key_in(F11), &ShortcutFocus { is_editing_text: true, ..f }), Some(WindowsKeyAction::Player(PlayerShortcut::ToggleFullScreen)));
+        assert_eq!(resolve_windows_key(&key_in("m"), &ShortcutFocus { is_editing_text: true, ..f }), None);
         let list = ShortcutFocus { is_in_list: true, ..f };
-        assert_eq!(resolve_windows_key(&k(keys::UP), &list), None);
-        assert_eq!(resolve_windows_key(&k(keys::UP), &ShortcutFocus { panel_hidden: true, ..list }), Some(WindowsKeyAction::Player(PlayerShortcut::AdjustVolume(0.05))));
-        let esc = k(keys::ESCAPE);
+        assert_eq!(resolve_windows_key(&key_in(keys::UP), &list), None);
+        assert_eq!(resolve_windows_key(&key_in(keys::UP), &ShortcutFocus { panel_hidden: true, ..list }), Some(WindowsKeyAction::Player(PlayerShortcut::AdjustVolume(0.05))));
+        let esc = key_in(keys::ESCAPE);
         assert_eq!(resolve_windows_key(&esc, &f), None);
         assert_eq!(resolve_windows_key(&esc, &ShortcutFocus { is_theater: true, ..f }), Some(WindowsKeyAction::Player(PlayerShortcut::LeaveFullScreenOrTheater)));
     }

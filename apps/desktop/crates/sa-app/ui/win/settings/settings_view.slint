@@ -14,9 +14,12 @@ component CaptionButton inherits Rectangle {
     in property <string> glyph;
     in property <bool> close;
     in property <string> label;
+    // Hover / press reported by the native chrome (maximize button with Snap Layouts: 1 hover, 2 pressed).
+    in property <int> external-hover;
     callback clicked();
     width: 46px;
-    background: touch.pressed ? (root.close ? #c42b1ce6 : Theme.subtle-pressed) : touch.has-hover ? (root.close ? #c42b1c : Theme.subtle-hover) : transparent;
+    background: touch.pressed || root.external-hover == 2 ? (root.close ? #c42b1ce6 : Theme.subtle-pressed)
+        : touch.has-hover || root.external-hover == 1 ? (root.close ? #c42b1c : Theme.subtle-hover) : transparent;
     accessible-role: button;
     accessible-label: root.label;
     Text {
@@ -75,6 +78,7 @@ component SettingsTitleBar inherits Rectangle {
             }
             CaptionButton {
                 glyph: SettingsBridge.is-maximized ? "\u{E923}" : "\u{E922}";
+                external-hover: SettingsBridge.maximize-hover;
                 clicked => { SettingsBridge.maximize-toggle-requested(); }
             }
             CaptionButton {

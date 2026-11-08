@@ -2,12 +2,12 @@
 // they fit, else stacked), filter pills, lists bar (logged in) with rename popover and context menu, divider,
 // content (auth card | spinner | empty state | cards). Confirmations (clear history, delete list) are NSAlert
 // sheets shown by Rust. Rule 6: logged out every tab shows the sign-in card; the search field and "Ara" are disabled.
-import { LineEdit, ScrollView, ListView, Spinner } from "std-widgets.slint";
+import { ScrollView, ListView, Spinner } from "std-widgets.slint";
 import { Loc } from "../../shared/loc.slint";
 import { HubBridge, MainBridge } from "../../shared/bridge.slint";
 import { MacTheme } from "../theme.slint";
 import { Sym, PushButton, ToolTip } from "../main/controls.slint";
-import { PillButton, IconButton, ErrorLabel, PopoverSurface, HubMacMenu } from "hub_controls.slint";
+import { PillButton, IconButton, ErrorLabel, PopoverSurface, HubMacMenu, RoundedField } from "hub_controls.slint";
 import { ProfileAuthCard } from "auth_form.slint";
 import { VideoCard } from "video_card.slint";
 
@@ -18,16 +18,17 @@ component SearchBar inherits HorizontalLayout {
     Rectangle {
         min-width: 200px;
         horizontal-stretch: 1;
-        height: field.preferred-height;
-        field := LineEdit {
+        height: field.height;
+        field := RoundedField {
             width: parent.width;
             enabled: HubBridge.search-enabled;
-            placeholder-text: HubBridge.filter == 0 || !HubBridge.is-logged-in
+            trailing-inset: self.text != "" ? 16px : 0px;
+            placeholder: HubBridge.filter == 0 || !HubBridge.is-logged-in
                 ? Loc.t("İndekslenen tüm videolarda ara (yazıp Enter'a basın)…")
                 : Loc.t("Bu listede ara (yazıp Enter'a basın)…");
             accepted => { HubBridge.search-submitted(self.text); }
-            edited => {
-                if (self.text == "") {
+            edited(text) => {
+                if (text == "") {
                     HubBridge.search-edited("");
                 }
             }
@@ -92,10 +93,10 @@ component RenamePopover inherits PopupWindow {
                 color: MacTheme.label;
             }
             // The content is created when the popover opens: it starts with the list's current name.
-            field := LineEdit {
+            field := RoundedField {
                 width: 240px;
                 text: HubBridge.rename-initial;
-                placeholder-text: Loc.t("Yeni liste adı…");
+                placeholder: Loc.t("Yeni liste adı…");
                 accepted => { HubBridge.list-rename(HubBridge.rename-list-id, self.text); }
                 edited => { HubBridge.clear-list-error(); }
             }
@@ -157,27 +158,16 @@ component ListsBar inherits VerticalLayout {
                 padding-bottom: 1px;
                 for list in HubBridge.lists: HorizontalLayout {
                     spacing: 2px;
-                    Rectangle {
-                        width: pill.preferred-width;
-                        height: pill.preferred-height;
-                        pill := PillButton {
-                            width: parent.width;
-                            height: parent.height;
-                            label: list.title;
-                            selected: list.selected;
-                            clicked => { HubBridge.list-selected(list.id); }
-                        }
-                        // Right click: context menu (Yeniden adlandır / Listeyi sil); the popover hangs below the pill.
-                        TouchArea {
-                            pointer-event(e) => {
-                                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
-                                    root.menu-x = pill.absolute-position.x - root.absolute-position.x + self.mouse-x;
-                                    root.menu-y = pill.absolute-position.y - root.absolute-position.y + self.mouse-y;
-                                    HubBridge.menu-requested("list:" + list.id);
-                                    menu.show();
-                                }
-                            }
-                            clicked => { HubBridge.list-selected(list.id); }
+                    // Right click: context menu (Yeniden adlandır / Listeyi sil); the rename popover hangs below.
+                    pill := PillButton {
+                        label: list.title;
+                        selected: list.selected;
+                        clicked => { HubBridge.list-selected(list.id); }
+                        context-requested(mx, my) => {
+                            root.menu-x = self.absolute-position.x - root.absolute-position.x + mx;
+                            root.menu-y = self.absolute-position.y - root.absolute-position.y + my;
+                            HubBridge.menu-requested("list:" + list.id);
+                            menu.show();
                         }
                     }
                     if list.selected: IconButton {
@@ -190,10 +180,12 @@ component ListsBar inherits VerticalLayout {
                 }
             }
         }
-        name := LineEdit {
+        name := RoundedField {
             width: 170px;
+            y: (parent.height - self.height) / 2;
+            small: true;
             font-size: MacTheme.small-size;
-            placeholder-text: Loc.t("Yeni liste adı…");
+            placeholder: Loc.t("Yeni liste adı…");
             accepted => { HubBridge.list-create(self.text); }
             edited => { HubBridge.clear-list-error(); }
         }
@@ -221,10 +213,23 @@ component ListsBar inherits VerticalLayout {
 export component HubView inherits Rectangle {
     property <int> feed-epoch: HubBridge.feed-epoch;
     changed feed-epoch => { feed.content-y = 0; }
-    // ViewThatFits: search bar and profile actions side by side when they fit.
-    // The window width Rust pushes (minus the sidebar) avoids a layout binding loop on the hub's own width.
-    property <bool> header-row: MainBridge.window-width - (MainBridge.show-file-explorer ? MacTheme.sidebar-ideal + 1px : 0) >= 760px;
+    // ViewThatFits: search bar and profile actions side by side when their ideal widths fit (padding 16+16, search
+    // field min 200, spacing 8, "Ara", spacing 10, the profile actions on one line). The window width Rust pushes
+    // (minus the sidebar) avoids a layout binding loop on the hub's own width; the parts are measured off-layout.
+    property <length> header-row-width: 32px + 200px + 8px + ara-measure.preferred-width + 10px + actions-measure.preferred-width;
+    property <bool> header-row: MainBridge.window-width - (MainBridge.show-file-explorer ? MacTheme.sidebar-ideal + 1px : 0) >= root.header-row-width;
     background: MacTheme.content-background;
+
+    // Invisible measurements (not in a layout, so they take no room).
+    ara-measure := PushButton {
+        visible: false;
+        symbol: "magnifyingglass";
+        label: Loc.t("Ara");
+        prominent: true;
+    }
+    actions-measure := ProfileActions {
+        visible: false;
+    }
 
     VerticalLayout {
         VerticalLayout {
@@ -243,8 +248,11 @@ export component HubView inherits Rectangle {
                 SearchBar { }
                 ProfileActions { }
             }
-            // Filter bar.
-            HorizontalLayout {
+            // Filter bar: a horizontal scroll view without indicators (a narrow hub scrolls the pills, never squeezes them).
+            Flickable {
+                height: filters.preferred-height;
+                content-width: max(self.width, filters.preferred-width);
+                filters := HorizontalLayout {
                 spacing: 8px;
                 alignment: start;
                 padding-top: 1px;
@@ -273,6 +281,7 @@ export component HubView inherits Rectangle {
                     label: Loc.t("En çok izlenenler");
                     selected: HubBridge.filter == 4;
                     clicked => { HubBridge.filter-selected(4); }
+                }
                 }
             }
             if HubBridge.is-logged-in: ListsBar { }

@@ -289,9 +289,27 @@ pub fn accent_color() -> Option<[f64; 4]> {
 }
 
 /// A semantic `NSColor` class method (`labelColor`, `separatorColor`, `windowBackgroundColor`, …) in sRGB, resolved
-/// for the current app appearance.
+/// for the current app appearance (`NSApp.effectiveAppearance` made the drawing appearance while the dynamic color
+/// is converted, the way SwiftUI resolves `Color(nsColor:)` for the views; outside of drawing AppKit would otherwise
+/// resolve it for whatever appearance happens to be current on the thread).
 pub fn named_color(selector: Sel) -> Option<[f64; 4]> {
     autoreleasepool(|_| unsafe {
+        let app = shared_application();
+        let appearance: Option<Retained<AnyObject>> = msg_send![&*app, effectiveAppearance];
+        match appearance {
+            Some(appearance) if responds(&appearance, sel!(performAsCurrentDrawingAppearance:)) => {
+                let result = std::cell::Cell::new(None);
+                let block = block2::StackBlock::new(|| result.set(srgb_named_color(selector)));
+                let _: () = msg_send![&*appearance, performAsCurrentDrawingAppearance: &*block];
+                result.get()
+            }
+            _ => srgb_named_color(selector),
+        }
+    })
+}
+
+unsafe fn srgb_named_color(selector: Sel) -> Option<[f64; 4]> {
+    unsafe {
         let cls = class!(NSColor);
         let color: Option<Retained<AnyObject>> = msg_send![cls, performSelector: selector];
         let color = color?;
@@ -303,5 +321,5 @@ pub fn named_color(selector: Sel) -> Option<[f64; 4]> {
         let b: f64 = msg_send![&*rgb, blueComponent];
         let a: f64 = msg_send![&*rgb, alphaComponent];
         Some([r, g, b, a])
-    })
+    }
 }

@@ -46,6 +46,12 @@ struct OpenWindow {
     model: Rc<SettingsModel>,
     refresh: Rc<SettingsRefreshSubscription>,
     _alive: Rc<Cell<bool>>,
+    /// The native chrome (Windows tree on a real window only).
+    #[cfg(all(windows, sa_ui = "win"))]
+    chrome: Option<Rc<sa_platform::win::chrome::WindowChrome>>,
+    /// The open NSColorPanel session of the color well (real Mac only).
+    #[cfg(target_os = "macos")]
+    color_panel: Rc<RefCell<Option<sa_platform::mac::color_panel::ColorPanelSession>>>,
 }
 
 impl SettingsWindowHost {
@@ -73,6 +79,14 @@ impl SettingsWindowHost {
         self.open.borrow().as_ref().map(|o| o.window.clone_strong())
     }
 
+    /// The Windows chrome is attached to the open window (always `false` elsewhere).
+    pub fn has_native_chrome(&self) -> bool {
+        #[cfg(all(windows, sa_ui = "win"))]
+        return self.open.borrow().as_ref().is_some_and(|o| o.chrome.is_some());
+        #[cfg(not(all(windows, sa_ui = "win")))]
+        return false;
+    }
+
     pub fn model(&self) -> Option<Rc<SettingsModel>> {
         self.open.borrow().as_ref().map(|o| o.model.clone())
     }
@@ -91,6 +105,8 @@ impl SettingsWindowHost {
             model.show_page(page);
             self.restore_size(&window);
             window.show()?;
+            // winit creates the native window once the event loop runs: native setup waits for it.
+            self.when_native_window(60);
             model.window_loaded();
         } else if let Some(o) = self.open.borrow().as_ref() {
             if page.is_some() {
@@ -106,9 +122,19 @@ impl SettingsWindowHost {
     /// Closing the main window closes Settings too.
     pub fn close(&self) {
         let Some(o) = self.open.borrow_mut().take() else { return };
+        #[cfg(all(windows, sa_ui = "win"))]
+        match &o.chrome {
+            Some(c) => super::chrome::save_size(c, self.deps.settings.as_ref()),
+            None => self.save_size(&o.window),
+        }
+        #[cfg(not(all(windows, sa_ui = "win")))]
         self.save_size(&o.window);
         o.refresh.dispose();
         o.model.close();
+        #[cfg(target_os = "macos")]
+        if o.color_panel.borrow_mut().take().is_some() {
+            sa_platform::mac::color_panel::close();
+        }
         self.theme.set(None);
         let _ = o.window.hide();
     }
@@ -168,6 +194,31 @@ impl SettingsWindowHost {
         }
 
         self.bind(&window, &model);
+        #[cfg(target_os = "macos")]
+        let color_panel = {
+            let session = Rc::new(RefCell::new(None));
+            window.global::<ui::SettingsBridge>().set_native_color_panel(true);
+            let m = Rc::downgrade(&model);
+            let weak = window.as_weak();
+            let slot = Rc::downgrade(&session);
+            window.global::<ui::SettingsBridge>().on_overlay_color_panel_requested(move || {
+                let (Some(w), Some(slot)) = (weak.upgrade(), slot.upgrade()) else { return };
+                let c = w.global::<ui::SettingsBridge>().get_overlay_color();
+                let initial = [c.red() as f64 / 255.0, c.green() as f64 / 255.0, c.blue() as f64 / 255.0];
+                let m = m.clone();
+                // `HexColor.hex(from:)`: components clamped, ×255 rounded.
+                let to_u8 = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                *slot.borrow_mut() = Some(sa_platform::mac::color_panel::show(
+                    initial,
+                    Box::new(move |rgb| {
+                        if let Some(m) = m.upgrade() {
+                            m.set_overlay_color(to_u8(rgb[0]), to_u8(rgb[1]), to_u8(rgb[2]));
+                        }
+                    }),
+                ));
+            });
+            session
+        };
         {
             let weak = Rc::downgrade(self);
             window.window().on_close_requested(move || {
@@ -177,7 +228,78 @@ impl SettingsWindowHost {
                 slint::CloseRequestResponse::HideWindow
             });
         }
-        Ok(OpenWindow { window, model, refresh, _alive: alive })
+        Ok(OpenWindow {
+            window,
+            model,
+            refresh,
+            _alive: alive,
+            #[cfg(all(windows, sa_ui = "win"))]
+            chrome: None,
+            #[cfg(target_os = "macos")]
+            color_panel,
+        })
+    }
+
+    // MARK: native window setup
+
+    /// Runs the native setup once winit has created the window (retries every 16 ms, `tries` times; a software
+    /// renderer window never gets one, so nothing happens there).
+    fn when_native_window(self: &Rc<Self>, tries: u32) {
+        let Some(window) = self.window() else { return };
+        if !self.setup_native(&window) && tries > 0 {
+            let weak = Rc::downgrade(self);
+            slint::Timer::single_shot(std::time::Duration::from_millis(16), move || {
+                if let Some(h) = weak.upgrade()
+                    && h.is_open()
+                {
+                    h.when_native_window(tries - 1);
+                }
+            });
+        }
+    }
+
+    /// `false` while the native window does not exist yet.
+    fn setup_native(self: &Rc<Self>, window: &ui::SettingsWindow) -> bool {
+        use slint::winit_030::WinitWindowAccessor;
+        if !window.window().has_winit_window() {
+            return false;
+        }
+        let host = Rc::downgrade(self);
+        // The OS theme changed: `appTheme = system` re-resolves.
+        let on_theme: Box<dyn Fn()> = Box::new(move || {
+            if let Some(h) = host.upgrade() {
+                h.theme.set(None);
+                h.push_now();
+            }
+        });
+        #[cfg(all(windows, sa_ui = "win"))]
+        {
+            let chrome = super::chrome::attach(window, self.deps.settings.as_ref(), on_theme);
+            if let Some(o) = self.open.borrow_mut().as_mut() {
+                o.chrome = chrome;
+            }
+        }
+        #[cfg(not(all(windows, sa_ui = "win")))]
+        {
+            window.window().on_winit_window_event(move |_, event| {
+                if matches!(event, slint::winit_030::winit::event::WindowEvent::ThemeChanged(_)) {
+                    on_theme();
+                }
+                slint::winit_030::EventResult::Propagate
+            });
+        }
+        #[cfg(target_os = "macos")]
+        if self.flavor == Flavor::Mac {
+            // Preferences window: not resizable, close button only (mac-ui §3.5).
+            use slint::winit_030::winit::window::WindowButtons;
+            let _ = window.window().with_winit_window(|w| {
+                w.set_resizable(false);
+                w.set_enabled_buttons(WindowButtons::CLOSE);
+            });
+        }
+        self.theme.set(None);
+        self.push_now();
+        true
     }
 
     // MARK: window size (Windows: persisted physical size, written on close when restored)
@@ -226,6 +348,10 @@ impl SettingsWindowHost {
         if self.theme.get() != Some(theme) {
             self.theme.set(Some(theme));
             apply_theme_to(&o.window, theme);
+            #[cfg(all(windows, sa_ui = "win"))]
+            if let Some(c) = &o.chrome {
+                super::chrome::set_dark(c, &o.window);
+            }
         }
         push(&o.window, &view, self.flavor);
     }
@@ -352,12 +478,24 @@ fn parse_id(s: &str) -> Option<Uuid> {
 
 /// `appTheme`: System leaves the OS value (`unknown`), Light/Dark force the scheme.
 pub fn apply_theme_to(window: &ui::SettingsWindow, theme: ThemeChoice) {
-    let scheme = match theme {
-        ThemeChoice::System => slint::language::ColorScheme::Unknown,
-        ThemeChoice::Light => slint::language::ColorScheme::Light,
-        ThemeChoice::Dark => slint::language::ColorScheme::Dark,
+    // System is resolved here (not left `Unknown`): the std widgets and the area's own tokens must agree.
+    let dark = match theme {
+        ThemeChoice::System => system_uses_dark(),
+        ThemeChoice::Light => false,
+        ThemeChoice::Dark => true,
     };
+    let scheme = if dark { slint::language::ColorScheme::Dark } else { slint::language::ColorScheme::Light };
     window.global::<ui::Palette>().set_color_scheme(scheme);
+}
+
+/// The OS app theme (`appTheme = system`): UISettings on Windows, the app's effective appearance on macOS.
+pub fn system_uses_dark() -> bool {
+    #[cfg(windows)]
+    return sa_platform::win::accent::system_uses_dark_theme().unwrap_or(false);
+    #[cfg(target_os = "macos")]
+    return sa_platform::mac::appkit::is_dark_appearance();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    return false;
 }
 
 /// Starts a system move of the window (title bar drag) where the backend supports it.

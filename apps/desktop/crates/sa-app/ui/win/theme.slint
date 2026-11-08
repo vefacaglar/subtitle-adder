@@ -1,6 +1,7 @@
 // Fluent tokens of the WinUI app (win-ui-main §5). Light/dark follow `Palette.color-scheme`, which Rust sets from
 // `appTheme` (System = follow the OS). The `fluent` std-widgets style provides the controls; these tokens cover custom chrome.
 import { Palette } from "std-widgets.slint";
+import { AppBridge } from "../shared/bridge.slint";
 
 export global Theme {
     out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
@@ -38,12 +39,12 @@ export global Theme {
     out property <brush> text-tertiary: dark ? #ffffff87 : #00000072;
     out property <brush> text-disabled: dark ? #ffffff5d : #0000005c;
 
-    // Accent (UISettings accent shades are pushed by Rust in the real app).
-    // AccentFillColorDefault: light = AccentDark1, dark = AccentLight2.
-    in-out property <brush> accent: dark ? #60cdff : #005fb8;
-    in-out property <brush> accent-hover: dark ? #5abce9 : #1a6fc2;
+    // Accent: the UISettings shades Rust pushes into `AppBridge` (defaults = the Windows 11 default blue).
+    // AccentFillColorDefault: light = AccentDark1, dark = AccentLight2; AccentFillColorSecondary = 90 % of it.
+    out property <brush> accent: dark ? AppBridge.accent-light2 : AppBridge.accent-dark1;
+    out property <brush> accent-hover: dark ? AppBridge.accent-light2.with-alpha(0.9) : AppBridge.accent-dark1.with-alpha(0.9);
     // AccentTextFillColorPrimary: light = AccentDark2, dark = AccentLight3.
-    in-out property <brush> accent-text: dark ? #99ebff : #003e92;
+    out property <brush> accent-text: dark ? AppBridge.accent-light3 : AppBridge.accent-dark2;
     // TextOnAccentFillColorPrimary
     out property <brush> text-on-accent: dark ? #000000 : #ffffff;
 

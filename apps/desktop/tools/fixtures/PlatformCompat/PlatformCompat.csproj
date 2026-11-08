@@ -9,6 +9,17 @@
       server <pipe> <count>       serves <count> connections; prints one line "batch|<n>" then one "path|<full>" per
                                   received path, per connection
       names <user>                prints SanitizeToken(<user>), the mutex and the pipe name
+      assoc-register <scratch> <exe> [icon]
+                                  runs FileAssociationRegistrar.Register with HKEY_CURRENT_USER redirected to
+                                  HKCU\<scratch> (RegOverridePredefKey), so the user's real associations are untouched
+      assoc-unregister <scratch>  the same for Unregister
+      assoc-registered <scratch>  prints IsRegistered (true/false) under the redirected HKCU
+      dump <scratch>              prints the subtree HKCU\<scratch> (one "key|name|kind|data" line per value, and
+                                  "key|" per key, ordinal order) for byte-for-byte comparison
+      fonts                       prints SystemFonts.Families (DirectWrite, SortedSet CurrentCultureIgnoreCase)
+      paths <path...>             prints one JSON object per path: Path.GetPathRoot, Path.HasExtension,
+                                  Path.GetFileNameWithoutExtension, MediaLibraryIndex.NormalizeDirectoryPath and
+                                  LocalProfileManager's drive-root readiness rule
     Build: dotnet build -c Release (bin/ and obj/ stay under this folder).
     Used by crates/sa-platform/tests/csharp_compat.rs (opt-in: SA_DOTNET_FIXTURES=1).
   -->
@@ -18,5 +29,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Windows-only fixture (registry, DirectWrite). -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 </Project>

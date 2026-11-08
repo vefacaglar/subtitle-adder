@@ -913,6 +913,15 @@ pub mod testing {
 
     impl RawClient {
         pub fn connect(scope: &str, timeout: Duration) -> std::io::Result<RawClient> {
+            Self::open(scope, timeout, true)
+        }
+
+        /// A client that never reads (a stalled peer, F5 tests).
+        pub fn connect_stalled(scope: &str, timeout: Duration) -> std::io::Result<RawClient> {
+            Self::open(scope, timeout, false)
+        }
+
+        fn open(scope: &str, timeout: Duration, read: bool) -> std::io::Result<RawClient> {
             let cancel = Event::new()?;
             let path = pipe::pipe_path(&pipe_name(scope));
             let deadline = Instant::now() + timeout;
@@ -928,6 +937,9 @@ pub mod testing {
             }
             let conn = Connection::start(Arc::new(pipe))?;
             let (tx, rx) = crossbeam_channel::unbounded();
+            if !read {
+                return Ok(RawClient { conn, lines: rx });
+            }
             let reader = conn.clone();
             std::thread::spawn(move || {
                 let mut decoder = LineDecoder::new();

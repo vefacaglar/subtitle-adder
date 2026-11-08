@@ -99,6 +99,8 @@ pub struct Confirm {
 #[derive(Default)]
 struct State {
     page: i32,
+    /// A page was shown once (the window opened); re-selecting the shown page does nothing from then on.
+    entered: bool,
     scroll_epoch: i32,
     closed: bool,
     // fonts
@@ -448,11 +450,17 @@ impl SettingsModel {
         self.enter_page(page, true);
     }
 
+    /// Shows `page`. Selecting the page that is already shown changes nothing (a NavigationView raises no
+    /// SelectionChanged, a SwiftUI TabView keeps its tab): no reload, no scroll to the top.
     fn enter_page(&self, page: i32, persist: bool) {
         let max = if self.flavor == Flavor::Mac { 3 } else { 2 };
         let page = page.clamp(0, max);
         {
             let mut st = self.state.borrow_mut();
+            if st.entered && st.page == page {
+                return;
+            }
+            st.entered = true;
             st.page = page;
             st.scroll_epoch += 1;
         }
@@ -595,9 +603,16 @@ impl SettingsModel {
         self.state.borrow().lan.clone()
     }
 
+    /// C# `IsExternalLlmActive`: a cloud provider is active (`ActiveProviderName` set by `ApplyToViewModel`), or the
+    /// LAN section is on with an address.
     fn is_lan_active(&self) -> bool {
+        let cloud_active = self
+            .deps
+            .providers
+            .active_provider()
+            .is_some_and(|p| !p.preset_id.eq_ignore_ascii_case("lan") && !p.base_url.trim().is_empty());
         let st = self.state.borrow();
-        st.lan.enabled && !st.lan.url.trim().is_empty()
+        cloud_active || (st.lan.enabled && !st.lan.url.trim().is_empty())
     }
 
     pub fn set_lan_enabled(&self, v: bool) {
@@ -619,8 +634,9 @@ impl SettingsModel {
         self.changed();
     }
 
+    /// Selection, Enter and focus loss of the editable combo. Stored as typed (the C# setter does not trim; the LAN
+    /// provider sync trims).
     pub fn commit_lan_model(&self, text: &str) {
-        let text = text.trim();
         if self.state.borrow().lan.model == text {
             return;
         }
@@ -913,7 +929,18 @@ impl SettingsModel {
         st.notices.remove(&id);
     }
 
+    /// The key part of a provider row's summary. Windows reads the manager's in-memory key slots synchronously like the
+    /// C# `MaskedApiKey` (no loading state); macOS uses the background-filled key cache (`providerKeyCaption`).
     pub fn key_caption(&self, id: Uuid) -> String {
+        if self.flavor == Flavor::Windows
+            && let Some(w) = &self.deps.win
+        {
+            return match w.masked_key(id) {
+                Ok(Some(mask)) => mask,
+                Ok(None) => sa_core::l("Anahtar yok"),
+                Err(()) => sa_core::l("Anahtar okunamadı"),
+            };
+        }
         self.state.borrow().keys.get(&id).cloned().unwrap_or(ProviderKey::Loading).caption()
     }
 
@@ -1235,6 +1262,8 @@ impl SettingsModel {
     pub fn form_test(&self) {
         match self.flavor {
             Flavor::Windows => {
+                // C#: url, key and model are trimmed when the button is clicked; the answer's chosen model is this
+                // snapshot (or the first listed model when it was blank).
                 let (preset, url, key, model) = {
                     let mut st = self.state.borrow_mut();
                     if st.win_form.testing {
@@ -1242,7 +1271,12 @@ impl SettingsModel {
                     }
                     st.win_form.testing = true;
                     let f = &st.win_form;
-                    (f.preset().id.to_owned(), f.url.clone(), zeroize::Zeroizing::new(f.key.to_string()), f.model.clone())
+                    (
+                        f.preset().id.to_owned(),
+                        f.url.trim().to_owned(),
+                        zeroize::Zeroizing::new(f.key.trim().to_owned()),
+                        f.model.trim().to_owned(),
+                    )
                 };
                 self.changed();
                 let tester = self.deps.tester.clone();
@@ -1251,7 +1285,7 @@ impl SettingsModel {
                 let ui = self.deps.ui.clone();
                 let _ = std::thread::Builder::new().name("sa-settings-form-test".into()).spawn(move || {
                     let outcome = tester.test_draft(&preset, &url, &key, &model, &cancel);
-                    key_ui.post(&ui, move |m| m.finish_win_form_test(outcome));
+                    key_ui.post(&ui, move |m| m.finish_win_form_test(&model, outcome));
                 });
             }
             Flavor::Mac => {
@@ -1292,7 +1326,7 @@ impl SettingsModel {
         }
     }
 
-    fn finish_win_form_test(&self, outcome: Option<TestOutcome>) {
+    fn finish_win_form_test(&self, tested_model: &str, outcome: Option<TestOutcome>) {
         if self.is_closed() {
             return;
         }
@@ -1300,7 +1334,7 @@ impl SettingsModel {
             let mut st = self.state.borrow_mut();
             st.win_form.testing = false;
             if let Some(o) = &outcome {
-                st.win_form.apply_test_models(&o.models);
+                st.win_form.apply_test_models(&o.models, tested_model);
                 st.provider_status = Some(Notice { text: o.message.clone(), is_error: !o.success });
             }
         }
@@ -1357,7 +1391,23 @@ impl SettingsModel {
             return;
         }
         let preset = form.preset();
-        let message = match form.editing.and_then(|id| self.provider(id)) {
+        // C#: while editing, `UpdateProvider` of a provider that is gone (another instance removed it) does nothing and
+        // `SetActiveProvider(id)` of an unknown id selects the on-device models; nothing is added.
+        let target = match form.editing {
+            Some(id) => match self.provider(id) {
+                Some(p) => Some(p),
+                None => {
+                    self.deps.providers.set_active(None);
+                    self.apply_providers();
+                    let mut st = self.state.borrow_mut();
+                    st.win_form.reset();
+                    st.provider_status = Some(Notice { text: sa_core::l("Sağlayıcı güncellendi ve etkinleştirildi."), is_error: false });
+                    return;
+                }
+            },
+            None => None,
+        };
+        let message = match target {
             Some(existing) => {
                 let mut p = existing.clone();
                 p.name = if name.is_empty() { existing.preset().name(None) } else { name };
@@ -1414,13 +1464,10 @@ impl SettingsModel {
             let ok = self.deps.providers.update(draft.profile(), None);
             self.forget_tests(draft.id);
             match (ok, draft.key_to_save()) {
+                // `writeKey`: a blank key removes the stored one; a refused write (also a refused removal) keeps the
+                // sheet open with "API anahtarı kaydedilemedi".
                 (true, Some(key)) => {
-                    let stored = if key.trim().is_empty() {
-                        self.deps.providers.set_key(draft.id, "");
-                        true
-                    } else {
-                        self.deps.providers.set_key(draft.id, key.trim())
-                    };
+                    let stored = self.deps.providers.set_key(draft.id, key.trim());
                     self.record_key_written(draft.id, key, stored);
                     stored
                 }
@@ -1498,7 +1545,8 @@ impl SettingsModel {
 
     pub fn set_overlay_size(&self, v: f64) {
         let v = if v.is_finite() { v.clamp(sa_core::appearance::OverlayStyle::MIN_SIZE, sa_core::appearance::OverlayStyle::MAX_SIZE) } else { sa_core::appearance::OverlayStyle::DEFAULT_SIZE };
-        let v = (v * 1000.0).round() / 1000.0;
+        // Windows: the slider's StepFrequency 0.001 snaps the value; the SwiftUI slider is continuous.
+        let v = if self.flavor == Flavor::Windows { (v * 1000.0).round() / 1000.0 } else { v };
         if (self.deps.appearance.size() - v).abs() > 1e-9 {
             self.deps.appearance.set_size(v);
         }
@@ -1533,7 +1581,8 @@ impl SettingsModel {
 
     pub fn set_overlay_opacity(&self, v: f64) {
         let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { sa_core::appearance::OverlayStyle::DEFAULT_OPACITY };
-        let v = (v * 100.0).round() / 100.0;
+        // Windows: StepFrequency 0.01; macOS: continuous.
+        let v = if self.flavor == Flavor::Windows { (v * 100.0).round() / 100.0 } else { v };
         if (self.deps.appearance.opacity() - v).abs() > 1e-9 {
             self.deps.appearance.set_opacity(v);
         }
@@ -1633,7 +1682,7 @@ impl SettingsModel {
                     name: p.name.clone(),
                     shows_preset_tag: p.name.to_lowercase() != preset_name.to_lowercase(),
                     preset_name,
-                    summary: format!("{} · {}", p.base_url, st.keys.get(&p.id).cloned().unwrap_or(ProviderKey::Loading).caption()),
+                    summary: format!("{} · {}", p.base_url, self.key_caption(p.id)),
                     is_active: active == Some(p.id),
                     is_testing: st.testing.contains(&p.id),
                     model: p.model.clone(),
@@ -1737,7 +1786,8 @@ impl SettingsModel {
                     header: if dr.is_new { sa_core::l("API Sağlayıcısı Ekle") } else { sa_core::l("API Sağlayıcısını Düzenle") },
                     save_caption: if dr.is_new { sa_core::l("Kaydet ve Etkinleştir") } else { sa_core::l("Güncelle") },
                     preset_items: preset_names(),
-                    preset_index: super::providers::preset_index(dr.preset_id()) as i32,
+                    // `draft.preset` (unknown id → custom, the last preset), unlike the Windows combo (→ 0).
+                    preset_index: super::providers::preset_index(dr.preset().id) as i32,
                     name: dr.name.clone(),
                     url: dr.base_url().to_owned(),
                     url_placeholder: dr.url_placeholder(),

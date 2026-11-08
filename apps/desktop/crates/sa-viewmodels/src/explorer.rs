@@ -72,12 +72,13 @@ fn is_combining_mark(c: char) -> bool {
     matches!(c as u32, 0x300..=0x36F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
 }
 
-/// Windows OrdinalIgnoreCase `contains`.
+/// Windows OrdinalIgnoreCase `contains` (.NET simple invariant uppercase per code point).
 fn contains_ignore_case(hay: &str, needle: &str) -> bool {
-    hay.to_uppercase().contains(&needle.to_uppercase())
+    sa_core::text::upper_invariant(hay).contains(&sa_core::text::upper_invariant(needle))
 }
 
-/// Windows `FormatByteSize`-like and macOS decimal size texts.
+/// Row size texts: Windows rows show the index's `FormattedSize` (`MediaLibraryIndex.FormatFileSize`: B/KB/MB/GB,
+/// invariant culture); macOS rows show `ByteCountFormatter` `.file` (decimal units).
 pub fn size_text(bytes: i64, format: ByteSizeFormat) -> String {
     let tr = sa_core::l10n::LanguageState::shared().language() == sa_core::l10n::UiLanguage::Tr;
     let sep = |s: String| if tr { s.replace('.', ",") } else { s };
@@ -85,18 +86,7 @@ pub fn size_text(bytes: i64, format: ByteSizeFormat) -> String {
         if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_owned() } else { s }
     };
     match format {
-        ByteSizeFormat::WindowsBinary => {
-            if bytes <= 0 {
-                return "0 MB".into();
-            }
-            let mb = bytes as f64 / 1_048_576.0;
-            if mb < 1024.0 {
-                let s = if mb < 1.0 { format!("{mb:.2}") } else { format!("{mb:.1}") };
-                format!("{} MB", sep(trim(s)))
-            } else {
-                format!("{} GB", sep(trim(format!("{:.2}", mb / 1024.0))))
-            }
-        }
+        ByteSizeFormat::WindowsBinary => sa_media::format_file_size(bytes),
         ByteSizeFormat::AppleDecimal => {
             let b = bytes.max(0) as f64;
             if b < 1000.0 {
@@ -112,6 +102,16 @@ pub fn size_text(bytes: i64, format: ByteSizeFormat) -> String {
     }
 }
 
+/// The launch folder: the Videos/Movies location, else home (C# `GetInitialFolder`, Swift `defaultFolder`).
+fn initial_folder(quick: &[QuickLocation]) -> Option<PathBuf> {
+    quick
+        .iter()
+        .find(|q| q.kind == QuickLocationKind::Videos && q.path.is_dir())
+        .map(|q| q.path.clone())
+        .or_else(|| quick.iter().find(|q| q.kind == QuickLocationKind::Home && q.path.is_dir()).map(|q| q.path.clone()))
+        .or_else(|| std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from))
+}
+
 fn parent_of(p: &Path) -> Option<PathBuf> {
     p.parent().filter(|x| !x.as_os_str().is_empty()).map(Path::to_path_buf)
 }
@@ -120,9 +120,23 @@ fn name_of(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned())
 }
 
+/// How a folder is listed (Windows `NavigateCoreAsync` `transient` / `persist`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanMode {
+    /// Lists, updates the index and writes it (explicit browsing).
+    Persist,
+    /// Lists without touching the index (the folder of a video that was merely opened, Windows).
+    Transient,
+    /// Updates the in-memory index only, never the file (Windows refresh after opening a video).
+    InMemory,
+}
+
 struct State {
     current: Option<PathBuf>,
-    back: Vec<PathBuf>,
+    /// Windows: the current folder is shown only because a video from it was opened (never written to the index).
+    transient: bool,
+    /// Back stack with each folder's transient flag.
+    back: Vec<(PathBuf, bool)>,
     folders: Vec<String>,
     files: Vec<IndexedMediaFile>,
     rows: Vec<ExplorerRow>,
@@ -140,6 +154,8 @@ struct State {
     filter_gen: u64,
     scan_cancel: Option<CancellationToken>,
     started: bool,
+    /// The profile whose session the browsed folders belong to (a logout or switch forgets them).
+    session_user: Option<String>,
 }
 
 struct Inner {
@@ -252,7 +268,9 @@ impl Inner {
         self.rebuild_rows();
     }
 
-    fn run_scan(self: &Rc<Self>, folder: PathBuf, show_cached: bool, crawl: bool) {
+    fn run_scan(self: &Rc<Self>, folder: PathBuf, show_cached: bool, crawl: bool, mode: ScanMode) {
+        // A folder that is not written to the index is never crawled either.
+        let crawl = crawl && mode == ScanMode::Persist;
         let (generation_id, token) = {
             let mut st = self.st.borrow_mut();
             if let Some(t) = st.scan_cancel.take() {
@@ -274,7 +292,11 @@ impl Inner {
         let key = self.key();
         let ui = self.svc.ui.clone();
         let _ = std::thread::Builder::new().name("sa-explorer-scan".into()).spawn(move || {
-            let result = index.scan(&folder, &token);
+            let result = match mode {
+                ScanMode::Persist => index.scan(&folder, &token),
+                ScanMode::Transient => index.scan_transient(&folder, &token),
+                ScanMode::InMemory => index.refresh_in_memory(&folder, &token),
+            };
             if token.is_cancelled() {
                 return;
             }
@@ -343,22 +365,80 @@ impl Inner {
     }
 
     fn go(self: &Rc<Self>, folder: PathBuf, push: bool, crawl: bool) {
+        self.go_with(folder, push, crawl, ScanMode::Persist);
+    }
+
+    fn go_with(self: &Rc<Self>, folder: PathBuf, push: bool, crawl: bool, mode: ScanMode) {
         {
             let mut st = self.st.borrow_mut();
             if push
                 && let Some(cur) = st.current.clone()
                 && !self.same(&cur, &folder)
             {
-                st.back.push(cur);
+                let t = st.transient;
+                st.back.push((cur, t));
             }
             st.follows_video = false;
             st.query.clear();
             st.index_hits.clear();
             st.current = Some(folder.clone());
+            st.transient = mode == ScanMode::Transient;
         }
         // Rule 6: never persisted (explorerLastFolder).
         self.notify(&[ExplorerChange::Folder]);
-        self.run_scan(folder, true, crawl);
+        self.run_scan(folder, true, crawl, mode);
+    }
+
+    /// Windows `IsDirectoryIndexed` + `RefreshDirectoryInMemoryAsync` for a folder that is not the current one.
+    fn refresh_other_in_memory(self: &Rc<Self>, folder: PathBuf) {
+        let index = self.svc.media_index.clone();
+        let key = self.key();
+        let ui = self.svc.ui.clone();
+        let _ = std::thread::Builder::new().name("sa-explorer-refresh".into()).spawn(move || {
+            if !index.is_directory_indexed(&folder) {
+                return;
+            }
+            let _ = index.refresh_in_memory(&folder, &CancellationToken::new());
+            key.post(&ui, |inner| {
+                inner.st.borrow_mut().total = inner.svc.media_index.total_indexed_files();
+                inner.refilter(false);
+                inner.notify(&[ExplorerChange::Status]);
+            });
+        });
+    }
+
+    /// The current folder's listing already shows `video` with the subtitle state it has now (checked on a worker:
+    /// the sidecar lookup touches the file system); otherwise `rescan` runs on the UI thread.
+    fn rescan_unless_current(self: &Rc<Self>, video: PathBuf, rescan: impl FnOnce(&Rc<Inner>) + Send + 'static) {
+        let listed = {
+            let st = self.st.borrow();
+            let has_listing = !st.files.is_empty() || !st.folders.is_empty();
+            let available = st.availability == FolderAvailability::Available;
+            st.files
+                .iter()
+                .find(|f| has_listing && available && self.same(Path::new(&f.full_path), &video))
+                .map(|f| (f.has_sidecar_subtitle, f.sidecar_extension.clone()))
+        };
+        let Some((had, ext)) = listed else {
+            rescan(self);
+            return;
+        };
+        let windows = self.svc.policy.explorer_compare == ExplorerCompare::OrdinalIgnoreCase;
+        let key = self.key();
+        let ui = self.svc.ui.clone();
+        let _ = std::thread::Builder::new().name("sa-explorer-sidecar".into()).spawn(move || {
+            let found = sa_core::subtitle_import::find_sidecar_subtitle(&video);
+            let unchanged = if windows {
+                had == found.is_some()
+            } else {
+                let offered = found.and_then(|p| p.extension().map(|e| e.to_string_lossy().to_lowercase()));
+                let known = ext.map(|e| e.trim_start_matches('.').to_lowercase());
+                known == offered
+            };
+            if !unchanged {
+                key.post(&ui, move |inner| rescan(inner));
+            }
+        });
     }
 
     /// Re-applies the search (index-wide only when logged in).
@@ -424,6 +504,7 @@ impl FileExplorerModel {
             key: std::cell::Cell::new(None),
             st: RefCell::new(State {
                 current: None,
+                transient: false,
                 back: Vec::new(),
                 folders: Vec::new(),
                 files: Vec::new(),
@@ -442,12 +523,19 @@ impl FileExplorerModel {
                 filter_gen: 0,
                 scan_cancel: None,
                 started: false,
+                session_user: None,
             }),
             handlers: RefCell::new(Vec::new()),
             subs: RefCell::new(Vec::new()),
         });
         let key = UiKey::register(&inner);
         inner.key.set(Some(key));
+        // UI-safe (memory only): the session the browsed folders belong to, and macOS `tracksFolders`.
+        if inner.svc.profiles.is_logged_in() {
+            let mut st = inner.st.borrow_mut();
+            st.logged_in = true;
+            st.session_user = inner.svc.profiles.current_username();
+        }
         FileExplorerModel { inner }
     }
 
@@ -479,12 +567,7 @@ impl FileExplorerModel {
         let shell = self.inner.svc.shell.clone();
         let _ = std::thread::Builder::new().name("sa-explorer-start".into()).spawn(move || {
             let quick = shell.quick_locations();
-            let initial = quick
-                .iter()
-                .find(|q| q.kind == QuickLocationKind::Videos && q.path.is_dir())
-                .map(|q| q.path.clone())
-                .or_else(|| quick.iter().find(|q| q.kind == QuickLocationKind::Home && q.path.is_dir()).map(|q| q.path.clone()))
-                .or_else(|| std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from));
+            let initial = initial_folder(&quick);
             key.post(&ui, move |inner| {
                 inner.st.borrow_mut().quick = quick;
                 inner.notify(&[ExplorerChange::QuickLocations]);
@@ -495,11 +578,14 @@ impl FileExplorerModel {
                 if !navigated && let Some(f) = initial.clone() {
                     inner.st.borrow_mut().current = Some(f.clone());
                     inner.notify(&[ExplorerChange::Folder]);
-                    inner.run_scan(f, true, false);
+                    inner.run_scan(f, true, false, ScanMode::Persist);
                 } else if let Some(c) = current {
-                    let scanned = inner.st.borrow().scan_gen > 0;
+                    let (scanned, transient) = {
+                        let st = inner.st.borrow();
+                        (st.scan_gen > 0, st.transient)
+                    };
                     if !scanned {
-                        inner.run_scan(c, true, false);
+                        inner.run_scan(c, true, false, if transient { ScanMode::Transient } else { ScanMode::Persist });
                     }
                 }
             });
@@ -575,16 +661,21 @@ impl FileExplorerModel {
     }
     pub fn go_back(&self) {
         let prev = self.inner.st.borrow_mut().back.pop();
-        if let Some(p) = prev {
-            self.inner.go(p, false, false);
+        if let Some((p, transient)) = prev {
+            // A folder shown only for an opened video stays out of the index when it is returned to (Windows).
+            let mode = if transient { ScanMode::Transient } else { ScanMode::Persist };
+            self.inner.go_with(p, false, false, mode);
         }
     }
-    /// Re-scans the current folder (and quick locations).
+    /// Re-scans the current folder (and quick locations); a transient folder stays transient.
     pub fn refresh(&self) {
         self.refresh_quick_locations();
-        let cur = self.inner.st.borrow().current.clone();
+        let (cur, transient) = {
+            let st = self.inner.st.borrow();
+            (st.current.clone(), st.transient)
+        };
         if let Some(c) = cur {
-            self.inner.run_scan(c, false, false);
+            self.inner.run_scan(c, false, false, if transient { ScanMode::Transient } else { ScanMode::Persist });
         }
     }
     pub fn rows(&self) -> Vec<ExplorerRow> {
@@ -610,10 +701,54 @@ impl FileExplorerModel {
             self.inner.refilter(debounce);
         }
     }
-    /// The hub's session ended or began: drops index hits immediately when logged out.
+    /// The hub's session ended or began: drops index hits immediately when logged out. A logout or a switch to
+    /// another profile also forgets the folders browsed in the previous session ([`Self::reset_for_session_change`];
+    /// C# `App` / Swift `ContentView` `onChange(of: platform.username)`).
     pub fn set_logged_in(&self, logged_in: bool) {
+        let user = if logged_in { self.inner.svc.profiles.current_username() } else { None };
+        let previous = {
+            let mut st = self.inner.st.borrow_mut();
+            let same = match (&st.session_user, &user) {
+                (Some(a), Some(b)) => a.to_lowercase() == b.to_lowercase(),
+                (None, None) => true,
+                _ => false,
+            };
+            if same { None } else { Some(std::mem::replace(&mut st.session_user, user)) }
+        };
         let q = self.search_query();
         self.set_search(&q, logged_in);
+        if let Some(Some(_)) = previous {
+            self.reset_for_session_change();
+        }
+    }
+
+    /// Forgets the folders of the previous profile session (back stack, followed folder, search) and starts again
+    /// from the launch folder (Videos/Movies, else home). The persistent index is not touched.
+    pub fn reset_for_session_change(&self) {
+        {
+            let mut st = self.inner.st.borrow_mut();
+            if let Some(t) = st.scan_cancel.take() {
+                t.cancel();
+            }
+            st.back.clear();
+            st.query.clear();
+            st.index_hits.clear();
+            st.transient = false;
+        }
+        self.inner.rebuild_rows();
+        self.inner.notify(&[ExplorerChange::Folder]);
+        let key = self.inner.key();
+        let ui = self.inner.svc.ui.clone();
+        let shell = self.inner.svc.shell.clone();
+        let _ = std::thread::Builder::new().name("sa-explorer-reset".into()).spawn(move || {
+            let initial = initial_folder(&shell.quick_locations());
+            key.post(&ui, move |inner| {
+                if let Some(f) = initial {
+                    inner.go_with(f, false, false, ScanMode::Persist);
+                }
+                inner.st.borrow_mut().follows_video = true;
+            });
+        });
     }
     /// `%lld video · SSD indeksinde %lld dosya` (W) / `%lld medya · indekste %lld dosya` (M).
     pub fn status_text(&self) -> String {
@@ -625,7 +760,16 @@ impl FileExplorerModel {
             ExplorerCompare::Fold => l!("%lld medya · indekste %lld dosya", n, total),
         }
     }
-    /// The first opened video moves a fresh explorer to its folder; later ones refresh the index for their folder.
+    /// Brings the explorer in step with the video that was opened (or closed, `None`). The row is highlighted in
+    /// every case.
+    ///
+    /// * Windows (`SyncToVideoPathAsync`): with no current folder the video's folder is shown **transiently** (never
+    ///   written to the index, not crawled); its folder being current, the listing is refreshed in memory unless it
+    ///   already shows the video with its subtitle state; another folder is refreshed in memory only when it is
+    ///   already indexed. Opening a video never writes the index file.
+    /// * macOS (`sync(toVideo:tracksFolders:)`, `tracksFolders` = logged in): logged out only the folder being
+    ///   browsed anyway is kept current; logged in, the first video moves a fresh explorer to its folder and another
+    ///   folder is scanned into the index.
     pub fn sync_to_video(&self, video: Option<&Path>) {
         let Some(video) = video else {
             self.inner.st.borrow_mut().active_video = None;
@@ -634,13 +778,36 @@ impl FileExplorerModel {
         };
         let k = self.inner.svc.policy.path_key(video);
         let Some(folder) = parent_of(video) else { return };
-        let (follows, current) = {
+        let (current, logged_in) = {
             let mut st = self.inner.st.borrow_mut();
             st.active_video = Some(k);
-            (std::mem::replace(&mut st.follows_video, false), st.current.clone())
+            (st.current.clone(), st.logged_in)
         };
         self.inner.rebuild_rows();
         let same = current.as_ref().is_some_and(|c| self.inner.same(c, &folder));
+        let video = video.to_path_buf();
+        if self.inner.svc.policy.explorer_compare == ExplorerCompare::OrdinalIgnoreCase {
+            if current.is_none() {
+                self.inner.go_with(folder, true, false, ScanMode::Transient);
+            } else if same {
+                self.inner.rescan_unless_current(video, move |inner| {
+                    let (cur, transient) = {
+                        let st = inner.st.borrow();
+                        (st.current.clone(), st.transient)
+                    };
+                    if let Some(c) = cur {
+                        inner.run_scan(c, false, false, if transient { ScanMode::Transient } else { ScanMode::InMemory });
+                    }
+                });
+            } else {
+                self.inner.refresh_other_in_memory(folder);
+            }
+            return;
+        }
+        if !logged_in && !same {
+            return;
+        }
+        let follows = std::mem::replace(&mut self.inner.st.borrow_mut().follows_video, false);
         if follows && !same {
             self.inner.go(folder, false, true);
             return;
@@ -649,15 +816,33 @@ impl FileExplorerModel {
             self.inner.scan_other(folder);
             return;
         }
-        self.inner.run_scan(folder, false, false);
+        self.inner.rescan_unless_current(video, |inner| {
+            let cur = inner.st.borrow().current.clone();
+            if let Some(c) = cur {
+                inner.run_scan(c, false, false, ScanMode::Persist);
+            }
+        });
     }
-    /// Sidebar badge refresh after a save.
+    /// Sidebar badge refresh after a save. Windows refreshes in memory only (the index file is never written for a
+    /// save); macOS rescans the current folder, and scans another folder only while logged in.
     pub fn subtitle_saved(&self, path: &Path) {
         let Some(folder) = parent_of(path) else { return };
-        let current = self.inner.st.borrow().current.clone();
-        if current.as_ref().is_some_and(|c| self.inner.same(c, &folder)) {
-            self.inner.run_scan(folder, false, false);
-        } else {
+        let (current, transient, logged_in) = {
+            let st = self.inner.st.borrow();
+            (st.current.clone(), st.transient, st.logged_in)
+        };
+        let same = current.as_ref().is_some_and(|c| self.inner.same(c, &folder));
+        if self.inner.svc.policy.explorer_compare == ExplorerCompare::OrdinalIgnoreCase {
+            if same {
+                self.inner.run_scan(folder, false, false, if transient { ScanMode::Transient } else { ScanMode::InMemory });
+            } else if current.is_some() {
+                self.inner.refresh_other_in_memory(folder);
+            }
+            return;
+        }
+        if same {
+            self.inner.run_scan(folder, false, false, ScanMode::Persist);
+        } else if logged_in {
             self.inner.scan_other(folder);
         }
     }

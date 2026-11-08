@@ -169,6 +169,9 @@ export component HubBadge inherits Rectangle {
     in property <length> pad-x: 6px;
     in property <length> pad-y: 2px;
     in property <string> tooltip;
+    // A text symbol before `text` (e.g. "☰"), drawn with the symbol font: Segoe UI has no U+2630 and the WinUI
+    // text stack falls back to Segoe UI Symbol for it.
+    in property <string> symbol;
     // Intrinsic size also when placed freely (thumbnail overlays).
     width: self.preferred-width;
     height: self.preferred-height;
@@ -177,7 +180,7 @@ export component HubBadge inherits Rectangle {
     border-width: root.stroke == transparent ? 0 : 1px;
     border-color: root.stroke;
     accessible-role: AccessibleRole.text;
-    accessible-label: root.text;
+    accessible-label: root.symbol != "" ? root.symbol + " " + root.text : root.text;
     HorizontalLayout {
         padding-left: root.pad-x;
         padding-right: root.pad-x;
@@ -188,6 +191,13 @@ export component HubBadge inherits Rectangle {
             glyph: root.glyph;
             size: 11px;
             color: root.text-color;
+        }
+        if root.symbol != "": Text {
+            text: root.symbol;
+            font-family: "Segoe UI Symbol";
+            font-size: root.font-size;
+            color: root.text-color;
+            vertical-alignment: center;
         }
         Text {
             text: root.text;
@@ -214,14 +224,17 @@ export component StarButton inherits Rectangle {
     in property <length> pad-y: 2px;
     in property <length> radius: 4px;
     in property <string> label;
+    // Not hit-testable while false (the engagement bar hidden with the HUD).
+    in property <bool> enabled: true;
     callback clicked();
     min-width: 24px;
     min-height: 24px;
     border-radius: root.radius;
-    background: touch.pressed ? #ffffff10 : touch.has-hover ? #ffffff18 : transparent;
+    background: !root.enabled ? transparent : touch.pressed ? #ffffff10 : touch.has-hover ? #ffffff18 : transparent;
     accessible-role: button;
     accessible-label: root.label;
-    accessible-action-default => { root.clicked(); }
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
     HorizontalLayout {
         padding-left: root.pad-x;
         padding-right: root.pad-x;
@@ -235,11 +248,12 @@ export component StarButton inherits Rectangle {
         }
     }
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
     }
     ToolTip {
         text: root.label;
-        show: touch.has-hover && !touch.pressed;
+        show: root.enabled && touch.has-hover && !touch.pressed;
     }
 }
 

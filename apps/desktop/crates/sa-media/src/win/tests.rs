@@ -1030,3 +1030,42 @@ fn read_ahead_prefetches_and_the_file_stream_persists_in_the_background() {
     assert_eq!(s.encrypted_cache_read_count(), 4);
     assert_eq!(s.underlying_read_count(), 5);
 }
+
+/// A source whose first read of the second chunk fails after moving its position (a flaky drive mid-burst).
+struct FlakySource {
+    inner: std::io::Cursor<Vec<u8>>,
+    fail_once_at: Option<u64>,
+}
+
+impl std::io::Read for FlakySource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.fail_once_at == Some(self.inner.position()) {
+            self.fail_once_at = None;
+            self.inner.set_position(self.inner.position() + 10);
+            return Err(std::io::Error::other("device error"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl std::io::Seek for FlakySource {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// C# seeks whenever the source's live `Position` is not the chunk start; after a failed burst the position is
+/// unknown, so the retry seeks again and returns the right bytes.
+#[test]
+fn a_failed_source_read_is_retried_from_the_chunk_start() {
+    let raw: Vec<u8> = (0..3 * CHUNK as usize).map(|i| (i % 249) as u8).collect();
+    let source = FlakySource { inner: std::io::Cursor::new(raw.clone()), fail_once_at: Some(CHUNK as u64) };
+    let s = BufferedVideoStream::from_stream(Box::new(source), false, CHUNK, 4, 0, None, None, None).unwrap();
+    let mut first = vec![0u8; CHUNK as usize];
+    assert_eq!(s.read_shared(&mut first).unwrap(), CHUNK as usize);
+    let mut buf = vec![0u8; 100];
+    assert!(s.read_shared(&mut buf).is_err(), "the failed burst surfaces as an error");
+    assert_eq!(s.position(), CHUNK as u64, "a failed read does not move the stream");
+    assert_eq!(s.read_shared(&mut buf).unwrap(), 100);
+    assert_eq!(buf, raw[CHUNK as usize..CHUNK as usize + 100]);
+}

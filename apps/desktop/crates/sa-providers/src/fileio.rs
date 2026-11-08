@@ -51,10 +51,25 @@ pub(crate) fn read_file(path: &Path) -> ReadOutcome {
     ReadOutcome::Unreadable
 }
 
-/// Decodes text with BOM detection (UTF-8, UTF-16 LE/BE); without a BOM, lossy UTF-8.
+/// Decodes text with the BOM detection of .NET `StreamReader` (UTF-8, UTF-32 LE/BE, UTF-16 LE/BE; UTF-32 LE is
+/// checked before UTF-16 LE, whose BOM it starts with); without a BOM, lossy UTF-8.
 pub(crate) fn decode_text(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return String::from_utf8_lossy(rest).into_owned();
+    }
+    let utf32 = |rest: &[u8], be: bool| -> String {
+        rest.chunks_exact(4)
+            .map(|c| {
+                let v = if be { u32::from_be_bytes([c[0], c[1], c[2], c[3]]) } else { u32::from_le_bytes([c[0], c[1], c[2], c[3]]) };
+                char::from_u32(v).unwrap_or('\u{fffd}')
+            })
+            .collect()
+    };
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE, 0x00, 0x00]) {
+        return utf32(rest, false);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0x00, 0x00, 0xFE, 0xFF]) {
+        return utf32(rest, true);
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
         let units: Vec<u16> = rest.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
@@ -315,6 +330,8 @@ mod tests {
         assert_eq!(decode_text(b"\xEF\xBB\xBF{}"), "{}");
         assert_eq!(decode_text(&[0xFF, 0xFE, b'{', 0, b'}', 0]), "{}");
         assert_eq!(decode_text(&[0xFE, 0xFF, 0, b'{', 0, b'}']), "{}");
+        assert_eq!(decode_text(&[0xFF, 0xFE, 0, 0, b'{', 0, 0, 0, b'}', 0, 0, 0]), "{}");
+        assert_eq!(decode_text(&[0, 0, 0xFE, 0xFF, 0, 0, 0, b'{', 0, 0, 0, b'}']), "{}");
         assert_eq!(decode_text("ğ".as_bytes()), "ğ");
     }
 

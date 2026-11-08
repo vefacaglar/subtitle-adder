@@ -268,6 +268,8 @@ fn registered_names_are_cut_per_surface() {
     r.settle();
     assert_eq!(r.bridge().get_card_usernames().row_count(), 5, "Windows auth card: 5 chips");
     assert_eq!(r.bridge().get_flyout_usernames().row_count(), 4, "flyout: 4 chips");
+    // One rig at a time: each holds the process-wide language lock.
+    drop(r);
     let m = rig(HubFlavor::Mac, None);
     {
         let mut st = m.env.profiles.st.lock();
@@ -493,4 +495,186 @@ fn texts_follow_the_ui_language() {
     r.settle();
     assert_eq!(r.bridge().get_cards().row_data(0).unwrap().views_text.as_str(), "2 views");
     assert_eq!(r.bridge().get_profile_title().as_str(), "alice");
+}
+
+// ------------------------------------------------------------------------------------------------ added UI tests
+
+#[test]
+fn logout_while_the_hub_is_hidden_still_clears_the_bridge() {
+    // win-ui-hub-settings §5.6: the profile-change clearing runs even while the Platform tab is hidden, so returning
+    // to it never shows the previous profile for a frame.
+    let r = rig(HubFlavor::Windows, Some(("alice", "pw")));
+    let a = add_video(&r, "alice", "Videos/a.mp4", 1, true, 0);
+    r.env.profiles.st.lock().thumbs.entry("alice".into()).or_default().insert(a.to_string_lossy().to_lowercase(), png(32, 18));
+    r.login("alice", "pw");
+    r.eventually("card", |r| r.bridge().get_cards().row_count() == 1);
+    r.eventually("picture", |r| r.hub.cached_picture_count() == 1);
+    r.hub.set_active(false);
+    r.bridge().invoke_logout();
+    assert_eq!(r.bridge().get_cards().row_count(), 0);
+    assert_eq!(r.bridge().get_lists().row_count(), 0);
+    assert_eq!(r.hub.cached_picture_count(), 0);
+    r.settle();
+    r.hub.set_active(true);
+    r.settle();
+    assert!(r.bridge().get_shows_auth_card());
+    assert_eq!(r.bridge().get_cards().row_count(), 0);
+}
+
+#[test]
+fn an_unchanged_card_sequence_is_updated_in_place() {
+    // win-ui-hub-settings §5.4 rebuild rule 1: same paths in the same order → rows are patched, the list is kept.
+    let r = rig(HubFlavor::Windows, Some(("alice", "pw")));
+    add_video(&r, "alice", "Videos/a.mp4", 2, false, 0);
+    add_video(&r, "alice", "Videos/b.mp4", 1, false, 0);
+    r.login("alice", "pw");
+    r.eventually("two cards", |r| r.bridge().get_cards().row_count() == 2);
+    let model = r.bridge().get_cards();
+    let rows: Vec<_> = model.iter().collect();
+    let mut liked = rows.clone();
+    liked[1].is_liked = true;
+    let vm = slint::VecModel::from(rows.clone());
+    assert!(!sa_app::hub::cards::apply_rows(&vm, liked.clone()), "same sequence: patched in place");
+    assert!(vm.row_data(1).unwrap().is_liked);
+    let mut swapped = liked.clone();
+    swapped.swap(0, 1);
+    assert!(sa_app::hub::cards::apply_rows(&vm, swapped), "another order: the list is replaced");
+    // Paths compare case-insensitively (Windows).
+    let mut upper = vm.iter().collect::<Vec<_>>();
+    upper[0].path = upper[0].path.to_uppercase().into();
+    assert!(!sa_app::hub::cards::apply_rows(&vm, upper));
+    // Through the presenter: a like keeps the bridge's model and its two rows.
+    r.bridge().invoke_card_like(0);
+    r.settle();
+    assert_eq!(r.bridge().get_cards().row_count(), 2);
+}
+
+fn sample_card(badge: Option<&str>, views: i64, liked: bool, rating: i64, lists: &[&str]) -> sa_viewmodels::hub::VideoCard {
+    let path = PathBuf::from(r"D:\Diziler\Sezon 2\Bolum_05.mp4");
+    sa_viewmodels::hub::VideoCard {
+        title: "Bolum_05".into(),
+        file_name: "Bolum_05.mp4".into(),
+        extension_label: "MP4".into(),
+        folder: sa_viewmodels::hub::folder_line(r"D:\Diziler\Sezon 2"),
+        view_count: views,
+        is_liked: liked,
+        rating,
+        progress_ratio: 0.5,
+        duration_seconds: 95.0,
+        duration_text: "1:35".into(),
+        last_watched: None,
+        last_watched_text: None,
+        list_ids: lists.iter().map(|l| l.to_lowercase()).collect(),
+        list_names: lists.iter().map(|l| (*l).to_owned()).collect(),
+        sidecar_badge: badge.map(str::to_owned),
+        has_thumbnail: false,
+        path,
+    }
+}
+
+#[test]
+fn card_rows_carry_each_faces_texts_in_both_languages() {
+    use sa_app::hub::cards::card_row;
+    let lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let c = sample_card(Some("SRT"), 3, true, 4, &["Belgeseller"]);
+    let w = card_row(&c, HubFlavor::Windows, None);
+    assert_eq!(w.views_text.as_str(), "3 görüntüleme");
+    assert_eq!(w.watch_line.as_str(), "3 görüntüleme · Henüz izlenmedi");
+    assert_eq!(w.subtitle_status.as_str(), "Altyazılı (SRT)");
+    assert_eq!(w.like_text.as_str(), "Favorilerde");
+    assert_eq!(w.rating_badge.as_str(), "★ 4/5");
+    assert_eq!(w.list_names.row_count(), 1);
+    assert!(w.has_progress && !w.has_thumbnail);
+    let none = card_row(&sample_card(None, 0, false, 0, &[]), HubFlavor::Windows, None);
+    assert_eq!(none.views_text.as_str(), "Henüz izlenmedi");
+    assert_eq!(none.subtitle_status.as_str(), "Altyazı yok");
+    assert_eq!(none.rating_badge.as_str(), "");
+    assert_eq!(none.like_text.as_str(), "Favorilere ekle");
+    lang.set(UiLanguage::En);
+    let en = card_row(&c, HubFlavor::Windows, None);
+    assert_eq!(en.views_text.as_str(), "3 views");
+    assert_eq!(en.like_text.as_str(), "In Favorites");
+    drop(lang);
+
+    // macOS: the chip uses the one format key `Altyazılı (%@)` in both languages (theSubtitleChipUsesOneFormatKey…).
+    let lang = LanguageScope::new(CatalogChain::Mac, UiLanguage::Tr);
+    let m = card_row(&c, HubFlavor::Mac, None);
+    assert_eq!(m.subtitle_chip.as_str(), "Altyazılı (SRT)");
+    assert_eq!(m.watch_badges.as_str(), "3 görüntüleme");
+    assert_eq!(m.view_count.as_str(), "3");
+    assert_eq!(m.accessible_label.as_str(), "Bolum_05.mp4");
+    let unwatched = card_row(&sample_card(None, 0, false, 0, &[]), HubFlavor::Mac, None);
+    assert_eq!(unwatched.watch_badges.as_str(), "Henüz izlenmedi");
+    assert_eq!(unwatched.subtitle_chip.as_str(), "Altyazı yok");
+    lang.set(UiLanguage::En);
+    let m = card_row(&c, HubFlavor::Mac, None);
+    assert!(m.subtitle_chip.ends_with("(SRT)") && !m.subtitle_chip.starts_with("Altyazılı"), "{}", m.subtitle_chip);
+    assert!(cards_audio_check());
+}
+
+fn cards_audio_check() -> bool {
+    sa_app::hub::cards::is_audio(Path::new("a.MP3")) && !sa_app::hub::cards::is_audio(Path::new("a.mp4"))
+}
+
+#[test]
+fn list_pills_and_filters_map_both_ways() {
+    use sa_app::hub::cards::{empty_symbol, filter_from_index, filter_index, list_rows};
+    use sa_profiles::VideoFeedFilter;
+    for i in 0..5 {
+        assert_eq!(filter_index(&filter_from_index(i).unwrap()), i);
+    }
+    assert!(filter_from_index(5).is_none(), "a custom list is selected by id, not by index");
+    let lists = vec![
+        UserVideoList { id: "A1".into(), name: "Daha Sonra İzle".into(), video_paths: vec!["x".into(), "y".into()], created_at: Ticks(0), updated_at: Ticks(0) },
+        UserVideoList { id: "b2".into(), name: "Belgeseller".into(), video_paths: vec![], created_at: Ticks(0), updated_at: Ticks(0) },
+    ];
+    let rows = list_rows(&lists, &VideoFeedFilter::CustomList(Some("a1".into())));
+    assert_eq!(rows[0].title.as_str(), "Daha Sonra İzle (2)");
+    assert!(rows[0].selected, "ids compare case-insensitively");
+    assert!(!rows[1].selected);
+    assert_eq!(filter_index(&VideoFeedFilter::CustomList(Some("a1".into()))), 5);
+    assert!(list_rows(&lists, &VideoFeedFilter::All).iter().all(|r| !r.selected));
+    assert_eq!(empty_symbol(&VideoFeedFilter::History, false), "clock");
+    assert_eq!(empty_symbol(&VideoFeedFilter::Liked, true), "magnifyingglass");
+}
+
+// ------------------------------------------------------------------------------------------------ parity checks
+
+#[test]
+fn submitting_the_same_search_again_runs_it_again() {
+    // C# `ExecuteSearch` always calls `RefreshFeed()`, Swift `submitSearch()` always schedules a refresh: pressing
+    // Enter / "Ara" again finds videos that appeared since the last run of the same query.
+    for flavor in [HubFlavor::Windows, HubFlavor::Mac] {
+        let r = rig(flavor, Some(("alice", "pw")));
+        add_video(&r, "alice", "Videos/Sezon_1.mp4", 1, false, 0);
+        r.login("alice", "pw");
+        r.bridge().invoke_search_submitted("sezon".into());
+        r.settle();
+        assert_eq!(r.bridge().get_cards().row_count(), 1, "{flavor:?}");
+        add_video(&r, "alice", "Videos/Sezon_2.mp4", 1, false, 0);
+        r.bridge().invoke_search_submitted("sezon ".into());
+        r.eventually("the repeated search sees the new video", |r| r.bridge().get_cards().row_count() == 2);
+        drop(r);
+    }
+}
+
+#[test]
+fn logout_clears_a_typed_search_and_the_list_failures() {
+    // Swift `forgetProfileState` empties the search field; nothing typed or reported for the closing profile stays on
+    // screen (rule 6), even when no query was applied.
+    let r = rig(HubFlavor::Mac, Some(("alice", "pw")));
+    r.login("alice", "pw");
+    r.bridge().invoke_list_create("".into());
+    r.settle();
+    assert_ne!(r.bridge().get_list_error().as_str(), "");
+    let epoch = r.bridge().get_search_reset_epoch();
+    r.bridge().invoke_logout();
+    assert_ne!(r.bridge().get_search_reset_epoch(), epoch, "the search box is emptied at logout");
+    assert_eq!(r.bridge().get_list_error().as_str(), "");
+    assert_eq!(r.bridge().get_rename_error().as_str(), "");
+    // Logging in does not clear a box (logged-out → logged-in needs no clearing).
+    r.settle();
+    let epoch = r.bridge().get_search_reset_epoch();
+    r.login("alice", "pw");
+    assert_eq!(r.bridge().get_search_reset_epoch(), epoch);
 }

@@ -173,7 +173,8 @@ pub fn date_text(t: Ticks, format: HubDateFormat, language: UiLanguage) -> Strin
             if tr {
                 format!("{} {} {} {:02}:{:02}", dt.day(), TR_MONTHS[m0], dt.year(), dt.hour(), dt.minute())
             } else {
-                format!("{} {}, {} at {}:{:02} {}", EN_MONTHS[m0], dt.day(), dt.year(), h12, dt.minute(), if pm { "PM" } else { "AM" })
+                // ICU (macOS 13+) separates the day period with a narrow no-break space.
+                format!("{} {}, {} at {}:{:02}\u{202F}{}", EN_MONTHS[m0], dt.day(), dt.year(), h12, dt.minute(), if pm { "PM" } else { "AM" })
             }
         }
     }
@@ -311,7 +312,14 @@ struct State {
     engagement: PlayerEngagement,
     engagement_loaded: bool,
     player_video: Option<PathBuf>,
-    records_progress: bool,
+    /// The store session under which playback of `player_video` may be recorded: the one that was open when the
+    /// video was opened (Swift `recordingGeneration`, C# `_activeVideoSessionToken` + `_activeVideoRecordsProgress`).
+    /// `None` when nobody was logged in then, or after that session ended: progress of a video never lands in the
+    /// history of a profile that logged in (or took over) while it played on.
+    recording_generation: Option<u64>,
+    /// The session of a logout under way: a snapshot of it is not shown again, even before the store has ended it
+    /// (Swift `closingGeneration`; the refresh queued behind the logout shows the result).
+    closing_generation: Option<u64>,
     restored: bool,
     pending_open: Option<PathBuf>,
     pending_edits: HashMap<String, PendingEdit>,
@@ -370,6 +378,9 @@ impl Inner {
         st.thumbnail_requested.clear();
         st.pending_open = None;
         st.applied_generation = None;
+        st.recording_generation = None;
+        // The closing profile's search is not run again over the logged-out feed (rule 6: nothing kept in memory).
+        st.search.clear();
     }
 
     fn schedule_refresh(self: &Rc<Self>) {
@@ -413,7 +424,10 @@ impl Inner {
 
     fn apply_snapshot(self: &Rc<Self>, snap: Snapshot, _ticket: u64) {
         let current_gen = self.svc.profiles.session_generation();
-        if snap.generation != current_gen {
+        let closing = snap.logged_in && self.st.borrow().closing_generation == Some(snap.generation);
+        if closing {
+            // A profile that is being logged out never comes back on screen.
+        } else if snap.generation != current_gen {
             // Built under a login that is over: rebuild.
             self.st.borrow_mut().refresh_pending = true;
         } else {
@@ -597,13 +611,14 @@ impl Inner {
     fn report(self: &Rc<Self>, position: f64, flush: bool) {
         let (ok, video, duration) = {
             let st = self.st.borrow();
-            (st.logged_in && st.records_progress, st.player_video.clone(), st.last_duration)
+            let generation = st.recording_generation.filter(|g| st.logged_in && *g == self.svc.profiles.session_generation());
+            (generation, st.player_video.clone(), st.last_duration)
         };
         let Some(video) = video else { return };
-        if !ok || !position.is_finite() || !duration.is_finite() || duration <= 0.0 {
+        let Some(generation) = ok else { return };
+        if !position.is_finite() || !duration.is_finite() || duration <= 0.0 {
             return;
         }
-        let generation = self.svc.profiles.session_generation();
         let store = self.svc.profiles.clone();
         self.lanes.spawn(Lane::Actions, move || {
             if store.session_generation() != generation {
@@ -662,7 +677,6 @@ impl Inner {
                             if matches!(st.filter, VideoFeedFilter::CustomList(_)) {
                                 st.filter = VideoFeedFilter::All;
                             }
-                            st.records_progress = true;
                             st.page_limit = inner.svc.policy.hub_card_page_size.unwrap_or(usize::MAX);
                         }
                     }
@@ -831,7 +845,8 @@ impl VideoPlatformModel {
                 engagement: PlayerEngagement::default(),
                 engagement_loaded: false,
                 player_video: None,
-                records_progress: true,
+                recording_generation: None,
+                closing_generation: None,
                 restored: false,
                 pending_open: None,
                 pending_edits: HashMap::new(),
@@ -900,6 +915,7 @@ impl VideoPlatformModel {
                 if let Some(p) = pending {
                     let same = inner.st.borrow().player_video.as_ref().is_some_and(|v| lower_key(v) == lower_key(&p));
                     if same && inner.svc.profiles.is_logged_in() {
+                        inner.st.borrow_mut().recording_generation = Some(inner.svc.profiles.session_generation());
                         inner.count_open(p);
                     }
                 }
@@ -974,7 +990,8 @@ impl VideoPlatformModel {
         }
         {
             let mut st = self.inner.st.borrow_mut();
-            st.records_progress = false;
+            st.recording_generation = None;
+            st.closing_generation = Some(self.inner.svc.profiles.session_generation());
             st.remember_me = false;
             st.auth_error = None;
             if matches!(st.filter, VideoFeedFilter::CustomList(_)) {
@@ -1104,10 +1121,17 @@ impl VideoPlatformModel {
         if !st.search.trim().is_empty() {
             return (l!("\"%@\" için eşleşen video bulunamadı", st.search.trim()), search_hint);
         }
+        // Without a profile there is no history at all; the hint must not suggest that one is being kept.
+        if !st.logged_in && !self.inner.svc.policy.hub_logged_out_empty_per_filter {
+            return (
+                l!("Gösterilecek video bulunamadı"),
+                l!("Profil açık değilken izleme geçmişi tutulmaz. Klasör gezgininden bir video açabilir veya geçmişinizi görmek için giriş yapabilirsiniz."),
+            );
+        }
         let general = if st.logged_in {
             l!("Bir video açıp izlediğinizde, favorilere eklediğinizde veya puanladığınızda burada YouTube tarzı kartlar halinde listelenir.")
         } else {
-            search_hint
+            l!("Klasör gezgininden bir video klasörü açın. Giriş yaptığınızda izleme geçmişiniz de burada görünür.")
         };
         match &st.filter {
             VideoFeedFilter::History => (l!("Henüz izleme geçmişi yok"), general),
@@ -1448,14 +1472,26 @@ impl VideoPlatformModel {
                 _ => false,
             }
         };
+        let store_logged_in = self.inner.svc.profiles.is_logged_in();
+        let generation = self.inner.svc.profiles.session_generation();
         if same {
+            // The same video opened again under a login that began after it was opened: the new session records it.
+            let reopen = {
+                let st = self.inner.st.borrow();
+                counts_as_open && st.restored && st.logged_in && store_logged_in && st.recording_generation != Some(generation)
+            };
+            if reopen && let Some(p) = path {
+                self.inner.st.borrow_mut().recording_generation = Some(generation);
+                self.inner.count_open(p.to_path_buf());
+            }
             return;
         }
         {
             let mut st = self.inner.st.borrow_mut();
             st.player_video = path.map(Path::to_path_buf);
             st.pending_open = None;
-            st.records_progress = true;
+            // Recorded only for the session that is open now; nobody logged in means nothing is recorded for it.
+            st.recording_generation = (st.restored && st.logged_in && store_logged_in).then_some(generation);
             st.engagement = PlayerEngagement::default();
             st.engagement_loaded = false;
             st.last_position = None;

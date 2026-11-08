@@ -141,13 +141,14 @@ component ControlBar inherits Rectangle {
                     BarButton {
                         y: 4px;
                         symbol: MainBridge.is-muted ? "speaker.slash.fill" : "speaker.wave.2.fill";
-                        title: Loc.t("Sesi kapat");
+                        title: MainBridge.is-muted ? Loc.t("Sesi aç") : Loc.t("Sesi kapat");
                         size: 14px;
                         clicked => { MainBridge.toggle-mute(); }
                     }
                     if root.volume-open: BarSlider {
                         y: 10px;
                         width: 66px;
+                        accessible-name: Loc.t("Ses düzeyi");
                         ratio: MainBridge.is-muted ? 0 : MainBridge.volume;
                         scrub(s, r) => { MainBridge.volume-scrub(s, r); }
                     }
@@ -214,30 +215,36 @@ component ControlsPanel inherits Rectangle {
         padding-top: 5px;
         padding-bottom: 5px;
         spacing: 8px;
-        if root.variant == 0: Text {
-            text: Loc.t("Gösterilen");
-            font-size: MacTheme.caption-size;
-            color: #ffffffd9;
-            vertical-alignment: center;
-        }
-        if root.variant < 2: Segmented {
-            fixed-width: 250px;
-            on-dark: true;
-            accessible-name: Loc.t("Gösterilen");
-            items: [
-                { title: Loc.t("Orijinal"), enabled: true },
-                { title: MainBridge.translation-title, enabled: MainBridge.has-translations },
-                { title: Loc.t("İkisi"), enabled: MainBridge.has-translations },
-            ];
-            current-index: MainBridge.has-translations ? MainBridge.display-mode : 0;
-            selected(i) => { MainBridge.display-mode-selected(i); }
-        }
-        if root.variant == 2: MenuButton {
-            menu-id: "display";
-            label: MainBridge.display-mode == 0 || !MainBridge.has-translations ? Loc.t("Orijinal") : MainBridge.display-mode == 1 ? MainBridge.translation-title : Loc.t("İkisi");
-            fg: white;
-            height: 22px;
-            menu-width: 180px;
+        // The display picker carries its own `.help` (the tooltip below); hovering a child keeps `has-hover`.
+        picker-touch := TouchArea {
+            HorizontalLayout {
+                spacing: 8px;
+                if root.variant == 0: Text {
+                    text: Loc.t("Gösterilen");
+                    font-size: MacTheme.caption-size;
+                    color: #ffffffd9;
+                    vertical-alignment: center;
+                }
+                if root.variant < 2: Segmented {
+                    fixed-width: 250px;
+                    on-dark: true;
+                    accessible-name: Loc.t("Gösterilen");
+                    items: [
+                        { title: Loc.t("Orijinal"), enabled: true },
+                        { title: MainBridge.translation-title, enabled: MainBridge.has-translations },
+                        { title: Loc.t("İkisi"), enabled: MainBridge.has-translations },
+                    ];
+                    current-index: MainBridge.has-translations ? MainBridge.display-mode : 0;
+                    selected(i) => { MainBridge.display-mode-selected(i); }
+                }
+                if root.variant == 2: MenuButton {
+                    menu-id: "display";
+                    label: MainBridge.display-mode == 0 || !MainBridge.has-translations ? Loc.t("Orijinal") : MainBridge.display-mode == 1 ? MainBridge.translation-title : Loc.t("İkisi");
+                    fg: white;
+                    height: 22px;
+                    menu-width: 180px;
+                }
+            }
         }
         Rectangle {
             width: 1px;
@@ -276,12 +283,10 @@ component ControlsPanel inherits Rectangle {
             clicked => { MainBridge.toggle-full-screen(); }
         }
     }
-    ptouch := TouchArea {
-        enabled: false;
-    }
     ToolTip {
         text: MainBridge.has-translations ? Loc.t("Video üstünde gösterilecek metin") : Loc.t("Önce altyazıları çevir; sonra orijinali, çeviriyi ya da ikisini birden gösterebilirsin.");
-        show: false;
+        show: picker-touch.has-hover;
+        offset-y: root.height + 4px;
     }
 }
 
@@ -312,9 +317,20 @@ export component PlayerView inherits Rectangle {
         }
 
         // Pointer surface: clicks (1 = play/pause, 2 = + full screen) and wheel notches; not over the control strips.
+        // Mouse down moves the keyboard focus here, out of any line text field, so the player keys work at once
+        // (`window?.makeFirstResponder(self)`, mac-ui §5.3).
+        surface-focus := FocusScope {
+            width: 0;
+            height: 0;
+        }
         TouchArea {
             y: 48px;
             height: max(0px, parent.height - 48px - 56px);
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                    surface-focus.focus();
+                }
+            }
             clicked => { MainBridge.video-clicked(1); }
             double-clicked => { MainBridge.video-clicked(2); }
             scroll-event(e) => {

@@ -1,14 +1,26 @@
 //! Crash log (win-ui-main §1.4; C# `App.LogCrash`): an unhandled error is appended to `%TEMP%\SubtitleAdder-crash.log`
 //! as `"{local time, .NET round-trip "O"}\n{redacted error with backtrace}\n\n"`. Paths are redacted (the message can
 //! name the opened video); IO errors while logging are ignored.
+//!
+//! The hook is installed first thing at startup (win-ui-main §1.1 step 1), before the diagnostics log exists. Once
+//! the app created its `DiagnosticLog`, [`set_diagnostic_log`] routes entries through `DiagnosticLog::append_crash`,
+//! which holds the same lock as the log's startup scrub of old crash entries (C# `DiagnosticLog.AppendCrash`), so a
+//! crash written while the scrub runs is never overwritten.
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 use sa_core::diagnostics::DiagnosticLog;
 
 static LOCK: Mutex<()> = Mutex::new(());
+static LOG: OnceLock<Arc<DiagnosticLog>> = OnceLock::new();
+
+/// Routes crash entries through `log` (its crash file, under its scrub lock). The first call wins.
+pub fn set_diagnostic_log(log: Arc<DiagnosticLog>) {
+    let _ = LOG.set(log);
+}
 
 /// `%TEMP%\SubtitleAdder-crash.log`.
 pub fn crash_log_path() -> PathBuf {
@@ -30,7 +42,10 @@ pub fn entry(timestamp: &str, error: &str) -> String {
 
 /// Appends one entry; `false` when it could not be written.
 pub fn append(error: &str) -> bool {
-    append_to(&crash_log_path(), error)
+    match LOG.get() {
+        Some(log) => log.append_crash(&entry(&round_trip_now(), error)),
+        None => append_to(&crash_log_path(), error),
+    }
 }
 
 pub fn append_to(path: &std::path::Path, error: &str) -> bool {
@@ -92,5 +107,20 @@ mod tests {
         let text = std::fs::read_to_string(&p).unwrap();
         assert_eq!(text.matches("\n\n").count(), 2);
         assert!(text.contains("\nboom\n\n") && text.ends_with("\nagain\n\n"));
+    }
+
+    #[test]
+    fn with_a_diagnostic_log_entries_go_to_its_crash_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = DiagnosticLog::new(
+            dir.path().join("SubtitleAdder-diagnostics.log"),
+            sa_core::diagnostics::DiagnosticFormat::Windows,
+            Box::new(Vec::new),
+        );
+        log.wait_for_startup_scrub();
+        set_diagnostic_log(log.clone());
+        assert!(append(r"panic: D:\Films\x.mkv missing"));
+        let text = std::fs::read_to_string(log.crash_log_path()).unwrap();
+        assert!(text.ends_with("\npanic: <path>\n\n"), "{text}");
     }
 }

@@ -1,7 +1,7 @@
 //! Windows platform services (`windows` crate): known folders, user/machine names, preferred UI languages, the
 //! process UI language override, DirectWrite font families, quick locations (Videolar / İndirilenler / Masaüstü /
 //! drives), drive readiness, Explorer, memory, process checks, crash log, shell thumbnails, plus the single-instance
-//! coordinator, HKCU file associations and the window chrome.
+//! coordinator, HKCU file associations, the window chrome, the system accent palette and the startup steps.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,13 +12,16 @@ use sa_core::future::LocalBoxFuture;
 use sa_core::l10n::UiLanguage;
 use sa_core::platform::{Alert, AlertResponse, FileAssociations, FileFilter, PlatformShell, QuickLocation};
 
+pub mod accent;
 pub mod associations;
 pub mod chrome;
 pub mod crash;
+pub mod file_dialog;
 pub mod folders;
 pub mod fonts;
 pub mod process;
 pub mod single_instance;
+pub mod startup;
 pub mod thumbnails;
 mod wide;
 
@@ -59,11 +62,16 @@ impl WinShell {
     pub fn install_crash_log() {
         crash::install();
     }
+
+    /// The interface font for `appFontFamily` (system font = Segoe UI Variable / Segoe UI), win-ui-main §1.3.
+    pub fn ui_font_family(app_font_family: Option<&str>) -> String {
+        fonts::ui_font_family(app_font_family)
+    }
 }
 
 impl PlatformShell for WinShell {
     fn app_data_dir(&self) -> PathBuf {
-        Self::local_app_data().join("SubtitleAdder")
+        sa_core::platform::data_dir_override().unwrap_or_else(|| Self::local_app_data().join("SubtitleAdder"))
     }
     fn diagnostics(&self) -> &dyn DiagnosticSink {
         self.diagnostics.as_ref()
@@ -113,5 +121,24 @@ impl PlatformShell for WinShell {
     }
     fn file_associations(&self) -> Option<&dyn FileAssociations> {
         Some(&self.associations)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use windows::Win32::System::LibraryLoader::{FindResourceW, GetModuleHandleW};
+    use windows::core::PCWSTR;
+
+    /// build.rs embeds the manifest (resource 1, RT_MANIFEST) and the icon group (RT_GROUP_ICON) into every binary
+    /// that links this crate, this test binary included.
+    #[test]
+    fn the_binary_carries_the_manifest_and_the_icon() {
+        if std::env::var_os("SA_NO_WIN_RESOURCES").is_some() {
+            return;
+        }
+        let module = unsafe { GetModuleHandleW(None) }.unwrap();
+        let find = |id: usize, kind: usize| unsafe { FindResourceW(Some(module), PCWSTR(id as *const u16), PCWSTR(kind as *const u16)) };
+        assert!(!find(1, 24).is_invalid(), "RT_MANIFEST");
+        assert!(!find(1, 14).is_invalid(), "RT_GROUP_ICON");
     }
 }

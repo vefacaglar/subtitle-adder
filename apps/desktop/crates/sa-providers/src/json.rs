@@ -4,7 +4,8 @@
 //!   empties, default encoder escaping (every non-ASCII char and `<>&'"+\`` as `\uXXXX`, uppercase hex). Keys in
 //!   insertion order.
 //! * [`Style::Apple`]: Foundation `JSONEncoder` with `.prettyPrinted, .sortedKeys, .withoutEscapingSlashes` —
-//!   2 spaces, `"key" : value`, LF, keys sorted, raw UTF-8, `/` unescaped, empties as `[\n\n<indent>]`.
+//!   2 spaces, `"key" : value`, LF, keys sorted the way `JSONWriter` sorts them (`apple_key_cmp`), raw UTF-8, `/`
+//!   unescaped, empties as `[\n\n<indent>]`.
 
 use serde_json::Value;
 
@@ -83,7 +84,7 @@ fn write_value(out: &mut String, value: &Value, style: Style, level: usize) {
             }
             let mut entries: Vec<(&String, &Value)> = map.iter().collect();
             if style == Style::Apple {
-                entries.sort_by(|a, b| a.0.cmp(b.0));
+                entries.sort_by(|a, b| apple_key_cmp(a.0, b.0));
             }
             out.push('{');
             for (i, (k, v)) in entries.into_iter().enumerate() {
@@ -131,6 +132,46 @@ fn write_string(out: &mut String, s: &str, style: Style) {
     out.push('"');
 }
 
+/// `String.compare(_:options: [.numeric, .caseInsensitive, .forcedOrdering])`, the order Foundation's `JSONWriter`
+/// gives `.sortedKeys` (the same rule as `sa_profiles::mac::json::apple_key_cmp`): runs of ASCII digits compare by
+/// numeric value, everything else by lowercased scalars; keys equal under those rules fall back to the literal order.
+fn apple_key_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let x: Vec<char> = a.chars().collect();
+    let y: Vec<char> = b.chars().collect();
+    let (mut i, mut j) = (0, 0);
+    while i < x.len() && j < y.len() {
+        if x[i].is_ascii_digit() && y[j].is_ascii_digit() {
+            let (si, sj) = (i, j);
+            while i < x.len() && x[i].is_ascii_digit() {
+                i += 1;
+            }
+            while j < y.len() && y[j].is_ascii_digit() {
+                j += 1;
+            }
+            let da: String = x[si..i].iter().skip_while(|c| **c == '0').collect();
+            let db: String = y[sj..j].iter().skip_while(|c| **c == '0').collect();
+            match da.len().cmp(&db.len()).then_with(|| da.cmp(&db)) {
+                Ordering::Equal => continue,
+                other => return other,
+            }
+        }
+        let ca: String = x[i].to_lowercase().collect();
+        let cb: String = y[j].to_lowercase().collect();
+        match ca.cmp(&cb) {
+            Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+            other => return other,
+        }
+    }
+    match (x.len() - i).cmp(&(y.len() - j)) {
+        Ordering::Equal => a.cmp(b),
+        other => other,
+    }
+}
+
 fn push_u(out: &mut String, unit: u32) {
     out.push_str(&format!("\\u{unit:04X}"));
 }
@@ -160,6 +201,21 @@ mod tests {
             "{\n  \"activeProviderId\" : null,\n  \"b\" : {\n    \"a\" : \"İkinci \\\"q\\\"\",\n    \"z\" : \"https://a/b\"\n  },\n  \"providers\" : [\n\n  ]\n}"
         );
         assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), v);
+    }
+
+    #[test]
+    fn apple_keys_sort_like_json_writer() {
+        let v = json!({"rememberMe": 1, "rememberedUsername": 2, "a10": 3, "a9": 4, "B": 5, "a": 6});
+        let text = pretty(&v, Style::Apple);
+        let positions: Vec<usize> = ["\"a\"", "\"a9\"", "\"a10\"", "\"B\"", "\"rememberedUsername\"", "\"rememberMe\""]
+            .iter()
+            .map(|k| text.find(k).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]), "{text}");
+        // The provider documents keep the plain ASCII order.
+        let mut keys = ["presetId", "name", "model", "id", "discoveredModels", "baseUrl", "asyncTranslation"];
+        keys.sort_by(|a, b| apple_key_cmp(a, b));
+        assert_eq!(keys, ["asyncTranslation", "baseUrl", "discoveredModels", "id", "model", "name", "presetId"]);
     }
 
     #[test]

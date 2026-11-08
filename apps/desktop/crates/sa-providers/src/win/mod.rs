@@ -430,11 +430,26 @@ impl WinProviderManager {
                 ReadOutcome::Content(bytes) => match parse_windows_file(&fileio::decode_text(&bytes)) {
                     Err(()) => st.problem = Some(ProviderLoadProblem::Damaged),
                     Ok(WindowsFile::Null) => st.problem = None,
-                    Ok(WindowsFile::Doc(doc)) => {
+                    Ok(WindowsFile::Doc(mut doc)) => {
                         let disk_active = doc.active;
+                        // The same id: the profile in memory wins, but a plaintext key the C# app wrote meanwhile
+                        // still wins over the stored one (as on every load), in memory and in the sidecar alike.
+                        let mut fresh = Vec::new();
+                        for p in std::mem::take(&mut doc.profiles) {
+                            match st.find_mut(p.profile.id) {
+                                Some(e) => {
+                                    let plain = zeroize::Zeroizing::new(p.plaintext_key);
+                                    if !plain.trim().is_empty() {
+                                        let stored = self.store_key_locked(e, &plain);
+                                        e.plaintext_pending = !stored;
+                                    }
+                                }
+                                None => fresh.push(p),
+                            }
+                        }
+                        doc.profiles = fresh;
                         let (disk, _) = self.entries_from(doc);
-                        let mut merged: Vec<Entry> =
-                            disk.into_iter().filter(|d| st.find(d.profile.id).is_none()).collect();
+                        let mut merged: Vec<Entry> = disk;
                         merged.append(&mut st.entries);
                         st.entries = merged;
                         if st.active.is_none() {

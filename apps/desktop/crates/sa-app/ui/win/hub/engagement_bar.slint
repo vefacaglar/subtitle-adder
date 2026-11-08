@@ -75,6 +75,7 @@ export component EngagementBar inherits Rectangle {
                 radius: 5px;
                 min-width: 26px;
                 min-height: 26px;
+                enabled: root.shown;
                 label: Loc.t1("%lld yıldız", n);
                 clicked => { HubBridge.engagement-rate(HubBridge.engagement-rating == n ? 0 : n); }
             }

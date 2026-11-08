@@ -508,7 +508,8 @@ impl Inner {
         sorted.sort();
         self.svc.diagnostics.write(
             "Job",
-            &format!("StartJob jobId={job_id} video='{}' models=[{}]", video.display(), sorted.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")),
+            // The plaintext log never names the video (rule 6; C# 43ab997).
+            &format!("StartJob jobId={job_id} models=[{}]", sorted.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")),
         );
         self.claim_models(&mut c.st, job_id, models);
 
@@ -1163,6 +1164,14 @@ impl Inner {
         self.edit(|i, c, fx| {
             let Some(s) = c.st.session_mut(sid) else { return };
             if s.asyncs.run_id != run_id {
+                return;
+            }
+            if !i.svc.policy.async_batch_failure_stops_background {
+                // Windows: the lines of this batch stay queued for the final pass; later lines still go in the
+                // background (C# `TranslatePartialBatchExternallyAsync`).
+                if let Some(m) = failure {
+                    i.svc.diagnostics.write("Translation", &format!("Background batch failed; final pass will retry: {m}"));
+                }
                 return;
             }
             if let Some(m) = failure {

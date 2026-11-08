@@ -173,7 +173,8 @@ export component VideoCard inherits Rectangle {
                 }
                 for name in root.card.list-names: HubBadge {
                     fill: HubColors.list-badge;
-                    text: "☰ " + name;
+                    symbol: "☰";
+                    text: name;
                     text-color: HubColors.list-badge-text;
                 }
             }

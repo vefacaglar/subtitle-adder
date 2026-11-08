@@ -213,17 +213,33 @@ pub fn is_directory(path: &str) -> bool {
     attrs != INVALID_FILE_ATTRIBUTES && attrs & FILE_ATTRIBUTE_DIRECTORY.0 != 0
 }
 
-/// Drive root ready / UNC share reachable (win-media §10 "drive-root readiness"): only the root is touched.
+/// Drive root ready / UNC share reachable (win-media §10 "drive-root readiness", C#
+/// `LocalProfileManager.IsVideoStorageAvailable`): only the root is touched. A rootless path is available; a `\\…`
+/// root must exist as a directory; any other root goes through .NET `new DriveInfo(root).IsReady`, which needs a
+/// drive letter (`C:` / `C:\`; a bare `\` root makes the constructor throw, so the path is unavailable).
 pub fn storage_available(path: &Path) -> bool {
     let s = path.to_string_lossy();
     if s.trim().is_empty() {
         return false;
     }
     let root = path_root(&s);
-    if root.is_empty() || root == "\\" {
+    if root.trim().is_empty() {
         return true;
     }
-    without_error_dialogs(|| is_directory(&root))
+    match drive_root_probe(&root) {
+        Some(probe) => without_error_dialogs(|| is_directory(&probe)),
+        None => false,
+    }
+}
+
+/// The directory a readiness check probes for a `Path.GetPathRoot` result: the UNC / device root itself, or `X:\`
+/// for a drive (`DriveInfo.Name`); `None` when `DriveInfo` would reject the root.
+pub fn drive_root_probe(root: &str) -> Option<String> {
+    if root.starts_with(r"\\") {
+        return Some(root.to_owned());
+    }
+    let b = root.as_bytes();
+    (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':').then(|| format!("{}\\", &root[..2]))
 }
 
 // ---- quick locations --------------------------------------------------------------------------------------------
@@ -387,8 +403,17 @@ mod tests {
     #[test]
     fn storage_checks_only_roots() {
         assert!(!storage_available(Path::new("")));
+        assert!(!storage_available(Path::new("   ")));
         assert!(storage_available(Path::new("relative.mp4")));
         assert!(storage_available(Path::new(r"C:\definitely\missing\file.mp4")));
+        assert!(storage_available(Path::new("C:relative.mp4")));
+        assert!(storage_available(Path::new(r"\\?\C:\definitely\missing.mp4")));
+        // `new DriveInfo("\\")` throws in C#: a rooted path without a drive is unavailable.
+        assert!(!storage_available(Path::new(r"\Films\a.mp4")));
+        assert_eq!(drive_root_probe("C:").as_deref(), Some(r"C:\"));
+        assert_eq!(drive_root_probe(r"d:\").as_deref(), Some(r"d:\"));
+        assert_eq!(drive_root_probe(r"\\nas\media").as_deref(), Some(r"\\nas\media"));
+        assert_eq!(drive_root_probe("\\"), None);
     }
 
     #[test]

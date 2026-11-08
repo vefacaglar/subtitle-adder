@@ -545,10 +545,15 @@ impl WinProfileStore {
 
     /// Logged out (after the first read): every mutator returns at once, before the store is drained or any file
     /// is touched (UNIFIED.md §4 item 1). A login or remembered restore elsewhere reaches this store through the
-    /// broker subscription, which resyncs immediately.
+    /// broker subscription, which resyncs immediately. A header written by another manager of the same file in this
+    /// process bumps the process-wide generation; like C# `EnsureSyncedIfChangedLocked`, that forces the resync
+    /// (which may restore a remembered session) instead of the early return.
     fn locked_out(&self) -> bool {
         let st = self.state.lock();
-        st.active_profile.is_none() && st.last_synced_json.is_some() && !self.dirty.load(Ordering::SeqCst)
+        st.active_profile.is_none()
+            && st.last_synced_json.is_some()
+            && !self.dirty.load(Ordering::SeqCst)
+            && self.current_generation() == st.last_synced_generation
     }
 
     fn drain(&self) {

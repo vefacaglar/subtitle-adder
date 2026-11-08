@@ -158,7 +158,11 @@ fn seeking_while_playing_continues_from_the_target() {
     assert!(wait_until(T, || p.position() > 0.3));
     p.seek(2.0);
     assert_eq!(p.position(), 2.0);
-    assert!(frame_where(&mut p, T, |f| f.pts >= 1.99 && f.pts < 2.1).is_some());
+    // The first frame taken after the seek comes from the target. It is usually the target frame itself; when the
+    // test thread is starved (parallel tests decoding 1080p) newer frames may replace it before it is taken, so a
+    // few frames of slack are allowed. Frames of the old position (< 1 s) never show up.
+    let first = frame_where(&mut p, T, |f| f.pts >= 1.0).expect("a frame after the seek");
+    assert!(first.pts >= 1.99 && first.pts < 2.5, "{}", first.pts);
     assert!(wait_until(T, || p.position() > 2.2));
     assert!(p.is_playing());
     assert!(rec.wait_for(0, T, is_ended(g)).is_some());
@@ -642,4 +646,130 @@ fn a_resolution_change_in_the_stream_reports_the_new_size() {
     assert!(rec.wait_for(0, T, |e| *e == changed).is_some(), "{:?}", rec.snapshot());
     assert!(frame_where(&mut p, T, |f| (f.width, f.height) == (640, 360)).is_some());
     assert_eq!(p.natural_size(), Some((640, 360)));
+}
+
+/// Windows: as with the C# app's `BufferedVideoStream` (share read/write/delete), the file that is playing can be
+/// renamed and deleted, and playback goes on from the open handle.
+#[cfg(windows)]
+#[test]
+fn a_playing_file_can_be_renamed_and_deleted_on_windows() {
+    let Some(src) = common::clip(Clip::SmallH264) else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("playing.mp4");
+    std::fs::copy(&src, &path).unwrap();
+    let rec = Recorder::default();
+    let mut p = quiet();
+    rec.attach(&mut p);
+    let g = p.load(Some(MediaSource::File(path.clone())), true);
+    opened(&rec, g);
+    assert!(rec.wait_for(0, T, is_frame(g)).is_some());
+    let renamed = dir.path().join("renamed.mp4");
+    std::fs::rename(&path, &renamed).expect("a playing file can be renamed");
+    std::fs::remove_file(&renamed).expect("a playing file can be deleted");
+    // Playback still runs to the end from the open handle.
+    assert!(rec.wait_for(0, T, is_ended(g)).is_some(), "{:?}", rec.snapshot());
+    assert!(!rec.snapshot().iter().any(|e| matches!(e, PlayerEvent::Failed { .. })));
+}
+
+/// Every extension both apps accept (`MediaFileTypes` / `VideoTypes`: 14 video, 8 audio) opens, with a typical codec
+/// pairing for that container (plus AV1, which Media Foundation and AVFoundation play): duration, natural size and
+/// the first frame for video, no size for audio. This pins the decoders and demuxers the FFmpeg build must carry to
+/// match the platform players.
+#[test]
+fn every_media_extension_the_apps_accept_opens() {
+    let Some(ff) = common::ffmpeg_cli() else {
+        eprintln!("skipped: no ffmpeg CLI to generate test clips");
+        return;
+    };
+    let v = |size: &str| vec!["-f".to_owned(), "lavfi".into(), "-i".into(), format!("testsrc2=size={size}:rate=25")];
+    let a = |rate: u32| vec!["-f".to_owned(), "lavfi".into(), "-i".into(), format!("sine=frequency=440:sample_rate={rate}")];
+    let s = |x: &[&str]| x.iter().map(|y| y.to_string()).collect::<Vec<_>>();
+    let av = |size: &str, rate: u32, codecs: &[&str]| [v(size), a(rate), s(&["-t", "1"]), s(codecs)].concat();
+    let ao = |rate: u32, codecs: &[&str]| [a(rate), s(&["-t", "1"]), s(codecs)].concat();
+    let h264 = ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"];
+    let cases: Vec<(&str, Vec<String>, bool)> = vec![
+        ("av1.mp4", av("160x120", 48000, &["-c:v", "libaom-av1", "-cpu-used", "8", "-b:v", "200k", "-c:a", "aac"]), true),
+        ("h264.mov", av("160x120", 48000, &[&h264[..], &["-c:a", "aac"]].concat()), true),
+        ("prores.mov", av("160x120", 48000, &["-c:v", "prores_ks", "-profile:v", "0", "-c:a", "pcm_s16le"]), true),
+        ("h264.m4v", av("160x120", 48000, &[&h264[..], &["-c:a", "aac"]].concat()), true),
+        ("h264-ac3.mkv", av("160x120", 48000, &[&h264[..], &["-c:a", "ac3"]].concat()), true),
+        ("mpeg4-mp3.avi", av("160x120", 44100, &["-c:v", "mpeg4", "-c:a", "libmp3lame"]), true),
+        ("vp8-vorbis.webm", av("160x120", 48000, &["-c:v", "libvpx", "-deadline", "realtime", "-c:a", "libvorbis"]), true),
+        ("wmv2-wmav2.wmv", av("160x120", 44100, &["-c:v", "wmv2", "-c:a", "wmav2"]), true),
+        ("mpeg2.mpg", av("160x120", 48000, &["-c:v", "mpeg2video", "-c:a", "mp2", "-f", "vob"]), true),
+        ("mpeg1.mpeg", av("160x120", 44100, &["-c:v", "mpeg1video", "-c:a", "mp2", "-f", "mpeg"]), true),
+        ("h264.ts", av("160x120", 48000, &[&h264[..], &["-c:a", "aac", "-f", "mpegts"]].concat()), true),
+        ("h264.mts", av("160x120", 48000, &[&h264[..], &["-c:a", "ac3", "-f", "mpegts", "-mpegts_m2ts_mode", "1"]].concat()), true),
+        ("h264.m2ts", av("160x120", 48000, &[&h264[..], &["-c:a", "ac3", "-f", "mpegts", "-mpegts_m2ts_mode", "1"]].concat()), true),
+        ("h263.3gp", av("176x144", 48000, &["-c:v", "h263", "-c:a", "aac", "-ac", "1"]), true),
+        ("sorenson.flv", av("160x120", 44100, &["-c:v", "flv", "-c:a", "libmp3lame"]), true),
+        ("tone.mp3", ao(44100, &["-c:a", "libmp3lame"]), false),
+        ("tone.wav", ao(48000, &["-c:a", "pcm_s16le"]), false),
+        ("tone.m4a", ao(48000, &["-c:a", "aac", "-f", "ipod"]), false),
+        ("tone.aac", ao(48000, &["-c:a", "aac", "-f", "adts"]), false),
+        ("tone.flac", ao(48000, &["-c:a", "flac"]), false),
+        ("tone.ogg", ao(48000, &["-c:a", "libvorbis"]), false),
+        ("tone.opus", ao(48000, &["-c:a", "libopus"]), false),
+        ("tone.wma", ao(44100, &["-c:a", "wmav2", "-f", "asf"]), false),
+    ];
+    let dir = common::fixtures_dir().join("formats");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, args, video) in cases {
+        let path = dir.join(name);
+        if !path.exists() {
+            let tmp = dir.join(format!("tmp-{}-{name}", std::process::id()));
+            let ok = std::process::Command::new(&ff)
+                .args(["-y", "-hide_banner", "-loglevel", "error"])
+                .args(&args)
+                .arg(&tmp)
+                .status()
+                .is_ok_and(|s| s.success());
+            assert!(ok, "ffmpeg failed to generate {name}");
+            if std::fs::rename(&tmp, &path).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+        let rec = Recorder::default();
+        let mut p = quiet();
+        rec.attach(&mut p);
+        let g = p.load(Some(MediaSource::File(path)), false);
+        let Some(PlayerEvent::Opened { duration, natural_size, .. }) =
+            rec.wait_for(0, T, |e| matches!(e, PlayerEvent::Opened { .. } | PlayerEvent::Failed { .. }))
+        else {
+            panic!("{name}: {:?}", rec.snapshot());
+        };
+        assert_eq!(p.failure_kind(), None, "{name}");
+        assert!(duration > 0.8 && duration < 1.6, "{name}: duration {duration}");
+        if video {
+            let (w, h) = natural_size.unwrap_or_else(|| panic!("{name}: no size"));
+            let f = frame_where(&mut p, T, |_| true).unwrap_or_else(|| panic!("{name}: no frame"));
+            assert_eq!((f.width, f.height), (w, h), "{name}");
+            assert!(w >= 160 && h >= 120, "{name}: {w}x{h}");
+        } else {
+            assert_eq!(natural_size, None, "{name}");
+        }
+        let _ = g;
+        p.dispose();
+    }
+}
+
+/// An empty file fails the same way through our own file handle (Windows) and through FFmpeg's file protocol (macOS;
+/// forced here with a `file:` URL), and counts as a format problem, as AVFoundation's "file format not recognized".
+#[test]
+fn an_empty_file_fails_the_same_way_through_either_file_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("empty.mp4");
+    std::fs::write(&path, b"").unwrap();
+    let url = std::path::PathBuf::from(format!("file:{}", path.display()));
+    let mut kinds = Vec::new();
+    for source in [path, url] {
+        let rec = Recorder::default();
+        let mut p = quiet();
+        rec.attach(&mut p);
+        let g = p.load(Some(MediaSource::File(source.clone())), false);
+        let e = rec.wait_for(0, T, |e| matches!(e, PlayerEvent::Failed { generation, .. } if *generation == g));
+        assert!(e.is_some(), "{source:?}: {:?}", rec.snapshot());
+        kinds.push(p.failure_kind());
+    }
+    assert_eq!(kinds, [Some(FailureKind::UnsupportedFormat); 2]);
 }

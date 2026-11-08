@@ -25,6 +25,14 @@ export global AppBridge {
     in property <bool> is-maximized;
     // ui-main: the window has keyboard focus (title bar text dims when inactive).
     in property <bool> is-active: true;
+    // ui-main (Windows): hover/press of the non-client maximize button (Snap Layouts), 0 none, 1 hover, 2 pressed.
+    in property <int> maximize-hover;
+    // ui-main (Windows): UISettings accent shades (win-ui-main §5); defaults = the Windows default blue palette as
+    // WinUI resolves it (AccentDark1/2, AccentLight2/3).
+    in property <color> accent-dark1: #005fb8;
+    in property <color> accent-dark2: #003e92;
+    in property <color> accent-light2: #60cdff;
+    in property <color> accent-light3: #99ebff;
 
     callback open-settings();
     callback close-requested();
@@ -394,6 +402,9 @@ export global SettingsBridge {
     callback close-requested();
     callback drag-requested();
     callback title-double-clicked();
+    // (W) hover / press state of the maximize caption button reported by the native chrome (0 none, 1 hover,
+    // 2 pressed): with Snap Layouts the button is non-client, so Slint gets no pointer events over it.
+    in property <int> maximize-hover;
 
     // ---- General ▸ Dil
     in property <[string]> ui-language-items;
@@ -538,6 +549,10 @@ export global SettingsBridge {
     in-out property <string> overlay-color-hex: "#FFFFFF";
     callback overlay-color-picked(color);
     callback overlay-color-hex-entered(string);
+    // (M) on a real Mac the color well opens the shared NSColorPanel (Rust reports changes through
+    // `overlay-color-picked`); elsewhere (previews) the well shows its Slint popover.
+    in property <bool> native-color-panel;
+    callback overlay-color-panel-requested();
     in-out property <int> overlay-background-index;
     callback overlay-background-selected(int);
     in-out property <float> overlay-opacity: 0.6;

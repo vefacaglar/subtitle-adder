@@ -3,6 +3,7 @@
 //! The compiled UI tree follows the target (`ui/win` fluent, `ui/mac` cupertino; see build.rs). Both trees export
 //! the same windows and globals, so this crate's Rust code is shared; tree-specific glue uses `cfg(sa_ui = "…")`.
 
+pub mod app;
 pub mod dispatcher;
 pub mod hub;
 pub mod loc;
@@ -15,8 +16,6 @@ pub mod symbols;
 pub mod ui {
     slint::include_modules!();
 }
-
-use slint::ComponentHandle;
 
 /// Which UI tree and style this binary was built with.
 pub const UI_TREE: &str = env!("SA_UI_TREE");
@@ -44,32 +43,7 @@ pub fn probe_native_stack() -> String {
     out
 }
 
-/// Skeleton app: opens the main window with empty areas (ARCHITECTURE.md §9 lists what each agent wires next).
+/// The app: composition, the main window(s), the event loop and the shutdown order ([`app::run`]).
 pub fn run() -> Result<(), slint::PlatformError> {
-    select_catalog_chain();
-    let main = ui::MainWindow::new()?;
-    loc::install(&main);
-    symbols::install(&main);
-    loc::follow_language_changes(main.as_weak());
-
-    let weak = main.as_weak();
-    main.global::<ui::AppBridge>().on_close_requested(move || {
-        if let Some(w) = weak.upgrade() {
-            let _ = w.hide();
-        }
-    });
-    let weak = main.as_weak();
-    main.global::<ui::MainBridge>().on_workspace_selected(move |w| {
-        if let Some(win) = weak.upgrade() {
-            win.global::<ui::MainBridge>().set_workspace(w);
-        }
-    });
-    let weak = main.as_weak();
-    main.global::<ui::MainBridge>().on_file_explorer_toggled(move |v| {
-        if let Some(win) = weak.upgrade() {
-            win.global::<ui::MainBridge>().set_show_file_explorer(v);
-        }
-    });
-    main.global::<ui::MainBridge>().set_status_text(sa_core::l("Hazır").into());
-    main.run()
+    app::run()
 }

@@ -119,3 +119,160 @@ fn user_name_sanitization_matches_dotnet() {
         assert_eq!(lines[2], names.pipe);
     }
 }
+
+// ---- file associations (win-ui-main §3): the same registry tree, written and removed by either side ------------
+
+/// `HKCU\<scratch>` for one test, removed (with everything below it) on drop.
+struct Scratch(String);
+
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        Scratch(format!(r"Software\SubtitleAdderDesktopTests-compat-{tag}-{}-{n}", std::process::id()))
+    }
+
+    /// Another app already owns `.mkv` (the registrar must never steal an existing default).
+    fn seed_foreign_mkv(&self) {
+        let status = Command::new("reg")
+            .args(["add", &format!(r"HKCU\{}\Software\Classes\.mkv", self.0), "/ve", "/d", "VLC.mkv", "/f"])
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = Command::new("reg").args(["delete", &format!(r"HKCU\{}", self.0), "/f"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+}
+
+fn tool(args: &[&str]) -> String {
+    let out = Command::new(tool_exe()).args(args).output().unwrap();
+    assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap()
+}
+
+fn dump(s: &Scratch) -> String {
+    tool(&["dump", &s.0])
+}
+
+#[test]
+fn file_associations_write_and_remove_the_same_registry_tree_as_csharp() {
+    use sa_core::platform::FileAssociations;
+    use sa_platform::win::associations::FileAssociationRegistrar;
+    if !enabled() {
+        return;
+    }
+    let exe = r"C:\Program Files\Subtitle Adder\SubtitleAdder.exe";
+    for icon in [None, Some(r"C:\Program Files\Subtitle Adder\Assets\AppIcon.ico")] {
+        let cs = Scratch::new("cs");
+        let rs = Scratch::new("rs");
+        cs.seed_foreign_mkv();
+        rs.seed_foreign_mkv();
+        let rust = |s: &Scratch| FileAssociationRegistrar::with_root(&s.0, PathBuf::from(exe), icon.map(str::to_owned));
+        let mut register_args = vec!["assoc-register", cs.0.as_str(), exe];
+        register_args.extend(icon);
+
+        assert_eq!(tool(&register_args).trim(), "ok");
+        assert!(rust(&rs).register());
+        let written = dump(&cs);
+        assert!(written.contains(r"Software\Classes\SubtitleAdder.Media\shell\open\command||String|"), "{written}");
+        assert!(written.contains(r"Software\Classes\.mkv||String|VLC.mkv"), "{written}");
+        assert_eq!(dump(&rs), written, "Rust and C# registrations differ (icon {icon:?})");
+
+        // Each side recognizes the other's registration, and registering again changes nothing.
+        assert!(rust(&cs).is_registered());
+        assert_eq!(tool(&["assoc-registered", &rs.0]).trim(), "true");
+        assert_eq!(tool(&register_args).trim(), "ok");
+        assert!(rust(&rs).register());
+        assert_eq!(dump(&cs), written);
+        assert_eq!(dump(&rs), written);
+
+        // Cross removal: Rust removes what C# wrote, C# removes what Rust wrote; both leave the same remains.
+        assert!(rust(&cs).unregister());
+        assert_eq!(tool(&["assoc-unregister", &rs.0]).trim(), "ok");
+        let removed = dump(&cs);
+        assert_eq!(dump(&rs), removed);
+        assert!(!removed.contains("SubtitleAdder.Media"), "{removed}");
+        assert!(removed.contains(r"Software\Classes\.mkv||String|VLC.mkv"), "{removed}");
+        assert!(!rust(&cs).is_registered());
+        assert_eq!(tool(&["assoc-registered", &rs.0]).trim(), "false");
+        // Removing twice is fine on both sides.
+        assert!(rust(&rs).unregister());
+        assert_eq!(tool(&["assoc-unregister", &cs.0]).trim(), "ok");
+        assert_eq!(dump(&rs), dump(&cs));
+    }
+}
+
+// ---- fonts (win-ui-main §20.2) -------------------------------------------------------------------------------------
+
+#[test]
+fn installed_font_families_match_the_csharp_list_and_order() {
+    if !enabled() {
+        return;
+    }
+    let cs: Vec<String> = tool(&["fonts"]).lines().map(str::to_owned).collect();
+    let rs = sa_platform::win::fonts::families();
+    assert!(cs.len() > 10, "{cs:?}");
+    let first_difference = cs.iter().zip(rs.iter()).position(|(a, b)| a != b);
+    assert_eq!(first_difference, None, "first difference at {first_difference:?}: C# {:?} / Rust {:?}",
+        first_difference.map(|i| &cs[i.saturating_sub(2)..(i + 3).min(cs.len())]),
+        first_difference.map(|i| &rs[i.saturating_sub(2)..(i + 3).min(rs.len())]));
+    assert_eq!(cs.len(), rs.len());
+}
+
+// ---- path rules: roots, extensions, explorer folders, storage readiness ----------------------------------------------
+
+#[test]
+fn path_rules_match_dotnet() {
+    use sa_platform::dialogs::{DialogFlavor, has_extension, suggested_save_name};
+    use sa_platform::win::folders::{normalize_directory_path, path_root, storage_available};
+    if !enabled() {
+        return;
+    }
+    // A drive letter that does not exist here (DriveInfo.IsReady false).
+    let missing = (b'D'..=b'Z').map(|c| format!("{}:\\", c as char)).find(|r| !Path::new(r).exists()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let inputs: Vec<String> = [
+        r"C:\Users\x\film.tr.srt",
+        r"C:\Users\x\film",
+        r"C:\Users\x\film.",
+        r"C:\Users\x\.srt",
+        "film.tr.srt",
+        "film",
+        r"C:\Windows\",
+        r"C:\Windows\System32//",
+        "  C:/Windows/System32/  ",
+        r"C:\",
+        "C:",
+        "C:relative.mp4",
+        r"\Films\a.mp4",
+        r"relative\a.mp4",
+        r"\?\C:\Windows",
+        "D:/x//y/",
+        "   ",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .chain([format!("{missing}film.mp4"), dir.path().join("a.mkv").display().to_string()])
+    .collect();
+    let mut args = vec!["paths"];
+    args.extend(inputs.iter().map(String::as_str));
+    let out = tool(&args);
+    let rows: Vec<serde_json::Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(rows.len(), inputs.len());
+    for (input, row) in inputs.iter().zip(&rows) {
+        let expect_root = row["root"].as_str().unwrap_or("");
+        assert_eq!(path_root(input), expect_root, "GetPathRoot({input:?})");
+        assert_eq!(has_extension(Path::new(input)), row["hasExtension"].as_bool().unwrap(), "HasExtension({input:?})");
+        assert_eq!(
+            suggested_save_name(input, DialogFlavor::Windows),
+            row["withoutExtension"].as_str().unwrap_or(""),
+            "GetFileNameWithoutExtension({input:?})"
+        );
+        assert_eq!(normalize_directory_path(input), row["normalizedDirectory"].as_str().unwrap(), "NormalizeDirectoryPath({input:?})");
+        assert_eq!(storage_available(Path::new(input)), row["storageAvailable"].as_bool().unwrap(), "storage of {input:?}");
+    }
+}

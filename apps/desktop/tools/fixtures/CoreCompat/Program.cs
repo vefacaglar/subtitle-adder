@@ -210,6 +210,32 @@ switch (cmd)
         Emit("ok");
         break;
     }
+    case "settings-ops":
+    {
+        // Replays typed writes on an InMemorySettingsStore (values held as in-memory JsonValue primitives, not parsed
+        // from a file) and prints, after every operation, how many Changed events fired so far and the typed reads of
+        // the touched key. Ops: "int k v", "double k v" (R syntax, "NaN"), "string k v", "bool k true|false",
+        // "remove k".
+        var store = new InMemorySettingsStore();
+        var changed = new List<string>();
+        store.Changed += (_, key) => changed.Add(key);
+        foreach (var line in InputLines(args[1]))
+        {
+            var op = line.Split(' ', 3);
+            var key = op[1];
+            switch (op[0])
+            {
+                case "int": store.SetInt(key, int.Parse(op[2], CultureInfo.InvariantCulture)); break;
+                case "double": store.SetDouble(key, double.Parse(op[2], CultureInfo.InvariantCulture)); break;
+                case "string": store.SetString(key, op[2]); break;
+                case "bool": store.SetBool(key, op[2] == "true"); break;
+                case "remove": store.Remove(key); break;
+            }
+            Emit(line, changed.Count, store.GetString(key), store.GetBool(key), store.GetInt(key),
+                store.GetDouble(key) is { } d ? R(d) : null);
+        }
+        break;
+    }
     case "undo":
     {
         // Replays an operation script on the real UndoStack; after every operation prints the observable state.

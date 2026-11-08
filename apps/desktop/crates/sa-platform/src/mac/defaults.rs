@@ -24,6 +24,7 @@ use sa_core::subscription::{Subscribers, Subscription};
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     static kCFPreferencesAnyApplication: CFStringRef;
+    static kCFPreferencesCurrentApplication: CFStringRef;
     static kCFPreferencesCurrentUser: CFStringRef;
     static kCFPreferencesAnyHost: CFStringRef;
     fn CFPreferencesCopyAppValue(key: CFStringRef, application: CFStringRef) -> CFTypeRef;
@@ -31,6 +32,25 @@ unsafe extern "C" {
     fn CFPreferencesAppSynchronize(application: CFStringRef) -> u8;
     fn CFPreferencesCopyValue(key: CFStringRef, application: CFStringRef, user: CFStringRef, host: CFStringRef) -> CFTypeRef;
     fn CFPreferencesCopyMultiple(keys: CFTypeRef, application: CFStringRef, user: CFStringRef, host: CFStringRef) -> CFTypeRef;
+    fn CFBundleGetMainBundle() -> *const c_void;
+    fn CFBundleGetIdentifier(bundle: *const c_void) -> CFStringRef;
+}
+
+/// `Bundle.main.bundleIdentifier`: the packaged app's `CFBundleIdentifier`; `None` for an unbundled development run
+/// (its embedded `__info_plist` deliberately has none).
+pub fn main_bundle_identifier() -> Option<String> {
+    unsafe {
+        let bundle = CFBundleGetMainBundle();
+        if bundle.is_null() {
+            return None;
+        }
+        let id = CFBundleGetIdentifier(bundle);
+        if id.is_null() {
+            return None;
+        }
+        let s = CFString::wrap_under_get_rule(id).to_string();
+        (!s.is_empty()).then_some(s)
+    }
 }
 
 /// A copied preference value.
@@ -162,13 +182,26 @@ fn set_raw(domain: &str, key: &str, value: Option<CFType>) {
     }
 }
 
+fn string_array(items: &[String]) -> CFType {
+    let strings: Vec<CFString> = items.iter().map(|s| CFString::new(s)).collect();
+    CFArray::from_CFTypes(&strings).as_CFType()
+}
+
 /// Per-app `AppleLanguages` (`None` removes it).
 pub fn set_app_string_array(domain: &str, key: &str, value: Option<&[String]>) {
-    let v = value.map(|items| {
-        let strings: Vec<CFString> = items.iter().map(|s| CFString::new(s)).collect();
-        CFArray::from_CFTypes(&strings).as_CFType()
-    });
-    set_raw(domain, key, v);
+    set_raw(domain, key, value.map(string_array));
+}
+
+/// A string array in the domain AppKit itself reads for this process (`kCFPreferencesCurrentApplication`: the
+/// bundle id, or the executable name of an unbundled run), `None` removes it.
+pub fn set_current_app_string_array(key: &str, value: Option<&[String]>) {
+    let k = CFString::new(key);
+    let v = value.map(string_array);
+    unsafe {
+        let r = v.as_ref().map(|v| v.as_CFTypeRef()).unwrap_or(std::ptr::null());
+        CFPreferencesSetAppValue(k.as_concrete_TypeRef(), r, kCFPreferencesCurrentApplication);
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication);
+    }
 }
 
 /// Every key of the domain (current user, any host) in canonical form.
@@ -314,11 +347,7 @@ impl SettingsStore for UserDefaultsSettingsStore {
         }
     }
     fn set_string_array(&self, key: &str, value: Option<&[String]>) {
-        let v = value.map(|items| {
-            let strings: Vec<CFString> = items.iter().map(|s| CFString::new(s)).collect();
-            CFArray::from_CFTypes(&strings).as_CFType()
-        });
-        self.put(key, v);
+        self.put(key, value.map(string_array));
     }
     fn remove(&self, key: &str) {
         self.put(key, None);

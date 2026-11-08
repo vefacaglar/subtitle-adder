@@ -69,6 +69,40 @@
         }
       }
     },
+    "Dosya türleri Windows'a kaydedilemedi.": {
+      "comment": "Added by the Rust desktop app (Settings ▸ General file associations failure; the C# app showed the raw exception text, Windows).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file types could not be registered with Windows."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dosya türleri Windows'a kaydedilemedi."
+          }
+        }
+      }
+    },
+    "Dosya türü ilişkilendirmeleri kaldırılamadı.": {
+      "comment": "Added by the Rust desktop app (Settings ▸ General file associations failure; the C# app showed the raw exception text, Windows).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file type associations could not be removed."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dosya türü ilişkilendirmeleri kaldırılamadı."
+          }
+        }
+      }
+    },
     "Güvenli bağlantı kurulamadı.": {
       "comment": "Added by the Rust desktop app (enginekit connection-test errors, UNIFIED.md section 8, both platforms).",
       "localizations": {

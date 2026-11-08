@@ -1,6 +1,7 @@
-//! Opening a [`MediaSource`] as an FFmpeg demuxer: the file protocol for paths, a custom `AVIOContext` over a
-//! `Read + Seek` (Windows `BufferedVideoStream` over the encrypted chunk cache) otherwise. Every blocking FFmpeg call
-//! is interruptible through the session's stop flag.
+//! Opening a [`MediaSource`] as an FFmpeg demuxer: a custom `AVIOContext` over a `Read + Seek` (Windows
+//! `BufferedVideoStream` over the encrypted chunk cache, and on Windows also an existing file opened with
+//! delete sharing), FFmpeg's own URL open (file protocol) otherwise. Every blocking FFmpeg call is interruptible
+//! through the session's stop flag.
 
 use std::ffi::{CString, c_int, c_void};
 use std::io::{Read, Seek, SeekFrom};
@@ -151,10 +152,41 @@ pub(crate) fn classify(e: ffmpeg_next::Error) -> FailureKind {
     }
 }
 
+/// Windows: an existing file is read through our own handle opened like the C# app's `BufferedVideoStream`
+/// (read-only, sharing read/write/delete, sequential-scan hint), so a video that is playing can still be renamed,
+/// moved or deleted, as with the C# app (FFmpeg's file protocol opens without `FILE_SHARE_DELETE`). Anything else (no
+/// such file, or the open fails) goes to FFmpeg's own URL open, as the C# app falls back to `CreateFromUri`.
+#[cfg(windows)]
+fn open_shared_file(path: &std::path::Path) -> Option<Box<dyn ReadSeek>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    const FILE_SHARE_DELETE: u32 = 0x4;
+    const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+    if !path.is_file() {
+        return None;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
+        .open(path)
+        .ok()
+        .map(|f| Box::new(f) as Box<dyn ReadSeek>)
+}
+
+#[cfg(not(windows))]
+fn open_shared_file(_path: &std::path::Path) -> Option<Box<dyn ReadSeek>> {
+    None
+}
+
 /// Opens and probes `source`. Blocking; aborts with an error once `stop` is set.
 pub(crate) fn open_input(source: MediaSource, stop: Arc<AtomicBool>) -> Result<OpenedInput, OpenFailure> {
     let (url, reader) = match source {
-        MediaSource::File(path) => (path.to_string_lossy().into_owned(), None),
+        MediaSource::File(path) => {
+            let reader = open_shared_file(&path);
+            (path.to_string_lossy().into_owned(), reader)
+        }
         MediaSource::Reader { path, open } => {
             let reader = open().map_err(|e| OpenFailure::new(e.to_string(), FailureKind::Io))?;
             (path.to_string_lossy().into_owned(), Some(reader))

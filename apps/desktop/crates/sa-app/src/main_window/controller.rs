@@ -20,6 +20,7 @@ use sa_core::engine_types::SubtitleFormat;
 use sa_core::models::SubtitleLanguage;
 use sa_core::platform::{FileFilter, PlatformShell};
 use sa_core::settings::{SettingsStore, defaults, keys};
+use sa_enginekit::editing::SentenceListExt;
 use sa_player::{MediaPlayerBackend, VideoFrame};
 use sa_viewmodels::explorer::{ExplorerChange, FileExplorerModel};
 use sa_viewmodels::hub::{HubChange, VideoPlatformModel};
@@ -127,6 +128,15 @@ pub struct MainWindowController {
     timer: slint::Timer,
     key: Cell<Option<UiKey<MainWindowController>>>,
     disposed: Cell<bool>,
+    /// Windows: the attached native chrome and the accent watcher (`attach_native_chrome`).
+    #[cfg(windows)]
+    native: RefCell<Option<NativeChrome>>,
+}
+
+#[cfg(windows)]
+struct NativeChrome {
+    chrome: Rc<super::chrome::MainChrome>,
+    _accent: Option<sa_platform::win::accent::AccentWatcher>,
 }
 
 fn s(v: impl Into<SharedString>) -> SharedString {
@@ -226,6 +236,8 @@ impl MainWindowController {
             timer: slint::Timer::default(),
             key: Cell::new(None),
             disposed: Cell::new(false),
+            #[cfg(windows)]
+            native: RefCell::new(None),
         });
         let key = UiKey::register(&this);
         this.key.set(Some(key));
@@ -358,6 +370,8 @@ impl MainWindowController {
                 self.sync_editor_state();
                 self.sync_overlay();
                 self.sync_toolbar();
+                // mac-ui §7.1 / win-ui-main §6.5: the first or last line switches drop zone / line panel / player.
+                self.sync_layout(false);
             }
             SubtitleChange::Translations => {
                 self.sync_rows();
@@ -534,11 +548,14 @@ impl MainWindowController {
             let p = self.player.borrow();
             (p.is_playing(), p.active_id())
         };
-        let editing = self.st.borrow().editing_text;
+        let (editing, index) = {
+            // Read the state in its own scope: a `let` chain would keep this borrow alive in the body below.
+            let st = self.st.borrow();
+            (st.editing_text, active.and_then(|uid| st.row_uids.iter().position(|u| *u == uid)))
+        };
         if playing
             && !editing
-            && let Some(uid) = active
-            && let Some(index) = self.st.borrow().row_uids.iter().position(|u| *u == uid)
+            && let Some(index) = index
             && let Some(w) = self.win()
         {
             let main = w.global::<MainBridge>();
@@ -665,7 +682,7 @@ impl MainWindowController {
         main.set_can_translate(vm.can_translate());
         main.set_can_generate(vm.can_generate());
         main.set_can_generate_and_translate(if self.mac { vm.can_generate_and_translate() } else { !working });
-        main.set_can_cancel(vm.can_cancel());
+        main.set_can_cancel(self.can_stop());
         main.set_can_pick_video(vm.workspace() == Workspace::Editor);
         main.set_can_pick_subtitle(!working);
         main.set_auto_save(vm.auto_save_subtitle());
@@ -674,6 +691,16 @@ impl MainWindowController {
         let explorer_open = self.explorer_open();
         main.set_show_file_explorer(explorer_open);
         self.sync_menu_bar();
+    }
+
+    /// Stop has something to stop. Windows: `CancelCommand` (= `IsWorking`, which includes a playlist run). macOS
+    /// `canStop`: the playlist run in the list tab, otherwise the job of the video on screen.
+    fn can_stop(&self) -> bool {
+        if self.mac {
+            if self.vm.workspace() == Workspace::Playlist { self.vm.is_playlist_running() } else { self.vm.is_working() }
+        } else {
+            self.vm.can_cancel()
+        }
     }
 
     fn explorer_open(&self) -> bool {
@@ -723,7 +750,7 @@ impl MainWindowController {
         main.set_retry_title(s(vm.offline_retry_title()));
         main.set_badge_text(s(vm.translation_badge_text()));
         main.set_empty_title(s(self.empty_title()));
-        main.set_empty_detail(s(if vm.is_working() || vm.is_queued() { String::new() } else { sa_core::l("Araç çubuğundan “Altyazı üret”e bas.") }));
+        main.set_empty_detail(s(if vm.is_working() || (self.mac && vm.is_queued()) { String::new() } else { sa_core::l("Araç çubuğundan “Altyazı üret”e bas.") }));
         main.set_empty_symbol(s(if self.mac && vm.is_queued() && !vm.has_sentences() { "clock" } else { "captions.bubble" }));
         let notice = if self.mac {
             mac_playback_notice(self.player.borrow().failure_message(), vm.workspace(), vm.status().kind(), vm.async_translation_fraction().is_some() || vm.is_async_translating())
@@ -1109,7 +1136,8 @@ impl MainWindowController {
 
     fn sync_engagement(&self) {
         let Some(w) = self.win() else { return };
-        let visible = self.hub.as_ref().is_some_and(|h| h.is_logged_in()) && self.vm.video().is_some();
+        // Same rule as `HubBridge.engagement-visible` (logged in and a video open in the player; rule 6).
+        let visible = self.hub.as_ref().is_some_and(|h| h.is_logged_in() && h.engagement().visible);
         w.global::<MainBridge>().set_engagement_visible(visible);
     }
 
@@ -1124,7 +1152,7 @@ impl MainWindowController {
         let editor = vm.workspace() == Workspace::Editor;
         m.set_can_open_video(editor);
         m.set_can_generate(vm.video().is_some() && !vm.is_working() && editor);
-        m.set_can_stop(vm.can_cancel());
+        m.set_can_stop(self.can_stop());
         m.set_theater_mode(vm.is_theater_mode());
         m.set_side_by_side(vm.side_by_side_layout());
         m.set_panel_hidden(vm.hide_subtitle_panel());
@@ -1166,10 +1194,10 @@ impl MainWindowController {
 
         // Window / chrome.
         on!(app, on_open_settings, |c| c.open_settings());
-        on!(app, on_minimize_requested, |c| if let Some(h) = &c.hooks.minimize { h() });
-        on!(app, on_maximize_toggle_requested, |c| if let Some(h) = &c.hooks.toggle_maximize { h() });
-        on!(app, on_drag_requested, |c| if let Some(h) = &c.hooks.drag_window { h() });
-        on!(app, on_title_double_clicked, |c| if let Some(h) = &c.hooks.toggle_maximize { h() });
+        on!(app, on_minimize_requested, |c| c.minimize_window());
+        on!(app, on_maximize_toggle_requested, |c| c.toggle_maximize_window());
+        on!(app, on_drag_requested, |c| c.drag_window());
+        on!(app, on_title_double_clicked, |c| c.toggle_maximize_window());
         on!(app, on_close_requested, |c| match &c.hooks.close_window {
             Some(h) => h(),
             None => {
@@ -1254,7 +1282,7 @@ impl MainWindowController {
             c.sync_hud();
         });
         on!(main, on_video_clicked, |c, count| {
-            for a in shortcuts::video_click_actions(count.max(0) as u32) {
+            for a in video_click_delta(count.max(0) as u32) {
                 c.perform_shortcut(a, false);
             }
         });
@@ -1284,8 +1312,10 @@ impl MainWindowController {
                 let p = c.player.borrow();
                 (p.volume(), p.is_muted())
             };
-            c.player.borrow_mut().set_volume(windows_wheel_volume(v, m, delta as f64));
-            c.drain_player();
+            if let Some(volume) = windows_wheel_volume(v, m, delta as f64) {
+                c.player.borrow_mut().set_volume(volume);
+                c.drain_player();
+            }
         });
 
         // Display picker.
@@ -1460,8 +1490,8 @@ impl MainWindowController {
                     }
                 }
             });
-            on!(m, on_minimize, |c| if let Some(h) = &c.hooks.minimize { h() });
-            on!(m, on_zoom, |c| if let Some(h) = &c.hooks.toggle_maximize { h() });
+            on!(m, on_minimize, |c| c.minimize_window());
+            on!(m, on_zoom, |c| c.toggle_maximize_window());
         }
 
         self.install_window_events(w);
@@ -1480,6 +1510,13 @@ impl MainWindowController {
                 winit::event::WindowEvent::Resized(_) | winit::event::WindowEvent::ScaleFactorChanged { .. } => {
                     let size = window.size().to_logical(window.scale_factor());
                     c.window_resized(size.width, size.height);
+                    // Slint updates its own size after this filter: re-report the caption layout on the next turn.
+                    let weak = Rc::downgrade(&c);
+                    slint::Timer::single_shot(Duration::ZERO, move || {
+                        if let Some(c) = weak.upgrade() {
+                            c.sync_native_chrome();
+                        }
+                    });
                     let full = window.with_winit_window(|ww| ww.fullscreen().is_some()).unwrap_or(false);
                     let maximized = window.is_maximized();
                     if let Some(win) = c.win() {
@@ -1491,6 +1528,7 @@ impl MainWindowController {
                         c.sync_toolbar();
                     }
                 }
+                winit::event::WindowEvent::ThemeChanged(_) => c.sync_native_chrome(),
                 winit::event::WindowEvent::Focused(f) => {
                     if let Some(win) = c.win() {
                         win.global::<AppBridge>().set_is_active(*f);
@@ -1622,7 +1660,8 @@ impl MainWindowController {
     }
 
     fn toggle_panel(&self) {
-        if self.st.borrow().full_screen {
+        // macOS disables the panel button in full screen; WinUI's SubtitlePanelButton / E key still toggle there.
+        if self.mac && self.st.borrow().full_screen {
             return;
         }
         self.vm.toggle_subtitle_panel();
@@ -1631,6 +1670,91 @@ impl MainWindowController {
     fn toggle_full_screen(&self) {
         let on = !self.st.borrow().full_screen;
         self.set_full_screen(on);
+    }
+
+    /// Attaches the native chrome once the window is shown (Windows: caption hit-testing with Snap Layouts, saved
+    /// size, frame theme, UISettings accent; macOS: nothing, the unified title bar is set through
+    /// [`super::chrome::winit_attributes`] before the window exists). No-op without a native window.
+    pub fn attach_native_chrome(self: &Rc<Self>) {
+        #[cfg(windows)]
+        {
+            let Some(w) = self.win() else { return };
+            if self.native.borrow().is_some() {
+                return;
+            }
+            let Some(chrome) = super::chrome::attach(&w, &*self.settings) else { return };
+            self.apply_accent(sa_platform::win::accent::AccentPalette::current());
+            let key = self.key.get().expect("registered");
+            let ui = self.ui_dispatcher.clone();
+            let watcher = sa_platform::win::accent::AccentWatcher::start(Box::new(move |p| {
+                key.post(&ui, move |c| c.apply_accent(p));
+            }));
+            *self.native.borrow_mut() = Some(NativeChrome { chrome, _accent: watcher });
+        }
+    }
+
+    /// Pushes the UISettings accent shades (win-ui-main §5) into `AppBridge` (the Fluent `Theme` derives its tokens).
+    #[cfg(windows)]
+    fn apply_accent(&self, p: sa_platform::win::accent::AccentPalette) {
+        let Some(w) = self.win() else { return };
+        let app = w.global::<AppBridge>();
+        let c = |x: sa_platform::win::accent::Rgba| slint::Color::from_argb_u8(x.a, x.r, x.g, x.b);
+        app.set_accent_dark1(c(p.dark1));
+        app.set_accent_dark2(c(p.dark2));
+        app.set_accent_light2(c(p.light2));
+        app.set_accent_light3(c(p.light3));
+    }
+
+    /// Re-reports caption layout, maximized state and frame theme to the native chrome (resize, full screen, theme).
+    fn sync_native_chrome(&self) {
+        #[cfg(windows)]
+        if let Some(w) = self.win()
+            && let Some(n) = self.native.borrow().as_ref()
+        {
+            n.chrome.sync(&w);
+            n.chrome.sync_theme(&w);
+        }
+    }
+
+    /// Caption minimize / macOS Window ▸ Minimize (⌘M).
+    fn minimize_window(&self) {
+        if let Some(h) = &self.hooks.minimize {
+            return h();
+        }
+        #[cfg(windows)]
+        if let Some(n) = self.native.borrow().as_ref() {
+            return n.chrome.minimize();
+        }
+        if let Some(w) = self.win() {
+            w.window().set_minimized(true);
+        }
+    }
+
+    /// Caption maximize/restore, title-bar double click / macOS Window ▸ Zoom.
+    fn toggle_maximize_window(&self) {
+        if let Some(h) = &self.hooks.toggle_maximize {
+            return h();
+        }
+        #[cfg(windows)]
+        if let Some(n) = self.native.borrow().as_ref() {
+            return n.chrome.toggle_maximize();
+        }
+        if let Some(w) = self.win() {
+            let max = w.window().is_maximized();
+            w.window().set_maximized(!max);
+            w.global::<AppBridge>().set_is_maximized(!max);
+        }
+    }
+
+    /// Dragging the window from empty title-bar / toolbar space (the Windows chrome answers HTCAPTION itself).
+    fn drag_window(&self) {
+        if let Some(h) = &self.hooks.drag_window {
+            return h();
+        }
+        use slint::winit_030::WinitWindowAccessor;
+        if let Some(w) = self.win() {
+            let _ = w.window().with_winit_window(|ww| ww.drag_window());
+        }
     }
 
     fn set_full_screen(&self, on: bool) {
@@ -1645,6 +1769,7 @@ impl MainWindowController {
         }
         self.sync_layout(true);
         self.sync_toolbar();
+        self.sync_native_chrome();
     }
 
     fn leave_full_screen_or_theater(&self) {
@@ -1682,7 +1807,9 @@ impl MainWindowController {
                 let p = self.player.borrow();
                 (p.volume(), p.is_muted())
             };
-            self.player.borrow_mut().set_volume(windows_wheel_volume(v, m, delta));
+            // PlayerGrid_PointerWheelChanged: a zero delta returns before anything (no reveal either).
+            let Some(volume) = windows_wheel_volume(v, m, delta) else { return };
+            self.player.borrow_mut().set_volume(volume);
             self.hud.borrow_mut().reveal(Instant::now());
         }
         self.drain_player();
@@ -1774,8 +1901,10 @@ impl MainWindowController {
                 true
             }
             // Windows: Space on the list toggles playback; macOS leaves it to the window chrome.
+            // Lines_PreviewKeyDown: `_player.TogglePlayback()` alone (no HUD reveal, unlike the root handler).
             "space" if !self.mac => {
-                self.perform_shortcut(PlayerShortcut::TogglePlayback, false);
+                self.player.borrow_mut().toggle_playback();
+                self.drain_player();
                 true
             }
             _ => false,
@@ -1828,6 +1957,12 @@ impl MainWindowController {
         self.show_video(path, start_playing);
     }
 
+    /// A hub card's play action: Windows `VideoSelected` (editor tab + `OpenVideo`), macOS `play(url)`
+    /// (`showVideo(url, startPlaying: true)`).
+    pub fn play_from_hub(&self, path: PathBuf) {
+        self.show_video(path, self.mac);
+    }
+
     /// `showVideo(url, startPlaying)` (mac-ui §6.3) / `FileSelected(path)` (Windows).
     fn show_video(&self, path: PathBuf, start_playing: bool) {
         let already = self.vm.video().is_some_and(|v| self.policy.same_path(&v, &path));
@@ -1863,18 +1998,40 @@ impl MainWindowController {
             "speaker" | "row" => {
                 let Ok(row) = rest.parse::<usize>() else { return };
                 let Some(uid) = self.uid_at(row as i32) else { return };
-                let Some(sentence) = self.vm.sentences().into_iter().find(|s| s.uid == uid) else { return };
-                let speakers = menus::speaker_items(row, &self.vm.speakers(), sentence.speaker, dark, self.mac);
+                // WinUI `SpeakerRow_Click` / `RowMenu_Opening` call `SelectRow(row)` before building the items, so
+                // the enabled states below are those of the clicked row. A SwiftUI context menu leaves the selection
+                // alone and its actions target the row under the pointer (`rowTargets`).
+                if !self.mac {
+                    self.select_row_at(row as i32);
+                }
+                let sentences = self.vm.sentences();
+                let Some(index) = sentences.iter().position(|s| s.uid == uid) else { return };
+                let speakers = menus::speaker_items(row, &self.vm.speakers(), sentences[index].speaker, dark, self.mac);
                 if head == "speaker" {
                     speakers
                 } else {
-                    let st = RowMenuState {
-                        can_retranslate: self.vm.can_translate_selected(),
-                        can_split: self.vm.can_split_selected(now),
-                        can_merge: self.vm.can_merge_selected(),
-                        can_delete: !self.vm.is_working(),
-                        shows_speakers: self.vm.sentences().iter().any(|s| s.speaker.is_some()),
-                        is_working: self.vm.is_working(),
+                    let working = self.vm.is_working();
+                    let st = if self.mac {
+                        let selected = self.vm.selected_uids();
+                        let single = !selected.contains(&uid) || selected.len() == 1;
+                        RowMenuState {
+                            // `.disabled(vm.isWorking)`: the row joins the selection when it is chosen.
+                            can_retranslate: true,
+                            can_split: !working && single && sentences.can_split(index, now),
+                            can_merge: !working && single && index + 1 < sentences.len(),
+                            can_delete: !working,
+                            shows_speakers: sentences.iter().any(|s| s.speaker.is_some()),
+                            is_working: working,
+                        }
+                    } else {
+                        RowMenuState {
+                            can_retranslate: self.vm.can_translate_selected(),
+                            can_split: self.vm.can_split_selected(now),
+                            can_merge: self.vm.can_merge_selected(),
+                            can_delete: true,
+                            shows_speakers: sentences.iter().any(|s| s.speaker.is_some()),
+                            is_working: working,
+                        }
                     };
                     menus::row_menu(row, st, speakers, self.mac)
                 }
@@ -2060,7 +2217,10 @@ impl MainWindowController {
         let st = self.st.borrow();
         ShortcutFocus {
             is_editing_text: st.editing_text,
-            is_on_button: false,
+            // WinUI: the root handler leaves Space on a focused ListView/ListViewItem to `Lines_PreviewKeyDown`
+            // (which toggles playback without revealing the HUD). Focused buttons are not tracked (Slint buttons
+            // here are not keyboard-focusable).
+            is_on_button: !self.mac && st.list_focused,
             is_in_list: st.list_focused,
             is_full_screen: st.full_screen,
             panel_hidden: self.vm.hide_subtitle_panel(),
@@ -2150,7 +2310,7 @@ impl MainWindowController {
                 }
             }
             K::Stop => {
-                if self.vm.can_cancel() {
+                if self.can_stop() {
                     self.vm.cancel();
                 }
             }
@@ -2172,6 +2332,9 @@ impl MainWindowController {
     fn perform_shortcut(&self, sc: PlayerShortcut, repeat: bool) -> bool {
         let reveal = matches!(sc, PlayerShortcut::TogglePlayback | PlayerShortcut::Seek(_) | PlayerShortcut::AdjustVolume(_) | PlayerShortcut::ToggleMute);
         let mut target = Target { c: self };
+        // Windows acts on every KeyDown, auto-repeat included (MainWindow.Root_PreviewKeyDown); macOS lets only the
+        // repeating shortcuts repeat (mac-ui §5.2).
+        let repeat = self.mac && repeat;
         let done = shortcuts::perform(sc, repeat, &mut target);
         self.drain_player();
         if reveal {
@@ -2210,6 +2373,11 @@ impl MainWindowController {
             return;
         }
         self.timer.stop();
+        // win-ui-main §4.3: the restored size is saved on close.
+        #[cfg(windows)]
+        if let Some(n) = self.native.borrow_mut().take() {
+            n.chrome.save_size(&*self.settings);
+        }
         self.vm.finish_editing();
         self.player.borrow_mut().dispose();
         let outputs = self.player.borrow_mut().take_outputs();
@@ -2250,10 +2418,13 @@ struct Target<'a> {
 
 impl ShortcutTarget for Target<'_> {
     fn is_player_shown(&self) -> bool {
-        self.c.vm.is_player_shown()
+        // Only macOS gates the player shortcuts on a visible player; the Windows root handler always acts (§15).
+        !self.c.mac || self.c.vm.is_player_shown()
     }
     fn is_full_screen(&self) -> bool {
-        self.c.st.borrow().full_screen
+        // Only consulted for TogglePanel: macOS keeps the panel setting in full screen (mac-ui §5.2); the WinUI E key
+        // calls ToggleSubtitlePanel() unconditionally.
+        self.c.mac && self.c.st.borrow().full_screen
     }
     fn toggle_playback(&mut self) {
         self.c.player.borrow_mut().toggle_playback();
@@ -2279,6 +2450,22 @@ impl ShortcutTarget for Target<'_> {
     fn leave_full_screen_or_theater(&mut self) {
         self.c.leave_full_screen_or_theater();
     }
+}
+
+/// The actions of a `video-clicked(count)` report. Slint's `TouchArea` invokes `clicked` for every release, the
+/// second release of a double click included, and only then `double-clicked`; so for `count >= 2` the actions the
+/// single click already performed are left out. A double click therefore ends as `VideoClick` (WinUI `Tapped` +
+/// `DoubleTapped`, AppKit `clickCount`) defines it: playback toggled twice (no net change) and full screen toggled.
+pub(crate) fn video_click_delta(count: u32) -> Vec<PlayerShortcut> {
+    let mut actions = shortcuts::video_click_actions(count);
+    if count >= 2 {
+        for done in shortcuts::video_click_actions(1) {
+            if let Some(i) = actions.iter().position(|a| *a == done) {
+                actions.remove(i);
+            }
+        }
+    }
+    actions
 }
 
 fn state_index(s: PlaylistItemState) -> i32 {
@@ -2315,6 +2502,14 @@ fn quick_glyph(k: sa_core::platform::QuickLocationKind) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_double_click_toggles_playback_twice_in_total_and_full_screen_once() {
+        // Slint: release 1 → clicked; release 2 → clicked, then double-clicked.
+        let all: Vec<PlayerShortcut> = [1, 1, 2].into_iter().flat_map(video_click_delta).collect();
+        assert_eq!(all, vec![PlayerShortcut::TogglePlayback, PlayerShortcut::TogglePlayback, PlayerShortcut::ToggleFullScreen]);
+        assert!(video_click_delta(0).is_empty());
+    }
 
     #[test]
     fn frames_are_copied_row_by_row_when_strided() {

@@ -58,12 +58,15 @@ component ColorWell inherits Rectangle {
     in property <color> value;
     in property <string> hex;
     in property <string> tooltip;
+    // A real Mac opens NSColorPanel instead of the popover.
+    in property <bool> native-panel;
     callback picked(color);
     callback hex-entered(string);
+    callback native-requested();
     width: 44px;
     height: 22px;
     border-radius: 5.5px;
-    border-width: 0.5px;
+    border-width: 1phx;
     border-color: MacTheme.button-border;
     background: MacTheme.button-background;
     drop-shadow-blur: MacTheme.dark ? 0 : 1px;
@@ -79,10 +82,18 @@ component ColorWell inherits Rectangle {
         height: parent.height - 8px;
         border-radius: 3px;
         background: root.value;
-        border-width: 0.5px;
+        border-width: 1phx;
         border-color: #00000033;
     }
-    touch := TouchArea { clicked => { panel.show(); } }
+    touch := TouchArea {
+        clicked => {
+            if (root.native-panel) {
+                root.native-requested();
+            } else {
+                panel.show();
+            }
+        }
+    }
     ToolTip {
         text: root.tooltip;
         show: touch.has-hover && !touch.pressed;
@@ -98,7 +109,7 @@ component ColorWell inherits Rectangle {
             width: 240px;
             background: MacTheme.menu-background;
             border-radius: 10px;
-            border-width: 0.5px;
+            border-width: 1phx;
             border-color: MacTheme.menu-border;
             drop-shadow-blur: 14px;
             drop-shadow-offset-y: 5px;
@@ -278,6 +289,8 @@ export component AppearanceTab inherits VerticalLayout {
                 tooltip: Loc.t("Yazı rengini seç");
                 picked(c) => { SettingsBridge.overlay-color-picked(c); }
                 hex-entered(t) => { SettingsBridge.overlay-color-hex-entered(t); }
+                native-panel: SettingsBridge.native-color-panel;
+                native-requested => { SettingsBridge.overlay-color-panel-requested(); }
             }
         }
         RowSeparator { }

@@ -277,6 +277,8 @@ pub struct FakeWinOps {
     pub cache_max: Mutex<i64>,
     pub cleared: Mutex<usize>,
     pub associations: Option<Arc<FakeAssociations>>,
+    /// The provider store whose keys `masked_key` / `plain_key` report (the Windows manager holds them in memory).
+    pub keys_from: Option<Arc<MemoryProviderStore>>,
 }
 
 impl WinSettingsOps for FakeWinOps {
@@ -288,11 +290,18 @@ impl WinSettingsOps for FakeWinOps {
         self.lan_answer.lock().clone()
     }
     fn store_lan_models(&self, _models: &[String], _selected: Option<&str>) {}
-    fn masked_key(&self, _id: Uuid) -> Result<Option<String>, ()> {
-        Ok(None)
+    fn masked_key(&self, id: Uuid) -> Result<Option<String>, ()> {
+        match self.keys_from.as_ref().map(|s| s.read_key(id)) {
+            Some(ProviderKeyRead::Found(k)) => Ok(sa_providers::mask_key(k.expose())),
+            Some(ProviderKeyRead::Unavailable) => Err(()),
+            _ => Ok(None),
+        }
     }
-    fn plain_key(&self, _id: Uuid) -> String {
-        String::new()
+    fn plain_key(&self, id: Uuid) -> String {
+        match self.keys_from.as_ref().map(|s| s.read_key(id)) {
+            Some(ProviderKeyRead::Found(k)) => k.expose().to_owned(),
+            _ => String::new(),
+        }
     }
     fn is_testing(&self) -> bool {
         false
@@ -360,7 +369,11 @@ pub fn fake_deps_with(ui: Arc<dyn UiDispatcher>, fonts: Vec<String>, ui_language
     let vm = FakeVm::new(catalog.clone(), store.clone());
     let providers = MemoryProviderStore::new();
     let tester = Arc::new(FakeTester::default());
-    let win = Arc::new(FakeWinOps { associations: Some(Arc::new(FakeAssociations::default())), ..Default::default() });
+    let win = Arc::new(FakeWinOps {
+        associations: Some(Arc::new(FakeAssociations::default())),
+        keys_from: Some(providers.clone()),
+        ..Default::default()
+    });
     let language = Arc::new(AppLanguage::new(store.clone(), || vec!["tr-TR".to_owned()], LanguageState::shared().clone()));
     let deps = SettingsDeps {
         settings: store.clone(),

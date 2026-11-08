@@ -52,10 +52,24 @@ enum MenuTarget {
     List(String),
 }
 
+struct CreateWatch {
+    before: Vec<String>,
+    saw_refresh: bool,
+}
+
+impl CreateWatch {
+    /// The create succeeded: a list that was not there before exists, or is on show (the view model selects the
+    /// new list before the refreshed lists arrive).
+    fn succeeded(&self, lists: &[sa_profiles::UserVideoList], filter: &VideoFeedFilter) -> bool {
+        let new = |id: &str| !self.before.iter().any(|b| b.eq_ignore_ascii_case(id));
+        lists.iter().any(|l| new(&l.id)) || cards::selected_list_id(filter).is_some_and(new)
+    }
+}
+
 #[derive(Default)]
 struct Pending {
-    /// Lists before a create (a new one appearing clears the box).
-    create: Option<usize>,
+    /// A create under way (double-press guard): the list ids before it, and whether a feed refresh was seen since.
+    create: Option<CreateWatch>,
     /// (list id, requested name) of a rename under way.
     rename: Option<(String, String)>,
     delete_profile: bool,
@@ -295,7 +309,13 @@ impl Inner {
         cb!(on_remember_toggled, |inner, v: bool| inner.vm.set_remember_me(v));
         cb!(on_open_platform, |inner| inner.open_platform());
         cb!(on_search_submitted, |inner, q: SharedString| {
+            // Enter / "Ara" always runs the search, also when the query is unchanged (C# `ExecuteSearch` →
+            // `RefreshFeed()`, Swift `submitSearch()` → `scheduleRefresh()`): newly indexed files show up.
+            let unchanged = inner.vm.search_query() == q.trim();
             inner.vm.search(&q);
+            if unchanged && inner.vm.is_logged_in() {
+                inner.vm.refresh();
+            }
             inner.sync();
         });
         cb!(on_search_edited, |inner, q: SharedString| {
@@ -527,8 +547,8 @@ impl Inner {
             return; // a double press while one is under way
         }
         self.set_list_error("");
-        let before = self.vm.lists().len();
-        self.st.borrow_mut().pending.create = Some(before);
+        let before = self.vm.lists().into_iter().map(|l| l.id).collect();
+        self.st.borrow_mut().pending.create = Some(CreateWatch { before, saw_refresh: false });
         if trimmed.is_empty() {
             // macOS: the store reports `Lütfen bir liste adı girin.` under the row.
             self.st.borrow_mut().pending.create = None;
@@ -685,13 +705,27 @@ impl Inner {
                 st.paths.clear();
                 st.feed_key = None;
                 st.menu = MenuTarget::None;
+                let ended = previous.is_some();
+                if ended {
+                    // A list create/rename of the closing profile is forgotten with it.
+                    st.pending.create = None;
+                    st.pending.rename = None;
+                }
                 drop(st);
-                if previous.is_some() {
+                if ended {
                     self.images.borrow_mut().reset();
                 }
                 self.cards.set_vec(Vec::new());
                 self.lists.set_vec(Vec::new());
                 self.menu.set_vec(Vec::new());
+                if ended && let Some(w) = self.window.upgrade() {
+                    // The closing profile's typed search and list failures leave the screen with it (Swift
+                    // `forgetProfileState` empties `searchText`; the view model already dropped the applied query).
+                    let hub = w.global::<HubBridge>();
+                    hub.set_search_reset_epoch(hub.get_search_reset_epoch().wrapping_add(1));
+                    hub.set_list_error(SharedString::new());
+                    hub.set_rename_error(SharedString::new());
+                }
             }
             changed
         };
@@ -771,14 +805,17 @@ impl Inner {
         }
         {
             let mut st = self.st.borrow_mut();
-            if let Some(before) = st.pending.create
-                && lists.len() > before
-            {
-                st.pending.create = None;
-                hub.set_new_list_reset_epoch(hub.get_new_list_reset_epoch().wrapping_add(1));
-            } else if st.pending.create.is_some() && !vm.is_refreshing() {
-                // Windows: a duplicate name is silently refused.
-                st.pending.create = None;
+            let refreshing = vm.is_refreshing();
+            if let Some(watch) = st.pending.create.as_mut() {
+                if watch.succeeded(&lists, &filter) {
+                    st.pending.create = None;
+                    hub.set_new_list_reset_epoch(hub.get_new_list_reset_epoch().wrapping_add(1));
+                } else if refreshing {
+                    watch.saw_refresh = true;
+                } else if watch.saw_refresh {
+                    // The create's refresh ended without a new list: Windows refuses a duplicate name silently.
+                    st.pending.create = None;
+                }
             }
             if let Some((id, name)) = st.pending.rename.clone()
                 && vm.action_error().is_none()

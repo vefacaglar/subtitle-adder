@@ -146,11 +146,11 @@ impl WinProviderForm {
         }
     }
 
+    /// `ResetEditForm`. A running draft test keeps its button disabled until it answers (C#).
     pub fn reset(&mut self) {
         self.editing = None;
         self.key = Zeroizing::new(String::new());
         self.async_translation = true;
-        self.testing = false;
         self.apply_preset_defaults();
     }
 
@@ -165,7 +165,6 @@ impl WinProviderForm {
         self.model = profile.model.clone();
         self.async_translation = profile.async_translation;
         self.pristine = false;
-        self.testing = false;
     }
 
     pub fn header(&self) -> String {
@@ -176,12 +175,12 @@ impl WinProviderForm {
         if self.editing.is_some() { sa_core::l("Güncelle") } else { sa_core::l("Kaydet ve Etkinleştir") }
     }
 
-    /// The test answered: the model list is replaced; the chosen model stays if one was typed, else the first.
-    pub fn apply_test_models(&mut self, models: &[String]) {
+    /// The test answered: the model list is replaced; the chosen model is the (trimmed) model sent with the test if
+    /// it was not blank, else the first listed one (C# `TestDraftButton_Click`).
+    pub fn apply_test_models(&mut self, models: &[String], tested_model: &str) {
         self.model_items = models.to_vec();
-        if self.model.trim().is_empty() {
-            self.model = models.first().cloned().unwrap_or_default();
-        }
+        let tested = tested_model.trim();
+        self.model = if tested.is_empty() { models.first().cloned().unwrap_or_default() } else { tested.to_owned() };
     }
 }
 

@@ -1026,3 +1026,43 @@ fn english_messages_follow_the_ui_language() {
     sa_core::l10n::LanguageState::shared().set_language(sa_core::UiLanguage::Tr);
     assert_eq!(out.message, "Invalid or unauthorized API key (HTTP 403).");
 }
+
+#[test]
+fn an_unreadable_file_merged_later_keeps_memory_profiles_but_a_newer_csharp_plaintext_key_wins() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let f = Fixture::new();
+    let m = f.manager();
+    let p = add(&m, "openai", None, None, Some("sk-old-1111"), Some("gpt-4o-mini"), true);
+    {
+        // Another process holds the file without sharing: the reload cannot read it and keeps the state.
+        let _held = std::fs::OpenOptions::new().read(true).share_mode(0).open(f.file()).unwrap();
+        m.reload();
+        assert_eq!(m.load_problem(), Some(ProviderLoadProblem::Unreadable));
+        assert_eq!(m.providers().len(), 1);
+    }
+    // Meanwhile the C# app re-entered the key of `p` and added `q`, both in plaintext.
+    let q = Uuid::new_v4();
+    std::fs::write(
+        f.file(),
+        format!(
+            r#"{{"activeProviderId":"{q}","providers":[{{"id":"{}","name":"Disk","presetId":"openai","baseUrl":"https://api.openai.com/v1","apiKey":" sk-csharp-2222 ","model":"disk-model"}},{{"id":"{q}","name":"Q","presetId":"groq","apiKey":"sk-q-3333"}}]}}"#,
+            p.id
+        ),
+    )
+    .unwrap();
+    m.update_model(p.id, "gpt-4.1-mini");
+    assert_eq!(m.load_problem(), None);
+    let providers = m.providers();
+    assert_eq!(providers.iter().map(|x| x.id).collect::<Vec<_>>(), vec![q, p.id], "disk-only first, then memory");
+    let merged = providers.iter().find(|x| x.id == p.id).unwrap();
+    assert_eq!((merged.name.as_str(), merged.model.as_str()), ("OpenAI", "gpt-4.1-mini"), "the memory profile wins");
+    assert_eq!(m.active_provider_id(), Some(p.id), "the memory's active provider stays");
+    assert_eq!(key_of(&m, p.id).as_deref(), Some("sk-csharp-2222"), "plaintext wins, in memory");
+    assert_eq!(key_of(&m, q).as_deref(), Some("sk-q-3333"));
+    assert_eq!(f.state().3, "sk-csharp-2222");
+    let text = f.text();
+    assert!(!text.contains("sk-csharp") && !text.contains("sk-q-"), "{text}");
+    let again = f.manager();
+    assert_eq!(key_of(&again, p.id).as_deref(), Some("sk-csharp-2222"), "and in the sidecar");
+    assert_eq!(key_of(&again, q).as_deref(), Some("sk-q-3333"));
+}

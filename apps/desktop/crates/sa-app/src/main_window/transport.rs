@@ -113,10 +113,14 @@ pub fn scrub_target(ratio: f64, duration: f64) -> Option<f64> {
     (d > 0.0).then(|| finite_or(ratio, 0.0).clamp(0.0, 1.0) * d)
 }
 
-/// Wheel over the volume panel / the player (Windows): ±0.05 from `muted ? 0 : volume`, clamped.
-pub fn windows_wheel_volume(volume: f64, muted: bool, delta: f64) -> f64 {
+/// Wheel over the volume panel / the player (Windows): ±0.05 from `muted ? 0 : volume`, clamped. A zero (or
+/// non-finite) delta changes nothing (`if (delta == 0) return;` in both C# handlers).
+pub fn windows_wheel_volume(volume: f64, muted: bool, delta: f64) -> Option<f64> {
+    if delta == 0.0 || !delta.is_finite() {
+        return None;
+    }
     let base = if muted { 0.0 } else { volume };
-    (base + if delta > 0.0 { 0.05 } else { -0.05 }).clamp(0.0, 1.0)
+    Some((base + if delta > 0.0 { 0.05 } else { -0.05 }).clamp(0.0, 1.0))
 }
 
 #[cfg(test)]
@@ -201,9 +205,12 @@ mod tests {
 
     #[test]
     fn windows_wheel_steps_from_silence_while_muted() {
-        assert!((windows_wheel_volume(0.5, false, 1.0) - 0.55).abs() < 1e-9);
-        assert!((windows_wheel_volume(0.5, true, 1.0) - 0.05).abs() < 1e-9);
-        assert_eq!(windows_wheel_volume(0.02, false, -1.0), 0.0);
-        assert_eq!(windows_wheel_volume(0.99, false, 3.0), 1.0);
+        assert!((windows_wheel_volume(0.5, false, 1.0).unwrap() - 0.55).abs() < 1e-9);
+        assert!((windows_wheel_volume(0.5, true, 1.0).unwrap() - 0.05).abs() < 1e-9);
+        assert_eq!(windows_wheel_volume(0.02, false, -1.0), Some(0.0));
+        assert_eq!(windows_wheel_volume(0.99, false, 3.0), Some(1.0));
+        // A zero delta is ignored (it would otherwise lower the volume).
+        assert_eq!(windows_wheel_volume(0.5, false, 0.0), None);
+        assert_eq!(windows_wheel_volume(0.5, false, f64::NAN), None);
     }
 }

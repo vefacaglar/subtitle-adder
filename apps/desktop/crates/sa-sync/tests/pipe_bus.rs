@@ -1,5 +1,5 @@
 //! Windows named-pipe broker (win-sync §3–§8, §16): the broker parts of the C# `LocalProfileTests` plus the new
-//! Rust tests (orphan slots, outbound cap, F1, F3–F6, host takeover from a second process).
+//! Rust tests (orphan slots, outbound cap, F1–F6, host takeover from a second process).
 #![cfg(windows)]
 
 mod common;
@@ -556,6 +556,90 @@ fn lines_published_right_before_dispose_still_reach_the_others() {
     assert!(!leaving.closed_engine_on_dispose());
     assert!(wait_until(5000, || rec.len() == ids.len()), "received {} of {}", rec.len(), ids.len());
     assert_eq!(rec.ids(), ids, "in publish order");
+    host.dispose();
+    assert!(host.closed_engine_on_dispose());
+}
+
+/// F2: when another process still holds the channel, the last broker of this process does not shut the engine down
+/// (C# keeps it for cross-process counting), but it commits and closes this process's stores, which C# skipped (the
+/// app then exits and queued SQLite writes were lost).
+#[test]
+fn the_last_broker_of_a_process_commits_and_closes_its_stores_while_another_process_runs() {
+    let scope = test_scope("f2");
+    let instances = broker_dir(&std::env::temp_dir(), &scope).join("instances");
+    std::fs::create_dir_all(&instances).unwrap();
+    // A live slot of "another process" (held exclusively).
+    let other = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .share_mode(0)
+        .open(instances.join("instance-00000000000000000000000000000f2a.slot"))
+        .unwrap();
+
+    let bus = NamedPipeBus::new(Some(&scope));
+    bus.set_data_worker_factory(fake_factory());
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("profiles.db");
+    let _ = bus.data_worker_store(&db);
+    let store: Arc<FakeStore> =
+        created_stores().lock().iter().find(|s| s.path == std::path::absolute(&db).unwrap()).unwrap().clone();
+    store.hold.store(true, Ordering::SeqCst);
+    let req = StateSyncWriteRequest::new("manager-f2", &db.to_string_lossy(), WriteKind::UpsertVideo);
+    bus.submit_write_request(req.clone());
+    assert!(!store.is_processed(&req.request_id), "held in the store queue");
+    assert_eq!(bus.active_instance_count(), 2);
+
+    bus.dispose();
+    assert!(!bus.closed_engine_on_dispose(), "another process keeps the channel");
+    assert!(is_channel_engine_running(Some(&scope)));
+    assert!(store.is_processed(&req.request_id), "queued write committed before the process leaves");
+    assert!(store.disposed.load(Ordering::SeqCst), "this process's store released");
+
+    // The other process leaves too: the next broker here is the last one and closes the engine.
+    drop(other);
+    let again = NamedPipeBus::new(Some(&scope));
+    assert_eq!(again.active_instance_count(), 1);
+    again.dispose();
+    assert!(again.closed_engine_on_dispose());
+    assert!(!is_channel_engine_running(Some(&scope)));
+}
+
+/// F5: a peer that stops reading never blocks a publisher (C# writes synchronously, so its publisher would hang); the
+/// host disconnects it once its bounded queue overflows, and healthy peers keep receiving every line in order.
+#[test]
+fn a_stalled_peer_never_blocks_publishers_and_is_disconnected() {
+    let scope = test_scope("f5");
+    let host = NamedPipeBus::new(Some(&scope));
+    assert!(host.wait_until_ready(READY));
+    let other = NamedPipeBus::new(Some(&scope));
+    assert!(other.wait_until_ready(READY));
+    let rec = Recorder::default();
+    let _s = other.subscribe(TopicFilter::All, rec.handler());
+    let stalled = RawClient::connect_stalled(&scope, READY).unwrap();
+    assert!(wait_until(3000, || host.connected_client_count() == 3));
+
+    let mut ids = Vec::new();
+    let mut slowest = Duration::ZERO;
+    for i in 0..1600 {
+        let mut e = ev(EventKind::ThumbnailCaptured);
+        e.payload_base64 = Some("A".repeat(512));
+        ids.push(e.event_id.clone());
+        let t = std::time::Instant::now();
+        host.publish(Topic::Thumbnail, e);
+        slowest = slowest.max(t.elapsed());
+        // Paced like real producers: the publisher's own connection never overflows.
+        if i % 50 == 49 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    assert!(slowest < Duration::from_millis(250), "a publish blocked for {slowest:?}");
+    assert!(wait_until(5000, || host.connected_client_count() == 2), "the stalled peer is disconnected");
+    assert!(wait_until(10000, || rec.len() == ids.len()), "received {} of {}", rec.len(), ids.len());
+    assert_eq!(rec.ids(), ids, "healthy peers get every line in order");
+    stalled.close();
+    other.dispose();
     host.dispose();
     assert!(host.closed_engine_on_dispose());
 }

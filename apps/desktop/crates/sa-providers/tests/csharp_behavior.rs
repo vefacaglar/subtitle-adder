@@ -145,6 +145,10 @@ const URLS: &[&str] = &[
     "https://opencode.ai/zen/go/v1;x",
     "https://opencode.ai",
     "HTTP://API.OPENAI.COM/V1",
+    "http://proxy.test/api.deepsee\u{212a}.com",
+    "http://proxy.test/api.deep\u{17f}eek.com",
+    "http://proxy.test/OPENCODE.AI",
+    "https://\u{212a}.test/v1",
 ];
 
 #[test]
@@ -303,6 +307,17 @@ fn load_cases() -> Vec<(&'static str, Vec<u8>)> {
     for u in format!(r#"{{"providers":[{}]}}"#, entry(A)).encode_utf16() {
         utf16.extend_from_slice(&u.to_le_bytes());
     }
+    let doc = format!(r#"{{"providers":[{}]}}"#, entry(A));
+    let mut utf16_be = vec![0xFE, 0xFF];
+    let mut utf32_le = vec![0xFF, 0xFE, 0, 0];
+    let mut utf32_be = vec![0, 0, 0xFE, 0xFF];
+    for u in doc.encode_utf16() {
+        utf16_be.extend_from_slice(&u.to_be_bytes());
+    }
+    for c in doc.chars() {
+        utf32_le.extend_from_slice(&(c as u32).to_le_bytes());
+        utf32_be.extend_from_slice(&(c as u32).to_be_bytes());
+    }
     let s = |t: String| t.into_bytes();
     vec![
         ("01-csharp", include_bytes!("../../../tools/fixtures/ProvidersFixture/csharp-translation-providers.json").to_vec()),
@@ -352,6 +367,9 @@ fn load_cases() -> Vec<(&'static str, Vec<u8>)> {
         ("37-number-id", s(r#"{"providers":[{"id":5}]}"#.into())),
         ("38-providers-string", s(r#"{"providers":"x"}"#.into())),
         ("39-active-number", s(format!(r#"{{"activeProviderId":5,"providers":[{}]}}"#, entry(A)))),
+        ("40-utf16-be-bom", utf16_be),
+        ("41-utf32-le-bom", utf32_le),
+        ("42-utf32-be-bom", utf32_be),
         // Known difference, not compared: an unknown property holding a number beyond f64 (`1e400`) is skipped by
         // System.Text.Json but fails serde_json, so the port treats such a file as damaged (aside copy, no loss).
     ]
@@ -390,11 +408,8 @@ fn files_load_like_the_csharp_reader() {
             None,
             EngineLaunchState::new(EngineLaunchSettings::default()),
         );
-        let text = match bytes.strip_prefix(&[0xFF, 0xFE][..]) {
-            Some(le) => String::from_utf16_lossy(&le.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()),
-            None => String::from_utf8_lossy(bytes).into_owned(),
-        }
-        .to_lowercase();
+        // Only used to tell ids the file contains from fresh ones: every BOM form above, NULs dropped.
+        let text = String::from_utf8_lossy(&bytes.iter().copied().filter(|b| *b != 0).collect::<Vec<_>>()).to_lowercase();
         let providers = m.providers();
         let active = m.active_provider_id().map(|id| providers.iter().position(|p| p.id == id).unwrap());
         let rows: Vec<Value> = providers
@@ -963,6 +978,34 @@ fn connection_test_scenarios_match_the_csharp_manager() {
     };
     run_scenario(&exe, &script("tr"));
     run_scenario(&exe, &script("en"));
+    // Address validation of the draft test (.NET `Uri.TryCreate` + non-empty host) and the raw request URLs built
+    // from what was typed. No key (a key over plain http to a public host is refused on purpose, UNIFIED.md §3.7) and
+    // no `.local` names (they would resolve over the real network).
+    let odd = [
+        "http://", "https://", "http:", "a b", "http://a b", "http://[::1", "http://[::1]", "http://h:99999", "http://h:65535",
+        "http://h:0", "http://h:", "http://h:x", "http://-h", "http://h_1", "http://ü.test", "http://ŞİRKET.test/v1",
+        "http://h:1/a b", "http://user@h:1", "http://user:pw@h:1/v1", "ftp://h", "h:abc", "http://.", "http://..",
+        "http://h..x", "http://1.2.3.4.5", "http://999.1.1.1", "http://%41", r"\\server\share", "file:///c:/x",
+        "http://h#frag", "http://h?q=1", "mailto:x", "http://h/%zz", "http://h:1//", "HTTP://H:1/V1/", "//h:1",
+        "http:/h", "http:\\\\h", "https://h:443", "http://h:80/v1", "http://127.1", "http://0x7f.1", "http://[fe80::1%25eth0]",
+    ];
+    let hosts = [
+        "-h", "h-", "_h", "1.2.3.4.5", "999.1.1.1", "0177.0.0.1", "1", "4294967295", "4294967296", "0", "1.2.3",
+        "01.02.03.04", "0x7fffffff", "256.1.1.1", "1.2.3.256", "h.", ".h", "İ", "ı", "ß.de", "XN--BCHER-KVA.example",
+        "h!", "h$", "h&", "h'", "h(", "h*", "h+", "h,", "h;", "h=", "h~", "h\"", "h<", "h{", "h|", "h^", "h`",
+        "Ⅻ.test", "ｈｅｌｌｏ.test", "h\u{a0}x", "h\u{200b}x", "[::1", "[0:0:0:0:0:0:0:1]", "[fe80::1%eth0]",
+        "[::ffff:1.2.3.4]", "[v1.x]", "[1::2::3]", "[ABCD::1]", "[::1]x", "::1", "LOCALHOST", "123", "1.2.3.4.",
+        "0x1.0x2.0x3.0x4", "1.2.3.0x4", "08.1.1.1", "1e1.1.1.1", "a.1", "1.a", "x.-h", "Ab-Cd.EF", "tr.İstanbul",
+        "ΑΒΓ.test", "Αx", "ŞA", "Aİ", "ÉCOLE.fr", "École", "A_B.ü", "A..ü", "ü.", "ü..", "a!ü", "日本.jp", "h\u{301}",
+        "h:65536", "h:00080", "h:+1", "h:-1", "@h", "a@b@h", "u@", ":1", "[]", "[::1]:99999", "[::1]:", "h:1:2",
+        "h::1", "h%2ex", "h/%zz", "h/a<b", "h/a\\b", "h\\x", "h?q=a b", "h#a b", "x.local.",
+    ];
+    let mut script = vec![json!({"op": "lang", "value": "tr"})];
+    for url in odd.iter().map(|u| (*u).to_owned()).chain(hosts.iter().map(|h| format!("http://{h}"))) {
+        script.push(json!({"op": "draft", "preset": "custom", "url": url, "key": "", "model": null,
+            "http": [["GET", "/v1/models", 200, r#"{"data":[{"id":"ok"}]}"#]]}));
+    }
+    run_scenario(&exe, &script);
     // Default names in English.
     run_scenario(&exe, &[
         json!({"op": "lang", "value": "en"}),

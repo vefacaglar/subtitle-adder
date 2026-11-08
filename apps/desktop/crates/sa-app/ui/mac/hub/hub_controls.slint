@@ -14,6 +14,8 @@ export component PillButton inherits Rectangle {
     in property <bool> compact;
     in property <string> tooltip;
     callback clicked();
+    // Right click (context menu) at a point in the pill's coordinates.
+    callback context-requested(length, length);
     border-radius: self.height / 2;
     background: root.selected ? MacTheme.control-accent : (MacTheme.dark ? #ffffff14 : #00000014);
     opacity: touch.pressed ? 0.7 : 1;
@@ -39,6 +41,11 @@ export component PillButton inherits Rectangle {
     }
     touch := TouchArea {
         clicked => { root.clicked(); }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                root.context-requested(self.mouse-x, self.mouse-y);
+            }
+        }
     }
     ToolTip {
         text: root.tooltip;
@@ -242,9 +249,10 @@ export component ErrorLabel inherits HorizontalLayout {
     }
 }
 
-// The popover surface (regular material, rounded, hairline border, soft shadow).
+// The popover surface (regular material, rounded, hairline border, soft shadow). Opaque: without the AppKit
+// material's blur the content behind a translucent fill would stay readable through the popover.
 export component PopoverSurface inherits Rectangle {
-    background: MacTheme.menu-background;
+    background: MacTheme.dark ? #2c2c2e : #f6f6f6;
     border-radius: 10px;
     border-width: 0.5px;
     border-color: MacTheme.menu-border;
@@ -314,7 +322,7 @@ export component HubMacMenu inherits PopupWindow {
     property <[MenuEntry]> entries: HubBridge.menu-entries;
     Rectangle {
         min-width: root.min-menu-width;
-        background: MacTheme.menu-background;
+        background: MacTheme.dark ? #2c2c2e : #f6f6f6;
         border-radius: 6px;
         border-width: 0.5px;
         border-color: MacTheme.menu-border;
@@ -332,5 +340,63 @@ export component HubMacMenu inherits PopupWindow {
                 }
             }
         }
+    }
+}
+
+// `TextField`/`SecureField` with `.textFieldStyle(.roundedBorder)` (22 pt high, hairline border, accent focus ring).
+// The std LineEdit of the cupertino style is not used here: its password mode has a reveal ("eye") button that an
+// AppKit secure field does not have.
+export component RoundedField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> password;
+    in property <bool> enabled: true;
+    in property <length> font-size: MacTheme.body-size;
+    // `.controlSize(.small)`: 19 pt high.
+    in property <bool> small;
+    in property <string> accessible-name;
+    // Room kept free at the trailing edge (an overlaid clear button).
+    in property <length> trailing-inset: 0px;
+    out property <bool> has-focus: input.has-focus;
+    callback edited(string);
+    callback accepted(string);
+    public function select-all() {
+        input.select-all();
+    }
+    forward-focus: input;
+    height: root.small ? 19px : max(22px, root.font-size + 9px);
+    min-width: 60px;
+    border-radius: 5px;
+    border-width: input.has-focus ? 2px : 0.5px;
+    border-color: input.has-focus ? MacTheme.control-accent.with-alpha(0.6) : MacTheme.button-border;
+    background: MacTheme.dark ? #ffffff0d : #ffffff;
+    opacity: root.enabled ? 1 : 0.5;
+    clip: true;
+    accessible-role: text-input;
+    accessible-label: root.accessible-name != "" ? root.accessible-name : root.placeholder;
+    accessible-value: root.password ? "" : root.text;
+    if root.text == "": Text {
+        x: 6px;
+        width: parent.width - 12px - root.trailing-inset;
+        text: root.placeholder;
+        font-size: root.font-size;
+        color: MacTheme.tertiary-label;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+    input := TextInput {
+        x: 6px;
+        width: parent.width - 12px - root.trailing-inset;
+        text <=> root.text;
+        enabled: root.enabled;
+        font-size: root.font-size;
+        color: MacTheme.label;
+        vertical-alignment: center;
+        single-line: true;
+        input-type: root.password ? InputType.password : InputType.text;
+        selection-background-color: MacTheme.control-accent.with-alpha(0.35);
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(self.text); }
     }
 }

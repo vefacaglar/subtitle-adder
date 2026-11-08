@@ -1,12 +1,11 @@
 // ProfileToolbarButton + ProfilePopover (mac-ui §9.4): the toolbar's profile button and the popover it toggles
 // (padding 16, width 300). Logged out: header + ProfileAuthForm; logged in: avatar, name, summary, "Video Platformu",
 // "Çıkış yap", DeleteProfileSection (closed → password → confirm).
-import { LineEdit } from "std-widgets.slint";
 import { Loc } from "../../shared/loc.slint";
-import { HubBridge } from "../../shared/bridge.slint";
+import { HubBridge, MainBridge } from "../../shared/bridge.slint";
 import { MacTheme } from "../theme.slint";
 import { Sym, ToolbarButton, PushButton, SmallSpinner } from "../main/controls.slint";
-import { PopoverSurface, PlainButton, ErrorLabel } from "hub_controls.slint";
+import { PopoverSurface, PlainButton, ErrorLabel, RoundedField } from "hub_controls.slint";
 import { ProfileAuthForm } from "auth_form.slint";
 
 component DeleteProfileSection inherits VerticalLayout {
@@ -49,12 +48,11 @@ component DeleteProfileSection inherits VerticalLayout {
         color: MacTheme.label;
     }
     // The password field lives while the section is open (kept across the two steps).
-    pw := LineEdit {
+    pw := RoundedField {
         visible: root.step == 1;
-        height: root.step == 1 ? self.preferred-height : 0;
-        input-type: password;
-        placeholder-text: Loc.t("Şifre");
-        accessible-label: Loc.t("Şifre");
+        height: root.step == 1 ? 22px : 0;
+        password: true;
+        placeholder: Loc.t("Şifre");
         accepted => { root.next(); }
     }
     if root.step != 0 && HubBridge.auth-error != "": ErrorLabel {
@@ -99,7 +97,8 @@ export component ProfilePopover inherits PopupWindow {
     property <int> close-epoch: HubBridge.popover-close-epoch;
     changed close-epoch => { root.close(); }
     PopoverSurface {
-        width: 300px + 32px;
+        // `.padding(16).frame(width: 300)`: 300 pt including the padding.
+        width: 300px;
         // One layout child gives the surface its height (a conditional alone would not).
         VerticalLayout {
         if !HubBridge.is-logged-in: VerticalLayout {
@@ -208,8 +207,12 @@ export component ProfileToolbarButton inherits Rectangle {
             popover.show();
         }
     }
+    // `.popover(arrowEdge: .bottom)`: below the button, centered on it, shifted to stay inside the window.
+    property <length> popover-width: 300px;
+    property <length> centered-x: (root.width - root.popover-width) / 2;
     popover := ProfilePopover {
-        x: root.width - 332px;
+        x: max(8px - root.absolute-position.x,
+            min(root.centered-x, MainBridge.window-width - 8px - root.popover-width - root.absolute-position.x));
         y: root.height + 6px;
     }
 }

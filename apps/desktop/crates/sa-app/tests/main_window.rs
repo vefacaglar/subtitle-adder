@@ -329,6 +329,50 @@ fn player_keys_need_a_video_on_screen_and_e_toggles_the_panel() {
 }
 
 #[test]
+fn windows_e_still_toggles_the_panel_setting_in_full_screen() {
+    // MainWindow.ToggleSubtitlePanel() has no full-screen guard (unlike macOS); the layout stays player-only.
+    let r = rig(false);
+    r.open_video("a.mp4");
+    assert!(r.key("f", false, false));
+    assert!(r.controller.is_full_screen());
+    assert!(r.key("e", false, false));
+    r.pump();
+    assert!(r.vm.hide_subtitle_panel());
+    assert_eq!(r.main().get_layout_mode(), 0);
+    assert!(r.key("\u{1b}", false, false));
+    assert!(!r.controller.is_full_screen());
+    assert_eq!(r.main().get_layout_mode(), 0, "the panel stays hidden after leaving full screen");
+}
+
+#[test]
+fn windows_space_in_the_focused_list_goes_to_the_list_handler() {
+    let r = rig(false);
+    r.open_video("a.mp4");
+    r.load_three_lines();
+    r.main().invoke_list_focus_changed(true);
+    let before = r.controller.player().auto_play_when_ready();
+    // Root_PreviewKeyDown skips Space on a ListView(Item); Lines_PreviewKeyDown toggles playback.
+    assert!(!r.key(" ", false, false));
+    assert!(r.main().invoke_list_key("space".into(), false));
+    assert_ne!(r.controller.player().auto_play_when_ready(), before);
+    r.main().invoke_list_focus_changed(false);
+    assert!(r.key(" ", false, false));
+    assert_eq!(r.controller.player().auto_play_when_ready(), before);
+}
+
+#[test]
+fn windows_zero_wheel_delta_keeps_the_volume() {
+    let r = rig(false);
+    r.open_video("a.mp4");
+    let before = r.controller.player().volume();
+    r.main().invoke_video_wheel(0.0, false);
+    r.main().invoke_volume_wheel(0.0);
+    assert_eq!(r.controller.player().volume(), before);
+    r.main().invoke_video_wheel(-120.0, false);
+    assert!((r.controller.player().volume() - (before - 0.05)).abs() < 1e-9);
+}
+
+#[test]
 fn side_by_side_and_hidden_panel_drive_the_layout_mode() {
     let r = rig(false);
     r.open_video("a.mp4");
@@ -350,7 +394,7 @@ fn side_by_side_and_hidden_panel_drive_the_layout_mode() {
 }
 
 #[test]
-fn several_dropped_videos_go_to_the_queue_and_one_opens_with_its_subtitle() {
+fn several_dropped_videos_go_to_the_queue() {
     let r = rig(false);
     let a = r.env.touch("v/a.mp4", "x");
     let b = r.env.touch("v/b.mkv", "x");
@@ -361,7 +405,10 @@ fn several_dropped_videos_go_to_the_queue_and_one_opens_with_its_subtitle() {
     assert_eq!(r.main().get_queue_rows().row_count(), 2);
     assert_eq!(r.main().get_playlist_count(), 2);
     assert!(r.main().get_has_playlist_items());
+}
 
+#[test]
+fn one_dropped_video_opens_with_its_subtitle_on_the_player_tab() {
     let r = rig(false);
     let v = r.env.touch("w/c.mp4", "x");
     let s = r.srt("w/c.srt", &[("00:00:00,000", "00:00:01,000", "Merhaba.")]);

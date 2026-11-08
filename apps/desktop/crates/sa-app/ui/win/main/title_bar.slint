@@ -7,15 +7,20 @@ import { Theme } from "../theme.slint";
 component CaptionButton inherits Rectangle {
     in property <string> glyph;
     in property <bool> close;
+    // The maximize button is non-client while the native chrome is attached (Snap Layouts): its hover/press comes
+    // from the chrome (`AppBridge.maximize-hover`: 1 hover, 2 pressed) instead of the TouchArea.
+    in property <int> chrome-hover;
+    property <bool> pressed: touch.pressed || root.chrome-hover == 2;
+    property <bool> hovered: touch.has-hover || root.chrome-hover >= 1;
     callback clicked();
     width: 46px;
-    background: touch.pressed ? (root.close ? #c42b1ce6 : Theme.subtle-pressed) : touch.has-hover ? (root.close ? #c42b1c : Theme.subtle-hover) : transparent;
+    background: root.pressed ? (root.close ? #c42b1ce6 : Theme.subtle-pressed) : root.hovered ? (root.close ? #c42b1c : Theme.subtle-hover) : transparent;
     accessible-role: button;
     Text {
         text: root.glyph;
         font-family: Theme.icon-font;
         font-size: 10px;
-        color: touch.has-hover && root.close ? white : (AppBridge.is-active ? Theme.text-primary : Theme.text-tertiary);
+        color: root.hovered && root.close ? white : (AppBridge.is-active ? Theme.text-primary : Theme.text-tertiary);
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -77,6 +82,7 @@ export component TitleBar inherits Rectangle {
             }
             CaptionButton {
                 glyph: AppBridge.is-maximized ? "\u{E923}" : "\u{E922}";
+                chrome-hover: AppBridge.maximize-hover;
                 clicked => { AppBridge.maximize-toggle-requested(); }
             }
             CaptionButton {

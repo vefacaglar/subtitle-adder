@@ -51,11 +51,32 @@ fn random_key() -> Result<DataKey, ProtectorError> {
     Ok(SecretKey32::new(*bytes))
 }
 
+/// `O_CREAT|O_EXCL` (unix: mode 0600, `O_NOFOLLOW|O_CLOEXEC`) + full write + fsync. A failed write removes the file
+/// again so a half-written key never stays behind.
+fn create_exclusive(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let mut f = options.open(path)?;
+    let written = f.write_all(content).and_then(|()| f.sync_all());
+    drop(f);
+    if written.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    written
+}
+
 /// Publishes `content` at `path` only if nothing is there yet: written to a unique temp file next to it, then
 /// hard-linked into place (atomic, `EEXIST` when another process won), then the temp is removed. Readers never see a
-/// half-written key. `Ok(false)` = the path already existed.
+/// half-written key. On a file system without hard links the key is created in place with `O_CREAT|O_EXCL` instead
+/// (mac-librarykit §13.2; a racing reader may then briefly find it incomplete, which reads as unavailable and is
+/// never repaired). `Ok(false)` = the path already existed.
 fn publish_new_file(path: &Path, content: &[u8]) -> std::io::Result<bool> {
-    use std::io::Write;
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
     if !dir.as_os_str().is_empty() {
         std::fs::create_dir_all(&dir)?;
@@ -63,21 +84,17 @@ fn publish_new_file(path: &Path, content: &[u8]) -> std::io::Result<bool> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let temp = dir.join(format!(".{name}.new-{}", uuid::Uuid::new_v4().simple()));
     let result = (|| {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-        }
-        let mut f = options.open(&temp)?;
-        f.write_all(content)?;
-        f.sync_all()?;
-        drop(f);
+        create_exclusive(&temp, content)?;
         match std::fs::hard_link(&temp, path) {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(e),
+            // A symlink (or anything else) already at `path` reports AlreadyExists above; any other failure is a file
+            // system that cannot link: create the file directly, still exclusively.
+            Err(_) => match create_exclusive(path, content) {
+                Ok(()) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(e) => Err(e),
+            },
         }
     })();
     let _ = std::fs::remove_file(&temp);

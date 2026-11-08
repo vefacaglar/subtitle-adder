@@ -109,10 +109,10 @@ impl RgbColor {
 pub struct HexColor;
 
 impl HexColor {
-    /// Trim, strip one `#`, exactly 6 hex digits → components 0…1.
+    /// Trim, strip one `#`, exactly 6 hex digits → components 0…1, with the trimming and sign rules of the platform
+    /// this binary is built for ([`parse_u32_windows`](Self::parse_u32_windows), [`parse_u32_mac`](Self::parse_u32_mac)).
     pub fn parse(hex: &str) -> Option<(f64, f64, f64)> {
-        let v = Self::parse_u32(hex)?;
-        Some((((v >> 16) & 0xFF) as f64 / 255.0, ((v >> 8) & 0xFF) as f64 / 255.0, (v & 0xFF) as f64 / 255.0))
+        Self::parse_u32(hex).map(Self::components)
     }
     pub fn parse_rgb(hex: &str) -> Option<RgbColor> {
         let (r, g, b) = Self::parse(hex)?;
@@ -128,12 +128,55 @@ impl HexColor {
     }
 
     fn parse_u32(hex: &str) -> Option<u32> {
+        if cfg!(target_os = "macos") { Self::parse_u32_mac(hex) } else { Self::parse_u32_windows(hex) }
+    }
+
+    /// C# `HexColor.Parse`: `Trim()` (all Unicode white space), one `#` stripped, exactly six hex digits
+    /// (`uint.TryParse` with `AllowHexSpecifier` takes no sign).
+    pub fn parse_u32_windows(hex: &str) -> Option<u32> {
         let text = crate::text::trim_dotnet(hex);
         let text = text.strip_prefix('#').unwrap_or(text);
         if text.len() != 6 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
         u32::from_str_radix(text, 16).ok()
+    }
+
+    /// Swift `HexColor.parse`: `trimmingCharacters(in: .whitespaces)` (space separators and tab, not line breaks),
+    /// one `#` stripped, six characters, then `UInt32(text, radix: 16)`, which also accepts a leading `+` (and a `-`
+    /// when the value is zero).
+    pub fn parse_u32_mac(hex: &str) -> Option<u32> {
+        let is_space =
+            |c: char| matches!(c, '\t' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}');
+        let text = hex.trim_matches(is_space);
+        let text = text.strip_prefix('#').unwrap_or(text);
+        if text.chars().count() != 6 {
+            return None;
+        }
+        let (negative, digits) = match text.as_bytes()[0] {
+            b'+' => (false, &text[1..]),
+            b'-' => (true, &text[1..]),
+            _ => (false, text),
+        };
+        if !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let value = u32::from_str_radix(digits, 16).ok()?;
+        (!negative || value == 0).then_some(value)
+    }
+
+    /// [`parse`](Self::parse) with the Windows rules (tests of both platforms).
+    pub fn parse_windows(hex: &str) -> Option<(f64, f64, f64)> {
+        Self::parse_u32_windows(hex).map(Self::components)
+    }
+
+    /// [`parse`](Self::parse) with the macOS rules (tests of both platforms).
+    pub fn parse_mac(hex: &str) -> Option<(f64, f64, f64)> {
+        Self::parse_u32_mac(hex).map(Self::components)
+    }
+
+    fn components(v: u32) -> (f64, f64, f64) {
+        (((v >> 16) & 0xFF) as f64 / 255.0, ((v >> 8) & 0xFF) as f64 / 255.0, (v & 0xFF) as f64 / 255.0)
     }
 
     fn byte(x: f64) -> u8 {
@@ -353,11 +396,27 @@ impl AppearanceSettings {
     pub fn percent_text(fraction: f64) -> String {
         crate::l!("%lld%%", crate::text::round_half_away_from_zero(fraction * 100.0) as i64)
     }
-    /// "Varsayılana döndür": removes the five overlay keys only (in key order).
+    /// "Varsayılana döndür" (the theme and the interface font stay): Windows removes the five overlay keys (C#
+    /// `ResetOverlay`), macOS writes their default values (Swift `OverlayStyle.resetStored`), so each platform's
+    /// settings end up as the original app leaves them.
     pub fn reset_overlay(&self) {
+        if cfg!(target_os = "macos") { self.reset_overlay_writing_defaults() } else { self.reset_overlay_removing() }
+    }
+
+    /// Windows reset: removes the overlay keys in key order.
+    pub fn reset_overlay_removing(&self) {
         for key in keys::OVERLAY_KEYS {
             self.store.remove(key);
         }
+    }
+
+    /// macOS reset: writes `""`, 0.05, `#FFFFFF`, `box`, 0.6 in key order.
+    pub fn reset_overlay_writing_defaults(&self) {
+        self.store.set_string(keys::OVERLAY_FONT, "");
+        self.store.set_double(keys::OVERLAY_SIZE, OverlayStyle::DEFAULT_SIZE);
+        self.store.set_string(keys::OVERLAY_TEXT_COLOR, OverlayStyle::DEFAULT_TEXT_HEX);
+        self.store.set_string(keys::OVERLAY_BACKGROUND, OverlayBackground::Box.raw());
+        self.store.set_double(keys::OVERLAY_OPACITY, OverlayStyle::DEFAULT_OPACITY);
     }
     /// Re-notify SizeText/OpacityText after a language switch.
     pub fn refresh_localization(&self) {

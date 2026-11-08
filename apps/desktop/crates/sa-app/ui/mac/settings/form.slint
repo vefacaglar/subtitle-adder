@@ -103,9 +103,10 @@ export component MacPopUp inherits Rectangle {
     property <string> title: root.current-index >= 0 && root.current-index < root.model.length ? root.model[root.current-index] : "";
     height: 22px;
     min-width: 80px;
+    // NSPopUpButton sizes to its widest item (not the current one), so the width does not jump per selection.
     preferred-width: min(240px, max(100px, probe.preferred-width + 40px));
     border-radius: 5.5px;
-    border-width: 0.5px;
+    border-width: 1phx;
     border-color: MacTheme.button-border;
     background: touch.pressed ? MacTheme.button-pressed : MacTheme.button-background;
     drop-shadow-blur: MacTheme.dark ? 0 : 1px;
@@ -116,10 +117,14 @@ export component MacPopUp inherits Rectangle {
     accessible-label: root.accessible-name;
     accessible-value: root.title;
     accessible-enabled: root.enabled;
-    probe := Text {
+    probe := VerticalLayout {
         visible: false;
-        text: root.title;
-        font-size: MacTheme.body-size;
+        height: 0px;
+        for item in root.model: Text {
+            height: 0px;
+            text: item;
+            font-size: MacTheme.body-size;
+        }
     }
     HorizontalLayout {
         padding-left: 8px;
@@ -162,7 +167,7 @@ export component MacPopUp inherits Rectangle {
             min-width: root.width + 24px;
             background: MacTheme.menu-background;
             border-radius: 6px;
-            border-width: 0.5px;
+            border-width: 1phx;
             border-color: MacTheme.menu-border;
             drop-shadow-blur: 14px;
             drop-shadow-offset-y: 5px;
@@ -232,7 +237,7 @@ export component MacSwitch inherits Rectangle {
     height: 22px;
     border-radius: 11px;
     background: root.checked ? MacTheme.control-accent : (MacTheme.dark ? #ffffff26 : #00000017);
-    border-width: root.checked ? 0px : 0.5px;
+    border-width: root.checked ? 0px : 1phx;
     border-color: MacTheme.dark ? #ffffff1a : #0000001f;
     opacity: root.enabled ? 1 : 0.5;
     accessible-role: switch;
@@ -282,15 +287,17 @@ export component MacField inherits Rectangle {
     in property <bool> password;
     in property <bool> enabled: true;
     in property <string> accessible-name;
+    // A grouped-form row field (`TextField(label, …)` inside `.formStyle(.grouped)`): no bezel, text trailing.
+    in property <bool> plain;
     callback edited(string);
     callback accepted(string);
     callback focus-lost(string);
     height: 22px;
     min-width: 80px;
     border-radius: 5px;
-    border-width: input.has-focus ? 2px : 0.5px;
+    border-width: root.plain ? (input.has-focus ? 2px : 0px) : (input.has-focus ? 2px : 1phx);
     border-color: input.has-focus ? MacTheme.control-accent.with-alpha(0.6) : MacTheme.button-border;
-    background: MacTheme.dark ? #ffffff0d : #ffffff;
+    background: root.plain ? transparent : (MacTheme.dark ? #ffffff0d : #ffffff);
     opacity: root.enabled ? 1 : 0.5;
     clip: true;
     if root.text == "" && !input.has-focus: Text {
@@ -300,6 +307,7 @@ export component MacField inherits Rectangle {
         font-size: MacTheme.body-size;
         color: MacTheme.tertiary-label;
         vertical-alignment: center;
+        horizontal-alignment: root.plain ? right : left;
         overflow: elide;
     }
     input := TextInput {
@@ -310,6 +318,7 @@ export component MacField inherits Rectangle {
         font-size: MacTheme.body-size;
         color: MacTheme.label;
         vertical-alignment: center;
+        horizontal-alignment: root.plain ? right : left;
         single-line: true;
         input-type: root.password ? InputType.password : InputType.text;
         selection-background-color: MacTheme.control-accent.with-alpha(0.35);
@@ -346,6 +355,7 @@ export component FieldRow inherits HorizontalLayout {
         text <=> root.text;
         placeholder: root.placeholder;
         password: root.password;
+        plain: true;
         accessible-name: root.label;
         edited(t) => { root.edited(t); }
     }

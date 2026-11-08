@@ -196,7 +196,7 @@ impl MacMediaIndex {
         st.loaded = true;
         // A missing, unreadable, corrupt or newer-format file starts an empty index; the next scan rewrites it.
         let Ok(bytes) = std::fs::read(&self.file) else { return };
-        let Ok(text) = String::from_utf8(bytes) else { return };
+        let Some(text) = decode_json_bytes(&bytes) else { return };
         let Some(doc) = MediaIndexDocument::parse_apple(&text) else { return };
         for mut snapshot in doc.directories {
             snapshot.directory_path = path::normalized(&snapshot.directory_path);
@@ -352,6 +352,34 @@ impl MacMediaIndex {
         }
         self.subscribers.notify(&());
         self.channels.lock().retain(|tx| !matches!(tx.try_send(()), Err(TrySendError::Disconnected(_))));
+    }
+}
+
+/// The text `JSONDecoder` reads from `Data`: UTF-8, or UTF-16/UTF-32 announced by a byte order mark (the mark itself
+/// is skipped, a UTF-8 one included). Invalid sequences make the file unusable (`None`), as a decoding error does.
+fn decode_json_bytes(bytes: &[u8]) -> Option<String> {
+    fn utf16(rest: &[u8], le: bool) -> Option<String> {
+        if rest.len() % 2 != 0 {
+            return None;
+        }
+        let units = rest.chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) });
+        char::decode_utf16(units).collect::<Result<String, _>>().ok()
+    }
+    fn utf32(rest: &[u8], le: bool) -> Option<String> {
+        if rest.len() % 4 != 0 {
+            return None;
+        }
+        rest.chunks_exact(4)
+            .map(|c| char::from_u32(if le { u32::from_le_bytes([c[0], c[1], c[2], c[3]]) } else { u32::from_be_bytes([c[0], c[1], c[2], c[3]]) }))
+            .collect()
+    }
+    match bytes {
+        [0xEF, 0xBB, 0xBF, rest @ ..] => std::str::from_utf8(rest).ok().map(str::to_owned),
+        [0xFF, 0xFE, 0x00, 0x00, rest @ ..] => utf32(rest, true),
+        [0x00, 0x00, 0xFE, 0xFF, rest @ ..] => utf32(rest, false),
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, true),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, false),
+        _ => std::str::from_utf8(bytes).ok().map(str::to_owned),
     }
 }
 

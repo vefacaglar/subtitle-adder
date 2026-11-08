@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Application manifest of SubtitleAdder.exe (Rust desktop app). Same settings as the WinUI app's app.manifest
      (Windows 10/11, PerMonitorV2, UTF-8 code page) plus Common Controls v6 (visual styles, TaskDialog for rfd).
-     Embedded by sa-app's build.rs: /MANIFEST:EMBED /MANIFESTINPUT:<this file>. -->
+     Embedded as resource 1 / RT_MANIFEST by crates/sa-platform/build.rs (rc.exe). -->
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
   <assemblyIdentity version="1.0.0.0" name="SubtitleAdder.app"/>
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">

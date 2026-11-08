@@ -578,4 +578,16 @@ impl MediaIndex for WinMediaIndex {
             let _ = self.refresh_in_memory(dir, &CancellationToken::new());
         }
     }
+
+    fn scan_transient(&self, dir: &Path, cancel: &CancellationToken) -> ScanResult {
+        WinMediaIndex::scan_transient(self, &dir.to_string_lossy(), cancel)
+    }
+
+    fn refresh_in_memory(&self, dir: &Path, cancel: &CancellationToken) -> ScanResult {
+        WinMediaIndex::refresh_in_memory(self, &dir.to_string_lossy(), cancel)
+    }
+
+    fn is_directory_indexed(&self, dir: &Path) -> bool {
+        WinMediaIndex::is_directory_indexed(self, &dir.to_string_lossy())
+    }
 }

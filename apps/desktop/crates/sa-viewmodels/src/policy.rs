@@ -103,6 +103,12 @@ pub struct PlatformPolicy {
     pub summary_language_placeholder: bool,
     /// Subtitle import rules (macOS: JSON ids renumbered, strict UTF-16, listing-based companion video).
     pub import_flavor: ImportFlavor,
+    /// Logged-out empty feed: macOS keeps the per-filter title with a sign-in hint; Windows shows one generic
+    /// "no history is kept" text for every filter.
+    pub hub_logged_out_empty_per_filter: bool,
+    /// macOS (`asyncFailed`): a failed background batch stops background translation for the rest of the run.
+    /// Windows: the failure is logged ("final pass will retry") and later batches are still sent.
+    pub async_batch_failure_stops_background: bool,
 }
 
 impl PlatformPolicy {
@@ -132,6 +138,8 @@ impl PlatformPolicy {
             provider_title_auto_model: false,
             summary_language_placeholder: true,
             import_flavor: ImportFlavor::Windows,
+            hub_logged_out_empty_per_filter: false,
+            async_batch_failure_stops_background: false,
         }
     }
 
@@ -161,6 +169,8 @@ impl PlatformPolicy {
             provider_title_auto_model: true,
             summary_language_placeholder: false,
             import_flavor: ImportFlavor::Mac,
+            hub_logged_out_empty_per_filter: true,
+            async_batch_failure_stops_background: true,
         }
     }
 
@@ -172,7 +182,8 @@ impl PlatformPolicy {
     /// Session / playlist key of a path (Windows case-insensitive, macOS lexical standardization).
     pub fn path_key(&self, path: &std::path::Path) -> String {
         let standardized = standardize(path);
-        if self.case_insensitive_paths { standardized.to_lowercase() } else { standardized }
+        // Windows: StringComparer.OrdinalIgnoreCase (.NET simple invariant uppercase).
+        if self.case_insensitive_paths { sa_core::text::upper_invariant(&standardized) } else { standardized }
     }
 
     /// Path equality under this platform's rule.

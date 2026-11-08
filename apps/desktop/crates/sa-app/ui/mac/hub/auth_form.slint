@@ -1,11 +1,11 @@
 // macOS sign-in surfaces (mac-ui §9.4): `ProfileAuthForm` (shared by the profile popover and the hub's card) and
 // `ProfileAuthCard`. ADD-M (UNIFIED.md §3.11): the opt-in "Girişi hatırla" checkbox below the password, default off.
-import { LineEdit, CheckBox } from "std-widgets.slint";
+import { CheckBox } from "std-widgets.slint";
 import { Loc } from "../../shared/loc.slint";
 import { HubBridge } from "../../shared/bridge.slint";
 import { MacTheme } from "../theme.slint";
 import { Sym, PushButton, SmallSpinner } from "../main/controls.slint";
-import { PillButton, ErrorLabel } from "hub_controls.slint";
+import { PillButton, ErrorLabel, RoundedField } from "hub_controls.slint";
 
 export component ProfileAuthForm inherits VerticalLayout {
     // "Yeni profil oluştur" in the popover, "Profil oluştur" on the card.
@@ -52,16 +52,14 @@ export component ProfileAuthForm inherits VerticalLayout {
             }
         }
     }
-    user := LineEdit {
-        placeholder-text: Loc.t("Kullanıcı adı");
-        accessible-label: Loc.t("Kullanıcı adı");
+    user := RoundedField {
+        placeholder: Loc.t("Kullanıcı adı");
         enabled: !HubBridge.is-authenticating;
         accepted => { pw.focus(); }
     }
-    pw := LineEdit {
-        input-type: password;
-        placeholder-text: Loc.t("Şifre");
-        accessible-label: Loc.t("Şifre");
+    pw := RoundedField {
+        password: true;
+        placeholder: Loc.t("Şifre");
         enabled: !HubBridge.is-authenticating;
         accepted => { root.login(); }
     }

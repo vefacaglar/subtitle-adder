@@ -10,6 +10,8 @@
 //! * [`appkit`]: process preparation, `NSApp.appearance`, title-bar double click, full screen, standard menu actions
 //!   and the Services / Window / Help menu roles.
 //! * [`symbols`]: SF Symbols rasterizer; [`thumbnails`]: AVAssetImageGenerator card pictures.
+//! * [`alert`]: `NSAlert` sheets for `confirm`; [`color_panel`]: `NSColorPanel`; [`notifications`]: main-queue
+//!   `NSNotificationCenter` observers (volumes, system colors, will terminate, window key/close).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,10 +22,13 @@ use sa_core::future::LocalBoxFuture;
 use sa_core::l10n::UiLanguage;
 use sa_core::platform::{Alert, AlertResponse, FileFilter, PlatformShell, QuickLocation};
 
+pub mod alert;
 pub mod appkit;
+pub mod color_panel;
 pub mod defaults;
 pub mod ffi;
 pub mod folders;
+pub mod notifications;
 pub mod open_documents;
 pub mod symbols;
 pub mod thumbnails;
@@ -35,6 +40,16 @@ pub const BUNDLE_ID: &str = "app.subtitleadder.mac";
 /// The domain of an unbundled development run (the Swift dev build's executable name).
 pub const DEV_DOMAIN: &str = "SubtitleAdderApp";
 
+const DEV_INFO_PLIST_LEN: usize = include_bytes!("../../../../../macos/Support/Info.plist").len();
+
+/// The Info.plist of an unbundled development run (the Swift dev build's `apps/macos/Support/Info.plist`: menu-bar
+/// name "Subtitle Adder", development region `tr`, localizations tr/en, deliberately no bundle id so the defaults
+/// domain stays the dev one), embedded as `__TEXT,__info_plist` like Package.swift's `-sectcreate` (mac-ui §13.3).
+/// A packaged app's `Contents/Info.plist` takes precedence. Referenced from [`MacShell::new`] so the linker keeps it.
+#[used]
+#[unsafe(link_section = "__TEXT,__info_plist")]
+static DEV_INFO_PLIST: [u8; DEV_INFO_PLIST_LEN] = *include_bytes!("../../../../../macos/Support/Info.plist");
+
 /// The macOS shell.
 pub struct MacShell {
     diagnostics: Arc<dyn DiagnosticSink>,
@@ -42,6 +57,7 @@ pub struct MacShell {
 
 impl MacShell {
     pub fn new(diagnostics: Arc<dyn DiagnosticSink>) -> Self {
+        std::hint::black_box(DEV_INFO_PLIST.as_ptr());
         Self { diagnostics }
     }
 
@@ -55,9 +71,12 @@ impl MacShell {
             .then(|| bundle.to_path_buf())
     }
 
-    /// Defaults domain: `app.subtitleadder.mac` when bundled, `SubtitleAdderApp` for an unbundled dev run.
+    /// Defaults domain = Swift `UserDefaults.standard`: the bundle identifier when packaged (`app.subtitleadder.mac`,
+    /// or the `BUNDLE_ID` the package was built with), `SubtitleAdderApp` (the Swift dev build's executable name) for
+    /// an unbundled development run.
     pub fn defaults_domain() -> &'static str {
-        if Self::app_bundle().is_some() { BUNDLE_ID } else { DEV_DOMAIN }
+        static DOMAIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        DOMAIN.get_or_init(|| defaults::main_bundle_identifier().unwrap_or_else(|| DEV_DOMAIN.to_owned()))
     }
 
     /// SIGPIPE ignored, activation policy regular, app activated (mac-ui §2.1 steps 1–2). Main thread.
@@ -73,7 +92,7 @@ impl MacShell {
 
 impl PlatformShell for MacShell {
     fn app_data_dir(&self) -> PathBuf {
-        folders::application_support().join("SubtitleAdder")
+        sa_core::platform::data_dir_override().unwrap_or_else(|| folders::application_support().join("SubtitleAdder"))
     }
     fn diagnostics(&self) -> &dyn DiagnosticSink {
         self.diagnostics.as_ref()
@@ -94,6 +113,11 @@ impl PlatformShell for MacShell {
         // Explicit choice: per-app `AppleLanguages = [code]`; System: removed (system menus/panels follow on relaunch).
         let codes = language.map(|l| vec![l.code().to_owned()]);
         defaults::set_app_string_array(Self::defaults_domain(), "AppleLanguages", codes.as_deref());
+        if defaults::main_bundle_identifier().is_none() {
+            // An unbundled run: AppKit reads the executable-name domain (`SubtitleAdder`), not the Swift dev domain the
+            // settings live in, so the value goes there too (packaged, both are the bundle id).
+            defaults::set_current_app_string_array("AppleLanguages", codes.as_deref());
+        }
     }
     fn installed_font_families(&self) -> Vec<String> {
         appkit::font_families()
@@ -128,7 +152,10 @@ impl PlatformShell for MacShell {
         Box::pin(async move { crate::dialogs::pick_save_file(&name, format).await })
     }
     fn confirm(&self, alert: Alert) -> LocalBoxFuture<'static, AlertResponse> {
-        // An app-installed presenter wins; otherwise an rfd alert (a sheet on the parented key window).
-        crate::dialogs::confirm(alert)
+        // An app-installed presenter wins; otherwise an NSAlert sheet on the window that owns dialogs.
+        match crate::dialogs::presenter() {
+            Some(p) => p(alert),
+            None => alert::present(alert, crate::dialogs::parent_ns_view()),
+        }
     }
 }

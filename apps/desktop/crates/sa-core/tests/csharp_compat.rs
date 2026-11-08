@@ -400,6 +400,13 @@ fn subtitle_inputs() -> Vec<(&'static str, Vec<u8>)> {
     all.extend((0x20u8..=0xFF).filter(|b| *b != b'\n' && *b != b'\r'));
     all.push(b'\n');
     files.push(("43-all-bytes.srt", all));
+    // C# computes `h * 3600 + m * 60` in wrapping 32-bit `int`, and its number parsing skips only ASCII white space.
+    files.push((
+        "44-huge-hours.ass",
+        "[Events]\nFormat: Start, End, Text\nDialogue: 600000:00:00.00, 600000:00:01.00, wrapped\nDialogue: 0:\u{00A0}00:01.00, 0:00:02.00, nbsp part\nDialogue: 0: 00:01.00, 0:00:02.00 , ascii space part\nDialogue: 2147483647:0:0, 2147483647:0:1, int max\nDialogue: 2147483648:0:0, 0:0:1, int overflow\nDialogue: 1:\u{2003}2, 1:3, em space minutes\n"
+            .as_bytes()
+            .to_vec(),
+    ));
     files
 }
 
@@ -625,6 +632,75 @@ fn settings_typed_reads_match_csharp() {
     for line in csharp(temp.path(), &["settings-read", path.to_str().unwrap()]) {
         let key = s(&line[0]);
         assert_eq!(normalize_double(typed_reads(store.as_ref(), &key)), normalize_double(line), "{key}");
+    }
+}
+
+/// Typed reads of values written in memory (not parsed from a file) and the `Changed` count, op by op: covers the
+/// cross-type reads (`set_int` then `get_double`, `set_double(3.0)` then `get_int`) and the deep-equality no-op
+/// (`set_double(3.0)` after `set_int(3)`).
+#[test]
+fn in_memory_settings_ops_match_csharp() {
+    if !enabled() {
+        return;
+    }
+    let ops = [
+        "int a 3",
+        "int a 3",
+        "double a 3",
+        "double a 3.5",
+        "double a 3",
+        "int a 3",
+        "double b 2147483648",
+        "double b -0",
+        "double b 0",
+        "double b 1E-05",
+        "double b NaN",
+        "double b NaN",
+        "string c 3",
+        "string c true",
+        "bool c true",
+        "bool c true",
+        "string c ",
+        "remove c",
+        "remove c",
+        "int d -2147483648",
+        "double d -2147483648",
+        "double e 1E+300",
+    ];
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("ops.txt");
+    write_lines(&file, &ops.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+    let store = InMemorySettingsStore::new();
+    let changed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = changed.clone();
+    let _sub = store.subscribe(Box::new(move |_| {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+    let lines = csharp(temp.path(), &["settings-ops", file.to_str().unwrap()]);
+    assert_eq!(lines.len(), ops.len());
+    for (index, (op, line)) in ops.iter().zip(lines).enumerate() {
+        let parts: Vec<&str> = op.splitn(3, ' ').collect();
+        let key = parts[1];
+        match parts[0] {
+            "int" => store.set_int(key, parts[2].parse().unwrap()),
+            "double" => store.set_double(key, parts[2].parse().unwrap()),
+            "string" => store.set_string(key, parts[2]),
+            "bool" => store.set_bool(key, parts[2] == "true"),
+            "remove" => store.remove(key),
+            other => panic!("unknown op {other}"),
+        }
+        let mut rust = typed_reads(store.as_ref(), key);
+        rust[0] = Value::from(changed.load(std::sync::atomic::Ordering::SeqCst));
+        let mut cs = line;
+        cs.remove(0);
+        // Deliberate, unobservable deviation: a value written in memory by C# `SetInt` (a `JsonValue<int>`) reads as
+        // `null` through `GetDouble` until the file is reloaded, while the port reads it as a number (as C# does after
+        // a restart). No key of either app is written as an int and read as a double.
+        if matches!(index, 0..=2 | 19 | 20) {
+            assert_eq!(cs[4], Value::Null, "{op}: the C# quirk changed");
+            cs[4] = rust[4].clone();
+        }
+        assert_eq!(normalize_double(rust), normalize_double(cs), "{op}");
     }
 }
 

@@ -24,18 +24,27 @@ pub const DEFAULT_ATTEMPTS: u32 = 5;
 
 /// Decodes text with BOM detection (UTF-8, UTF-16 LE/BE, UTF-32 LE/BE; no BOM → UTF-8, invalid sequences replaced).
 pub fn decode_with_bom(bytes: &[u8]) -> String {
+    // A trailing partial code unit decodes to U+FFFD, as the .NET decoders' replacement fallback does at the end.
     fn utf16(bytes: &[u8], le: bool) -> String {
         let units = bytes.chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) });
-        char::decode_utf16(units).map(|r| r.unwrap_or('\u{FFFD}')).collect()
+        let mut text: String = char::decode_utf16(units).map(|r| r.unwrap_or('\u{FFFD}')).collect();
+        if bytes.len() % 2 != 0 {
+            text.push('\u{FFFD}');
+        }
+        text
     }
     fn utf32(bytes: &[u8], le: bool) -> String {
-        bytes
+        let mut text: String = bytes
             .chunks_exact(4)
             .map(|c| {
                 let v = if le { u32::from_le_bytes([c[0], c[1], c[2], c[3]]) } else { u32::from_be_bytes([c[0], c[1], c[2], c[3]]) };
                 char::from_u32(v).unwrap_or('\u{FFFD}')
             })
-            .collect()
+            .collect();
+        if bytes.len() % 4 != 0 {
+            text.push('\u{FFFD}');
+        }
+        text
     }
     match bytes {
         [0xFF, 0xFE, 0x00, 0x00, rest @ ..] => utf32(rest, true),
@@ -259,6 +268,18 @@ mod tests {
         assert_eq!(decode_with_bom(&[0xFF, 0xFE, b'a', 0]), "a");
         assert_eq!(decode_with_bom(&[0xFE, 0xFF, 0, b'a']), "a");
         assert_eq!(decode_with_bom(&[0xFF, 0xFE, 0, 0, b'a', 0, 0, 0]), "a");
+        // .NET 10 `StreamReader(UTF8, detectEncodingFromByteOrderMarks: true).ReadToEnd()` of the same bytes.
+        let dotnet: [(&[u8], &str); 6] = [
+            (&[0xFF, 0xFE, b'a', 0, b'b'], "a\u{FFFD}"),
+            (&[0xFE, 0xFF, 0, b'a', 0], "a\u{FFFD}"),
+            (&[0xFF, 0xFE, 0, 0, b'a', 0, 0, 0, 1, 2], "a\u{FFFD}"),
+            (&[b'a', 0xC3, 0x28, 0xE2, 0x82, b'b', 0xF0, 0x9F, 0x98], "a\u{FFFD}(\u{FFFD}b\u{FFFD}"),
+            (&[0xEF, 0xBB, 0xBF, 0xED, 0xA0, 0x80, b'x', 0xC0, 0xAF], "\u{FFFD}\u{FFFD}\u{FFFD}x\u{FFFD}\u{FFFD}"),
+            (&[0xFF, 0xFE, 0x00, 0xD8, b'a', 0], "\u{FFFD}a"),
+        ];
+        for (bytes, text) in dotnet {
+            assert_eq!(decode_with_bom(bytes), text, "{bytes:02X?}");
+        }
     }
 
     #[test]

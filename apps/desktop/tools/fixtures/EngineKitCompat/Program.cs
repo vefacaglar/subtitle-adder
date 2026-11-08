@@ -9,6 +9,25 @@ var stdout = new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8
 
 string Line(JsonNode? node) => node is null ? "null" : node.ToJsonString(options);
 
+JsonNode EventNode(EngineEvent engineEvent) => engineEvent switch
+{
+    EngineEvent.Stage s => new JsonObject { ["stage"] = s.Kind.RawValue(), ["fraction"] = s.Fraction },
+    EngineEvent.Partial p => new JsonObject
+        { ["partial"] = p.Language, ["sentences"] = JsonSerializer.Serialize(p.Sentences, options) },
+    EngineEvent.Translation t => new JsonObject
+        { ["translation"] = t.Language, ["sentences"] = JsonSerializer.Serialize(t.Sentences, options) },
+    EngineEvent.Result r => new JsonObject
+    {
+        ["result"] = r.Value.Language,
+        ["duration"] = r.Value.Duration,
+        ["audio"] = r.Value.Audio,
+        ["outputs"] = new JsonArray(r.Value.Outputs.Select(o => (JsonNode?)o).ToArray()),
+        ["sentences"] = JsonSerializer.Serialize(r.Value.Sentences, options),
+    },
+    EngineEvent.Error e => new JsonObject { ["error"] = e.Message },
+    _ => throw new InvalidOperationException(),
+};
+
 switch (args.Length > 0 ? args[0] : "")
 {
     case "edit":
@@ -85,24 +104,7 @@ switch (args.Length > 0 ? args[0] : "")
             JsonNode result;
             try
             {
-                result = EngineEvent.Decode(raw) switch
-                {
-                    EngineEvent.Stage s => new JsonObject { ["stage"] = s.Kind.RawValue(), ["fraction"] = s.Fraction },
-                    EngineEvent.Partial p => new JsonObject
-                        { ["partial"] = p.Language, ["sentences"] = JsonSerializer.Serialize(p.Sentences, options) },
-                    EngineEvent.Translation t => new JsonObject
-                        { ["translation"] = t.Language, ["sentences"] = JsonSerializer.Serialize(t.Sentences, options) },
-                    EngineEvent.Result r => new JsonObject
-                    {
-                        ["result"] = r.Value.Language,
-                        ["duration"] = r.Value.Duration,
-                        ["audio"] = r.Value.Audio,
-                        ["outputs"] = new JsonArray(r.Value.Outputs.Select(o => (JsonNode?)o).ToArray()),
-                        ["sentences"] = JsonSerializer.Serialize(r.Value.Sentences, options),
-                    },
-                    EngineEvent.Error e => new JsonObject { ["error"] = e.Message },
-                    _ => throw new InvalidOperationException(),
-                };
+                result = EventNode(EngineEvent.Decode(raw));
             }
             catch (JsonException e) when (e.Message.StartsWith("bilinmeyen olay: ", StringComparison.Ordinal))
             {
@@ -123,8 +125,63 @@ switch (args.Length > 0 ? args[0] : "")
             stdout.WriteLine(new System.Globalization.StringInfo(JsonSerializer.Deserialize<string>(raw)!).LengthInTextElements);
         break;
     }
+    case "client":
+    {
+        // client <fake engine exe> <cases.json>: runs the real C# EngineClient against the Rust test's scripted fake
+        // engine (one script per case) and prints one JSON line per case: {"ok": <value>} or {"error": {kind, message}}
+        // (kind "Failed"/"NotFound" for EngineException, "other" for anything else), plus "events" for streams.
+        var fake = args[1];
+        using var doc = JsonDocument.Parse(File.ReadAllText(args[2]));
+        foreach (var testCase in doc.RootElement.EnumerateArray())
+        {
+            var script = testCase.GetProperty("script").GetString()!;
+            var lang = testCase.GetProperty("lang").GetString() == "en" ? UILanguage.En : UILanguage.Tr;
+            var client = new EngineClient(new EngineCommand(fake, [script]), lang) { Offline = true };
+            var line = new JsonObject();
+            var events = new JsonArray();
+            try
+            {
+                switch (testCase.GetProperty("op").GetString())
+                {
+                    case "models":
+                        line["ok"] = JsonSerializer.SerializeToNode(await client.ModelsAsync(), options);
+                        break;
+                    case "delete":
+                        line["ok"] = await client.DeleteModelAsync(testCase.GetProperty("id").GetString()!);
+                        break;
+                    case "render":
+                        line["ok"] = await client.RenderAsync(
+                            testCase.GetProperty("sentences").Deserialize<List<Sentence>>(options)!, SubtitleFormat.Srt);
+                        break;
+                    case "transcribe":
+                        await foreach (var e in client.Transcribe("v.mp4", "out")) events.Add(EventNode(e));
+                        line["ok"] = true;
+                        break;
+                    case "translate":
+                        await foreach (var e in client.Translate(
+                                           testCase.GetProperty("sentences").Deserialize<List<Sentence>>(options)!, "es", "tr"))
+                            events.Add(EventNode(e));
+                        line["ok"] = true;
+                        break;
+                    default:
+                        throw new InvalidOperationException("unknown client op");
+                }
+            }
+            catch (EngineException e)
+            {
+                line["error"] = new JsonObject { ["kind"] = e.Error.ToString(), ["message"] = e.Message };
+            }
+            catch (Exception e) when (e is not InvalidOperationException)
+            {
+                line["error"] = new JsonObject { ["kind"] = "other", ["message"] = e.GetType().Name };
+            }
+            line["events"] = events;
+            stdout.WriteLine(Line(line));
+        }
+        break;
+    }
     default:
-        Console.Error.WriteLine("usage: EngineKitCompat edit|tracker|decode|graphemes <file>");
+        Console.Error.WriteLine("usage: EngineKitCompat edit|tracker|decode|graphemes <file> | client <fake engine> <file>");
         return 2;
 }
 stdout.Flush();

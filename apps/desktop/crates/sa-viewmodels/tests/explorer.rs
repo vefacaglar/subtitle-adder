@@ -105,6 +105,7 @@ fn starts_in_the_videos_library_and_the_first_video_moves_a_fresh_explorer() {
         QuickLocation { title: "Filmler".into(), path: env.path("lib/Movies"), kind: QuickLocationKind::Videos },
         QuickLocation { title: "Masaüstü".into(), path: env.path("lib"), kind: QuickLocationKind::Desktop },
     ];
+    env.profiles.st.lock().current = Some("ayse".into());
     let m = FileExplorerModel::new(env.services());
     m.start();
     env.eventually("initial folder", || m.current_folder() == Some(env.path("lib/Movies")));
@@ -178,13 +179,130 @@ fn mac_search_folds_case_diacritics_and_dotless_i() {
 
 #[test]
 fn size_texts_per_platform() {
+    // Windows rows: `IndexedMediaFile.FormattedSize` (invariant, B/KB/MB/GB), whatever the UI language.
     let l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
-    assert_eq!(size_text(0, ByteSizeFormat::WindowsBinary), "0 MB");
-    assert_eq!(size_text(1_572_864, ByteSizeFormat::WindowsBinary), "1,5 MB");
-    assert_eq!(size_text(524_288, ByteSizeFormat::WindowsBinary), "0,5 MB");
+    assert_eq!(size_text(0, ByteSizeFormat::WindowsBinary), "0 B");
+    assert_eq!(size_text(1_572_864, ByteSizeFormat::WindowsBinary), "1.5 MB");
+    assert_eq!(size_text(524_288, ByteSizeFormat::WindowsBinary), "512 KB");
+    assert_eq!(size_text(500_000, ByteSizeFormat::WindowsBinary), "488.3 KB");
     assert_eq!(size_text(2_147_483_648, ByteSizeFormat::WindowsBinary), "2 GB");
     l.set(UiLanguage::En);
     assert_eq!(size_text(1_572_864, ByteSizeFormat::WindowsBinary), "1.5 MB");
     assert_eq!(size_text(500, ByteSizeFormat::AppleDecimal), "500 bytes");
     assert_eq!(size_text(2_500_000, ByteSizeFormat::AppleDecimal), "2.5 MB");
+}
+
+fn movies_quick(env: &Env) {
+    *env.shell.quick.lock() = vec![QuickLocation { title: "Videolar".into(), path: env.path("lib/Movies"), kind: QuickLocationKind::Videos }];
+}
+
+#[test]
+fn windows_an_opened_video_never_writes_its_folder_to_the_index() {
+    // C# `SyncToVideoPathAsync` after 43ab997: a fresh explorer shows the video's folder transiently; later videos
+    // only refresh already indexed folders, in memory.
+    use sa_media::MediaIndex;
+    let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    tree(&env);
+    let m = FileExplorerModel::new(env.services());
+    m.sync_to_video(Some(&env.path("lib/Other/Gamma.mp4")));
+    idle(&env, &m);
+    assert_eq!(m.current_folder(), Some(env.path("lib/Other")));
+    assert!(m.rows().iter().any(|r| r.name == "Gamma.mp4" && r.is_active));
+    assert_eq!(*env.index.transient_scans.lock(), vec![env.path("lib/Other")]);
+    assert!(env.index.cached_snapshot(&env.path("lib/Other")).is_none(), "not recorded in the index");
+    assert_eq!(env.index.scans.load(std::sync::atomic::Ordering::SeqCst), 0);
+    m.refresh();
+    idle(&env, &m);
+    assert!(env.index.cached_snapshot(&env.path("lib/Other")).is_none(), "a refresh keeps it transient");
+    // Browsing persists; going back to the transient folder does not.
+    m.navigate(&env.path("lib/Movies"));
+    idle(&env, &m);
+    assert!(env.index.cached_snapshot(&env.path("lib/Movies")).is_some());
+    m.go_back();
+    idle(&env, &m);
+    assert_eq!(m.current_folder(), Some(env.path("lib/Other")));
+    assert!(env.index.cached_snapshot(&env.path("lib/Other")).is_none());
+    // A video from a folder that was never indexed: nothing is scanned; from an indexed one: memory only.
+    env.touch("lib/Third/x.mp4", "x");
+    let persisted = env.index.scans.load(std::sync::atomic::Ordering::SeqCst);
+    m.sync_to_video(Some(&env.path("lib/Third/x.mp4")));
+    idle(&env, &m);
+    assert!(env.index.cached_snapshot(&env.path("lib/Third")).is_none());
+    m.sync_to_video(Some(&env.path("lib/Movies/Alpha.mp4")));
+    env.eventually("in-memory refresh", || env.index.memory_refreshes.lock().contains(&env.path("lib/Movies")));
+    assert_eq!(env.index.scans.load(std::sync::atomic::Ordering::SeqCst), persisted, "the index file is never written");
+    assert_eq!(m.current_folder(), Some(env.path("lib/Other")), "later videos do not move it");
+}
+
+#[test]
+fn windows_the_launch_folder_is_not_left_for_the_first_video() {
+    let _l = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    tree(&env);
+    movies_quick(&env);
+    let m = FileExplorerModel::new(env.services());
+    m.start();
+    env.eventually("initial folder", || m.current_folder() == Some(env.path("lib/Movies")));
+    idle(&env, &m);
+    m.sync_to_video(Some(&env.path("lib/Other/Gamma.mp4")));
+    idle(&env, &m);
+    assert_eq!(m.current_folder(), Some(env.path("lib/Movies")));
+}
+
+#[test]
+fn mac_a_video_opened_without_a_profile_does_not_write_its_folder_to_the_index() {
+    use sa_media::MediaIndex;
+    let _l = LanguageScope::new(CatalogChain::Mac, UiLanguage::Tr);
+    let env = Env::mac();
+    tree(&env);
+    movies_quick(&env);
+    let m = FileExplorerModel::new(env.services());
+    m.start();
+    env.eventually("initial folder", || m.current_folder() == Some(env.path("lib/Movies")));
+    idle(&env, &m);
+    m.sync_to_video(Some(&env.path("lib/Other/Gamma.mp4")));
+    idle(&env, &m);
+    assert_eq!(m.current_folder(), Some(env.path("lib/Movies")));
+    assert!(env.index.cached_snapshot(&env.path("lib/Other")).is_none());
+    let srt = env.touch("lib/Other/Gamma.srt", "1\n");
+    m.subtitle_saved(&srt);
+    idle(&env, &m);
+    assert!(env.index.cached_snapshot(&env.path("lib/Other")).is_none(), "a save elsewhere is not indexed logged out");
+}
+
+#[test]
+fn a_session_change_forgets_the_browsed_folders() {
+    for policy in [sa_viewmodels::PlatformPolicy::windows(), sa_viewmodels::PlatformPolicy::mac()] {
+        let _l = LanguageScope::new(policy.catalog_chain, UiLanguage::Tr);
+        let env = Env::new(policy);
+        tree(&env);
+        movies_quick(&env);
+        env.profiles.st.lock().current = Some("ayse".into());
+        let m = FileExplorerModel::new(env.services());
+        m.start();
+        env.eventually("initial folder", || m.current_folder() == Some(env.path("lib/Movies")));
+        idle(&env, &m);
+        m.navigate(&env.path("lib/Other"));
+        idle(&env, &m);
+        m.navigate(&env.path("lib/Movies/Series"));
+        idle(&env, &m);
+        m.set_search("ep", true);
+        assert!(m.can_go_back());
+        // The same profile again changes nothing.
+        m.set_logged_in(true);
+        assert!(m.can_go_back());
+        env.profiles.st.lock().current = None;
+        m.set_logged_in(false);
+        env.eventually("back at the launch folder", || m.current_folder() == Some(env.path("lib/Movies")));
+        assert!(!m.can_go_back());
+        assert!(m.search_query().is_empty());
+        // Logging in later starts no reset of its own.
+        env.profiles.st.lock().current = Some("mehmet".into());
+        m.navigate(&env.path("lib/Other"));
+        idle(&env, &m);
+        m.set_logged_in(true);
+        idle(&env, &m);
+        assert_eq!(m.current_folder(), Some(env.path("lib/Other")));
+    }
 }

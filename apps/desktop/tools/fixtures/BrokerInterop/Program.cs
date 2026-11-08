@@ -7,6 +7,9 @@
 //   try-event / try-request / try-ack <json>   STJ parse check (CS-TRY ok <json> | null | fail)
 //   try-kind <text>                 Enum.TryParse<WriteKind>(ignoreCase) (CS-TRY ok <n> | fail)
 //   ieq <a><TAB><b>                 string.Equals(a, b, OrdinalIgnoreCase) (CS-IEQ true|false)
+//   readlines <base64>              the broker's pipe reader (StreamReader(UTF8, no BOM detection, 4096).ReadLine
+//                                   until null) over those bytes, plus IsNullOrWhiteSpace per line
+//                                   (CS-LINES [{"t":line,"b":blank},...])
 //   status | scope | quit
 using System.IO.Pipes;
 using System.Security.Cryptography;
@@ -82,6 +85,9 @@ internal static class Program
                         var tab = arg.IndexOf('\t');
                         Log("CS-IEQ " + string.Equals(arg[..tab], arg[(tab + 1)..], StringComparison.OrdinalIgnoreCase).ToString().ToLowerInvariant());
                         break;
+                    case "readlines":
+                        Log("CS-LINES " + ReadLines(Convert.FromBase64String(arg)));
+                        break;
                     case "status":
                         Log($"CS-STATUS leader={broker.IsLeader.ToString().ToLowerInvariant()} ready={broker.IsReady.ToString().ToLowerInvariant()} count={broker.ActiveInstanceCount} clients={broker.ConnectedClientCount}");
                         break;
@@ -115,6 +121,20 @@ internal static class Program
         {
             return "fail";
         }
+    }
+
+    /// Exactly how StateSyncBroker reads a pipe (client loop and server sessions): ReadLine until null; the broker then
+    /// skips every line for which IsNullOrWhiteSpace is true.
+    private static string ReadLines(byte[] bytes)
+    {
+        using var reader = new StreamReader(new MemoryStream(bytes), Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: false);
+        var lines = new List<Dictionary<string, object>>();
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+        {
+            lines.Add(new Dictionary<string, object> { ["t"] = line, ["b"] = string.IsNullOrWhiteSpace(line) });
+        }
+        return JsonSerializer.Serialize(lines);
     }
 
     private static async Task<string> RawWriteAsync(string scope, string requestJson)

@@ -199,7 +199,23 @@ impl Inner {
         let display = c.st.fg().display_mode;
         self.leave_foreground(c, fx);
         let next = match &path {
-            Some(p) => self.session_for(&mut c.st, fx, p),
+            Some(p) => {
+                let existed = c.st.existing_session(p);
+                let sid = self.session_for(&mut c.st, fx, p);
+                // Windows `OpenVideo`: a session without lines, translations, status or loaded file is reset and its
+                // sidecar looked up again (a subtitle may have appeared next to the video since). macOS evicts such
+                // sessions, so its next open creates (and loads) a fresh one anyway.
+                if existed.is_some() && !c.st.policy.evict_sessions && c.st.session(sid).is_some_and(Session::is_blank) {
+                    if let Some(s) = c.st.session_mut(sid) {
+                        s.detected_language = None;
+                        s.saved_subtitle_name = None;
+                        s.async_fraction = None;
+                        s.export_language = ExportLanguage::Original;
+                    }
+                    self.load_sidecar_in_background(&c.st, fx, sid, p.clone());
+                }
+                sid
+            }
             None => {
                 let win = c.st.policy.single_jobs_as_list_rows == SingleJobsAsListRows::PlaylistRows;
                 if win && let Some(sid) = c.st.by_key.get("").copied() {

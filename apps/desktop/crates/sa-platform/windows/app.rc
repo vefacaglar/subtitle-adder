@@ -1,4 +1,0 @@
-// Executable icon of SubtitleAdder.exe (Explorer, taskbar pin). Compiled by sa-app's build.rs with rc.exe:
-//   rc /nologo /fo <out>\app.res /i <dir with AppIcon.ico> app.rc   then link <out>\app.res.
-// The icon is the WinUI app's apps/windows/src/SubtitleAdder/Assets/AppIcon.ico (or `sa-make-icon --ico`).
-1 ICON "AppIcon.ico"

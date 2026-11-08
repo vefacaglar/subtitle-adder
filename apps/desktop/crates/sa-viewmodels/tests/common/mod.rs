@@ -476,6 +476,10 @@ pub struct FakeIndex {
     pub search_calls: AtomicUsize,
     pub all_calls: AtomicUsize,
     pub scans: AtomicUsize,
+    /// Folders listed without touching the index (`scan_transient`).
+    pub transient_scans: Mutex<Vec<PathBuf>>,
+    /// Folders refreshed in memory only (`refresh_in_memory`).
+    pub memory_refreshes: Mutex<Vec<PathBuf>>,
     subs: Subscribers<()>,
 }
 
@@ -486,6 +490,8 @@ impl FakeIndex {
             search_calls: AtomicUsize::new(0),
             all_calls: AtomicUsize::new(0),
             scans: AtomicUsize::new(0),
+            transient_scans: Mutex::new(Vec::new()),
+            memory_refreshes: Mutex::new(Vec::new()),
             subs: Subscribers::new(),
         })
     }
@@ -533,6 +539,26 @@ impl MediaIndex for FakeIndex {
             Some(s) => {
                 self.dirs.lock().insert(dir.to_string_lossy().to_lowercase(), s.clone());
                 self.subs.notify(&());
+                ScanResult::Listed(s)
+            }
+            None => ScanResult::Missing,
+        }
+    }
+    fn scan_transient(&self, dir: &Path, _cancel: &CancellationToken) -> ScanResult {
+        self.transient_scans.lock().push(dir.to_path_buf());
+        match Self::list(dir) {
+            Some(s) => ScanResult::Listed(s),
+            None => ScanResult::Missing,
+        }
+    }
+    fn refresh_in_memory(&self, dir: &Path, _cancel: &CancellationToken) -> ScanResult {
+        self.memory_refreshes.lock().push(dir.to_path_buf());
+        match Self::list(dir) {
+            Some(s) => {
+                let key = dir.to_string_lossy().to_lowercase();
+                if self.dirs.lock().contains_key(&key) {
+                    self.dirs.lock().insert(key, s.clone());
+                }
                 ScanResult::Listed(s)
             }
             None => ScanResult::Missing,

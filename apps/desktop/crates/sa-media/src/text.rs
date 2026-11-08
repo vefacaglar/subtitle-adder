@@ -15,7 +15,6 @@ use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 
 use unicode_normalization::UnicodeNormalization;
-use unicode_normalization::char::is_combining_mark;
 
 // ---------------------------------------------------------------------------------------------------------------
 // .NET invariant casing
@@ -142,64 +141,12 @@ pub fn lower_key(s: &str) -> String {
     nfc(&s.to_lowercase())
 }
 
-/// The full Unicode case folding of one character where it differs from `to_lowercase` (CaseFolding.txt status F/C
-/// entries that matter for file names); every other character folds to its lowercase form.
-fn case_fold_into(c: char, out: &mut String) {
-    let folded: &str = match c {
-        'ß' | 'ẞ' => "ss",
-        'ſ' => "s",
-        'ς' => "σ",
-        'ŉ' => "ʼn",
-        'ϐ' => "β",
-        'ϑ' => "θ",
-        'ϕ' => "φ",
-        'ϖ' => "π",
-        'ϰ' => "κ",
-        'ϱ' => "ρ",
-        'ϵ' => "ε",
-        'ẛ' => "ṡ",
-        '\u{0345}' | '\u{1FBE}' => "ι",
-        'ﬀ' => "ff",
-        'ﬁ' => "fi",
-        'ﬂ' => "fl",
-        'ﬃ' => "ffi",
-        'ﬄ' => "ffl",
-        'ﬅ' | 'ﬆ' => "st",
-        _ => {
-            out.extend(c.to_lowercase());
-            return;
-        }
-    };
-    out.push_str(folded);
-}
-
 /// LibraryKit `TextFolding.fold`: case-, diacritic- and width-insensitive form (Foundation
-/// `folding([.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)`), then `ı` → `i`. Used for the
-/// macOS index search; `"Işık Şarkı"` matches `"isik"`, `"SARKI"` and `"ışık şarkı"`, `"Crème Brûlée"` folds to
-/// `"creme brulee"`.
-pub fn fold(text: &str) -> String {
-    // 1. canonical decomposition; 2. width folding of the Halfwidth and Fullwidth Forms block.
-    let mut decomposed = String::with_capacity(text.len());
-    for c in text.nfd() {
-        if ('\u{FF00}'..='\u{FFEF}').contains(&c) {
-            decomposed.extend(std::iter::once(c).nfkd());
-        } else {
-            decomposed.push(c);
-        }
-    }
-    // 3. full case folding (on the decomposed text, then decomposed again: `İ` → `i̇`).
-    let mut folded = String::with_capacity(decomposed.len());
-    for c in decomposed.chars() {
-        case_fold_into(c, &mut folded);
-    }
-    // 4. strip every combining mark; 5. dotless i → i; 6. NFC.
-    let stripped: String = folded
-        .nfd()
-        .filter(|c| !is_combining_mark(*c))
-        .map(|c| if c == '\u{0131}' { 'i' } else { c })
-        .collect();
-    nfc(&stripped)
-}
+/// `folding([.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)`), then `ı` → `i`. The
+/// macOS index search uses the workspace's one folding, so it always agrees with the library search and list-name
+/// uniqueness of `sa-profiles::mac` (in Swift all three call `TextFolding.fold`). `"Işık Şarkı"` matches `"isik"`,
+/// `"SARKI"` and `"ışık şarkı"`, `"Crème Brûlée"` folds to `"creme brulee"`.
+pub use sa_core::folding::fold;
 
 /// Swift `String <`: lexicographic over the Unicode scalars of the NFC forms.
 pub fn swift_lt(a: &str, b: &str) -> bool {
@@ -329,6 +276,8 @@ mod tests {
         assert!(fold("İstanbul").contains(&fold("İSTANBUL")));
         assert_eq!(fold("Ｆｉｌｍ"), "film");
         assert_eq!(fold("Straße"), "strasse");
+        // The same function as the library search and list names (`sa_core::folding::fold`).
+        assert_eq!(fold("Երևան"), sa_core::folding::fold("ԵՐԵՒԱՆ"));
     }
 
     #[test]

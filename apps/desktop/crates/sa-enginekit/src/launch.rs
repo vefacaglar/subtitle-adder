@@ -134,13 +134,14 @@ impl EngineLaunchState {
         inner.external_llm = llm;
     }
 
-    /// A different address forgets the cached `.local` LAN address; `None` (provider disabled) keeps it.
+    /// A different address forgets the cached `.local` LAN address. `None` (no active provider) counts as the empty
+    /// address, as the C# `TranslationProviderManager` disables the state by setting `Url = ""`.
     fn note_url(&self, llm: Option<&ExternalLlm>) {
-        let Some(llm) = llm else { return };
+        let url = llm.map_or("", |l| l.url.as_str());
         let mut last = self.last_url.lock();
-        if *last != llm.url {
+        if *last != url {
             crate::external_llm::clear_cached_lan_ip();
-            last.clone_from(&llm.url);
+            *last = url.to_owned();
         }
     }
     /// Keys to redact in diagnostics.
@@ -162,6 +163,9 @@ mod tests {
     fn llm(url: &str, model: &str, key: &str) -> Option<ExternalLlm> {
         Some(ExternalLlm { url: url.into(), model: model.into(), api_key: key.into() })
     }
+
+    /// Serializes the tests that change the process-wide cached LAN address.
+    static LAN_CACHE: Mutex<()> = Mutex::new(());
 
     const NAMES: [&str; 3] = [EXTERNAL_LLM_URL_VAR, EXTERNAL_LLM_MODEL_VAR, EXTERNAL_LLM_API_KEY_VAR];
 
@@ -259,6 +263,7 @@ mod tests {
 
     #[test]
     fn secrets_list_the_trimmed_active_key() {
+        let _cache = LAN_CACHE.lock();
         let state = EngineLaunchState::new(EngineLaunchSettings { offline: true, external_llm: llm("u", "m", " sk-1 ") });
         assert_eq!(state.secrets(), vec!["sk-1".to_owned()]);
         state.set_external_llm(None);
@@ -266,17 +271,25 @@ mod tests {
     }
 
     #[test]
-    fn another_address_forgets_the_cached_lan_ip_but_disabling_keeps_it() {
+    fn another_address_or_disabling_forgets_the_cached_lan_ip() {
+        let _cache = LAN_CACHE.lock();
         use crate::external_llm::{cached_lan_ip, set_cached_lan_ip};
         let state = EngineLaunchState::new(EngineLaunchSettings { offline: true, external_llm: llm("mac.local:1234", "", "") });
         set_cached_lan_ip("192.168.1.5");
         state.set_external_llm(llm("mac.local:1234", "other-model", ""));
+        state.set_offline(false);
         assert_eq!(cached_lan_ip().as_deref(), Some("192.168.1.5"));
-        state.set_external_llm(None);
-        state.set(EngineLaunchSettings { offline: false, external_llm: llm("mac.local:1234", "", "") });
+        state.set(EngineLaunchSettings { offline: true, external_llm: llm("mac.local:1234", "", "sk") });
         assert_eq!(cached_lan_ip().as_deref(), Some("192.168.1.5"));
         state.set_external_llm(llm("studio.local:1234", "", ""));
         assert_eq!(cached_lan_ip(), None);
+        // C# `TranslationProviderManager` disables with `Url = ""`, which forgets the address too.
+        set_cached_lan_ip("192.168.1.6");
+        state.set_external_llm(None);
+        assert_eq!(cached_lan_ip(), None);
+        set_cached_lan_ip("192.168.1.7");
+        state.set_external_llm(None);
+        assert_eq!(cached_lan_ip().as_deref(), Some("192.168.1.7"));
     }
 
     #[test]

@@ -238,7 +238,8 @@ fn lan_edits_persist_the_legacy_keys_and_sync_the_bridge() {
     m.commit_lan_model("  gemma4:e4b ");
     m.set_lan_async(true);
     assert_eq!(e.f.settings.get_string("externalLlmUrl").as_deref(), Some("192.168.1.50:11434"));
-    assert_eq!(e.f.settings.get_string("externalLlmModel").as_deref(), Some("gemma4:e4b"));
+    // C#: the setter stores the text as typed; the LAN provider sync trims it.
+    assert_eq!(e.f.settings.get_string("externalLlmModel").as_deref(), Some("  gemma4:e4b "));
     assert_eq!(e.f.settings.get_bool("externalLlmAsync"), Some(true));
     assert_eq!(e.f.win.synced.lock().last().map(|l| l.url.clone()).as_deref(), Some("192.168.1.50:11434"));
 
@@ -755,4 +756,110 @@ fn closing_drops_late_results() {
     m.close();
     pump(&e);
     assert!(!m.view().provider_status_open, "a result arriving after close is ignored");
+}
+
+
+// MARK: parity checks against the C# / Swift sources
+
+#[test]
+fn windows_row_key_caption_is_the_managers_mask_without_a_loading_state() {
+    let _g = SERIAL.lock();
+    let e = env();
+    let p = e.f.providers.add(provider("Ofis", "openai", "https://api.openai.com/v1"), Some("sk-oc-1234567890"), false);
+    let bare = e.f.providers.add(provider("Ev", "lan", "http://192.168.1.20:11434"), None, false);
+    // No pump: C# `MaskedApiKey` is read synchronously (the Windows manager holds the keys in memory).
+    let m = SettingsModel::new(e.f.deps.clone(), Flavor::Windows);
+    let v = m.view();
+    assert_eq!(v.provider_rows[0].summary, "https://api.openai.com/v1 · sk-••••7890");
+    assert_eq!(v.provider_rows[1].summary, "http://192.168.1.20:11434 · Anahtar yok");
+    e.f.providers.unreadable.lock().insert(p.id);
+    assert_eq!(m.view().provider_rows[0].summary, "https://api.openai.com/v1 · Anahtar okunamadı");
+    let _ = bare;
+}
+
+#[test]
+fn windows_saving_an_edit_of_a_provider_removed_elsewhere_adds_nothing_and_selects_local() {
+    let _g = SERIAL.lock();
+    let e = env();
+    let p = e.f.providers.add(provider("Lab", "openai", "https://api.openai.com/v1"), None, true);
+    let m = model(&e, Flavor::Windows);
+    m.edit_provider(p.id);
+    // Another instance removes it (no form reset: only this window's "Sil" resets the form).
+    {
+        let mut st = e.f.providers.state.lock();
+        st.0.clear();
+    }
+    m.form_save();
+    assert!(e.f.providers.providers().is_empty(), "C# UpdateProvider of an unknown id adds nothing");
+    assert_eq!(e.f.providers.active_provider_id(), None, "SetActiveProvider(unknown) → on-device models");
+    let v = m.view();
+    assert!(v.form.is_new);
+    assert_eq!(v.provider_status_text, "Sağlayıcı güncellendi ve etkinleştirildi.");
+}
+
+#[test]
+fn windows_form_test_sends_trimmed_values_and_keeps_the_tested_model() {
+    let _g = SERIAL.lock();
+    let e = env();
+    let m = model(&e, Flavor::Windows);
+    m.form_set_url("  https://api.example.com/v1  ");
+    m.form_set_key(" sk-1 ");
+    m.form_set_model(" mine ");
+    *e.f.tester.answer.lock() = ok("Bağlantı başarılı", &["m-1", "m-2"]);
+    m.form_test();
+    // Typing while the test runs does not survive the answer (C# sets the snapshot model).
+    m.form_set_model("typed meanwhile");
+    wait(&e, || !m.view().form.testing);
+    assert_eq!(e.f.tester.calls.lock()[0], "draft:opencode-go|https://api.example.com/v1|sk-1|mine");
+    let f = m.view().form;
+    assert_eq!(f.model_items, vec!["m-1", "m-2"]);
+    assert_eq!(f.model, "mine");
+}
+
+#[test]
+fn reselecting_the_shown_page_neither_reloads_nor_scrolls() {
+    let _g = SERIAL.lock();
+    let e = env();
+    let m = model(&e, Flavor::Windows);
+    m.show_page(None);
+    m.select_page(2);
+    pump(&e);
+    let epoch = m.view().scroll_epoch;
+    m.select_page(2);
+    m.show_page(Some("models"));
+    assert_eq!(m.view().scroll_epoch, epoch);
+    m.select_page(0);
+    assert!(m.view().scroll_epoch > epoch);
+}
+
+#[test]
+fn mac_draft_of_an_unknown_preset_shows_the_custom_type() {
+    let _g = SERIAL.lock();
+    let e = env();
+    let p = e.f.providers.add(provider("Eski", "retired-preset", "https://llm.example.com/v1"), None, false);
+    let m = model(&e, Flavor::Mac);
+    m.edit_provider(p.id);
+    assert_eq!(m.view().form.preset_index, 7, "`TranslationProviderPreset.preset(id:)`: unknown → custom");
+    // The Windows combo falls back to the first preset instead.
+    let w = model(&e, Flavor::Windows);
+    w.edit_provider(p.id);
+    assert_eq!(w.view().form.preset_index, 0);
+}
+
+#[test]
+fn windows_lan_toggle_refreshes_models_while_a_cloud_provider_is_active() {
+    let _g = SERIAL.lock();
+    let e = env();
+    e.f.providers.add(provider("OpenAI", "openai", "https://api.openai.com/v1"), None, true);
+    let m = model(&e, Flavor::Windows);
+    *e.f.win.lan_answer.lock() = Some(TestOutcome {
+        success: false,
+        message: "Lütfen geçerli bir sunucu adresi girin.".into(),
+        models: vec![],
+    });
+    // C# `IsExternalLlmActive` is true with an active cloud provider even without a LAN address.
+    m.set_lan_enabled(true);
+    assert!(m.view().lan_busy);
+    wait(&e, || !m.view().lan_busy);
+    assert!(!m.view().lan_test_open, "the toggle refreshes without the InfoBar");
 }

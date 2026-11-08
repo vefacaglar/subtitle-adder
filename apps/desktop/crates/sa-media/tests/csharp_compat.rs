@@ -30,7 +30,14 @@ fn tool_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fixtures/MediaCompat")
 }
 
+/// The built tool; the staleness check and the build run once per test process, so tests running in parallel never
+/// start the exe while another test rebuilds it.
 fn tool_exe() -> PathBuf {
+    static EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    EXE.get_or_init(build_tool).clone()
+}
+
+fn build_tool() -> PathBuf {
     let exe = tool_dir().join("bin/Release/net10.0/MediaCompat.exe");
     let built = std::fs::metadata(&exe).and_then(|m| m.modified());
     let stale = ["Program.cs", "MediaCompat.csproj"].iter().any(|source| {
@@ -491,4 +498,184 @@ fn odd_index_files_load_like_csharp() {
         assert_eq!(rust_dump(&rust, query), csharp_view, "query {query:?}");
     }
     assert_eq!(std::fs::read(&index_file).unwrap(), before, "a current-version file is never rewritten on load");
+}
+
+// ---- stream and formatting behavior ---------------------------------------------------------------------------
+
+/// The Rust side of the fixture's `stream-trace`: the same ops on a `BufferedVideoStream` over an in-memory video
+/// (synchronous SSD writes, no read-ahead) with a Rust `VideoCacheStore` whose profile logs out (`o`) and in (`l`).
+fn run_rust_stream_trace(dir: &Path, length: usize, chunk: i32, max_cached: i32, ops: &str) -> Vec<String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let raw = pattern(length, 19);
+    let video = dir.join("video.bin");
+    std::fs::write(&video, &raw).unwrap();
+    let logged_in = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&logged_in);
+    let keys: VaultKeyProvider =
+        Arc::new(move || flag.load(Ordering::SeqCst).then(|| ("alice".to_owned(), SecretKey32::new([7u8; 32]))));
+    let cache_dir = dir.join("VideoCache");
+    let store = VideoCacheStore::new(cache_dir.clone(), keys, Some(1 << 30));
+    let open = || {
+        BufferedVideoStream::from_stream(
+            Box::new(std::io::Cursor::new(raw.clone())),
+            false,
+            chunk,
+            max_cached,
+            0,
+            Some(Arc::clone(&store)),
+            None,
+            Some(video.to_string_lossy().into_owned()),
+        )
+        .unwrap()
+    };
+    fn count_vcache(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, |entries| {
+            entries
+                .flatten()
+                .map(|e| {
+                    let p = e.path();
+                    if p.is_dir() {
+                        count_vcache(&p)
+                    } else {
+                        usize::from(p.extension().is_some_and(|x| x.eq_ignore_ascii_case("vcache")))
+                    }
+                })
+                .sum()
+        })
+    }
+    let mut stream = open();
+    let mut out = Vec::new();
+    for op in ops.split(',') {
+        let n: i64 = if op.len() > 1 { op[1..].parse().unwrap() } else { 0 };
+        match &op[..1] {
+            "s" => drop(stream.seek_shared(std::io::SeekFrom::Start(n as u64))),
+            "e" => drop(stream.seek_shared(std::io::SeekFrom::End(-n))),
+            "c" => drop(stream.seek_shared(std::io::SeekFrom::Current(n))),
+            "r" => {
+                let mut buf = vec![0u8; n as usize];
+                let got = stream.read_shared(&mut buf).unwrap();
+                out.push(format!("r|{got}|{}", &hex(&Sha256::digest(&buf[..got]))[..16]));
+            }
+            "q" => {
+                let bits: Vec<String> = [0.0, 0.25, 0.5, 0.99, f64::NAN, 2.0]
+                    .iter()
+                    .map(|p| (stream.buffered_ratio(*p).to_bits() as i64).to_string())
+                    .collect();
+                out.push(format!(
+                    "q|{}|{}|{}|{}|{}|{}",
+                    stream.position(),
+                    stream.underlying_read_count(),
+                    stream.underlying_bytes_read(),
+                    stream.encrypted_cache_read_count(),
+                    stream.cached_chunk_count(),
+                    bits.join("|")
+                ));
+            }
+            "x" => drop(std::mem::replace(&mut stream, open())),
+            "o" => {
+                logged_in.store(false, Ordering::SeqCst);
+                store.end_stale_sessions();
+            }
+            "l" => logged_in.store(true, Ordering::SeqCst),
+            "f" => out.push(format!("f|{}|{}", count_vcache(&cache_dir), store.total_used_bytes())),
+            other => panic!("unknown stream op {other}"),
+        }
+    }
+    out
+}
+
+/// RAM window eviction, SSD hits after a reopen, short reads at the end, seeks past the end, the buffer-bar ratio (bit
+/// for bit, NaN and out-of-range playback ratios included), and a logout in the middle of playback (the open stream's
+/// session ends: no more SSD reads or writes, even after the same profile logs in again; a reopened stream uses the
+/// cache again) behave exactly like the C# `BufferedVideoStream` + `EncryptedVideoCacheStore`.
+#[test]
+fn buffered_stream_traces_match_csharp() {
+    if !enabled() {
+        return;
+    }
+    let scenarios: [(usize, i32, i32, &str); 3] = [
+        (
+            330_000,
+            65_536,
+            3,
+            "q,r1000,q,s200000,r70000,q,e50,r100,q,s0,r10,q,f,x,q,r65536,q,s300000,r40000,q,o,s100000,r5000,q,f,l,\
+             s131072,r10,q,x,q,f",
+        ),
+        // Chunk size below the 64 KiB floor, a two-chunk RAM window, seeks past the end, current-relative seeks.
+        (200_000, 1000, 1, "r70000,q,c-5000,r10000,q,s500000,r10,q,e0,r10,q,s65535,r2,q,x,r200000,q,s131072,r1,q,f"),
+        // A video of exactly one chunk; empty reads.
+        (65_536, 65_536, 32, "r0,q,r65536,q,r1,q,x,q,r65536,q,f"),
+    ];
+    for (length, chunk, max_cached, ops) in scenarios {
+        let tmp = tempfile::tempdir().unwrap();
+        let csharp_dir = tmp.path().join("cs");
+        let rust_dir = tmp.path().join("rs");
+        std::fs::create_dir_all(&csharp_dir).unwrap();
+        std::fs::create_dir_all(&rust_dir).unwrap();
+        let expected = csharp(&[
+            "stream-trace",
+            csharp_dir.to_str().unwrap(),
+            &length.to_string(),
+            &chunk.to_string(),
+            &max_cached.to_string(),
+            ops,
+        ]);
+        let actual = run_rust_stream_trace(&rust_dir, length, chunk, max_cached, ops);
+        assert_eq!(actual, expected, "ops {ops}");
+    }
+}
+
+/// `FormatFileSize`, `GetMimeType` and `SidecarBadge` give the C# text for the same inputs.
+#[test]
+fn size_mime_and_badge_texts_match_csharp() {
+    if !enabled() {
+        return;
+    }
+    let mut sizes: Vec<i64> = vec![-1, 0, 1, 1023, 1024, 1025, 1075, 1076, 1126, 1127, 1228, 1229, 1280, 10_188, 10_189, 1_048_575];
+    for unit in [1024i64, 1 << 20, 1 << 30] {
+        for m in [1i64, 2, 5, 9, 10, 99, 100, 999, 1000, 1023, 1024, 1025] {
+            for frac in [0i64, 1, 4, 5, 6, 49, 50, 51, 94, 95, 96, 499, 500, 501, 994, 995, 996] {
+                sizes.push(m * unit + unit * frac / 1000);
+                sizes.push(m * unit + unit * frac / 1000 - 1);
+            }
+        }
+    }
+    sizes.extend([i64::MAX, 5_000_000_000, 12_345_678_901, 1_099_511_627_776, 1_125_899_906_842_624]);
+    for batch in sizes.chunks(200) {
+        let mut args = vec!["format-size".to_owned()];
+        args.extend(batch.iter().map(i64::to_string));
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let actual: Vec<String> = batch.iter().map(|b| sa_media::format_file_size(*b)).collect();
+        assert_eq!(actual, csharp(&refs));
+    }
+
+    let paths = [
+        "a.MKV", "a.mK", "x", "", "b.Ts", "c.opus", "d.AVİ", "e.mp4.", "f.m2TS", "g.\u{212A}", "h.m\u{212A}v", "dir.mkv\\x",
+        "C:\\v.Wma",
+    ];
+    let mut args = vec!["mime"];
+    args.extend(paths);
+    let actual: Vec<String> = paths.iter().map(|p| sa_media::win::mime_type(Some(p)).to_owned()).collect();
+    assert_eq!(actual, csharp(&args));
+
+    let exts = [".srt", " ", "", "-null", ".ſrt", "..vtt", " .vtt", ".ı", ".ass ", "ß", ".ǆ"];
+    let mut args = vec!["badge"];
+    args.extend(exts);
+    let actual: Vec<String> = exts
+        .iter()
+        .map(|e| {
+            let f = sa_media::IndexedMediaFile {
+                full_path: "C:\\a.mp4".into(),
+                file_name: "a.mp4".into(),
+                directory_path: "C:\\".into(),
+                size_bytes: 1,
+                last_write_time_utc: 0,
+                has_sidecar_subtitle: true,
+                sidecar_extension: (*e != "-null").then(|| (*e).to_owned()),
+                indexed_at_utc: 0,
+            };
+            f.sidecar_badge().unwrap_or_else(|| "(none)".into())
+        })
+        .collect();
+    assert_eq!(actual, csharp(&args));
 }

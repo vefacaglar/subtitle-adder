@@ -1,7 +1,8 @@
 //! Diagnostic log (win-core §6, mac-enginekit §9, UNIFIED.md §2 "Diagnostics").
 //!
-//! Never blocks the caller: lines are formatted immediately and appended by one background consumer (bounded queue
-//! of 1024 lines, drop-oldest). Rotation at 2 MiB to `<file>.old`. Messages are scrubbed of configured API keys and
+//! Never blocks the caller: lines are formatted immediately and appended by one background consumer (Windows: bounded
+//! queue of 1024 lines, drop-oldest, like the C# channel; macOS: unbounded, like the Swift serial queue). Rotation
+//! at 2 MiB to `<file>.old`. Messages are scrubbed of configured API keys and
 //! `(?i)(bearer\s+)[^\s"',;]+` → `$1[redacted]` on **both** platforms (UNIFIED.md FIX-W).
 //!
 //! The Windows format additionally keeps the C# app's privacy rules (`DiagnosticLog.cs`): every absolute Windows
@@ -289,7 +290,8 @@ impl DiagnosticLog {
         let mut q = self.shared.queue.lock();
         for line in lines {
             let seq = self.shared.next_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            if q.lines.len() >= Self::QUEUE_CAPACITY {
+            // Windows: the C# bounded channel (1024, drop-oldest). macOS: a serial dispatch queue, unbounded.
+            if self.shared.format == DiagnosticFormat::Windows && q.lines.len() >= Self::QUEUE_CAPACITY {
                 q.lines.pop_front();
             }
             q.lines.push_back((seq, line));
@@ -419,9 +421,15 @@ fn append(shared: &Shared, lines: impl Iterator<Item = String>) {
     {
         let old = rotated(path);
         if shared.format == DiagnosticFormat::Mac {
+            // Swift: `try? removeItem(.old)`, then `try moveItem`; a failed move drops the batch.
             let _ = std::fs::remove_file(&old);
+            if std::fs::rename(path, &old).is_err() {
+                return;
+            }
+        } else {
+            // C#: `File.Move(overwrite: true)` in a catch-all; the batch is appended either way.
+            let _ = std::fs::rename(path, &old);
         }
-        let _ = std::fs::rename(path, &old);
     }
     let text: String = lines.collect();
     // Any error drops the batch (no spin, no retry).

@@ -329,11 +329,12 @@ fn path_arg(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// The last non-empty stdout line (split on `\n`, one trailing `\r` trimmed).
+/// The last non-empty stdout line, split on `\n`: Windows trims every trailing `\r` (C# `TrimEnd('\r')`), macOS one
+/// (the Swift `LineSplitter`).
 fn last_line(bytes: &[u8]) -> Option<String> {
     String::from_utf8_lossy(bytes)
         .split('\n')
-        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .map(|l| if cfg!(target_os = "macos") { l.strip_suffix('\r').unwrap_or(l) } else { l.trim_end_matches('\r') })
         .filter(|l| !l.is_empty())
         .last()
         .map(str::to_owned)
@@ -353,6 +354,21 @@ fn payload(line: Option<String>) -> Option<serde_json::Map<String, Value>> {
         Ok(Value::Object(o)) => Some(o),
         _ => None,
     }
+}
+
+/// macOS: Swift decodes the last line as one `Decodable` payload (`ModelsPayload` / `DeletePayload`), so a
+/// non-string `event` or any present, non-null optional field of the wrong type makes the whole payload absent (no
+/// error message is read from it either). Windows reads each property on its own (C# `JsonDocument`).
+fn swift_payload(
+    payload: Option<serde_json::Map<String, Value>>,
+    field_ok: impl Fn(&str, &Value) -> bool,
+) -> Option<serde_json::Map<String, Value>> {
+    if !cfg!(target_os = "macos") {
+        return payload;
+    }
+    payload.filter(|p| {
+        p.get("event").is_some_and(Value::is_string) && p.iter().all(|(k, v)| k == "event" || v.is_null() || field_ok(k, v))
+    })
 }
 
 /// A JSON integer as the platform's decoder reads one: Windows `System.Text.Json` `GetInt32`/`TryGetInt32` (an
@@ -422,7 +438,11 @@ impl EngineClient for ProcessEngineClient {
     fn models(&self, cancel: &CancellationToken) -> Result<Vec<EngineModel>, EngineError> {
         let args = vec!["models".to_owned(), "--json".to_owned()];
         let (bytes, status, run) = self.run_to_end(&args, StdinSource::Null, cancel)?;
-        let payload = payload(last_line(&bytes));
+        let payload = swift_payload(payload(last_line(&bytes)), |key, value| match key {
+            "message" => value.is_string(),
+            "models" => value.as_array().is_some_and(|rows| decode_models(rows).is_some()),
+            _ => true,
+        });
         if let Some(message) = error_message(&payload) {
             return Err(EngineError::Failed(message));
         }
@@ -441,7 +461,11 @@ impl EngineClient for ProcessEngineClient {
     fn delete_model(&self, id: &str, cancel: &CancellationToken) -> Result<i64, EngineError> {
         let args = vec!["delete-model".to_owned(), id.to_owned(), "--json".to_owned()];
         let (bytes, status, run) = self.run_to_end(&args, StdinSource::Null, cancel)?;
-        let payload = payload(last_line(&bytes));
+        let payload = swift_payload(payload(last_line(&bytes)), |key, value| match key {
+            "message" | "id" => value.is_string(),
+            "freed_mb" => json_int(value).is_some(),
+            _ => true,
+        });
         if let Some(message) = error_message(&payload) {
             return Err(EngineError::Failed(message));
         }
@@ -601,8 +625,11 @@ impl Launcher {
             }
         });
 
-        let trace = (for_translation && self.copy_translation_trace && args.first().is_some_and(|a| a == "translate"))
-            .then(|| (Arc::clone(&self.diagnostics), run_key));
+        // Swift redacts the configured key of the run's launch settings, whether or not its address was usable.
+        let trace = (for_translation && self.copy_translation_trace && args.first().is_some_and(|a| a == "translate")).then(|| {
+            let key = settings.external_llm.as_ref().map(|l| l.api_key.trim().to_owned()).unwrap_or_default();
+            (Arc::clone(&self.diagnostics), key)
+        });
         Ok(Run { child: handle, stdout, log_path, language, control: Arc::clone(&self.control), trace })
     }
 }
@@ -677,21 +704,37 @@ impl Drop for Run {
     }
 }
 
-/// The last 5 non-empty lines of a stderr log (split on `\n`, trailing `\r` removed), joined with `\n`. The log
-/// is decoded lossily on Windows (.NET `StreamReader`); on macOS a log that is not valid UTF-8 gives `""`
-/// (`String(contentsOf:encoding: .utf8)` fails).
+/// The last 5 non-empty lines of a stderr log, joined with `\n`, as each platform's app cut them:
+/// * Windows (C# `FailureAsync`): decoded lossily, split on `\n`, every trailing `\r` removed;
+/// * macOS (Swift `failure`): a log that is not valid UTF-8 gives `""` (`String(contentsOf:encoding: .utf8)` fails);
+///   split on the `Character` `"\n"`, which a CR LF pair is not (one grapheme cluster), and nothing is trimmed.
 pub fn log_tail(path: &Path) -> String {
     let Ok(bytes) = std::fs::read(path) else { return String::new() };
-    let text = if cfg!(target_os = "macos") {
+    let lines: Vec<String> = if cfg!(target_os = "macos") {
         match String::from_utf8(bytes) {
-            Ok(text) => text,
+            Ok(text) => split_on_lone_newlines(&text).into_iter().filter(|l| !l.is_empty()).map(str::to_owned).collect(),
             Err(_) => return String::new(),
         }
     } else {
-        String::from_utf8_lossy(&bytes).into_owned()
+        let text = String::from_utf8_lossy(&bytes);
+        text.split('\n').map(|l| l.trim_end_matches('\r')).filter(|l| !l.is_empty()).map(str::to_owned).collect()
     };
-    let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).filter(|l| !l.is_empty()).collect();
     lines[lines.len().saturating_sub(5)..].join("\n")
+}
+
+/// Swift `String.split(separator: "\n")`: splits at every `\n` that is not the second half of a `\r\n` cluster.
+fn split_on_lone_newlines(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' && !(i > 0 && bytes[i - 1] == b'\r') {
+            pieces.push(&text[start..i]);
+            start = i + 1;
+        }
+    }
+    pieces.push(&text[start..]);
+    pieces
 }
 
 /// The `[translation] ` lines of a stderr log (mac-enginekit 9.5: the last 4 MiB, split on LF or CR, at most the
@@ -841,7 +884,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("e.log");
         std::fs::write(&log, "1\r\n2\n\n3\r\r\n4\n5\n6 ünlü\n").unwrap();
-        assert_eq!(log_tail(&log), "2\n3\n4\n5\n6 ünlü");
+        if cfg!(target_os = "macos") {
+            // Swift: a CR LF pair is one `Character`, never equal to "\n", so it does not split; nothing is trimmed.
+            assert_eq!(log_tail(&log), "1\r\n2\n3\r\r\n4\n5\n6 ünlü");
+        } else {
+            assert_eq!(log_tail(&log), "2\n3\n4\n5\n6 ünlü");
+        }
+        assert_eq!(split_on_lone_newlines("a\nb\r\nc\n\nd\r"), vec!["a", "b\r\nc", "", "d\r"]);
         std::fs::write(&log, b"ok\n\xff\xfebad\n").unwrap();
         if cfg!(target_os = "macos") {
             assert_eq!(log_tail(&log), "");

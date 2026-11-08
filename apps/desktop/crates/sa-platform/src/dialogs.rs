@@ -1,5 +1,6 @@
-//! Native open/save dialogs and the alert fallback through `rfd` (IFileOpenDialog/IFileSaveDialog on Windows starting
-//! in the Videos known folder, win-ui-main §18; NSOpenPanel/NSSavePanel attached to the key window on macOS,
+//! Native open/save dialogs and the alert fallback: on Windows `IFileOpenDialog`/`IFileSaveDialog` set up like the
+//! WinUI pickers ([`crate::win::file_dialog`]: Videos as the *default* folder, so the last-used folder wins, as with
+//! `SuggestedStartLocation`; win-ui-main §18); on macOS `rfd` (NSOpenPanel/NSSavePanel attached to the key window,
 //! mac-ui §6.3).
 //!
 //! Parenting: the app registers the window that owns dialogs with [`set_dialog_parent`] (main window on Windows, the
@@ -99,7 +100,12 @@ pub fn suggested_save_name(name: &str, flavor: DialogFlavor) -> String {
     match flavor {
         DialogFlavor::Mac => name.to_owned(),
         DialogFlavor::Windows => {
-            let file = name.rsplit(['\\', '/']).next().unwrap_or(name);
+            // .NET `Path.GetFileName`: after the last separator, never inside the root (`C:film.srt` → `film.srt`).
+            let rest = match name.as_bytes() {
+                [d, b':', ..] if d.is_ascii_alphabetic() => &name[2..],
+                _ => name,
+            };
+            let file = rest.rsplit(['\\', '/']).next().unwrap_or(rest);
             match file.rfind('.') {
                 Some(i) => file[..i].to_owned(),
                 None => file.to_owned(),
@@ -154,8 +160,41 @@ fn parent() -> Option<ParentHandles> {
     PARENT.with(|p| *p.borrow())
 }
 
+/// The `NSView*` of the window that owns dialogs (macOS sheets).
+#[cfg(target_os = "macos")]
+pub(crate) fn parent_ns_view() -> Option<*mut std::ffi::c_void> {
+    match parent()?.window {
+        RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr()),
+        _ => None,
+    }
+}
+
 // ---- file dialogs -----------------------------------------------------------------------------------------------
 
+/// The owner `HWND` of the dialogs (0 = none).
+#[cfg(windows)]
+fn parent_hwnd() -> isize {
+    match parent().map(|p| p.window) {
+        Some(RawWindowHandle::Win32(h)) => h.hwnd.get(),
+        _ => 0,
+    }
+}
+
+#[cfg(windows)]
+fn windows_open_request(filter: &FileFilter, start_dir: Option<PathBuf>, multiple: bool) -> crate::win::file_dialog::DialogRequest {
+    let exts = filter_extensions_for(filter, DialogFlavor::Windows);
+    crate::win::file_dialog::DialogRequest {
+        filter: (!exts.is_empty())
+            .then(|| (filter_name(filter, DialogFlavor::Windows), exts.iter().map(|e| (*e).to_owned()).collect())),
+        multiple,
+        file_name: None,
+        default_extension: None,
+        start_dir,
+        owner: parent_hwnd(),
+    }
+}
+
+#[cfg_attr(windows, allow(dead_code))]
 fn open_dialog(filter: &FileFilter, start_dir: Option<PathBuf>) -> rfd::AsyncFileDialog {
     let flavor = DialogFlavor::native();
     let mut d = rfd::AsyncFileDialog::new();
@@ -174,16 +213,30 @@ fn open_dialog(filter: &FileFilter, start_dir: Option<PathBuf>) -> rfd::AsyncFil
 
 /// One file.
 pub async fn pick_open_file(filter: FileFilter, start_dir: Option<PathBuf>) -> Option<PathBuf> {
-    open_dialog(&filter, start_dir).pick_file().await.map(|h| h.path().to_path_buf())
+    #[cfg(windows)]
+    {
+        crate::win::file_dialog::open(windows_open_request(&filter, start_dir, false)).await.into_iter().next()
+    }
+    #[cfg(not(windows))]
+    {
+        open_dialog(&filter, start_dir).pick_file().await.map(|h| h.path().to_path_buf())
+    }
 }
 
 /// Several files.
 pub async fn pick_open_files(filter: FileFilter, start_dir: Option<PathBuf>) -> Vec<PathBuf> {
-    open_dialog(&filter, start_dir)
-        .pick_files()
-        .await
-        .map(|v| v.into_iter().map(|h| h.path().to_path_buf()).collect())
-        .unwrap_or_default()
+    #[cfg(windows)]
+    {
+        crate::win::file_dialog::open(windows_open_request(&filter, start_dir, true)).await
+    }
+    #[cfg(not(windows))]
+    {
+        open_dialog(&filter, start_dir)
+            .pick_files()
+            .await
+            .map(|v| v.into_iter().map(|h| h.path().to_path_buf()).collect())
+            .unwrap_or_default()
+    }
 }
 
 /// Save dialog; Windows appends the extension when missing and starts in the Videos library, macOS keeps the exact
@@ -195,19 +248,34 @@ pub async fn pick_save_file(suggested_name: &str, format: SubtitleFormat) -> Opt
 /// [`pick_save_file`] with a start folder (Windows: the Videos known folder).
 pub async fn pick_save_file_in(suggested_name: &str, format: SubtitleFormat, start_dir: Option<PathBuf>) -> Option<PathBuf> {
     let flavor = DialogFlavor::native();
-    let mut d = rfd::AsyncFileDialog::new().set_file_name(suggested_save_name(suggested_name, flavor));
-    if flavor == DialogFlavor::Windows {
-        let filter = FileFilter::Subtitle(format);
-        d = d.add_filter(filter_name(&filter, flavor), &[format.raw()]);
+    #[cfg(windows)]
+    {
+        // C# FileSavePicker: SuggestedFileName = name without extension, DefaultFileExtension = ".<raw>", one
+        // FileTypeChoices entry "<RAW>" → [".<raw>"], SuggestedStartLocation = VideosLibrary.
+        let request = crate::win::file_dialog::DialogRequest {
+            filter: Some((filter_name(&FileFilter::Subtitle(format), flavor), vec![format.raw().to_owned()])),
+            multiple: false,
+            file_name: Some(suggested_save_name(suggested_name, flavor)),
+            default_extension: Some(format.raw().to_owned()),
+            start_dir,
+            owner: parent_hwnd(),
+        };
+        let path = crate::win::file_dialog::save(request).await?;
+        Some(finish_save_path(path, format, flavor))
     }
-    if let Some(dir) = start_dir.filter(|d| d.is_dir()) {
-        d = d.set_directory(dir);
+    #[cfg(not(windows))]
+    {
+        // macOS: no type filter, so NSSavePanel keeps the exact `<stem>[.<lang>].<fmt>` name (never appends `.txt`).
+        let mut d = rfd::AsyncFileDialog::new().set_file_name(suggested_save_name(suggested_name, flavor));
+        if let Some(dir) = start_dir.filter(|d| d.is_dir()) {
+            d = d.set_directory(dir);
+        }
+        if let Some(p) = parent() {
+            d = d.set_parent(&p);
+        }
+        let path = d.save_file().await?.path().to_path_buf();
+        Some(finish_save_path(path, format, flavor))
     }
-    if let Some(p) = parent() {
-        d = d.set_parent(&p);
-    }
-    let path = d.save_file().await?.path().to_path_buf();
-    Some(finish_save_path(path, format, flavor))
 }
 
 // ---- alerts -----------------------------------------------------------------------------------------------------
@@ -223,6 +291,11 @@ pub fn set_alert_presenter(presenter: Box<AlertPresenter>) {
 
 pub fn clear_alert_presenter() {
     PRESENTER.with(|p| *p.borrow_mut() = None);
+}
+
+/// The installed presenter, if any (UI thread).
+pub fn presenter() -> Option<std::rc::Rc<AlertPresenter>> {
+    PRESENTER.with(|p| p.borrow().clone())
 }
 
 /// Maps the button choice of an rfd dialog back to the index in `alert.buttons`.
@@ -250,7 +323,7 @@ pub fn message_buttons(alert: &Alert) -> rfd::MessageButtons {
 
 /// `PlatformShell::confirm`: the installed presenter, else an rfd message dialog.
 pub fn confirm(alert: Alert) -> LocalBoxFuture<'static, AlertResponse> {
-    if let Some(p) = PRESENTER.with(|p| p.borrow().clone()) {
+    if let Some(p) = presenter() {
         return p(alert);
     }
     Box::pin(async move {
@@ -309,6 +382,9 @@ mod tests {
         assert_eq!(suggested_save_name("film.tr.srt", DialogFlavor::Windows), "film.tr");
         assert_eq!(suggested_save_name("film", DialogFlavor::Windows), "film");
         assert_eq!(suggested_save_name(".srt", DialogFlavor::Windows), "");
+        assert_eq!(suggested_save_name("C:", DialogFlavor::Windows), "");
+        assert_eq!(suggested_save_name("C:film.tr.srt", DialogFlavor::Windows), "film.tr");
+        assert_eq!(suggested_save_name(r"C:\v\film.srt", DialogFlavor::Windows), "film");
         assert_eq!(suggested_save_name("film.tr.srt", DialogFlavor::Mac), "film.tr.srt");
     }
 

@@ -3,6 +3,9 @@
 import { Button, ComboBox, LineEdit } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Loc } from "../../shared/loc.slint";
+import { ToolTip } from "../main/controls.slint";
+
+export { ToolTip }
 
 // Segoe Fluent Icons glyph.
 export component Glyph inherits Text {
@@ -225,6 +228,11 @@ export component GlyphButton inherits Rectangle {
         enabled: root.enabled;
         clicked => { root.clicked(); }
     }
+    // ToolTipService.ToolTip (a disabled button gets no pointer input, so no tooltip, as in WinUI).
+    ToolTip {
+        text: root.tooltip;
+        show: touch.has-hover && !touch.pressed;
+    }
 }
 
 // Editable ComboBox (WinUI `IsEditable`): a text box with a drop-down of known values. `committed` fires on
@@ -337,7 +345,12 @@ export component ContentDialog inherits Rectangle {
     background: #0000004d;
     // Swallow clicks behind the dialog.
     TouchArea { }
-    FocusScope {
+    changed open => {
+        if (root.open) {
+            keys.focus();
+        }
+    }
+    keys := FocusScope {
         key-pressed(e) => {
             if (e.text == Key.Escape || e.text == Key.Return) {
                 root.dismissed();
@@ -345,7 +358,7 @@ export component ContentDialog inherits Rectangle {
             }
             return reject;
         }
-        Rectangle {
+        card := Rectangle {
             width: min(548px, root.width - 48px);
             height: content.preferred-height;
             background: Theme.dark ? #2b2b2b : #ffffff;
@@ -380,12 +393,17 @@ export component ContentDialog inherits Rectangle {
                     HorizontalLayout {
                         padding: 24px;
                         spacing: 8px;
+                        // ContentDialog buttons share the row equally.
                         Button {
+                            // Equal preferred widths + equal stretch = equal columns.
+                            preferred-width: 120px;
                             horizontal-stretch: 1;
                             text: root.primary-text;
                             clicked => { root.primary(); }
                         }
                         Button {
+                            // Equal preferred widths + equal stretch = equal columns.
+                            preferred-width: 120px;
                             horizontal-stretch: 1;
                             text: root.close-text;
                             primary: true;

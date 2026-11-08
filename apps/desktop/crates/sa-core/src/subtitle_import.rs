@@ -211,11 +211,11 @@ pub fn find_companion_video_listing(subtitle_path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Swift `deletingPathExtension().lastPathComponent`: the name without its last extension (a leading-dot name has
-/// none).
+/// Swift `deletingPathExtension().lastPathComponent`: the name without its last extension. A name has no extension
+/// when its last dot is its first character (`.srt`) or its last one (`Film.`), so those stay whole.
 fn mac_stem(name: &str) -> &str {
     match name.rfind('.') {
-        Some(i) if i > 0 => &name[..i],
+        Some(i) if i > 0 && i + 1 < name.len() => &name[..i],
         _ => name,
     }
 }
@@ -227,10 +227,13 @@ fn mac_extension(name: &str) -> Option<&str> {
     }
 }
 
-/// macOS folder-listing fold: `NFC(lowercase(NFC(name)))` (Unicode default lowercasing, not Turkish rules).
+/// macOS folder-listing fold: `NFC(lowercase(NFC(name)))`. Swift `String.lowercased()` maps every scalar on its own
+/// (Unicode full lowercase mapping, no Turkish rules and no context: a final `Σ` becomes `σ`, never `ς`), so this
+/// lower-cases per `char` rather than with `str::to_lowercase`.
 pub fn fold(name: &str) -> String {
     let nfc: String = name.nfc().collect();
-    nfc.to_lowercase().nfc().collect()
+    let lower: String = nfc.chars().flat_map(char::to_lowercase).collect();
+    lower.nfc().collect()
 }
 
 /// macOS sidebar badge rule (mac-enginekit §12.2): which subtitle extension a listing holds for a video stem
@@ -338,12 +341,12 @@ pub fn parse_with(content: &str, extension: Option<&str>, flavor: ImportFlavor) 
     let trimmed = content.trim_start_matches(['\u{FEFF}', ' ', '\t', '\r', '\n']);
     let ext = trim_dotnet(extension.unwrap_or("")).trim_start_matches('.').to_lowercase();
     if ext == "ass" || ext == "ssa" || trimmed.to_ascii_lowercase().contains("[events]") {
-        return parse_ass(trimmed);
+        return parse_ass(trimmed, flavor);
     }
     if ext == "json" || (trimmed.starts_with('[') && trim_dotnet(trimmed).ends_with(']')) {
         return parse_json(trimmed, flavor);
     }
-    parse_srt_or_vtt(trimmed)
+    parse_srt_or_vtt(trimmed, flavor)
 }
 
 /// `.NET Math.Round(x, 3)` (banker's rounding).
@@ -392,6 +395,22 @@ fn parse_json_windows(json: &str) -> Option<Vec<Sentence>> {
     serde_json::from_value(value).ok()
 }
 
+/// SRT/VTT line trimming: Windows `string.Trim()` (all Unicode white space); macOS
+/// `trimmingCharacters(in: .whitespaces)` (space separators and tab only, so a line holding just U+2028, a form feed
+/// or a vertical tab is not blank there).
+fn trim_line(line: &str, flavor: ImportFlavor) -> &str {
+    match flavor {
+        ImportFlavor::Windows => trim_dotnet(line),
+        ImportFlavor::Mac => line.trim_matches(|c: char| c == '\t' || (c.is_whitespace() && !is_line_break_class(c))),
+    }
+}
+
+/// White space that Foundation's `.whitespaces` leaves out: `\n`, VT, FF, `\r`, NEL, LS, PS (everything else in
+/// Unicode `White_Space` is a space separator or tab).
+fn is_line_break_class(c: char) -> bool {
+    matches!(c, '\n' | '\u{0B}' | '\u{0C}' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
 fn split_lines(content: &str) -> Vec<&str> {
     // `\r\n` → `\n`, lone `\r` → `\n`, then split on `\n` (empty lines kept).
     let mut out = Vec::new();
@@ -435,27 +454,27 @@ fn make_sentence(count: usize, start: f64, end: f64, text: String) -> Sentence {
     Sentence::new(count as i64 + 1, round3(start), round3(end.max(start + 0.05)), text)
 }
 
-fn parse_srt_or_vtt(content: &str) -> Vec<Sentence> {
+fn parse_srt_or_vtt(content: &str, flavor: ImportFlavor) -> Vec<Sentence> {
     let lines = split_lines(content);
     let n = lines.len();
     let mut results: Vec<Sentence> = Vec::new();
     let mut i = 0;
     while i < n {
-        let line = trim_dotnet(lines[i]);
+        let line = trim_line(lines[i], flavor);
         if line.is_empty() || starts_with_ignore_ascii_case(line, "WEBVTT") {
             i += 1;
             continue;
         }
         if line.starts_with("NOTE") || line.starts_with("STYLE") {
             i += 1;
-            while i < n && !trim_dotnet(lines[i]).is_empty() {
+            while i < n && !trim_line(lines[i], flavor).is_empty() {
                 i += 1;
             }
             continue;
         }
         let mut caps = timing().captures(line);
         if caps.is_none() && i + 1 < n {
-            let next = timing().captures(trim_dotnet(lines[i + 1]));
+            let next = timing().captures(trim_line(lines[i + 1], flavor));
             if next.is_some() {
                 caps = next;
                 i += 1;
@@ -465,12 +484,12 @@ fn parse_srt_or_vtt(content: &str) -> Vec<Sentence> {
             i += 1;
             continue;
         };
-        let start = parse_timestamp(&caps["start"]);
-        let end = parse_timestamp(&caps["end"]);
+        let start = parse_timestamp(&caps["start"], flavor);
+        let end = parse_timestamp(&caps["end"], flavor);
         i += 1;
         let mut text_lines = Vec::new();
-        while i < n && !trim_dotnet(lines[i]).is_empty() {
-            let cleaned = clean_markup(trim_dotnet(lines[i]));
+        while i < n && !trim_line(lines[i], flavor).is_empty() {
+            let cleaned = clean_markup(trim_line(lines[i], flavor));
             if !cleaned.is_empty() {
                 text_lines.push(cleaned);
             }
@@ -485,7 +504,7 @@ fn parse_srt_or_vtt(content: &str) -> Vec<Sentence> {
     results
 }
 
-fn parse_ass(content: &str) -> Vec<Sentence> {
+fn parse_ass(content: &str, flavor: ImportFlavor) -> Vec<Sentence> {
     let mut results: Vec<Sentence> = Vec::new();
     let mut in_events = false;
     let (mut start_idx, mut end_idx, mut text_idx, mut field_count) = (1usize, 2usize, 9usize, 10usize);
@@ -520,8 +539,8 @@ fn parse_ass(content: &str) -> Vec<Sentence> {
         if parts.len() <= start_idx.max(end_idx).max(text_idx) {
             continue;
         }
-        let start = parse_timestamp(trim_dotnet(parts[start_idx]));
-        let end = parse_timestamp(trim_dotnet(parts[end_idx]));
+        let start = parse_timestamp(trim_dotnet(parts[start_idx]), flavor);
+        let end = parse_timestamp(trim_dotnet(parts[end_idx]), flavor);
         let raw_text = parts[text_idx].replace("\\N", " ").replace("\\n", " ").replace("\\h", " ");
         let text = clean_markup(&raw_text);
         if !text.is_empty() && end >= start {
@@ -544,25 +563,42 @@ fn clean_markup(text: &str) -> String {
 }
 
 /// `ts(raw)`: `h:m:s` or `m:s` with `,` as an alternative decimal separator; anything else → 0.
-fn parse_timestamp(raw: &str) -> f64 {
+///
+/// Windows (C# `ParseTimestamp`): `int.TryParse`/`double.TryParse` with the invariant culture, which allow only ASCII
+/// white space (`\t`…`\r`, space) around a part, and `h * 3600 + m * 60` computed in wrapping 32-bit `int`
+/// arithmetic before the seconds are added. macOS (Swift `parseTimestamp`): `Int(_:)` / `Double(_:)`, 64-bit, no
+/// white space inside a part at all. Both: decimal number syntax only (C# would also read `Infinity`/`NaN` and Swift
+/// `inf`/`nan`/hex floats; such a time cannot be written back, so the port reads it as 0).
+fn parse_timestamp(raw: &str, flavor: ImportFlavor) -> f64 {
     let normalized = trim_dotnet(raw).replace(',', ".");
     let parts: Vec<&str> = normalized.split(':').collect();
-    let int = |s: &str| trim_dotnet(s).parse::<i32>().ok();
+    let part = |s: &'_ str| -> Option<String> {
+        match flavor {
+            ImportFlavor::Windows => Some(s.trim_matches(|c: char| matches!(c, '\t'..='\r' | ' ')).to_owned()),
+            ImportFlavor::Mac => (!s.starts_with(char::is_whitespace) && !s.ends_with(char::is_whitespace)).then(|| s.to_owned()),
+        }
+    };
+    let int = |s: &str| part(s)?.parse::<i64>().ok().filter(|v| flavor == ImportFlavor::Mac || i32::try_from(*v).is_ok());
     let float = |s: &str| {
-        let t = trim_dotnet(s);
-        // Invariant number syntax only (digits, sign, point, exponent): no "inf"/"nan" words.
+        let t = part(s)?;
         if t.is_empty() || !t.bytes().all(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-' | b'.' | b'e' | b'E')) {
             return None;
         }
         t.parse::<f64>().ok()
     };
+    let whole = |h: i64, m: i64| -> f64 {
+        match flavor {
+            ImportFlavor::Windows => (h as i32).wrapping_mul(3600).wrapping_add((m as i32).wrapping_mul(60)) as f64,
+            ImportFlavor::Mac => h.wrapping_mul(3600).wrapping_add(m.wrapping_mul(60)) as f64,
+        }
+    };
     match parts.as_slice() {
         [h, m, s] => match (int(h), int(m), float(s)) {
-            (Some(h), Some(m), Some(s)) => f64::from(h) * 3600.0 + f64::from(m) * 60.0 + s,
+            (Some(h), Some(m), Some(s)) => whole(h, m) + s,
             _ => 0.0,
         },
         [m, s] => match (int(m), float(s)) {
-            (Some(m), Some(s)) => f64::from(m) * 60.0 + s,
+            (Some(m), Some(s)) => whole(0, m) + s,
             _ => 0.0,
         },
         _ => 0.0,

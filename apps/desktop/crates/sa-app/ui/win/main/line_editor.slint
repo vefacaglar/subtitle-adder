@@ -28,6 +28,12 @@ component LineText inherits Rectangle {
     accessible-role: text-input;
     accessible-label: root.placeholder;
     accessible-value: input.text;
+    // UI Automation ValuePattern.SetValue (WinUI TextBox parity): the same path as typing, committed on focus loss.
+    accessible-action-set-value(v) => {
+        input.focus();
+        input.text = v;
+        root.edited(v);
+    }
     touch := TouchArea {
         clicked => { input.focus(); }
     }
@@ -88,12 +94,14 @@ component SpeakerButton inherits Rectangle {
         padding: 4px;
         spacing: 6px;
         alignment: center;
-        if root.item.has-speaker: Rectangle {
-            width: 8px;
-            height: 8px;
-            y: (parent.height - 8px) / 2;
-            border-radius: 4px;
-            background: root.item.speaker-color;
+        if root.item.has-speaker: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.item.speaker-color;
+            }
         }
         Text {
             text: root.item.speaker-text;
@@ -130,6 +138,8 @@ component LineRow inherits Rectangle {
     accessible-role: list-item;
     accessible-label: root.item.accessible-label;
     accessible-item-selected: root.item.is-selected;
+    // UI Automation select / invoke (WinUI ListViewItem parity): a plain click.
+    accessible-action-default => { MainBridge.row-pressed(root.index, false, false); }
     // Fluent list item visuals: subtle fill on hover/selection, accent pill on the left edge when selected.
     background: root.item.is-selected ? (touch.has-hover ? Theme.subtle-hover.darker(0.05) : Theme.subtle-hover) : (touch.has-hover ? Theme.subtle-hover : transparent);
     border-radius: Theme.control-radius;

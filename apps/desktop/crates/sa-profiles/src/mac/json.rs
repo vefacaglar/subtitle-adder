@@ -1,6 +1,9 @@
 //! Apple `JSONEncoder` compatible writer (mac-librarykit §2.7): `.sortedKeys`, `.withoutEscapingSlashes`, raw
 //! UTF-8, integers as integers, and the `.prettyPrinted` layout (2-space indent, `"key" : value`, empty containers
 //! as `[\n\n<indent>]` / `{\n\n<indent>}`).
+//!
+//! Key order: Foundation's `JSONWriter` sorts `.sortedKeys` with `compare(_:options: [.numeric, .caseInsensitive,
+//! .forcedOrdering])`, not by bytes, so `rememberedUsername` comes before `rememberMe` (see [`apple_key_cmp`]).
 
 use serde_json::Value;
 
@@ -59,7 +62,7 @@ fn write(value: &Value, out: &mut String, indent: Option<usize>, depth: usize) {
         }
         Value::Object(map) => {
             let mut entries: Vec<(&String, &Value)> = map.iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(b.0));
+            entries.sort_by(|a, b| apple_key_cmp(a.0, b.0));
             out.push('{');
             match indent {
                 None => {
@@ -91,6 +94,46 @@ fn write(value: &Value, out: &mut String, indent: Option<usize>, depth: usize) {
             }
             out.push('}');
         }
+    }
+}
+
+/// `String.compare(_:options: [.numeric, .caseInsensitive, .forcedOrdering])` as `JSONWriter` uses it for
+/// `.sortedKeys`: runs of ASCII digits compare by numeric value, everything else by lowercased scalars; when the
+/// two keys are equal under those rules, the literal scalars decide (`.forcedOrdering`).
+pub fn apple_key_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let x: Vec<char> = a.chars().collect();
+    let y: Vec<char> = b.chars().collect();
+    let (mut i, mut j) = (0, 0);
+    while i < x.len() && j < y.len() {
+        if x[i].is_ascii_digit() && y[j].is_ascii_digit() {
+            let (si, sj) = (i, j);
+            while i < x.len() && x[i].is_ascii_digit() {
+                i += 1;
+            }
+            while j < y.len() && y[j].is_ascii_digit() {
+                j += 1;
+            }
+            let da: String = x[si..i].iter().skip_while(|c| **c == '0').collect();
+            let db: String = y[sj..j].iter().skip_while(|c| **c == '0').collect();
+            match da.len().cmp(&db.len()).then_with(|| da.cmp(&db)) {
+                Ordering::Equal => continue,
+                other => return other,
+            }
+        }
+        let ca: String = x[i].to_lowercase().collect();
+        let cb: String = y[j].to_lowercase().collect();
+        match ca.cmp(&cb) {
+            Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+            other => return other,
+        }
+    }
+    match (x.len() - i).cmp(&(y.len() - j)) {
+        Ordering::Equal => a.cmp(b),
+        other => other,
     }
 }
 
@@ -134,6 +177,18 @@ fn write_string(s: &str, out: &mut String) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn keys_sort_like_foundation_numeric_case_insensitive() {
+        let v = json!({"version": 2, "rememberMe": true, "rememberedUsername": "a", "profiles": [], "lastUsername": "a"});
+        assert_eq!(
+            compact(&v),
+            r#"{"lastUsername":"a","profiles":[],"rememberedUsername":"a","rememberMe":true,"version":2}"#
+        );
+        let mut keys = vec!["fp:10:a", "fp:9:a", "b", "B", "a", "fp:09:a"];
+        keys.sort_by(|a, b| apple_key_cmp(a, b));
+        assert_eq!(keys, ["a", "B", "b", "fp:09:a", "fp:9:a", "fp:10:a"]);
+    }
 
     #[test]
     fn writes_the_apple_layout() {

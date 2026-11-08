@@ -479,3 +479,232 @@ fn grapheme_counts_match_dotnet_string_info() {
         assert_eq!(grapheme_len(t).to_string(), *line, "{t:?} ({:?})", t.chars().map(|c| c as u32).collect::<Vec<_>>());
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The engine client: the same scripted fake engine driven by the C# `EngineClient` and by `ProcessEngineClient`.
+// ---------------------------------------------------------------------------------------------------------------
+
+mod common;
+
+use sa_core::cancel::CancellationToken;
+use sa_core::engine_types::{EngineError, SubtitleFormat};
+use sa_core::l10n::UiLanguage;
+use sa_enginekit::client::{EngineClient, TranscribeOptions};
+
+const MODELS_OK: &str = r#"{"event": "models", "models": [{"id": "base", "kind": null, "backend": null, "languages": null, "size_mb": 145, "disk_mb": null, "speed": 5, "accuracy": 2, "license": null, "downloaded": true, "extra": [1]}, {"id": "gigaam-v3", "kind": "transcription", "backend": "onnx", "languages": ["ru"], "size_mb": 900, "disk_mb": 901, "speed": 4, "accuracy": 4, "license": "MIT", "downloaded": false}, {"id": "nllb-1.3b", "kind": "translation", "backend": "ctranslate2", "languages": ["tr", "es"], "size_mb": 1336, "speed": 3, "accuracy": 4, "license": "CC-BY-NC-4.0", "downloaded": false}]}"#;
+const RESULT: &str = r#"{"event": "result", "language": "tr", "duration": 3.5, "audio": "a.wav", "outputs": ["a.srt"], "sentences": [{"id": 1, "start": 0, "end": 1.25, "text": "Merhaba <i>&</i> dünya", "words": [{"start": 0, "end": 1.25, "text": "Merhaba"}], "speaker": 0}]}"#;
+/// Stderr with blank lines, CR LF, a lone trailing CR pair, non-ASCII text and a last line without a newline.
+const STDERR_NOISE: &str =
+    "err line 1\nerr line 2\nerrraw \\r\\n\\r\\nline 3 \\r\\r\\n\nerr \nerr line 4 ünlü\nerr line 5\nerrraw line 6 without newline";
+
+fn stage_line(stage: &str, fraction: &str) -> String {
+    format!(r#"out {{"event": "stage", "stage": "{stage}", "fraction": {fraction}}}"#)
+}
+
+/// `(op, extra fields, script)` for every client case; each runs in both UI languages.
+fn client_cases() -> Vec<(&'static str, Value, String)> {
+    let sentences = json!([
+        {"id": 1, "start": 0, "end": 1.5, "text": "Şöyle \"tırnak\" \\ <b>", "words": [{"start": 0, "end": 1.5, "text": "Şöyle"}], "speaker": 1},
+        {"id": 2, "start": 1.5, "end": 2, "text": "İyi.", "words": [], "needs_review": true}
+    ]);
+    let with_sentences = || json!({"sentences": sentences.clone()});
+    let small = || json!({"id": "small"});
+    let m = |extra: &str| format!("out {MODELS_OK}\n{extra}");
+    let models_with = |row: &str| format!(r#"out {{"event": "models", "models": [{row}]}}"#);
+    let row = |fields: &str| format!(r#"{{"id": "x", "size_mb": 1, "speed": 1, "accuracy": 1, "downloaded": false{fields}}}"#);
+    let deleted = |id: &str, freed: &str| format!(r#"out {{"event": "deleted", "id": "{id}", "freed_mb": {freed}}}"#);
+    let raw = |json: &str| json.replace('\\', "\\\\");
+    let error = |message: &str| format!(r#"out {{"event": "error", "message": "{message}"}}"#);
+    let translation = r#"out {"event": "translation", "language": "es", "sentences": [{"id": 1, "start": 0, "end": 1.5, "text": "Hola.", "words": [], "speaker": 1, "needs_review": true}]}
+out {"event": "translation", "language": "es", "sentences": [{"id": 1, "start": 0, "end": 1.5, "text": "Hola.", "words": []}, {"id": 2, "start": 1.5, "end": 2, "text": "Bien.", "words": [], "needs_review": false}]}"#;
+
+    let cases: Vec<(&'static str, Value, String)> = vec![
+        ("models", json!({}), m("")),
+        ("models", json!({}), format!("outraw {}\\r\\r\\n\\r\\n\\n", raw(MODELS_OK))),
+        ("models", json!({}), m("out\nout   ")),
+        ("models", json!({}), m("outraw \\r\\r\\n")),
+        ("models", json!({}), m(r#"out {"event": "stage", "stage": "x"}"#)),
+        ("models", json!({}), m("exit 2")),
+        ("models", json!({}), format!("{STDERR_NOISE}\nexit 3")),
+        ("models", json!({}), "out".to_owned()),
+        ("models", json!({}), "out not json".to_owned()),
+        ("models", json!({}), error("boom")),
+        ("models", json!({}), format!("{STDERR_NOISE}\n{}\nexit 4", error("Model yok"))),
+        ("models", json!({}), r#"out {"event": "error", "message": 7}"#.to_owned()),
+        ("models", json!({}), r#"out {"event": "models", "models": {}}"#.to_owned()),
+        ("models", json!({}), r#"out {"event": "models"}"#.to_owned()),
+        ("models", json!({}), "out [1, 2]".to_owned()),
+        ("models", json!({}), models_with(&row(""))),
+        ("models", json!({}), models_with(&row(r#", "size_mb": 145.0"#))),
+        ("models", json!({}), models_with(&row(r#", "speed": 2147483648"#))),
+        ("models", json!({}), models_with(&row(r#", "disk_mb": -5, "license": "MIT AND Apache-2.0""#))),
+        ("models", json!({}), models_with(r#"{"id": "x", "speed": 1, "accuracy": 1, "downloaded": false}"#)),
+        ("models", json!({}), models_with(&row(r#", "downloaded": "yes""#))),
+        ("models", json!({}), models_with(&row(r#", "languages": "tr""#))),
+        ("models", json!({}), models_with("7")),
+        ("delete", small(), deleted("small", "464")),
+        ("delete", small(), deleted("small", "0")),
+        ("delete", small(), deleted("small", "-3")),
+        ("delete", small(), deleted("small", "464.0")),
+        ("delete", small(), deleted("small", "1e3")),
+        ("delete", small(), deleted("small", "2147483648")),
+        ("delete", small(), deleted("small", "\"464\"")),
+        ("delete", small(), deleted("small", "null")),
+        ("delete", small(), deleted("base", "464")),
+        ("delete", small(), r#"out {"event": "deleted", "id": "small"}"#.to_owned()),
+        ("delete", small(), format!("{}\nexit 1", deleted("small", "464"))),
+        ("delete", small(), format!("{STDERR_NOISE}\n{}\nexit 1", error("Model indirilmemiş"))),
+        ("delete", small(), format!("{STDERR_NOISE}\nexit 9")),
+        ("render", with_sentences(), "cat".to_owned()),
+        ("render", with_sentences(), "drain\noutraw 1\\r\\n00:00:00,000 --> 00:00:01,500\\r\\n- Şöyle\\r\\n\\r\\n".to_owned()),
+        ("render", with_sentences(), format!("drain\n{}", error("render error event"))),
+        ("render", with_sentences(), format!("drain\nout partial output\n{STDERR_NOISE}\nexit 2")),
+        ("render", with_sentences(), "exit 4".to_owned()),
+        (
+            "transcribe",
+            json!({}),
+            format!(
+                "{}\nerr noise\n{}\nout {{\"event\": \"stage\", \"stage\": \"yeni\"}}\nout {{\"event\": \"partial\", \"language\": \"?\", \"sentences\": []}}\nout {RESULT}",
+                stage_line("extracting_audio", "null"),
+                stage_line("transcribing", "0.5")
+            ),
+        ),
+        (
+            "transcribe",
+            json!({}),
+            format!("outraw {{\"event\": \"stage\", \"stage\": \"segmenting\"}}\\r\\n\\n\\r\\n\nout\noutraw {}", raw(RESULT)),
+        ),
+        (
+            "transcribe",
+            json!({}),
+            format!("{}\n{}\n{}", error("Video bulunamadı"), stage_line("segmenting", "null"), error("ikinci")),
+        ),
+        ("transcribe", json!({}), format!("out {RESULT}\n{}\nexit 3", error("geç hata"))),
+        ("transcribe", json!({}), format!("{}\n{STDERR_NOISE}\nexit 5", stage_line("loading_model", "null"))),
+        ("transcribe", json!({}), format!("{}\nexit 1", stage_line("loading_model", "null"))),
+        ("transcribe", json!({}), format!("out {RESULT}\nexit 0")),
+        (
+            "translate",
+            with_sentences(),
+            format!("drain\n{}\n{}\n{translation}", stage_line("downloading_model", "0.12"), stage_line("translating", "null")),
+        ),
+        ("translate", with_sentences(), format!("drain\n{}\nexit 1", error("NLLB kaynak dil ister."))),
+        ("translate", with_sentences(), format!("{STDERR_NOISE}\nexit 6")),
+    ];
+    let mut both = Vec::new();
+    for (op, extra, script) in cases {
+        both.push((op, extra.clone(), script.clone()));
+        let mut en = extra;
+        en["lang"] = json!("en");
+        both.push((op, en, script));
+    }
+    both
+}
+
+fn rust_events(stream: sa_enginekit::EventStream) -> (Vec<Value>, Option<EngineError>) {
+    let (events, error) = common::collect(stream);
+    let encode = |s: &[Sentence]| Sentence::encode_list(s).unwrap();
+    let events = events
+        .iter()
+        .map(|e| match e {
+            EngineEvent::Stage { stage, fraction } => json!({"stage": stage_raw(*stage), "fraction": fraction}),
+            EngineEvent::Partial { language, sentences } => json!({"partial": language, "sentences": encode(sentences)}),
+            EngineEvent::Translation { language, sentences } => json!({"translation": language, "sentences": encode(sentences)}),
+            EngineEvent::Result(r) => json!({"result": r.language, "duration": r.duration, "audio": r.audio,
+                "outputs": r.outputs, "sentences": encode(&r.sentences)}),
+            EngineEvent::Error { message } => json!({"error": message}),
+        })
+        .collect();
+    (events, error)
+}
+
+fn rust_client_outcome(op: &str, extra: &Value, fake: &common::Fake) -> Value {
+    let cancel = CancellationToken::new();
+    let client = &fake.client;
+    let sentences = || -> Vec<Sentence> { serde_json::from_value(extra["sentences"].clone()).unwrap() };
+    let one_shot = |r: Result<Value, EngineError>| match r {
+        Ok(v) => (Some(v), None, Vec::new()),
+        Err(e) => (None, Some(e), Vec::new()),
+    };
+    let stream = |(events, error): (Vec<Value>, Option<EngineError>)| (error.is_none().then(|| json!(true)), error, events);
+    let (ok, error, events) = match op {
+        "models" => one_shot(client.models(&cancel).map(|m| serde_json::to_value(m).unwrap())),
+        "delete" => one_shot(client.delete_model(extra["id"].as_str().unwrap(), &cancel).map(|mb| json!(mb))),
+        "render" => one_shot(client.render(&sentences(), SubtitleFormat::Srt, &cancel).map(|t| json!(t))),
+        "transcribe" => {
+            stream(rust_events(client.transcribe(Path::new("v.mp4"), Path::new("out"), &TranscribeOptions::default(), &cancel)))
+        }
+        "translate" => stream(rust_events(client.translate(&sentences(), "es", Some("tr"), "madlad-3b", &cancel))),
+        other => panic!("unknown op {other}"),
+    };
+    let mut line = serde_json::Map::new();
+    if let Some(ok) = ok {
+        line.insert("ok".into(), ok);
+    }
+    if let Some(e) = error {
+        let (kind, message) = match e {
+            EngineError::Failed(m) => ("Failed", m),
+            EngineError::NotFound => ("NotFound", EngineError::not_found_text(None)),
+            EngineError::Cancelled => ("other", "cancelled".to_owned()),
+        };
+        line.insert("error".into(), json!({"kind": kind, "message": message}));
+    }
+    line.insert("events".into(), Value::Array(events));
+    Value::Object(line)
+}
+
+#[test]
+fn engine_client_outcomes_match_the_csharp_engine_kit() {
+    if !enabled() {
+        return;
+    }
+    let cases = client_cases();
+    let lang = |extra: &Value| if extra["lang"] == "en" { UiLanguage::En } else { UiLanguage::Tr };
+    let fakes: Vec<common::Fake> = cases.iter().map(|(_, extra, script)| common::Fake::new(script, lang(extra))).collect();
+    let input: Vec<Value> = cases
+        .iter()
+        .zip(&fakes)
+        .map(|((op, extra, _), fake)| {
+            let mut case = extra.clone();
+            case["op"] = json!(op);
+            case["lang"] = json!(if lang(extra) == UiLanguage::En { "en" } else { "tr" });
+            case["script"] = json!(fake.path("script.txt"));
+            case
+        })
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("cases.json");
+    std::fs::write(&file, serde_json::to_string(&input).unwrap()).unwrap();
+    let out = Command::new(tool_exe()).arg("client").arg(common::FAKE_ENGINE).arg(&file).output().expect("EngineKitCompat runs");
+    assert!(out.status.success(), "EngineKitCompat client failed: {}", String::from_utf8_lossy(&out.stderr));
+    let expected: Vec<String> = String::from_utf8(out.stdout).unwrap().lines().map(str::to_owned).collect();
+    assert_eq!(expected.len(), cases.len());
+    let mut mismatches = Vec::new();
+    for (((op, extra, script), fake), expected) in cases.iter().zip(&fakes).zip(&expected) {
+        let expected = normalize_outcome(serde_json::from_str(expected).unwrap());
+        let actual = normalize_outcome(rust_client_outcome(op, extra, fake));
+        if expected != actual {
+            mismatches.push(format!("{op} {extra}\n{script}\n  C#:   {expected}\n  Rust: {actual}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n\n"));
+}
+
+/// Numbers compared by value; sentence payloads compared as JSON values (same keys and numbers).
+fn normalize_outcome(v: Value) -> Value {
+    fn sentences_as_values(v: Value) -> Value {
+        match v {
+            Value::Object(o) => Value::Object(
+                o.into_iter()
+                    .map(|(k, v)| match (k.as_str(), v) {
+                        ("sentences", Value::String(s)) => (k, serde_json::from_str(&s).unwrap()),
+                        (_, v) => (k, sentences_as_values(v)),
+                    })
+                    .collect(),
+            ),
+            Value::Array(a) => Value::Array(a.into_iter().map(sentences_as_values).collect()),
+            other => other,
+        }
+    }
+    numbers_as_f64(sentences_as_values(v))
+}

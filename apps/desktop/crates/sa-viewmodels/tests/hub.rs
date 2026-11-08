@@ -379,3 +379,53 @@ fn regex_like(s: &str, pattern: &str) -> bool {
     s.chars().count() == pattern.chars().count()
         && s.chars().zip(pattern.chars()).all(|(c, p)| if p == 'd' { c.is_ascii_digit() } else { c == p })
 }
+
+#[test]
+fn a_video_playing_on_into_a_new_login_is_not_recorded_for_that_profile() {
+    // Swift `recordingGeneration` / C# `_activeVideoRecordsProgress`: progress belongs to the session the video was
+    // opened in; a login (or a switch) while it plays records nothing until it is opened again.
+    for policy in [sa_viewmodels::PlatformPolicy::windows(), sa_viewmodels::PlatformPolicy::mac()] {
+        let _l = LanguageScope::new(policy.catalog_chain, UiLanguage::Tr);
+        let env = Env::new(policy);
+        env.profiles.st.lock().users.push(("u".into(), "pw".into()));
+        env.profiles.st.lock().users.push(("v".into(), "pw".into()));
+        let vids = index_videos(&env, &["a.mp4"]);
+        let h = hub(&env);
+        h.player_video_changed(Some(&vids[0]), true);
+        h.report_playback(PlaybackReport::Opened { duration: 100.0 });
+        settle(&env, &h);
+        h.login("u", SecretString::new("pw"), false);
+        settle(&env, &h);
+        h.report_playback(PlaybackReport::Paused { position: 30.0 });
+        settle(&env, &h);
+        assert_eq!(env.profiles.st.lock().progress_writes, 0, "opened logged out: nothing for the new profile");
+        // Opening it again under the login records it from now on.
+        h.player_video_changed(Some(&vids[0]), true);
+        settle(&env, &h);
+        assert_eq!(env.profiles.stats_of("u", &vids[0]).map(|s| s.view_count), Some(1));
+        h.report_playback(PlaybackReport::Paused { position: 40.0 });
+        settle(&env, &h);
+        assert_eq!(env.profiles.stats_of("u", &vids[0]).unwrap().last_position_seconds, 40.0);
+        // A switch to another profile while it plays on: nothing lands in that profile's history.
+        h.login("v", SecretString::new("pw"), false);
+        settle(&env, &h);
+        h.report_playback(PlaybackReport::Paused { position: 70.0 });
+        settle(&env, &h);
+        assert!(env.profiles.stats_of("v", &vids[0]).is_none_or(|s| s.last_position_seconds == 0.0));
+    }
+}
+
+#[test]
+fn logout_clears_the_hub_search() {
+    let _l = LanguageScope::new(CatalogChain::Mac, UiLanguage::Tr);
+    let env = Env::mac();
+    env.profiles.st.lock().users.push(("u".into(), "pw".into()));
+    index_videos(&env, &["a.mp4"]);
+    let h = hub(&env);
+    h.login("u", SecretString::new("pw"), false);
+    settle(&env, &h);
+    h.search("tatil");
+    settle(&env, &h);
+    h.logout();
+    assert!(h.search_query().is_empty());
+}

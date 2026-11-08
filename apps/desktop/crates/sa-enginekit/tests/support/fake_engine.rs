@@ -5,7 +5,7 @@
 //! * `out <text>` – a stdout line (flushed); `out` alone writes an empty line
 //! * `outraw <text>` – text with `\n`, `\r` and `\\` escapes, no newline added (flushed)
 //! * `outbig <bytes>` – one stdout line of that many `a` characters
-//! * `err <text>` – a stderr line
+//! * `err <text>` – a stderr line; `errraw <text>` – stderr text with the `outraw` escapes, no newline added
 //! * `args <file>` – the engine arguments joined by single spaces
 //! * `stdin <file>` – all of stdin into the file; `cat` – stdin to stdout; `drain` – read and discard stdin
 //! * `sleep <ms>`; `pid <file>` – own PID; `child <file>` – spawn `--sleep-child` (30 s) and write its PID
@@ -107,6 +107,11 @@ fn main() {
             "err" => {
                 let mut e = stderr.lock();
                 let _ = writeln!(e, "{rest}");
+                let _ = e.flush();
+            }
+            "errraw" => {
+                let mut e = stderr.lock();
+                let _ = e.write_all(unescape(rest).as_bytes());
                 let _ = e.flush();
             }
             "args" => write_file(rest, &engine_args.join(" ")),

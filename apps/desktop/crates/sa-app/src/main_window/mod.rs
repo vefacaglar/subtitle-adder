@@ -5,8 +5,10 @@
 //! * Pure, unit-tested pieces: [`layout`] (workspace layout), [`hud`] (control visibility), [`transport`]
 //!   (transport texts/ratios), [`player`] (player controller over `MediaPlayerBackend`), [`rows`] (keyed row
 //!   models, selection), [`menus`] (menu builders), [`status`] (error bar, playback notice), [`input`] (keys, drops).
+//! * [`chrome`] — native window chrome (Windows caption/Snap/size persistence, macOS unified title bar attributes).
 //! * [`demo`] fills the bridges with representative content for `sa-shot` look checks.
 
+pub mod chrome;
 pub mod controller;
 pub mod demo;
 pub mod hud;

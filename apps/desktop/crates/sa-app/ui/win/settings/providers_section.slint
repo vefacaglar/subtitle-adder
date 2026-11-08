@@ -6,23 +6,44 @@ import { SettingsBridge, SettingsProviderRow } from "../../shared/bridge.slint";
 import { Theme } from "../theme.slint";
 import { CardFrame, SectionHeader, InfoBar, EditableCombo } from "controls.slint";
 
-// Fluent RadioButton (20 px ring, accent dot when checked).
+// Fluent RadioButton (20 px ring, accent dot when checked); the whole `RadioRow` (ring + content) is its hit area,
+// like a WinUI RadioButton with Content.
 component Radio inherits Rectangle {
     in property <bool> checked;
-    callback clicked();
+    in property <bool> hovered;
     width: 20px;
     height: 20px;
     border-radius: 10px;
     border-width: root.checked ? 0px : 1px;
     border-color: Theme.control-strong-stroke;
-    background: root.checked ? Theme.accent : (touch.has-hover ? Theme.subtle-hover : transparent);
-    accessible-role: checkbox;
-    accessible-checked: root.checked;
+    background: root.checked ? Theme.accent : (root.hovered ? Theme.subtle-hover : transparent);
     if root.checked: Rectangle {
-        width: touch.has-hover ? 10px : 8px;
+        width: root.hovered ? 10px : 8px;
         height: self.width;
         border-radius: self.width / 2;
         background: Theme.text-on-accent;
+    }
+}
+
+component RadioRow inherits Rectangle {
+    in property <bool> checked;
+    in property <string> label;
+    callback clicked();
+    accessible-role: checkbox;
+    accessible-checked: root.checked;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    HorizontalLayout {
+        spacing: 8px;
+        VerticalLayout {
+            alignment: start;
+            padding-top: 2px;
+            Radio {
+                checked: root.checked;
+                hovered: touch.has-hover;
+            }
+        }
+        @children
     }
     touch := TouchArea { clicked => { root.clicked(); } }
 }
@@ -43,17 +64,11 @@ component ProviderCard inherits CardFrame {
         spacing: 8px;
         HorizontalLayout {
             spacing: 12px;
-            HorizontalLayout {
+            RadioRow {
                 horizontal-stretch: 1;
-                spacing: 8px;
-                VerticalLayout {
-                    alignment: start;
-                    padding-top: 2px;
-                    Radio {
-                        checked: root.item.is-active;
-                        clicked => { SettingsBridge.provider-activate(root.item.id); }
-                    }
-                }
+                checked: root.item.is-active;
+                label: root.item.name;
+                clicked => { SettingsBridge.provider-activate(root.item.id); }
                 VerticalLayout {
                     spacing: 2px;
                     alignment: center;
@@ -150,15 +165,10 @@ export component ProvidersSection inherits VerticalLayout {
                 padding-right: 16px;
                 padding-top: 12px;
                 padding-bottom: 12px;
-                spacing: 8px;
-                VerticalLayout {
-                    alignment: start;
-                    padding-top: 2px;
-                    Radio {
-                        checked: SettingsBridge.local-provider-active;
-                        clicked => { SettingsBridge.provider-activate(""); }
-                    }
-                }
+                RadioRow {
+                checked: SettingsBridge.local-provider-active;
+                label: Loc.t("Yerel modeller (Cihaz üzerinde)");
+                clicked => { SettingsBridge.provider-activate(""); }
                 VerticalLayout {
                     horizontal-stretch: 1;
                     spacing: 2px;
@@ -176,6 +186,7 @@ export component ProvidersSection inherits VerticalLayout {
                         color: Theme.text-primary;
                         wrap: word-wrap;
                     }
+                }
                 }
             }
         }
@@ -210,7 +221,8 @@ export component ProvidersSection inherits VerticalLayout {
             HorizontalLayout {
                 spacing: 12px;
                 VerticalLayout {
-                    horizontal-stretch: 1;
+                    // Two equal columns (Grid `*, *`).
+                    width: (parent.width - 12px) / 2;
                     spacing: 4px;
                     FieldLabel { text: Loc.t("Sağlayıcı türü"); }
                     ComboBox {
@@ -221,7 +233,7 @@ export component ProvidersSection inherits VerticalLayout {
                     }
                 }
                 VerticalLayout {
-                    horizontal-stretch: 1;
+                    width: (parent.width - 12px) / 2;
                     spacing: 4px;
                     FieldLabel { text: Loc.t("Sağlayıcı adı"); }
                     LineEdit {
@@ -235,7 +247,8 @@ export component ProvidersSection inherits VerticalLayout {
             HorizontalLayout {
                 spacing: 12px;
                 VerticalLayout {
-                    horizontal-stretch: 1;
+                    // Two equal columns (Grid `*, *`).
+                    width: (parent.width - 12px) / 2;
                     spacing: 4px;
                     FieldLabel { text: Loc.t("Sunucu adresi (Base URL)"); }
                     LineEdit {
@@ -246,7 +259,7 @@ export component ProvidersSection inherits VerticalLayout {
                     }
                 }
                 VerticalLayout {
-                    horizontal-stretch: 1;
+                    width: (parent.width - 12px) / 2;
                     spacing: 4px;
                     FieldLabel { text: Loc.t("API anahtarı"); }
                     LineEdit {
