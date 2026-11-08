@@ -28,14 +28,10 @@
         },
         {
             "name": "Subtitle Adder (Rust)",
-            "type": "cppvsdbg",
+            "type": "node-terminal",
             "request": "launch",
-            "program": "${workspaceFolder}/apps/desktop/dist/SubtitleAdder.exe",
-            "args": [],
-            "cwd": "${workspaceFolder}/apps/desktop/dist",
-            "console": "internalConsole",
-            "stopAtEntry": false,
-            "preLaunchTask": "desktop (Rust): stage"
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${workspaceFolder}/apps/desktop/scripts/run.ps1\"",
+            "cwd": "${workspaceFolder}"
         },
         {
             "name": "Subtitle Adder (macOS)",
