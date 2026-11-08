@@ -27,6 +27,8 @@ samples/
 
 # .NET
 bin/
+# ...but not Cargo's src/bin targets of the Rust desktop app
+!apps/desktop/crates/*/src/bin/
 obj/
 *.user
 TestResults/
