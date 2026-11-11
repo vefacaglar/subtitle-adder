@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 use std::time::Duration;
 
@@ -361,12 +361,42 @@ struct StateCell {
     state: Mutex<State>,
     session_token: AtomicI64,
     logged_in: AtomicBool,
+    /// Session-changing operations under way ([`StateCell::begin_session_change`]).
+    session_changes: AtomicU32,
+}
+
+/// Marks a session-changing operation as under way until dropped (after its state guard, so after the new token is
+/// published).
+struct SessionChange<'a>(&'a AtomicU32);
+
+impl Drop for SessionChange<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl StateCell {
     fn new(state: State) -> Self {
         let (token, logged_in) = (state.session_token, state.active_profile.is_some());
-        Self { state: Mutex::new(state), session_token: AtomicI64::new(token), logged_in: AtomicBool::new(logged_in) }
+        Self {
+            state: Mutex::new(state),
+            session_token: AtomicI64::new(token),
+            logged_in: AtomicBool::new(logged_in),
+            session_changes: AtomicU32::new(0),
+        }
+    }
+
+    /// Raised at the start of an operation that may bump the session token, before it waits for the state lock
+    /// (it can then hold it for seconds: the cross-process mutex wait and the header save). Keep the returned guard
+    /// alive past the state guard.
+    fn begin_session_change(&self) -> SessionChange<'_> {
+        self.session_changes.fetch_add(1, Ordering::AcqRel);
+        SessionChange(&self.session_changes)
+    }
+
+    /// True while a session-changing operation is under way (never blocks).
+    fn session_change_in_progress(&self) -> bool {
+        self.session_changes.load(Ordering::Acquire) > 0
     }
 
     fn lock(&self) -> StateGuard<'_> {
@@ -1629,6 +1659,11 @@ impl WinProfileStore {
         }
         if evt.topic.eq_ignore_ascii_case(Topic::Profiles.wire()) {
             let mut updated;
+            // Another instance logged out or deleted a profile: the resync below may end this process's session.
+            // (A login elsewhere only restores a session here while none is active, and list events change no
+            // session, so streams keep their key through those.)
+            let _change =
+                matches!(evt.kind, EventKind::ProfileLogout | EventKind::ProfileDeleted).then(|| self.state.begin_session_change());
             {
                 let mut st = self.state.lock();
                 self.dirty.store(true, Ordering::SeqCst);
@@ -1663,6 +1698,7 @@ impl WinProfileStore {
         let salt = crypto::random_salt();
         let (hash, key) = crypto::derive(password, &salt, PBKDF2_ITERATIONS as u32);
         self.drain();
+        let _change = self.state.begin_session_change();
         {
             let mut st = self.state.lock();
             let _m = netcompat::CrossProcessMutex::acquire(&self.mutex_name, 2000);
@@ -1765,6 +1801,7 @@ impl WinProfileStore {
         }
         self.drain();
         let pre = self.preverify(&u, password);
+        let _change = self.state.begin_session_change();
         {
             let mut st = self.state.lock();
             let _m = netcompat::CrossProcessMutex::acquire(&self.mutex_name, 2000);
@@ -1813,6 +1850,7 @@ impl WinProfileStore {
     /// `Logout`.
     pub fn logout_user(&self) {
         self.drain();
+        let _change = self.state.begin_session_change();
         let changed;
         {
             let mut st = self.state.lock();
@@ -1848,6 +1886,7 @@ impl WinProfileStore {
         }
         self.drain();
         let pre = self.preverify(&u, password);
+        let _change = self.state.begin_session_change();
         {
             let mut st = self.state.lock();
             let _m = netcompat::CrossProcessMutex::acquire(&self.mutex_name, 2000);
@@ -2680,6 +2719,12 @@ impl ProfileStore for WinProfileStore {
     fn session_generation(&self) -> u64 {
         self.state.session_token().max(0) as u64
     }
+    /// Lock-free: raised by `register_user`, `login_user`, `logout_user`, `delete_user` and the resync after another
+    /// instance's logout / delete, from before they take the state lock until their token is published. A failed
+    /// operation (wrong password, taken name) raises it too: a stream then continues uncached from its source.
+    fn session_change_in_progress(&self) -> bool {
+        self.state.session_change_in_progress()
+    }
     fn start(&self) {
         let was_logged_in = self.state.lock().active_profile.is_some();
         self.load_from_disk();
@@ -2899,6 +2944,74 @@ mod tests {
         assert!(again != generation && again != veli, "a new login is a new session, also for the same user");
         assert_eq!(again_key.expose(), key.expose());
         assert_eq!(again, store.session_generation());
+    }
+
+    /// The cache's contract on `session_generation`: whenever `active_vault_key()` changes (user or key), the token
+    /// changed too, across every session-changing operation.
+    #[test]
+    fn the_token_changes_whenever_the_active_vault_key_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WinProfileStore::open(dir.path().join("profiles.json"), sa_sync::InProcessBus::with_scope(&sa_core::text::guid_n()));
+        let snapshot = |s: &WinProfileStore| (s.session_generation(), s.active_vault_key().map(|(u, k)| (u, *k.expose())));
+        let mut last = snapshot(&store);
+        let mut check = |what: &str, s: &WinProfileStore| {
+            let now = snapshot(s);
+            if now.1 != last.1 {
+                assert_ne!(now.0, last.0, "{what}: the key changed but the token did not");
+            }
+            last = now;
+        };
+        store.register_user("ali", "pw-1", false).unwrap();
+        check("register", &store);
+        store.register_user("veli", "pw-2", false).unwrap();
+        check("register another (switch)", &store);
+        store.login_user("ali", "pw-1", false).unwrap();
+        check("login switch", &store);
+        assert!(store.login_user("veli", "wrong", false).is_err());
+        check("failed login", &store);
+        store.logout_user();
+        check("logout", &store);
+        store.login_user("veli", "pw-2", true).unwrap();
+        check("login", &store);
+        store.delete_user("veli", "pw-2").unwrap();
+        check("delete the active profile", &store);
+        store.login_user("ali", "pw-1", false).unwrap();
+        check("login after delete", &store);
+        // Another in-process store of the same file logs out: this one follows at its next locked read.
+        let other = WinProfileStore::open(dir.path().join("profiles.json"), sa_sync::InProcessBus::with_scope(&sa_core::text::guid_n()));
+        other.logout_user();
+        let _ = store.active_vault_key();
+        check("logout elsewhere", &store);
+    }
+
+    /// While a logout waits inside its critical section, the lock-free signal is up (so a stream stops using its
+    /// captured key before the new token is published); afterwards it is down and the token is new.
+    #[test]
+    fn a_session_change_in_progress_is_visible_lock_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WinProfileStore::open(dir.path().join("profiles.json"), sa_sync::InProcessBus::with_scope(&sa_core::text::guid_n()));
+        store.register_user("ali", "pw-1234", false).unwrap();
+        let generation = store.session_generation();
+        assert_eq!(store.settled_session_generation(), Some(generation));
+        std::thread::scope(|s| {
+            let held = store.state.state.lock(); // a worker inside a disk sync
+            let logout = s.spawn(|| store.logout_user());
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !store.session_change_in_progress() && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(store.session_change_in_progress(), "raised before the logout got the lock");
+            assert_eq!(store.settled_session_generation(), None);
+            assert_eq!(store.session_generation(), generation, "nothing published yet");
+            drop(held);
+            logout.join().unwrap();
+        });
+        assert!(!store.session_change_in_progress());
+        let settled = store.settled_session_generation().unwrap();
+        assert_ne!(settled, generation);
+        // A failed login raises it only while it runs, and changes nothing.
+        assert!(store.login_user("ali", "wrong", false).is_err());
+        assert_eq!(store.settled_session_generation(), Some(settled));
     }
 
     #[test]

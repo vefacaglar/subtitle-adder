@@ -141,13 +141,14 @@ impl WinParts {
 /// The encrypted chunk cache over the profile store. The vault key is read (under the profile store lock) only when
 /// a playback stream opens, together with its session generation; every chunk read and write of the stream then
 /// compares the store's lock-free generation, so the demux thread never waits for a profile save and a logout or user
-/// switch ends the stream's cache session (its key copy zeroized) at the next chunk.
+/// switch ends the stream's cache session (its key copy zeroized) at the next chunk, already while the change is
+/// still in progress.
 fn video_cache_store(dir: PathBuf, profiles: &Arc<WinProfileStore>) -> Arc<VideoCacheStore> {
     let (key_profiles, generation_profiles) = (profiles.clone(), profiles.clone());
     VideoCacheStore::with_session_keys(
         dir,
         Arc::new(move || key_profiles.active_vault_key_in_session()),
-        Arc::new(move || generation_profiles.session_generation()),
+        Arc::new(move || generation_profiles.settled_session_generation()),
         None,
     )
 }

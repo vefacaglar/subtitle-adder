@@ -222,7 +222,29 @@ pub trait ProfileStore: Send + Sync {
     fn remember_me(&self) -> bool;
     /// Bumps on login/logout/switch/delete/restore; snapshots built under an older generation are never applied.
     /// UI-safe (memory only on both platforms).
+    ///
+    /// Contract: every change of the active user's identity or vault key (what [`Self::active_vault_key`] returns)
+    /// bumps it, and it never goes back. The encrypted video cache relies on this: an open stream keeps its captured
+    /// key only while the generation is unchanged.
     fn session_generation(&self) -> u64;
+
+    /// Lock-free: true from the start of an operation that may change the session (login, register, logout, delete;
+    /// raised before it waits for the store lock) until its new generation is published. A consumer holding a
+    /// captured key ([`Self::active_vault_key_in_session`]) stops using it meanwhile; if the operation then fails,
+    /// nothing changed and the consumer simply goes on without the key. Default: never (test doubles).
+    fn session_change_in_progress(&self) -> bool {
+        false
+    }
+
+    /// Lock-free: the current generation, or `None` while a session change is in progress. The flag is read before
+    /// the generation, so a change that starts and finishes between the two reads still shows up as a new
+    /// generation. A per-read check compares this with the generation its key was captured under.
+    fn settled_session_generation(&self) -> Option<u64> {
+        if self.session_change_in_progress() {
+            return None;
+        }
+        Some(self.session_generation())
+    }
     /// First read + remembered restore (background lane).
     fn start(&self);
     fn register(&self, username: &str, password: &SecretString, remember: bool) -> Result<(), ProfileError>;
@@ -302,6 +324,12 @@ pub trait ProfileStore: Send + Sync {
     /// generation, so it never takes the store lock again and still stops the moment the session changes. `None`
     /// logged out. The default (test doubles) brackets the key read with two generation reads and gives up when they
     /// differ (generations only grow); both real stores read the key and the generation under one lock.
+    ///
+    /// The default is only sound when the store publishes a new generation no earlier than the state change it
+    /// describes (by the time the new generation is readable, `active_vault_key` must already return the new key).
+    /// A generation published early could be paired with the old key; one published late only pairs the old
+    /// generation with the new key, which the consumer's next check rejects (fails closed). Both real stores publish
+    /// at the unlock of the critical section that made the change.
     fn active_vault_key_in_session(&self) -> Option<(u64, String, SecretKey32)> {
         let before = self.session_generation();
         let (username, key) = self.active_vault_key()?;

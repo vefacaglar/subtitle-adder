@@ -47,9 +47,10 @@ pub type VaultKeyProvider = Arc<dyn Fn() -> Option<(String, SecretKey32)> + Send
 /// (`ProfileStore::active_vault_key_in_session`); `None` logged out. May block (the profile store lock).
 pub type SessionKeyProvider = Arc<dyn Fn() -> Option<(u64, String, SecretKey32)> + Send + Sync>;
 
-/// The current session generation (`ProfileStore::session_generation`). Must never block: it runs on every chunk
-/// read of a playback stream (the demux thread).
-pub type SessionGenerationProvider = Arc<dyn Fn() -> u64 + Send + Sync>;
+/// The current session generation, or `None` while a session change is in progress
+/// (`ProfileStore::settled_session_generation`). Must never block: it runs on every chunk read of a playback stream
+/// (the demux thread). A `None` ends the stream's cache session like a new generation does.
+pub type SessionGenerationProvider = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 
 /// Where a store gets its key from.
 enum KeySource {
@@ -189,7 +190,10 @@ impl VideoCacheStore {
     /// Like [`Self::new`], for a key source that may block (the profile store lock): `keys` runs only when a stream
     /// opens (and on the session watcher thread); a chunk read or write compares the lock-free `generation` with the
     /// one its session was opened under, so the player's demux thread never waits for the profile store, and a
-    /// logout or user switch ends an open stream's session at its next chunk.
+    /// logout or user switch ends an open stream's session at its next chunk — already when the change begins
+    /// (`generation` is `None` while it is in progress). A change the profile store only learns about by re-reading
+    /// its file (another in-process store of the same file, another instance without a broker event) is noticed by
+    /// the session watcher's full lookup within [`Self::SESSION_WATCH_INTERVAL`], not at the next chunk.
     pub fn with_session_keys(cache_dir: PathBuf, keys: SessionKeyProvider, generation: SessionGenerationProvider, max_bytes: Option<i64>) -> Arc<Self> {
         Self::build(cache_dir, KeySource::Session { keys, generation }, max_bytes)
     }
@@ -279,6 +283,12 @@ impl VideoCacheStore {
         if username.trim().is_empty() {
             return None;
         }
+        // A session change under way (or finished since the lookup) would end the session at its first chunk.
+        if let KeySource::Session { generation: current, .. } = &self.keys
+            && current() != generation
+        {
+            return None;
+        }
         let session = Arc::new(CacheSession {
             username: username.trim().to_owned(),
             profile_tag: keyed_tag(key.expose(), "SubtitleAdder.VideoCache.ProfileDir.v2"),
@@ -327,7 +337,7 @@ impl VideoCacheStore {
     fn generation_current(&self, session: &CacheSession) -> bool {
         match &self.keys {
             KeySource::PerChunk(_) => true,
-            KeySource::Session { generation, .. } => session.generation == Some(generation()),
+            KeySource::Session { generation, .. } => session.generation.is_some() && generation() == session.generation,
         }
     }
 
@@ -412,6 +422,8 @@ impl VideoCacheStore {
     // ---- chunks ------------------------------------------------------------------------------------------------
 
     /// Chunk indices `0..total_chunks` cached for the active profile; empty while logged out.
+    /// Blocking: begins a session, i.e. takes the profile store lock with a session key source. For tests and
+    /// tools, never the read path (streams use the `*_for` variants with their own session).
     pub fn cached_chunk_indices(&self, id: &str, total_chunks: i64, chunk_size: i32, total_len: i64) -> HashSet<i64> {
         let session = self.try_begin_session();
         self.cached_chunk_indices_for(session.as_deref(), id, total_chunks, chunk_size, total_len)
@@ -438,6 +450,8 @@ impl VideoCacheStore {
     }
 
     /// Reads and decrypts a chunk for the active profile; `None` logged out, on a miss, a foreign or damaged file.
+    /// Blocking: begins a session, i.e. takes the profile store lock with a session key source. For tests and
+    /// tools, never the read path (streams use the `*_for` variants with their own session).
     pub fn try_read_chunk(&self, id: &str, chunk_size: i32, index: i64, expected_len: i32) -> Option<Vec<u8>> {
         let session = self.try_begin_session();
         self.try_read_chunk_for(session.as_deref(), id, chunk_size, index, expected_len)
@@ -491,6 +505,8 @@ impl VideoCacheStore {
     }
 
     /// Encrypts and writes a chunk for the active profile; `false` (nothing written) while logged out.
+    /// Blocking: begins a session, i.e. takes the profile store lock with a session key source. For tests and
+    /// tools, never the read path (streams use the `*_for` variants with their own session).
     pub fn try_write_chunk(&self, id: &str, chunk_size: i32, index: i64, plaintext: &[u8]) -> bool {
         let session = self.try_begin_session();
         self.try_write_chunk_for(session.as_deref(), id, chunk_size, index, plaintext)
