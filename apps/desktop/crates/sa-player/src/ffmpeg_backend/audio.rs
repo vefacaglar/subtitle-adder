@@ -298,6 +298,7 @@ where
         .build_output_stream::<T, _, _>(
             config,
             move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+                super::priority::raise_once_on_this_thread(super::priority::Role::AudioOutput);
                 let ts = info.timestamp();
                 let latency = ts.playback.duration_since(ts.callback);
                 scratch.clear();

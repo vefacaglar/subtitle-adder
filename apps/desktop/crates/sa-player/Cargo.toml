@@ -10,7 +10,7 @@ publish.workspace = true
 [features]
 default = ["ffmpeg"]
 # The FFmpeg/cpal backend. View models depend on this crate without it (trait + pure types only).
-ffmpeg = ["dep:ffmpeg-next", "dep:cpal"]
+ffmpeg = ["dep:ffmpeg-next", "dep:cpal", "dep:windows", "dep:libc"]
 
 [dependencies]
 sa-core.workspace = true
@@ -18,6 +18,14 @@ parking_lot.workspace = true
 crossbeam-channel.workspace = true
 ffmpeg-next = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }
+
+# Thread priorities of the player threads (`ffmpeg_backend/priority.rs`): MMCSS / SetThreadPriority on Windows,
+# pthread QoS classes on macOS.
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, optional = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

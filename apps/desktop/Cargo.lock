@@ -4863,10 +4863,12 @@ dependencies = [
  "cpal",
  "crossbeam-channel",
  "ffmpeg-next",
+ "libc",
  "parking_lot",
  "sa-core",
  "serde_json",
  "tempfile",
+ "windows",
 ]
 
 [[package]]

@@ -20,6 +20,7 @@
 mod audio;
 mod hw;
 mod io;
+mod priority;
 mod session;
 mod sync;
 mod video;
