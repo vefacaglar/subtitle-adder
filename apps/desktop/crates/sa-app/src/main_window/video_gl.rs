@@ -23,14 +23,24 @@
 //!   `R <unix time µs> <pts of the video frame on screen, or -> <1 if that frame is new in this render, else 0>
 //!   <player clock (s), or ->`, written by a background thread.
 //! * `SUBTITLE_ADDER_FRAME_DUMP=<dir>` writes the converted picture (the RGBA target, read back after the shader ran)
-//!   as `<dir>/frame-<n>-<pts>[-field2].png` for the first 3 frames after every load or jump, and one frame every
-//!   2 s, so the shader's output can be checked without a screen capture. Each dump logs one `[video] dump` line with
-//!   the frame's format to stderr.
+//!   as `<dir>/frame-<pid>-<surface>-<n>-<pts>[-field2].png` for the first 3 frames after every load or jump, and
+//!   one frame every 2 s, so the shader's output can be checked without a screen capture. Each dump logs one
+//!   `[video] dump` line with the frame's format to stderr. At most two pictures wait for the writer; further dumps
+//!   are skipped meanwhile. A directory that cannot be created or written is reported once.
+//!
+//! Known limits:
+//! * Without a previous frame (the first frame after a load, a seek or a pts discontinuity, and so a paused still
+//!   right after one) the other field's rows are always interpolated (bob), which halves the vertical detail of a
+//!   still; weaving it would need to know that the picture is paused and static.
+//! * Interlaced 4:1:0 chroma (vertical subsampling by 4) is sampled as if progressive: its chroma rows are not
+//!   separated by field. 4:1:x chroma of a width that is not a multiple of 4 is mapped by normalized coordinates,
+//!   so the last chroma column is slightly stretched.
 
 use std::cell::{Cell, RefCell};
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -158,27 +168,60 @@ impl DumpPolicy {
 /// `SUBTITLE_ADDER_FRAME_DUMP`: PNG writer thread and the dump policy (see the module docs).
 struct FrameDump {
     images: mpsc::Sender<DumpImage>,
+    /// Images sent and not written yet: at [`FrameDump::MAX_IN_FLIGHT`] further dumps are skipped (not even read
+    /// back), so scrubbing cannot queue 33 MB pictures without bound.
+    in_flight: Arc<AtomicUsize>,
     policy: DumpPolicy,
+    /// `<pid>-<surface>`: dumps of several processes or windows into one directory never overwrite each other.
+    prefix: String,
     count: u32,
 }
 
 impl FrameDump {
+    const MAX_IN_FLIGHT: usize = 2;
+
     fn from_env() -> Option<Self> {
+        static SURFACES: AtomicU32 = AtomicU32::new(0);
         let dir = std::path::PathBuf::from(std::env::var_os("SUBTITLE_ADDER_FRAME_DUMP").filter(|p| !p.is_empty())?);
-        std::fs::create_dir_all(&dir).ok()?;
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("[video] frame dumps off: cannot create {}: {e}", dir.display());
+            return None;
+        }
         let (tx, rx) = mpsc::channel::<DumpImage>();
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let pending = in_flight.clone();
         std::thread::Builder::new()
             .name("video-dump".into())
             .spawn(move || {
+                let mut reported = false;
                 while let Ok(img) = rx.recv() {
                     let path = dir.join(&img.name);
-                    if let Err(e) = image::save_buffer(&path, &img.rgba, img.width, img.height, image::ExtendedColorType::Rgba8) {
-                        eprintln!("[video] dump {}: {e}", path.display());
+                    let r = image::save_buffer(&path, &img.rgba, img.width, img.height, image::ExtendedColorType::Rgba8);
+                    drop(img);
+                    pending.fetch_sub(1, Ordering::AcqRel);
+                    if let Err(e) = r
+                        && !std::mem::replace(&mut reported, true)
+                    {
+                        // Once: a directory that cannot be written fails every dump the same way.
+                        eprintln!("[video] frame dump {} failed: {e} (further failures are not logged)", path.display());
                     }
                 }
             })
             .ok()?;
-        Some(Self { images: tx, policy: DumpPolicy::default(), count: 0 })
+        let surface = SURFACES.fetch_add(1, Ordering::Relaxed);
+        Some(Self { images: tx, in_flight, policy: DumpPolicy::default(), prefix: format!("{}-{surface}", std::process::id()), count: 0 })
+    }
+
+    /// Whether the writer can take another image now.
+    fn has_room(&self) -> bool {
+        self.in_flight.load(Ordering::Acquire) < Self::MAX_IN_FLIGHT
+    }
+
+    fn send(&mut self, img: DumpImage) {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        if self.images.send(img).is_err() {
+            self.in_flight.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 }
 
@@ -349,6 +392,11 @@ impl VideoSurface {
             s.pending = None;
             s.current = None;
             s.shown = None;
+            if let Some(g) = &mut s.gl {
+                // The frames the plane textures were filled from (two decoder frames, ~24 MB each at 4K P010) are
+                // released, and the next interlaced frame is not compared against them.
+                g.forget_images();
+            }
             if let Some(d) = &mut s.dump {
                 d.policy.reset();
             }
@@ -372,8 +420,9 @@ impl Inner {
         let Some(img) = frame.planar.clone() else { return false };
         let Some(gl) = self.gl.as_mut() else { return false };
         let (w, h) = (frame.width.max(1), frame.height.max(1));
-        let dump = self.dump.as_mut().is_some_and(|d| d.policy.wants(frame.pts, Instant::now()));
-        let result = unsafe { gl.draw(&img, frame.second_field, w, h, dump) };
+        // A dump the writer has no room for is skipped before the read-back.
+        let dump = self.dump.as_mut().is_some_and(|d| d.policy.wants(frame.pts, Instant::now()) && d.has_room());
+        let result = unsafe { gl.draw(&img, frame.pts, frame.second_field, w, h, dump) };
         match result {
             Ok((texture, pixels)) => {
                 if self.shown != Some((texture, w, h)) {
@@ -387,9 +436,9 @@ impl Inner {
                 if let (Some(d), Some(rgba)) = (self.dump.as_mut(), pixels) {
                     d.count += 1;
                     let field = if frame.second_field { "-field2" } else { "" };
-                    let name = format!("frame-{:04}-{:09.3}{field}.png", d.count, frame.pts);
+                    let name = format!("frame-{}-{:04}-{:09.3}{field}.png", d.prefix, d.count, frame.pts);
                     eprintln!("[video] dump {name}: {}", describe(&img, w, h));
-                    let _ = d.images.send(DumpImage { name, width: w, height: h, rgba });
+                    d.send(DumpImage { name, width: w, height: h, rgba });
                 }
                 self.current = Some(frame);
                 true
@@ -473,6 +522,8 @@ struct Gl {
     cur: usize,
     /// The image `planes[cur]` holds (its second field is drawn without uploading again).
     uploaded: Option<Arc<PlanarImage>>,
+    /// The pts of the frame `uploaded` came with.
+    uploaded_pts: Option<f64>,
     /// The interlaced image the other set holds (the frame before `uploaded`).
     previous: Option<Arc<PlanarImage>>,
     target: Option<Target>,
@@ -665,6 +716,13 @@ struct Saved {
 /// Texture units the conversion uses: the current frame's planes (0..3) and the previous frame's (3..6).
 const UNITS: usize = 6;
 
+/// Whether a frame at `previous` pts is the one right before a frame at `pts` (for motion detection): a step forward
+/// of at most 100 ms (a frame or two of interlaced video), not a seek or a new source.
+fn previous_frame_follows(previous: f64, pts: f64) -> bool {
+    let d = pts - previous;
+    d > 0.0 && d <= 0.1
+}
+
 /// The shader's layout code for `layout`.
 fn layout_code(layout: PlaneLayout) -> i32 {
     match layout {
@@ -751,12 +809,20 @@ impl Gl {
                 planes: Default::default(),
                 cur: 0,
                 uploaded: None,
+                uploaded_pts: None,
                 previous: None,
                 target: None,
                 retired: Vec::new(),
                 scratch: Vec::new(),
             })
         }
+    }
+
+    /// Drops the images the plane textures were filled from (the textures stay, to be reused).
+    fn forget_images(&mut self) {
+        self.uploaded = None;
+        self.uploaded_pts = None;
+        self.previous = None;
     }
 
     unsafe fn destroy(self) {
@@ -838,7 +904,7 @@ impl Gl {
     /// Uploads `img` (unless it is the image the planes hold already: the second field of an interlaced frame) and
     /// converts it into the output texture (`w` × `h`, as shown); returns that texture, and the converted pixels
     /// (RGBA, top row first) when `read_back`.
-    unsafe fn draw(&mut self, img: &Arc<PlanarImage>, second_field: bool, w: u32, h: u32, read_back: bool) -> Result<(NonZeroU32, Option<Vec<u8>>), String> {
+    unsafe fn draw(&mut self, img: &Arc<PlanarImage>, pts: f64, second_field: bool, w: u32, h: u32, read_back: bool) -> Result<(NonZeroU32, Option<Vec<u8>>), String> {
         unsafe {
             // Textures replaced last frame: the bridge shows the new one by now.
             for (f, t) in std::mem::take(&mut self.retired) {
@@ -846,7 +912,7 @@ impl Gl {
                 self.gl.delete_texture(t);
             }
             let saved = self.save();
-            let r = self.convert(img, second_field, w, h, read_back);
+            let r = self.convert(img, pts, second_field, w, h, read_back);
             self.restore(&saved);
             let err = self.gl.get_error();
             let r = r?;
@@ -857,21 +923,25 @@ impl Gl {
         }
     }
 
-    unsafe fn convert(&mut self, img: &Arc<PlanarImage>, second_field: bool, w: u32, h: u32, read_back: bool) -> Result<(NonZeroU32, Option<Vec<u8>>), String> {
+    unsafe fn convert(&mut self, img: &Arc<PlanarImage>, pts: f64, second_field: bool, w: u32, h: u32, read_back: bool) -> Result<(NonZeroU32, Option<Vec<u8>>), String> {
         unsafe {
             let wide = img.bits > 8;
             let format = img.format();
             let count = img.plane_count();
             let upload = !self.uploaded.as_ref().is_some_and(|u| Arc::ptr_eq(u, img));
             if upload {
-                // An interlaced frame goes into the other set, so the one before it stays for motion detection.
+                // An interlaced frame goes into the other set, so the one before it stays for motion detection: only
+                // when that one directly precedes it (not across a seek or another jump in pts, where it would be
+                // an unrelated picture).
                 let prev = self.uploaded.take();
-                if img.interlaced && prev.as_ref().is_some_and(|p| p.interlaced) {
+                let follows = self.uploaded_pts.is_some_and(|p| previous_frame_follows(p, pts));
+                if img.interlaced && follows && prev.as_ref().is_some_and(|p| p.interlaced) {
                     self.cur ^= 1;
                     self.previous = prev;
                 } else {
                     self.previous = None;
                 }
+                self.uploaded_pts = Some(pts);
             }
             // Forgotten until the upload succeeded (a failure leaves the planes undefined).
             self.uploaded = None;
@@ -947,7 +1017,8 @@ impl Gl {
                 let tex = if temporal && i < count { self.planes[other][i].as_ref().map(|p| p.tex) } else { None };
                 self.gl.active_texture(glow::TEXTURE3 + i as u32);
                 self.gl.bind_texture(glow::TEXTURE_2D, tex.or(fallback));
-            }            if count == 1 {
+            }
+            if count == 1 {
                 sizes[1] = sizes[0];
             }
 
@@ -1062,6 +1133,15 @@ mod tests {
         assert!(!p.wants(30.12, at(2300)));
         p.reset();
         assert!(p.wants(30.16, at(2340)), "a new load starts a new burst");
+    }
+
+    #[test]
+    fn only_the_frame_right_before_is_used_for_motion_detection() {
+        assert!(previous_frame_follows(1.0, 1.04));
+        assert!(previous_frame_follows(1.0, 1.08), "one dropped frame");
+        assert!(!previous_frame_follows(1.0, 1.0));
+        assert!(!previous_frame_follows(1.0, 0.96), "a seek back");
+        assert!(!previous_frame_follows(1.0, 1.5), "a seek forward");
     }
 
     #[test]
