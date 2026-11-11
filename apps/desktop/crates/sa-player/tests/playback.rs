@@ -836,32 +836,9 @@ fn first_frame(p: &mut FfmpegPlayer, path: &std::path::Path) -> sa_player::Video
 }
 
 /// The R'G'B' (0..255) of pixel (`x`, `y`) of the coded picture, converted on the CPU the way the UI's shader does
-/// (nearest chroma sample, the shader's uniforms from `sa_player::color::yuv_uniforms`).
+/// (nearest chroma sample; `sa_player::color::yuv_to_rgb_reference`).
 fn planar_rgb(img: &sa_player::PlanarImage, x: usize, y: usize) -> [f32; 3] {
-    use sa_player::PlaneLayout;
-    let (range, k, scale) = sa_player::color::yuv_uniforms(img);
-    let wide = img.bits > 8;
-    let sb = img.sample_bytes();
-    let sample = |plane: usize, px: usize, py: usize, comp: usize, comps: usize| -> f32 {
-        let (d, info) = img.plane(plane).expect("plane");
-        let o = py * info.stride + (px * comps + comp) * sb;
-        if wide { u16::from_le_bytes([d[o], d[o + 1]]) as f32 * scale } else { d[o] as f32 / 255.0 }
-    };
-    if img.layout == PlaneLayout::Packed {
-        return [0, 1, 2].map(|c| sample(0, x, y, c, 4) * 255.0);
-    }
-    let (sx, sy) = img.chroma_shift;
-    let (cx, cy) = (x >> sx, y >> sy);
-    let luma = sample(0, x, y, 0, 1);
-    let (u, v) = match img.layout {
-        PlaneLayout::SemiPlanar if img.swap_uv => (sample(1, cx, cy, 1, 2), sample(1, cx, cy, 0, 2)),
-        PlaneLayout::SemiPlanar => (sample(1, cx, cy, 0, 2), sample(1, cx, cy, 1, 2)),
-        PlaneLayout::Planar => (sample(1, cx, cy, 0, 1), sample(2, cx, cy, 0, 1)),
-        _ => (range[2], range[2]),
-    };
-    let yv = (luma - range[0]) * range[1];
-    let (u, v) = ((u - range[2]) * range[3], (v - range[2]) * range[3]);
-    [yv + k[0] * v, yv - k[1] * u - k[2] * v, yv + k[3] * u].map(|c| (c * 255.0).clamp(0.0, 255.0))
+    sa_player::color::yuv_to_rgb_reference(img, x, y).map(|c| c * 255.0)
 }
 
 /// Mean and worst channel difference between `img` converted like the shader and the RGBA path's `reference` frame
@@ -1015,18 +992,43 @@ fn interlaced_frames_are_handed_over_field_by_field() {
     assert!(!f.planar.expect("planar").interlaced && !f.second_field);
 }
 
-/// HDR10 (PQ, BT.2020, mastering metadata + MaxCLL) and HLG frames carry what the shader needs to tone-map them.
-#[test]
-fn hdr_frames_carry_their_transfer_primaries_and_peak() {
-    let Some(pq) = common::custom_clip(
-        "hdr10-pq.mkv",
+/// HDR10: PQ, BT.2020, mastering metadata (4000 nits) + MaxCLL 1200, from the lavfi `source`, cached as `name`.
+fn hdr10_clip_of(name: &str, source: &str) -> Option<std::path::PathBuf> {
+    common::custom_clip(
+        name,
         &[
-            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=10", "-t", "1", "-c:v", "libx265", "-preset", "ultrafast",
+            "-f", "lavfi", "-i", source, "-t", "1", "-c:v", "libx265", "-preset", "ultrafast",
             "-x265-params",
             "log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:hdr10=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,1):max-cll=1200,400",
             "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc",
         ],
-    ) else {
+    )
+}
+
+fn hdr10_clip() -> Option<std::path::PathBuf> {
+    hdr10_clip_of("hdr10-pq.mkv", "testsrc2=size=320x240:rate=10")
+}
+
+/// HLG in BT.2020 from the lavfi `source`, cached as `name`.
+fn hlg_clip_of(name: &str, source: &str) -> Option<std::path::PathBuf> {
+    common::custom_clip(
+        name,
+        &[
+            "-f", "lavfi", "-i", source, "-t", "1", "-c:v", "libx265", "-preset", "ultrafast",
+            "-x265-params", "log-level=error:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
+            "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+        ],
+    )
+}
+
+fn hlg_clip() -> Option<std::path::PathBuf> {
+    hlg_clip_of("hlg-hevc.mkv", "testsrc2=size=320x240:rate=10")
+}
+
+/// HDR10 (PQ, BT.2020, mastering metadata + MaxCLL) and HLG frames carry what the shader needs to tone-map them.
+#[test]
+fn hdr_frames_carry_their_transfer_primaries_and_peak() {
+    let Some(pq) = hdr10_clip() else {
         eprintln!("skipped: no ffmpeg CLI");
         return;
     };
@@ -1036,20 +1038,141 @@ fn hdr_frames_carry_their_transfer_primaries_and_peak() {
         assert_eq!((img.transfer, img.primaries, img.matrix), (sa_player::Transfer::Pq, sa_player::Primaries::Bt2020, sa_player::YuvMatrix::Bt2020), "hardware={hardware}");
         assert_eq!(img.peak_nits, 1200.0, "hardware={hardware}: MaxCLL wins over the 4000-nit mastering peak");
     }
-    let Some(hlg) = common::custom_clip(
-        "hlg-hevc.mkv",
-        &[
-            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=10", "-t", "1", "-c:v", "libx265", "-preset", "ultrafast",
-            "-x265-params", "log-level=error:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
-            "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
-        ],
-    ) else {
+    let Some(hlg) = hlg_clip() else {
         return;
     };
     let img = first_frame(&mut player(false, true), &hlg).planar.expect("planar");
     assert_eq!((img.transfer, img.primaries), (sa_player::Transfer::Hlg, sa_player::Primaries::Bt2020));
     let params = sa_player::color::ColorParams::for_image(&img);
     assert_eq!(params.mode, sa_player::color::ColorMode::Hlg);
+}
+
+/// The RGBA path (software renderer) tone-maps HDR10 and HLG as the shader does: compared with the planar frame
+/// converted by the shader's math (`yuv_to_rgb_reference` + `ColorParams::apply`), and far from the washed-out
+/// picture of the plain matrix conversion. Software and hardware decoding.
+#[test]
+fn rgba_path_tone_maps_hdr10_and_hlg_like_the_shader() {
+    // SMPTE HD bars: large flat areas at many levels (on testsrc2 only the black background is flat).
+    let bars = "smptehdbars=size=320x240:rate=10";
+    let (Some(pq), Some(hlg)) = (hdr10_clip_of("hdr10-bars.mkv", bars), hlg_clip_of("hlg-bars.mkv", bars)) else {
+        eprintln!("skipped: no ffmpeg CLI or libx265");
+        return;
+    };
+    for (name, path) in [("HDR10", pq), ("HLG", hlg)] {
+        for hardware in [false, true] {
+            let img = first_frame(&mut player(hardware, true), &path).planar.expect("planar");
+            let mut p = player(hardware, false);
+            let f = first_frame(&mut p, &path);
+            assert!(f.planar.is_none() && f.pts == 0.0);
+            assert_eq!((f.width, f.height, f.stride), (320, 240, 320 * 4));
+            let params = sa_player::color::ColorParams::for_image(&img);
+            let reference = |x: usize, y: usize| sa_player::color::yuv_to_rgb_reference(&img, x, y);
+            let (mut sum, mut sum_plain, mut n, mut worst_flat, mut flat) = (0f64, 0f64, 0f64, 0f32, 0);
+            let (mut flat_plain, mut flat_n) = (0f64, 0f64);
+            for y in (2..238).step_by(3) {
+                for x in (2..318).step_by(3) {
+                    let rgb = reference(x, y);
+                    let want = params.apply(rgb).map(|c| c * 255.0);
+                    // Flat: the same colour two pixels around (bilinear and nearest chroma agree there; at the
+                    // pattern's saturated edges the tone curve magnifies their difference up to a full code range).
+                    let is_flat = [(x - 2, y), (x + 2, y), (x, y - 2), (x, y + 2)]
+                        .iter()
+                        .all(|&(a, b)| reference(a, b).iter().zip(rgb).all(|(c, r)| (c - r).abs() < 0.5 / 255.0));
+                    flat += is_flat as u32;
+                    let o = y * f.stride as usize + x * 4;
+                    for k in 0..3 {
+                        let got = f.rgba[o + k] as f32;
+                        let d = (got - want[k]).abs();
+                        sum += d as f64;
+                        sum_plain += (got - rgb[k] * 255.0).abs() as f64;
+                        n += 1.0;
+                        if is_flat {
+                            worst_flat = worst_flat.max(d);
+                            flat_plain += (got - rgb[k] * 255.0).abs() as f64;
+                            flat_n += 1.0;
+                        }
+                    }
+                }
+            }
+            let (mean, mean_plain, flat_plain) = (sum / n, sum_plain / n, flat_plain / flat_n);
+            let s = p.stats();
+            eprintln!(
+                "{name} hardware={hardware}: mean {mean:.2}, worst in flat areas {worst_flat} ({flat} pixels), mean to the untone-mapped picture {mean_plain:.1} (flat areas {flat_plain:.1}); {s:?}"
+            );
+            assert!(s.soft_tonemapped >= 1 && s.planar == 0, "{name} hardware={hardware}: {s:?}");
+            assert!(flat > 1000, "{name}: {flat} flat pixels");
+            // Within one code of the rounded shader value (`want` is unrounded).
+            assert!(mean <= 3.0 && worst_flat <= 1.5, "{name} hardware={hardware}: mean {mean}, worst in flat areas {worst_flat}");
+            assert!(mean_plain >= 3.0 * mean && flat_plain >= 10.0, "{name} hardware={hardware}: tone mapping changed little ({mean_plain}, flat {flat_plain})");
+            p.dispose();
+        }
+    }
+}
+
+/// Vertical comb strength of a picture given as rows of luma: how much rows stick out from both neighbours in the
+/// same direction (the teeth of two fields captured at different times), averaged.
+fn comb(rows: &[Vec<f32>]) -> f64 {
+    let (mut sum, mut n) = (0f64, 0f64);
+    for y in 1..rows.len() - 1 {
+        for x in 0..rows[y].len() {
+            let (a, c, b) = (rows[y - 1][x], rows[y][x], rows[y + 1][x]);
+            sum += ((c - a) * (c - b)).max(0.0) as f64;
+            n += 1.0;
+        }
+    }
+    sum / n
+}
+
+/// The RGBA path deinterlaces: interlaced frames come field by field (`second_field`, 20 ms apart at 25 frames/s)
+/// and show far less combing than the woven frame.
+#[test]
+fn rgba_path_deinterlaces_field_by_field() {
+    let Some(path) = interlaced_clip() else { return };
+    // The woven picture: luma of the planar frame as decoded.
+    let img = first_frame(&mut player(false, true), &path).planar.expect("planar");
+    let (y, yi) = img.plane(0).expect("luma");
+    let woven: Vec<Vec<f32>> = (0..yi.rows as usize).map(|r| y[r * yi.stride..][..yi.width as usize].iter().map(|v| *v as f32 / 255.0).collect()).collect();
+    let woven_comb = comb(&woven);
+    let rec = Recorder::default();
+    let mut p = player(false, false);
+    rec.attach(&mut p);
+    let g = p.load(Some(MediaSource::File(path)), false);
+    opened(&rec, g);
+    p.play();
+    let mut seen = Vec::new();
+    let mut combs = Vec::new();
+    let ok = common::wait_until(T, || {
+        if let Some(f) = p.latest_frame() {
+            assert!(f.planar.is_none());
+            seen.push((f.pts, f.second_field));
+            let rows: Vec<Vec<f32>> = (0..f.height as usize)
+                .map(|r| {
+                    (0..f.width as usize)
+                        .map(|x| {
+                            let o = r * f.stride as usize + x * 4;
+                            (0.2126 * f.rgba[o] as f32 + 0.7152 * f.rgba[o + 1] as f32 + 0.0722 * f.rgba[o + 2] as f32) / 255.0
+                        })
+                        .collect()
+                })
+                .collect();
+            combs.push(comb(&rows));
+        }
+        seen.len() >= 16
+    });
+    assert!(ok, "frames: {seen:?}");
+    let s = p.stats();
+    p.dispose();
+    let worst = combs.iter().cloned().fold(0.0, f64::max);
+    eprintln!("woven comb {woven_comb:.6}, deinterlaced comb worst {worst:.6}; {s:?}");
+    assert!(seen.iter().any(|(_, s)| *s), "no second fields: {seen:?}");
+    for w in seen.windows(2) {
+        let d = w[1].0 - w[0].0;
+        if w[0].1 != w[1].1 && d > 0.0 && d < 0.03 {
+            assert!((d - 0.02).abs() < 0.004, "field spacing {d}: {seen:?}");
+        }
+    }
+    assert!(s.soft_deinterlaced >= 16 && s.planar == 0, "{s:?}");
+    assert!(worst < woven_comb * 0.25, "comb {worst} vs woven {woven_comb}: {combs:?}");
 }
 
 #[test]

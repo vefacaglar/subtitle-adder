@@ -1,8 +1,9 @@
 //! The CPU picture path of the software renderer (RGBA frames): deinterlacing and the YUV → R'G'B' conversion with
 //! HDR tone mapping, mirroring the UI's GPU shader (`sa-app/src/main_window/video_gl.rs`), so a frame looks the same
 //! whichever renderer shows it. Pure Rust, compiled without the `ffmpeg` feature; the decode thread
-//! (`ffmpeg_backend`) decides which frames take it (HDR, wide gamut and interlaced ones; plain SDR progressive frames
-//! keep swscale).
+//! (`ffmpeg_backend`) decides which frames take it: HDR and wide-gamut frames are deinterlaced (when interlaced) and
+//! converted here; interlaced SDR frames are deinterlaced here and converted by swscale (formats without a planar
+//! description: swscale's RGBA, deinterlaced and scaled here); plain SDR progressive frames keep swscale alone.
 //!
 //! * [`deinterlace_planes`]: the shader's `deinterlaced()` on the planes, for the field due: the shown field's rows are
 //!   copied; each row of the other field is woven in where it did not change since the previous frame and replaced by

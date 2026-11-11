@@ -114,6 +114,10 @@ pub struct PlaybackStats {
     pub hardware: u64,
     /// Frames handed over as YUV planes.
     pub planar: u64,
+    /// RGBA pictures tone-mapped (HDR / wide gamut) on the CPU (`crate::soft`; fields count one each).
+    pub soft_tonemapped: u64,
+    /// RGBA fields deinterlaced on the CPU.
+    pub soft_deinterlaced: u64,
 }
 
 impl PlaybackStats {
@@ -227,6 +231,8 @@ impl FfmpegPlayer {
             dropped_decoder: s.stats.dropped_decoder.load(Ordering::Relaxed),
             hardware: s.stats.hardware.load(Ordering::Relaxed),
             planar: s.stats.planar.load(Ordering::Relaxed),
+            soft_tonemapped: s.stats.soft_tonemapped.load(Ordering::Relaxed),
+            soft_deinterlaced: s.stats.soft_deinterlaced.load(Ordering::Relaxed),
         }
     }
 
@@ -354,8 +360,8 @@ impl MediaPlayerBackend for FfmpegPlayer {
         self.session.as_ref()?;
         let s = self.stats();
         Some(format!(
-            "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={}",
-            s.decoded, s.hardware, s.planar, s.presented, s.dropped_late, s.dropped_decoder
+            "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={} soft_tonemapped={} soft_deinterlaced={}",
+            s.decoded, s.hardware, s.planar, s.presented, s.dropped_late, s.dropped_decoder, s.soft_tonemapped, s.soft_deinterlaced
         ))
     }
 

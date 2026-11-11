@@ -5,7 +5,7 @@
 //! * Feature `ffmpeg` (default): [`ffmpeg_backend::FfmpegPlayer`] — demux/decode with `ffmpeg-next` 8.1 (hardware
 //!   decoding through D3D11VA on Windows and VideoToolbox on macOS, software otherwise), video handed over either as
 //!   the decoder's YUV planes (the UI converts them to RGB on the GPU; [`MediaPlayerBackend::set_planar_output`]) or
-//!   converted to RGBA by swscale, audio resampled by swresample to the output format and played through `cpal`
+//!   converted to RGBA (swscale; HDR tone mapping and deinterlacing on the CPU in [`soft`]), audio resampled by swresample to the output format and played through `cpal`
 //!   (WASAPI / CoreAudio); the audio clock is the master clock (video frames are shown when their pts is due, late
 //!   frames dropped). The backend also lists the file's audio and subtitle streams ([`MediaTracks`]), switches the
 //!   audio track while playing or paused, and reads embedded text subtitle tracks
@@ -40,6 +40,11 @@ pub use timeline::PlaybackTimeline;
 ///
 /// An interlaced planar frame is handed over twice, once per field (`second_field` false, then true half a frame
 /// later): the UI deinterlaces it by showing the field due at that time ([`PlanarImage::shown_field_is_bottom`]).
+///
+/// RGBA frames show the same picture as the GPU path: HDR (PQ / HLG) and wide-gamut frames are tone-mapped and
+/// converted to BT.709 on the CPU, and interlaced frames deinterlaced on the CPU ([`soft`]) and handed over field by
+/// field as well (two RGBA frames, the second with `second_field` true half a frame later; a second field that is
+/// already late is dropped before its conversion). Plain SDR BT.709 progressive frames are swscale's conversion.
 #[derive(Clone)]
 pub struct VideoFrame {
     pub width: u32,

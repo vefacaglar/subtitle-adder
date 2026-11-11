@@ -1,6 +1,8 @@
 //! Video frame description and conversion: the planes of a decoded frame for the GPU path (format, colour, HDR
 //! levels, interlacing), or swscale's RGBA8 conversion of any pixel format (at the display size and rotated for the
-//! RGBA path; unscaled for the GPU path's packed images). Output buffers are recycled once the UI dropped them.
+//! RGBA path; unscaled for the GPU path's packed images). The RGBA path tone-maps HDR / wide-gamut frames and
+//! deinterlaces interlaced ones itself (`Converter::convert_soft`, `crate::soft`). Output buffers are recycled once
+//! the UI dropped them.
 
 use std::ffi::c_int;
 use std::ptr;
@@ -8,6 +10,9 @@ use std::sync::Arc;
 
 use ffmpeg_next::ffi;
 
+use super::hw::OwnedFrame;
+use crate::color::{ColorMode, ColorParams, ToneLuts};
+use crate::soft;
 use crate::{ColorInfo, Interlace, PlanarFormat, PlanarImage, PlaneInfo, PlaneLayout, Primaries, Transfer, YuvMatrix};
 
 /// Display geometry of a stream.
@@ -117,14 +122,175 @@ pub(crate) struct Converter {
     scaler: Option<Scaler>,
     pool: Vec<Arc<Vec<u8>>>,
     scratch: Vec<u8>,
+    /// Deinterlaced copies of frames (RGBA path), reused once nothing holds them.
+    deinterlaced: Vec<Arc<OwnedFrame>>,
+    /// The colour tables of the RGBA path's own conversion, for the parameters they were built for.
+    luts: Option<ToneLuts>,
 }
 
 // SAFETY: the swscale context is only used by the owning thread.
 unsafe impl Send for Converter {}
 
+/// What the RGBA path does with one decoded frame ([`Converter::soft_source`]).
+pub(crate) struct SoftSource {
+    /// The frame's planes when the RGBA path converts it itself (HDR, wide gamut, interlaced); `None`: swscale
+    /// converts the frame as it is.
+    pub image: Option<Arc<PlanarImage>>,
+    /// Shown field by field (deinterlaced); only with `image`.
+    pub interlaced: bool,
+    /// Tone-mapped / gamut-converted (not plain SDR BT.709); only with `image`.
+    pub tone_map: bool,
+}
+
 impl Converter {
     pub fn new() -> Self {
-        Self { scaler: None, pool: Vec::new(), scratch: Vec::new() }
+        Self { scaler: None, pool: Vec::new(), scratch: Vec::new(), deinterlaced: Vec::new(), luts: None }
+    }
+
+    /// Decides how the RGBA path converts `raw` (its download `src` / `downloaded` for hardware frames): plain SDR
+    /// BT.709 progressive frames through swscale as before; HDR, wide-gamut and interlaced frames described as planes
+    /// (zero-copy, or swscale's packed RGBA for formats without a planar description) for [`Converter::convert_soft`].
+    pub unsafe fn soft_source(
+        &mut self,
+        raw: *const ffi::AVFrame,
+        src: *const ffi::AVFrame,
+        downloaded: Option<Arc<OwnedFrame>>,
+        geo: Geometry,
+        hdr: &HdrLevels,
+    ) -> SoftSource {
+        unsafe {
+            let plain = SoftSource { image: None, interlaced: false, tone_map: false };
+            let interlace = frame_interlace(raw);
+            let matrix = frame_matrix(raw);
+            let transfer = transfer_of((*raw).color_trc);
+            let primaries = primaries_of((*raw).color_primaries, transfer, matrix);
+            let tone_map = ColorParams::new(transfer, primaries, hdr.peak_nits()).mode != ColorMode::None;
+            if !tone_map && interlace.is_none() {
+                return plain;
+            }
+            let image = if planar_format((*src).format).is_some() {
+                let owner: Option<Box<dyn Send + Sync>> = match downloaded {
+                    Some(d) => Some(Box::new(d)),
+                    None => OwnedFrame::reference(raw).map(|r| Box::new(r) as Box<dyn Send + Sync>),
+                };
+                owner.and_then(|owner| planar_image(owner, src, raw, geo, hdr))
+            } else {
+                self.convert_packed(src).and_then(|(w, h, rgba)| packed_image(rgba, (w, h), raw, geo, hdr))
+            };
+            match image {
+                Some(img) => SoftSource { interlaced: img.interlaced, tone_map, image: Some(Arc::new(img)) },
+                None => plain,
+            }
+        }
+    }
+
+    /// RGBA at `geo` for the software renderer: swscale for a plain source, else the field due (`second_field`)
+    /// deinterlaced against `prev` (the previous interlaced frame as decoded, when it directly precedes this one) and
+    /// converted by swscale (SDR with a planar description) or by [`soft::convert_rgba`] with tone mapping.
+    pub unsafe fn convert_soft(
+        &mut self,
+        soft: &SoftSource,
+        src: *const ffi::AVFrame,
+        geo: Geometry,
+        prev: Option<&PlanarImage>,
+        second_field: bool,
+    ) -> Option<(u32, u32, Arc<Vec<u8>>)> {
+        unsafe {
+            let Some(img) = soft.image.as_ref() else { return self.convert(src, geo) };
+            if !soft.interlaced {
+                return self.convert_kernel(img, geo, false);
+            }
+            let packed = img.layout == PlaneLayout::Packed;
+            let av_format = if packed { ffi::AVPixelFormat::AV_PIX_FMT_RGBA as c_int } else { (*src).format };
+            let out = self.deinterlaced_frame(img.coded_width, img.coded_height, av_format)?;
+            let f = out.0;
+            {
+                let mut planes = Vec::with_capacity(3);
+                for i in 0..img.plane_count() {
+                    let (_, info) = img.plane(i)?;
+                    let stride = (*f).linesize[i];
+                    if (*f).data[i].is_null() || stride <= 0 || (stride as usize) < info.row_bytes {
+                        return None;
+                    }
+                    let len = (info.rows as usize - 1) * stride as usize + info.row_bytes;
+                    planes.push(soft::PlaneMut { data: std::slice::from_raw_parts_mut((*f).data[i], len), stride: stride as usize });
+                }
+                soft::deinterlace_planes(img, prev, img.shown_field_is_bottom(second_field), &mut planes);
+            }
+            if !soft.tone_map && !packed {
+                // SDR: swscale converts the deinterlaced copy as it converts progressive frames.
+                (*f).colorspace = (*src).colorspace;
+                (*f).color_range = (*src).color_range;
+                (*f).color_trc = (*src).color_trc;
+                (*f).color_primaries = (*src).color_primaries;
+                return self.convert(f, geo);
+            }
+            let format = img.format();
+            let planes = frame_planes(f, &format)?;
+            let color = ColorInfo { matrix: img.matrix, full_range: img.full_range, transfer: img.transfer, primaries: img.primaries, peak_nits: img.peak_nits };
+            let image = PlanarImage::new(format, (img.coded_width, img.coded_height), color, 0, None, planes, Box::new(out.clone()));
+            self.convert_kernel(&image, geo, true)
+        }
+    }
+
+    /// A writable frame of `format` at `w` × `h` for a deinterlaced copy (recycled once nothing holds it).
+    unsafe fn deinterlaced_frame(&mut self, w: u32, h: u32, format: c_int) -> Option<Arc<OwnedFrame>> {
+        unsafe {
+            let (w, h) = (w as c_int, h as c_int);
+            let same = |f: &Arc<OwnedFrame>| {
+                let p = f.0;
+                (*p).width == w && (*p).height == h && (*p).format == format && !(*p).buf[0].is_null()
+            };
+            if let Some(i) = self.deinterlaced.iter().position(|f| Arc::strong_count(f) == 1 && Arc::weak_count(f) == 0 && same(f)) {
+                return Some(self.deinterlaced[i].clone());
+            }
+            let f = OwnedFrame::alloc()?;
+            (*f.0).width = w;
+            (*f.0).height = h;
+            (*f.0).format = format;
+            if ffi::av_frame_get_buffer(f.0, 0) < 0 {
+                return None;
+            }
+            let f = Arc::new(f);
+            self.deinterlaced.retain(|f| same(f));
+            if self.deinterlaced.len() < 4 {
+                self.deinterlaced.push(f.clone());
+            }
+            Some(f)
+        }
+    }
+
+    /// [`soft::convert_rgba`] of `img` at `geo` (then rotated), with the colour tables cached per parameters.
+    fn convert_kernel(&mut self, img: &PlanarImage, geo: Geometry, chroma_fields: bool) -> Option<(u32, u32, Arc<Vec<u8>>)> {
+        if img.coded_height != geo.height || geo.width == 0 {
+            return None;
+        }
+        let params = ColorParams::for_image(img);
+        if self.luts.as_ref().is_none_or(|l| *l.params() != params) {
+            // Also when the stream's MaxCLL arrives with a later frame.
+            self.luts = Some(ToneLuts::new(&params));
+        }
+        let (dw, dh) = (geo.width, geo.height);
+        let len = dw as usize * dh as usize * 4;
+        let rotated = geo.quarter_turns % 4 != 0;
+        let mut out = self.buffer(len);
+        let luts = self.luts.as_ref()?;
+        let stripes = soft::stripes_for(dw as usize * dh as usize);
+        let target: &mut Vec<u8> = if rotated {
+            self.scratch.resize(len, 0);
+            &mut self.scratch
+        } else {
+            Arc::get_mut(&mut out).expect("fresh or recycled buffer is unique")
+        };
+        if !soft::convert_rgba(img, dw, luts, chroma_fields, target, stripes) {
+            return None;
+        }
+        if rotated {
+            rotate_rgba(&self.scratch, dw, dh, geo.quarter_turns, Arc::get_mut(&mut out).expect("unique"));
+        }
+        self.recycle(&out);
+        let (ow, oh) = geo.display_size();
+        Some((ow, oh, out))
     }
 
     fn buffer(&mut self, len: usize) -> Arc<Vec<u8>> {
@@ -470,18 +636,10 @@ pub(crate) unsafe fn frame_interlace(props: *const ffi::AVFrame) -> Option<Inter
     }
 }
 
-/// Describes the planes of `owner` (a software frame) for the GPU, or `None` when its format or layout is not one
-/// the UI converts (negative strides, unknown formats). `props` is the frame the color properties are read from
-/// (the hardware frame when `owner` is its download).
-pub(crate) unsafe fn planar_image(
-    owner: Box<dyn Send + Sync>,
-    frame: *const ffi::AVFrame,
-    props: *const ffi::AVFrame,
-    geo: Geometry,
-    hdr: &HdrLevels,
-) -> Option<PlanarImage> {
+/// The planes of `frame` as `format` lays them out (`None`: a plane is missing, or a stride is negative or shorter
+/// than its row).
+unsafe fn frame_planes(frame: *const ffi::AVFrame, format: &PlanarFormat) -> Option<[Option<(*const u8, PlaneInfo)>; 3]> {
     unsafe {
-        let (format, forced_full) = planar_format((*frame).format)?;
         let (w, h) = ((*frame).width, (*frame).height);
         if w <= 0 || h <= 0 {
             return None;
@@ -505,6 +663,28 @@ pub(crate) unsafe fn planar_image(
             }
             *plane = Some((data as *const u8, PlaneInfo { width: pw, rows, stride: stride as usize, row_bytes }));
         }
+        Some(planes)
+    }
+}
+
+/// Describes the planes of `owner` (a software frame) for the GPU, or `None` when its format or layout is not one
+/// the UI converts (negative strides, unknown formats). `props` is the frame the color properties are read from
+/// (the hardware frame when `owner` is its download).
+pub(crate) unsafe fn planar_image(
+    owner: Box<dyn Send + Sync>,
+    frame: *const ffi::AVFrame,
+    props: *const ffi::AVFrame,
+    geo: Geometry,
+    hdr: &HdrLevels,
+) -> Option<PlanarImage> {
+    unsafe {
+        let (format, forced_full) = planar_format((*frame).format)?;
+        let (w, h) = ((*frame).width, (*frame).height);
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let (w, h) = (w as u32, h as u32);
+        let planes = frame_planes(frame, &format)?;
         // Untagged gray has the range the RGBA path gives it (measured, see the test
         // `untagged_gray_has_the_range_the_rgba_path_gives_it`): swscale never applies a range conversion to 8-bit
         // gray (the `full_range = 0` passed to `sws_setColorspaceDetails` for untagged frames has no effect on it), so

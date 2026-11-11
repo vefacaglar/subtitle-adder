@@ -84,6 +84,9 @@ pub(crate) struct Stats {
     pub hardware: AtomicU64,
     /// Frames handed over as YUV planes.
     pub planar: AtomicU64,
+    /// RGBA pictures (frames or fields) tone-mapped / deinterlaced on the CPU.
+    pub soft_tonemapped: AtomicU64,
+    pub soft_deinterlaced: AtomicU64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -960,7 +963,7 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
     let VideoTrack { mut dec, hw: mut hw_decoder, hw_only, params, tb, layout, frame_dur, hdr } = track;
     let codec_id = unsafe { (*params.as_ptr()).codec_id };
     let simulate_failure = ctl.player.simulate_hw_failure.load(Ordering::Relaxed) || hw::simulate_failure_from_env();
-    let mut out = FrameOutput { conv: Converter::new(), download: Download::default(), hdr, fields: FieldPacer::default() };
+    let mut out = FrameOutput { conv: Converter::new(), download: Download::default(), hdr, fields: FieldPacer::default(), soft_prev: None };
     let start = ctl.start_time();
     let mut serial = 0u64;
     let mut target = 0.0;
@@ -990,6 +993,7 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
             has_skipped = false;
             next_pts = target;
             out.fields.reset();
+            out.soft_prev = None;
             hw_health.flushed();
         }
         let at_eof = item.packet.is_none();
@@ -1115,6 +1119,7 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
             last_skipped = frame::Video::empty();
             has_skipped = false;
             out.fields.reset();
+            out.soft_prev = None;
             // Decode again from the keyframe at or before where playback stands: the new decoder starts without one,
             // and the packets up to here went to the failed decoder.
             let at = if emitted { ctl.clock.now() } else { target };
@@ -1209,6 +1214,15 @@ struct FrameOutput {
     /// The stream's HDR light levels (from its side data, updated by frames that carry them).
     hdr: HdrLevels,
     fields: FieldPacer,
+    /// RGBA path: the previous interlaced frame as decoded (not deinterlaced) and its pts, for motion detection.
+    soft_prev: Option<(Arc<crate::PlanarImage>, f64)>,
+}
+
+impl FrameOutput {
+    /// The previous interlaced frame, when it is the one right before `pts`.
+    fn soft_prev_for(&self, pts: f64) -> Option<Arc<crate::PlanarImage>> {
+        self.soft_prev.as_ref().filter(|(_, p)| crate::soft::previous_frame_follows(*p, pts)).map(|(img, _)| img.clone())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1243,7 +1257,7 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
     let mut frame = None;
     if ctl.player.planar.load(Ordering::Relaxed) {
         let img = if video::planar_format(unsafe { (*src).format }).is_some() {
-            let owner: Option<Box<dyn Send + Sync>> = match downloaded {
+            let owner: Option<Box<dyn Send + Sync>> = match downloaded.clone() {
                 Some(d) => Some(Box::new(d)),
                 None => unsafe { OwnedFrame::reference(raw) }.map(|r| Box::new(r) as Box<dyn Send + Sync>),
             };
@@ -1255,47 +1269,98 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
         if let Some(img) = img {
             let (w, h) = geo.display_size();
             ctl.stats.planar.fetch_add(1, Ordering::Relaxed);
+            out.soft_prev = None;
             frame = Some(VideoFrame { width: w, height: h, stride: 0, pts, rgba: empty_rgba(), planar: Some(Arc::new(img)), second_field: false });
         }
     }
+    // RGBA path: HDR / wide-gamut frames are tone-mapped and interlaced ones deinterlaced on the CPU (`crate::soft`),
+    // the first field now, the second one below.
+    let mut soft = None;
     let frame = match frame {
         Some(f) => f,
         None => {
-            let Some((w, h, rgba)) = (unsafe { out.conv.convert(src, geo) }) else { return Pushed::Skipped };
+            // `downloaded` stays alive until the end: `src` points into it.
+            let source = unsafe { out.conv.soft_source(raw, src, downloaded.clone(), geo, &out.hdr) };
+            let prev = if source.interlaced { out.soft_prev_for(pts) } else { None };
+            let Some((w, h, rgba)) = (unsafe { out.conv.convert_soft(&source, src, geo, prev.as_deref(), false) }) else { return Pushed::Skipped };
+            count_soft(ctl, &source);
+            if !source.interlaced {
+                out.soft_prev = None;
+            }
+            soft = Some((source, prev));
             VideoFrame::from_rgba(w, h, w * 4, pts, rgba)
         }
     };
-    // An interlaced frame is shown field by field (the UI deinterlaces): its second field half a frame later
-    // (`FieldPacer`). The queue holds as many frames either way: twice the items for fields.
-    let interlaced = frame.planar.as_ref().is_some_and(|p| p.interlaced);
+    // An interlaced frame is shown field by field (the UI or the RGBA path deinterlaces): its second field half a
+    // frame later (`FieldPacer`). The queue holds as many frames either way: twice the items for fields.
+    let interlaced = frame.planar.as_ref().is_some_and(|p| p.interlaced) || soft.as_ref().is_some_and(|(s, _)| s.interlaced);
     let capacity = if interlaced { FRAME_QUEUE * 2 } else { FRAME_QUEUE };
-    let mut items = Vec::with_capacity(2);
-    if interlaced {
-        let half = out.fields.half(pts, dur);
+    if !interlaced {
+        out.fields.reset();
+        return queue_frame(ctl, capacity, DecodedFrame { serial, pts, duration: dur, frame });
+    }
+    let half = out.fields.half(pts, dur);
+    let planar_second = soft.is_none().then(|| {
         let mut second = frame.clone();
         second.second_field = true;
         second.pts = pts + half;
-        items.push(DecodedFrame { serial, pts, duration: half, frame });
-        items.push(DecodedFrame { serial, pts: pts + half, duration: (dur - half).max(half), frame: second });
-    } else {
-        out.fields.reset();
-        items.push(DecodedFrame { serial, pts, duration: dur, frame });
-    }
-    for item in items {
-        let mut q = ctl.frames.items.lock();
-        loop {
-            if ctl.stopped() || ctl.serial.load(Ordering::Acquire) != serial {
-                return Pushed::Skipped;
+        second
+    });
+    let first = queue_frame(ctl, capacity, DecodedFrame { serial, pts, duration: half, frame });
+    let second = match (planar_second, soft) {
+        (Some(second), _) => second,
+        (None, Some((source, prev))) => {
+            // The next frame is compared against this one as decoded.
+            out.soft_prev = source.image.clone().map(|img| (img, pts));
+            if first != Pushed::Queued {
+                return first;
             }
-            if q.len() < capacity {
-                break;
+            if ctl.clock.is_running() && pts + dur < ctl.clock.now() - 0.02 {
+                // Too late to convert: dropped as the decoder drops late frames.
+                ctl.stats.dropped_decoder.fetch_add(1, Ordering::Relaxed);
+                return Pushed::Queued;
             }
-            ctl.frames.space.wait_for(&mut q, Duration::from_millis(20));
+            let Some((w, h, rgba)) = (unsafe { out.conv.convert_soft(&source, src, geo, prev.as_deref(), true) }) else { return Pushed::Queued };
+            count_soft(ctl, &source);
+            let mut second = VideoFrame::from_rgba(w, h, w * 4, pts + half, rgba);
+            second.second_field = true;
+            second
         }
-        q.push_back(FrameItem::Frame(item));
-        drop(q);
-        ctl.wake.notify();
+        (None, None) => return first,
+    };
+    if first != Pushed::Queued {
+        return first;
     }
+    queue_frame(ctl, capacity, DecodedFrame { serial, pts: pts + half, duration: (dur - half).max(half), frame: second })
+}
+
+/// Counts an RGBA-path conversion of the decode thread's own (`soft_tonemapped`, `soft_deinterlaced`).
+fn count_soft(ctl: &Control, source: &video::SoftSource) {
+    if source.image.is_some() {
+        if source.tone_map {
+            ctl.stats.soft_tonemapped.fetch_add(1, Ordering::Relaxed);
+        }
+        if source.interlaced {
+            ctl.stats.soft_deinterlaced.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Queues `item` (of the current serial), waiting while `capacity` items are queued; `Skipped` on a stop or seek.
+fn queue_frame(ctl: &Control, capacity: usize, item: DecodedFrame) -> Pushed {
+    let mut q = ctl.frames.items.lock();
+    loop {
+        if ctl.stopped() || ctl.serial.load(Ordering::Acquire) != item.serial {
+            return Pushed::Skipped;
+        }
+        if q.len() < capacity {
+            break;
+        }
+        ctl.frames.space.wait_for(&mut q, Duration::from_millis(20));
+    }
+    q.push_back(FrameItem::Frame(item));
+    drop(q);
+    ctl.wake.notify();
     Pushed::Queued
 }
 
