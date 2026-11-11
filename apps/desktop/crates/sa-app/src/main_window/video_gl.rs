@@ -53,6 +53,7 @@ use std::time::{Duration, Instant};
 
 use glow::HasContext;
 use sa_player::color::{ColorMode, ColorParams};
+use sa_player::ffmpeg_backend::perf;
 // One rule for the GPU and the CPU (RGBA path) deinterlacer.
 use sa_player::soft::previous_frame_follows;
 use sa_player::{PlanarImage, PlaneLayout, VideoFrame};
@@ -637,6 +638,8 @@ struct Gl {
     /// Output textures replaced by a size change; deleted with the next frame, once the bridge shows the new one.
     retired: Vec<(glow::Framebuffer, glow::Texture)>,
     scratch: Vec<u8>,
+    /// Frames uploaded since the last start (`perf::UPLOAD`'s early / rest split).
+    since_start: u32,
 }
 
 const VERTEX: &str = r#"
@@ -914,6 +917,7 @@ impl Gl {
                 target: None,
                 retired: Vec::new(),
                 scratch: Vec::new(),
+                since_start: 0,
             })
         }
     }
@@ -1079,8 +1083,14 @@ impl Gl {
                 } else {
                     self.previous = None;
                 }
+                // `[player-stats]` splits the uploads after a start (a load, a seek: no frame before, or a jump) from
+                // the rest.
+                if self.uploaded_pts.is_none_or(|p| (pts - p).abs() > 1.0) {
+                    self.since_start = 0;
+                }
                 self.uploaded_pts = Some(pts);
             }
+            let timer = if upload { perf::Timer::start() } else { None };
             // Forgotten until the upload succeeded (a failure leaves the planes undefined).
             self.uploaded = None;
             let set = self.cur;
@@ -1139,6 +1149,12 @@ impl Gl {
                 // Also a filter change between 8- and 16-bit sources of the same size.
                 self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filter);
                 self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter);
+            }
+            if let Some(t) = timer {
+                t.finish(&perf::UPLOAD, self.since_start < perf::EARLY_FRAMES);
+            }
+            if upload {
+                self.since_start = self.since_start.saturating_add(1);
             }
             // The previous frame's planes are usable when they hold the same format at the same size.
             let other = set ^ 1;

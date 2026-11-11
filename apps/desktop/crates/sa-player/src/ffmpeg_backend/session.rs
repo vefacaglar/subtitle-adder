@@ -21,6 +21,7 @@ use super::AudioTap;
 use super::audio::{self, AudioChunk, AudioRing, DeviceFormat, Resampler};
 use super::hw::{self, Download, OwnedFrame};
 use super::io::{self, OpenFailure, OpenedInput};
+use super::perf;
 use super::priority;
 use super::sync::{Clock, Notify};
 use super::tracks;
@@ -965,7 +966,15 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
     let VideoTrack { mut dec, hw: mut hw_decoder, hw_only, params, tb, layout, frame_dur, hdr } = track;
     let codec_id = unsafe { (*params.as_ptr()).codec_id };
     let simulate_failure = ctl.player.simulate_hw_failure.load(Ordering::Relaxed) || hw::simulate_failure_from_env();
-    let mut out = FrameOutput { conv: Converter::new(), download: Download::default(), hdr, fields: FieldPacer::default(), soft_prev: None };
+    let mut out = FrameOutput {
+        conv: Converter::new(),
+        download: Download::default(),
+        hdr,
+        fields: FieldPacer::default(),
+        soft_prev: None,
+        since_start: 0,
+        meter: perf::ThreadMeter::default(),
+    };
     let start = ctl.start_time();
     let mut serial = 0u64;
     let mut target = 0.0;
@@ -996,6 +1005,7 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
             next_pts = target;
             out.fields.reset();
             out.soft_prev = None;
+            out.since_start = 0;
             hw_health.flushed();
         }
         let at_eof = item.packet.is_none();
@@ -1054,7 +1064,9 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
                         out.fields.reset();
                         continue;
                     }
-                    match push_frame(&ctl, &mut out, raw, layout, serial, pts, dur) {
+                    let pushed = push_frame(&ctl, &mut out, raw, layout, serial, pts, dur);
+                    out.meter.report();
+                    match pushed {
                         Pushed::Queued => {
                             emitted = true;
                             has_skipped = false;
@@ -1122,6 +1134,7 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
             has_skipped = false;
             out.fields.reset();
             out.soft_prev = None;
+            out.since_start = 0;
             // Decode again from the keyframe at or before where playback stands: the new decoder starts without one,
             // and the packets up to here went to the failed decoder.
             let at = if emitted { ctl.clock.now() } else { target };
@@ -1218,6 +1231,9 @@ struct FrameOutput {
     fields: FieldPacer,
     /// RGBA path: the previous interlaced frame as decoded (not deinterlaced) and its pts, for motion detection.
     soft_prev: Option<(Arc<crate::PlanarImage>, f64)>,
+    /// Hardware frames handled since the last start (load, seek, decoder restart), for `perf`.
+    since_start: u32,
+    meter: perf::ThreadMeter,
 }
 
 impl FrameOutput {
@@ -1251,7 +1267,13 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
     let mut downloaded: Option<Arc<OwnedFrame>> = None;
     let mut src = raw;
     if unsafe { hw::is_hw_format((*raw).format) } {
-        let Some(d) = (unsafe { out.download.download(raw) }) else { return Pushed::DownloadFailed };
+        let timer = perf::Timer::start();
+        let d = unsafe { out.download.download(raw) };
+        if let Some(t) = timer {
+            t.finish(&perf::TRANSFER, out.since_start < perf::EARLY_FRAMES);
+        }
+        out.since_start = out.since_start.saturating_add(1);
+        let Some(d) = d else { return Pushed::DownloadFailed };
         src = d.0;
         downloaded = Some(d);
     }

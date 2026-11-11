@@ -494,8 +494,10 @@ impl MainWindowController {
                     let unchanged = self.video.window_unchanged().map(|n| format!(" window_unchanged={n}")).unwrap_or_default();
                     let up = stats.started.elapsed().as_secs_f64();
                     let geometry = self.geometry_fields();
+                    // CPU attribution (`perf`: this is the UI thread, which `cpu_ui` measures).
+                    let cpu = sa_player::ffmpeg_backend::perf::line();
                     let _ = stats.lines.send(format!(
-                        "[player-stats] up={up:.1} {line} gpu={gpu} uploaded={uploads} renders={renders}{unchanged} {tracks} {geometry}"
+                        "[player-stats] up={up:.1} {line} gpu={gpu} uploaded={uploads} renders={renders}{unchanged} {tracks} {geometry} {cpu}"
                     ));
                 }
             }

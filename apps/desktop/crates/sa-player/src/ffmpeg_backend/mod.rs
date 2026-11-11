@@ -20,6 +20,7 @@
 mod audio;
 mod hw;
 mod io;
+pub mod perf;
 mod priority;
 mod session;
 pub mod subtitles;
