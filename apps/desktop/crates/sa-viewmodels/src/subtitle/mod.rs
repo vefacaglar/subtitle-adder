@@ -5,6 +5,7 @@
 //! (`UiDispatcherExt::invoke_blocking` through [`crate::uiref::UiKey`]).
 
 mod editing;
+mod embedded;
 mod files;
 mod playlist;
 mod runner;
@@ -36,7 +37,7 @@ use crate::types::{
 };
 use crate::uiref::UiKey;
 
-pub use session::{OfflineRetry, Session, SessionId};
+pub use session::{EmbeddedLines, OfflineRetry, Session, SessionId};
 
 /// Background pre-translation needs at least this many stable lines while recognition runs.
 pub const MIN_ASYNC_BATCH_SENTENCES: usize = 10;
@@ -224,6 +225,23 @@ impl State {
     pub fn translation_source(&self) -> Option<String> {
         self.fg().translation_source(&self.language)
     }
+    /// `SubtitleViewModel::session_mark`.
+    pub fn session_mark(&self) -> crate::media_tracks::SessionMark {
+        use std::hash::{Hash, Hasher};
+        let fg = self.fg();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        fg.id.hash(&mut h);
+        fg.video.hash(&mut h);
+        for x in &fg.sentences {
+            (x.uid, x.start.to_bits(), x.end.to_bits(), &x.text, x.speaker).hash(&mut h);
+        }
+        let mut translations: Vec<_> = fg.translations.iter().collect();
+        translations.sort_by_key(|(k, _)| **k);
+        translations.hash(&mut h);
+        fg.loaded_subtitle.hash(&mut h);
+        fg.embedded.hash(&mut h);
+        crate::media_tracks::SessionMark { content: h.finish(), job: fg.job_id, working: fg.is_working() || self.playlist_running }
+    }
 }
 
 /// State plus the foreground undo history (separate fields so undo actions get `&mut State`).
@@ -291,7 +309,11 @@ impl Inner {
         let mut fx = Fx::default();
         let r = {
             let mut c = self.core.borrow_mut();
-            f(self, &mut c, &mut fx)
+            let r = f(self, &mut c, &mut fx);
+            for s in c.st.sessions.values_mut() {
+                s.settle_embedded();
+            }
+            r
         };
         self.finish(fx);
         r
@@ -1526,6 +1548,7 @@ impl SubtitleViewModel {
             match error {
                 None => {
                     fg.has_unsaved_edits = false;
+                    fg.embedded_owned();
                     if !fg.is_working() && matches!(&fg.status, JobStatus::Failed { message } if message.id().starts_with("save-failed:")) {
                         fg.set_status(JobStatus::Finished);
                     }
@@ -1541,21 +1564,7 @@ impl SubtitleViewModel {
     /// The foreground session's lines, translations and job right now, for an embedded subtitle read that must not
     /// replace them when they changed while it ran (`media_tracks::SessionMark`).
     pub fn session_mark(&self) -> crate::media_tracks::SessionMark {
-        use std::hash::{Hash, Hasher};
-        self.read(|s| {
-            let fg = s.fg();
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            fg.id.hash(&mut h);
-            fg.video.hash(&mut h);
-            for x in &fg.sentences {
-                (x.uid, x.start.to_bits(), x.end.to_bits(), &x.text, x.speaker).hash(&mut h);
-            }
-            let mut translations: Vec<_> = fg.translations.iter().collect();
-            translations.sort_by_key(|(k, _)| **k);
-            translations.hash(&mut h);
-            fg.loaded_subtitle.hash(&mut h);
-            crate::media_tracks::SessionMark { content: h.finish(), job: fg.job_id, working: fg.is_working() || s.playlist_running }
-        })
+        self.read(State::session_mark)
     }
 
     // ----- playlist
@@ -1640,16 +1649,6 @@ impl SubtitleViewModel {
     pub fn refresh_localization(&self) {
         self.inner.catalog.refresh_localization();
         self.inner.edit(|_, _, fx| fx.ch(SubtitleChange::All));
-    }
-
-    /// A scratch file this session wrote (an embedded subtitle track read for import), deleted with the session's
-    /// WAVs and outputs by [`Self::shutdown`].
-    pub fn register_temp_file(&self, path: PathBuf) {
-        self.inner.edit(|_, c, _| {
-            if !c.st.temp_files.contains(&path) {
-                c.st.temp_files.push(path);
-            }
-        });
     }
 
     /// Cancels jobs, deletes the session temp files (Windows) and forgets subscriptions (exit).

@@ -22,6 +22,8 @@ pub(crate) enum OpenAction {
     Route { video: Option<PathBuf>, subtitle: Option<PathBuf>, finding_video: bool, switch_editor: bool },
     Video(Option<PathBuf>),
     Subtitle(PathBuf),
+    /// The complete lines of embedded track `stream` of the foreground video `video` (`media_tracks`).
+    Embedded { video: PathBuf, stream: usize, lines: Vec<Sentence> },
 }
 
 pub(crate) fn is_subtitle_path(p: &Path) -> bool {
@@ -67,7 +69,7 @@ pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     }
 }
 
-fn batch_busy_message() -> LocalizedMessage {
+pub(crate) fn batch_busy_message() -> LocalizedMessage {
     LocalizedMessage::key("Bu video toplu listede işleniyor. Liste bitince ya da durdurunca altyazı açabilirsin.")
 }
 
@@ -79,6 +81,10 @@ impl Inner {
             return false;
         }
         if s.saved_by_run {
+            return true;
+        }
+        // Read from the video again when it is opened again.
+        if s.embedded_pristine() {
             return true;
         }
         match (&s.video, &s.loaded_subtitle) {
@@ -134,17 +140,22 @@ impl Inner {
         sid
     }
 
-    fn load_sidecar_in_background(&self, st: &State, _fx: &mut Fx, sid: SessionId, video: PathBuf) {
+    fn load_sidecar_in_background(&self, st: &mut State, _fx: &mut Fx, sid: SessionId, video: PathBuf) {
         let key = self.key();
         let ui = self.svc.ui.clone();
         let fail_visible = st.policy.single_jobs_as_list_rows == SingleJobsAsListRows::RecentJobs;
         let flavor = st.policy.import_flavor;
-        let _ = std::thread::Builder::new().name("sa-sidecar".into()).spawn(move || {
-            let Some(sidecar) = subtitle_import::find_sidecar_subtitle(&video) else { return };
-            let parsed = subtitle_import::parse_file_with(&sidecar, flavor);
+        let spawned = std::thread::Builder::new().name("sa-sidecar".into()).spawn(move || {
+            let found = subtitle_import::find_sidecar_subtitle(&video).map(|sidecar| {
+                let parsed = subtitle_import::parse_file_with(&sidecar, flavor);
+                (sidecar, parsed)
+            });
+            // Posted also when there is none: the lookup is over (an embedded track may be chosen now).
             key.post(&ui, move |inner| {
                 inner.edit(|i, c, fx| {
                     let Some(s) = c.st.session_mut(sid) else { return };
+                    s.sidecar_lookups = s.sidecar_lookups.saturating_sub(1);
+                    let Some((sidecar, parsed)) = found else { return };
                     if !s.sentences.is_empty() || s.job.is_some() || s.status != JobStatus::Idle {
                         return;
                     }
@@ -165,6 +176,11 @@ impl Inner {
                 });
             });
         });
+        if spawned.is_ok()
+            && let Some(s) = st.session_mut(sid)
+        {
+            s.sidecar_lookups += 1;
+        }
     }
 
     /// `leave_foreground()`: commit drafts, clear undo, end or evict the old session.
@@ -212,7 +228,7 @@ impl Inner {
                         s.async_fraction = None;
                         s.export_language = ExportLanguage::Original;
                     }
-                    self.load_sidecar_in_background(&c.st, fx, sid, p.clone());
+                    self.load_sidecar_in_background(&mut c.st, fx, sid, p.clone());
                 }
                 sid
             }
@@ -405,6 +421,9 @@ impl Inner {
                 let finding = c.st.fg().video.is_none();
                 self.open_subtitle(c, fx, &s, finding);
             }
+            OpenAction::Embedded { video, stream, lines } => {
+                self.replace_with_embedded(c, fx, &video, stream, lines);
+            }
         }
     }
 
@@ -552,7 +571,9 @@ impl Inner {
         let auto_save = settings.map(|s| s.auto_save).unwrap_or(c.st.auto_save);
         let format = settings.map(|s| s.export_format).unwrap_or(c.st.export_format);
         let Some(s) = c.st.session(sid) else { return };
-        if !auto_save || !s.has_translations() || !can_save(s) {
+        // Lines read from the video are never written next to it behind the user's back (a translation, an edit or
+        // a save makes them the user's first; then `has_translations` decides as usual).
+        if !auto_save || s.embedded_pristine() || !s.has_translations() || !can_save(s) {
             return;
         }
         let Some(dir) = s.base_path().and_then(|p| p.parent()) else { return };
@@ -582,6 +603,7 @@ impl Inner {
                             Ok(()) => {
                                 if let Some(s) = c.st.session_mut(sid) {
                                     s.has_unsaved_edits = false;
+                                    s.embedded_owned();
                                 }
                                 fx.ch(SubtitleChange::Status);
                             }

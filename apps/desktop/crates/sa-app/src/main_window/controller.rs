@@ -17,7 +17,7 @@ use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedStrin
 use sa_core::appearance::{AppearanceSettings, OverlayBackground, SpeakerPalette, SubtitleDisplay};
 use sa_core::cancel::CancellationToken;
 use sa_core::dispatch::UiDispatcher;
-use sa_core::engine_types::SubtitleFormat;
+use sa_core::engine_types::{Sentence, SubtitleFormat};
 use sa_core::models::SubtitleLanguage;
 use sa_core::platform::{FileFilter, PlatformShell};
 use sa_core::settings::{SettingsStore, defaults, keys};
@@ -25,7 +25,7 @@ use sa_enginekit::editing::SentenceListExt;
 use sa_player::ffmpeg_backend::{ExtractError, ExtractedSubtitle};
 use sa_player::{MediaPlayerBackend, VideoFrame};
 use sa_viewmodels::explorer::{ExplorerChange, FileExplorerModel};
-use sa_viewmodels::media_tracks::{self, EmbeddedSubtitleReads, TrackChoice, TrackMenu};
+use sa_viewmodels::media_tracks::{self, AutoChoice, EmbeddedSubtitleReads, FinishedRead, ReadMode, SnapshotOutcome, TrackChoice, TrackMenu};
 use sa_viewmodels::hub::{HubChange, VideoPlatformModel};
 use sa_viewmodels::shortcuts::{self, PlayerShortcut, ShortcutFocus, ShortcutTarget, WindowsKeyAction};
 use sa_viewmodels::subtitle::subtitle_time_short;
@@ -48,16 +48,24 @@ use crate::ui::{self, AppBridge, ExplorerBridge, ExplorerRowData, MainBridge, Ma
 /// Converts the engine `preview` command into a playable copy (macOS fallback; runs on a worker thread).
 pub type PreviewMaker = Arc<dyn Fn(&Path) -> Result<PathBuf, String> + Send + Sync>;
 
-/// Reads embedded text subtitle stream `stream` of a media file as an importable document (runs on a worker thread;
-/// default: `sa_player::ffmpeg_backend::extract_text_subtitles`).
-pub type SubtitleReader =
-    Arc<dyn Fn(&Path, usize, &CancellationToken, &mut dyn FnMut(f64)) -> Result<ExtractedSubtitle, ExtractError> + Send + Sync>;
+/// Reads embedded text subtitle stream `stream` of a media file (runs on a worker thread): `progress` gets 0…1,
+/// `snapshot` the lines read so far whenever more came in (at most every ~250 ms), the result all of them. Default:
+/// `sa_player::ffmpeg_backend::stream_text_subtitles` (background CPU and I/O priority).
+pub type SubtitleReader = Arc<
+    dyn Fn(&Path, usize, &CancellationToken, &mut dyn FnMut(f64), &mut dyn FnMut(Vec<Sentence>)) -> Result<ExtractedSubtitle, ExtractError>
+        + Send
+        + Sync,
+>;
 
 fn default_subtitle_reader() -> SubtitleReader {
-    Arc::new(|path: &Path, stream: usize, cancel: &CancellationToken, progress: &mut dyn FnMut(f64)| {
-        sa_player::ffmpeg_backend::extract_text_subtitles(path, stream, cancel, progress)
+    Arc::new(|path: &Path, stream: usize, cancel: &CancellationToken, progress: &mut dyn FnMut(f64), snapshot: &mut dyn FnMut(Vec<Sentence>)| {
+        let options = sa_player::ffmpeg_backend::StreamOptions::default();
+        sa_player::ffmpeg_backend::stream_text_subtitles(path, stream, options, cancel, progress, snapshot)
     })
 }
+
+/// The newest snapshot of a read not yet applied on the UI thread (a slow UI thread skips the ones in between).
+type SnapshotSlot = Arc<parking_lot::Mutex<Option<Vec<Sentence>>>>;
 
 /// Everything a main window needs. `explorer` and `hub` are optional so the window also runs in previews/tests.
 pub struct MainWindowDeps {
@@ -141,6 +149,9 @@ struct UiState {
     /// macOS: a track menu failure shown in the status bar like a playback failure (dismissable, cleared with the
     /// video; the session's own status is left alone).
     track_notice: Option<sa_core::l10n::LocalizedMessage>,
+    /// The video just opened, until it is decided whether one of its embedded tracks is loaded for the user
+    /// (`consider_auto_track`).
+    auto_choice: Option<PathBuf>,
 }
 
 pub struct MainWindowController {
@@ -236,6 +247,8 @@ fn to_menu_entry(e: Entry) -> MenuEntry {
 /// (a write to a redirected stderr can block the UI thread for milliseconds, which would show up as a late frame in
 /// the very measurement the line is for).
 struct StatsLog {
+    /// When the window attached (`up=` on the line: seconds since the app showed its first window, near enough).
+    started: Instant,
     last: Cell<Instant>,
     lines: std::sync::mpsc::Sender<String>,
 }
@@ -252,7 +265,7 @@ impl StatsLog {
                 }
             })
             .ok()?;
-        Some(Self { last: Cell::new(Instant::now()), lines: tx })
+        Some(Self { started: Instant::now(), last: Cell::new(Instant::now()), lines: tx })
     }
 }
 
@@ -438,8 +451,16 @@ impl MainWindowController {
                     // The track state as the backend last reported it, and what the subtitle list holds.
                     let t = p.tracks();
                     let active = t.active_audio.map_or_else(|| "-".to_owned(), |i| i.to_string());
+                    let embedded = self.vm.embedded_lines();
+                    let embedded = embedded.map_or_else(
+                        || "-".to_owned(),
+                        |e| format!("{}{}{}", e.stream, if e.complete { "" } else { "+" }, if e.pristine { "" } else { "*" }),
+                    );
+                    let reading = self.reads.borrow().reading().map_or_else(|| "-".to_owned(), |(s, f)| format!("{s}@{:.0}%", f * 100.0));
+                    let overlay = self.win().map_or(0, |w| w.global::<MainBridge>().get_overlay_text().chars().count());
                     let tracks = format!(
-                        "audio_tracks={} subtitle_tracks={} active_audio={active} playing={} pos={:.2} lines={}",
+                        "audio_tracks={} subtitle_tracks={} active_audio={active} playing={} pos={:.2} lines={} embedded={embedded} \
+                         reading={reading} overlay_chars={overlay}",
                         t.audio.len(),
                         t.subtitles.len(),
                         p.is_playing(),
@@ -447,12 +468,16 @@ impl MainWindowController {
                         self.vm.sentences().len()
                     );
                     let unchanged = self.video.window_unchanged().map(|n| format!(" window_unchanged={n}")).unwrap_or_default();
-                    let _ = stats.lines.send(format!("[player-stats] {line} gpu={gpu} uploaded={uploads} renders={renders}{unchanged} {tracks}"));
+                    let up = stats.started.elapsed().as_secs_f64();
+                    let _ = stats.lines.send(format!("[player-stats] up={up:.1} {line} gpu={gpu} uploaded={uploads} renders={renders}{unchanged} {tracks}"));
                 }
             }
         }
         if self.hud.borrow_mut().poll(Instant::now()) {
             self.sync_hud();
+        }
+        if self.st.borrow().auto_choice.is_some() {
+            self.consider_auto_track();
         }
         let batch = self.drops.borrow_mut().take_if_settled(Instant::now());
         if let Some(paths) = batch {
@@ -478,6 +503,8 @@ impl MainWindowController {
                 self.sync_toolbar();
                 // mac-ui §7.1 / win-ui-main §6.5: the first or last line switches drop zone / line panel / player.
                 self.sync_layout(false);
+                // The track menu marks the embedded track in the list (and offers "Off" while it is unedited).
+                self.sync_tracks();
             }
             SubtitleChange::Translations => {
                 self.sync_rows();
@@ -534,10 +561,16 @@ impl MainWindowController {
         let video = self.vm.video();
         self.error_bar.borrow_mut().video_changed();
         // A track of the previous video being read is of no use any more; its menu (if open) goes with the button.
-        self.reads.borrow_mut().cancel();
+        let cancelled = self.reads.borrow_mut().cancel();
+        if let Some(read) = cancelled.filter(|r| r.mode.progressive && r.applied) {
+            // Its lines so far go too: the video starts empty (and is read again) when it is opened again.
+            self.vm.abandon_embedded_read(&read.video, read.stream);
+        }
         {
             let mut st = self.st.borrow_mut();
             st.track_notice = None;
+            // Decided once its tracks are known (`consider_auto_track`).
+            st.auto_choice = video.clone();
             if st.tracks_menu_open {
                 st.tracks_menu_open = false;
                 let interacting = st.seek_scrubbing || st.volume_scrubbing;
@@ -615,7 +648,10 @@ impl MainWindowController {
                         w.global::<MainBridge>().set_preparing_preview(v);
                     }
                 }
-                PlayerOutput::TracksChanged => self.sync_tracks(),
+                PlayerOutput::TracksChanged => {
+                    self.sync_tracks();
+                    self.consider_auto_track();
+                }
                 PlayerOutput::AudioTrackFailed(details) => self.show_track_failure(media_tracks::audio_track_failure(&details)),
             }
         }
@@ -1297,9 +1333,9 @@ impl MainWindowController {
     }
 
     fn track_menu_entries(&self) -> Vec<Entry> {
-        let loaded = self.loaded_embedded_track();
+        let embedded = self.vm.embedded_lines();
         let p = self.player.borrow();
-        let menu = TrackMenu::build(p.tracks(), self.reads.borrow().reading(), loaded);
+        let menu = TrackMenu::build(p.tracks(), self.reads.borrow().reading(), embedded.map(|e| e.stream), embedded.is_some_and(|e| e.pristine));
         menus::track_menu(&menu, self.mac)
     }
 
@@ -1313,42 +1349,78 @@ impl MainWindowController {
         self.sync_hud();
     }
 
-    fn choose_track(self: &Rc<Self>, choice: TrackChoice) {
+    fn choose_track(&self, choice: TrackChoice) {
         match choice {
             TrackChoice::Audio(stream) => {
                 self.player.borrow_mut().select_audio_track(stream);
                 self.drain_player();
             }
             TrackChoice::Subtitle(stream) => {
-                // The track whose lines the list already holds: nothing to do.
-                if self.loaded_embedded_track() == Some(stream) {
+                // The user chose: nothing is chosen for them any more.
+                self.st.borrow_mut().auto_choice = None;
+                // The track whose lines the list already holds (read to the end, or edited since): nothing to do. A
+                // read of it still running carries on (`EmbeddedSubtitleReads::start` does not start it twice).
+                if self.vm.embedded_lines().is_some_and(|e| e.stream == stream && (e.complete || !e.pristine)) {
                     return;
                 }
-                self.read_embedded_subtitle(stream)
+                self.read_embedded_subtitle(stream, false);
+            }
+            TrackChoice::SubtitleOff => {
+                self.st.borrow_mut().auto_choice = None;
+                let _ = self.reads.borrow_mut().cancel();
+                self.vm.clear_embedded_lines();
+                self.sync_tracks();
             }
         }
     }
 
-    /// The embedded track whose lines the list holds: the subtitle file imported last is that track's document.
-    fn loaded_embedded_track(&self) -> Option<usize> {
-        let p = self.player.borrow();
-        let (file, loaded) = (p.playing_file()?, self.vm.loaded_subtitle()?);
-        let work = self.shell.engine_work_dir();
-        p.tracks().subtitles.iter().map(|t| t.stream_index).find(|i| media_tracks::embedded_subtitle_path(&work, file, *i) == loaded)
+    /// The video just opened: once its tracks are known, loads one of its embedded text tracks for the user
+    /// (`media_tracks::auto_track`: the UI language's, else the default one) when the session is empty and idle and no
+    /// subtitle file next to the video is loaded or still being looked for (`SubtitleViewModel::embedded_auto_choice`).
+    /// Decided once per opened video; asked again from the timer while the sidecar lookup runs.
+    fn consider_auto_track(&self) {
+        let Some(video) = self.st.borrow().auto_choice.clone() else { return };
+        if self.vm.video().as_deref() != Some(video.as_path()) {
+            self.st.borrow_mut().auto_choice = None;
+            return;
+        }
+        let stream = {
+            let p = self.player.borrow();
+            // Not opened yet (or no subtitle track at all, then it stays undecided until the next video: harmless).
+            if p.tracks().subtitles.is_empty() {
+                return;
+            }
+            media_tracks::auto_track(p.tracks(), sa_core::l10n::LanguageState::shared().language().code())
+        };
+        match self.vm.embedded_auto_choice(&video) {
+            AutoChoice::Wait => return,
+            AutoChoice::Refused => {}
+            AutoChoice::Allowed => {
+                if let Some(stream) = stream {
+                    self.read_embedded_subtitle(stream, true);
+                }
+            }
+        }
+        self.st.borrow_mut().auto_choice = None;
     }
 
-    /// Reads embedded text track `stream` on a worker thread (its own demuxer: playback is not touched), writes it
-    /// as a JSON sentence file into the work folder and imports that file exactly like a picked subtitle file, unless
-    /// the session changed while it was read.
-    fn read_embedded_subtitle(self: &Rc<Self>, stream: usize) {
-        let (file, is_text) = {
+    /// Reads embedded text track `stream` on a worker thread (its own demuxer: playback is not touched). While the
+    /// list holds nothing the user made, its lines go in as they are read (`ReadMode::progressive`); otherwise the
+    /// complete track replaces the lines at the end like a subtitle file the user opened. Neither happens when the
+    /// session changed meanwhile.
+    fn read_embedded_subtitle(&self, stream: usize, automatic: bool) {
+        let (source, is_text) = {
             let p = self.player.borrow();
             (p.playing_file().map(Path::to_path_buf), p.tracks().subtitles.iter().any(|t| t.stream_index == stream && t.is_text()))
         };
-        let Some(file) = file.filter(|_| is_text) else { return };
-        let Some(ticket) = self.reads.borrow_mut().start(&file, stream, self.vm.session_mark()) else { return };
+        // The session the lines are for is the video's (on macOS the player may be playing a converted preview of it).
+        let (Some(source), Some(video)) = (source.filter(|_| is_text), self.vm.video()) else { return };
+        let mode = ReadMode { automatic, progressive: self.vm.embedded_reads_progressively() };
+        let Some(ticket) = self.reads.borrow_mut().start(&video, stream, self.vm.session_mark(), mode) else {
+            self.sync_tracks();
+            return;
+        };
         self.sync_tracks();
-        let target = media_tracks::embedded_subtitle_path(&self.shell.engine_work_dir(), &file, stream);
         let reader = self.subtitle_reader.clone();
         let key = self.key.get().expect("registered");
         let ui = self.ui_dispatcher.clone();
@@ -1363,13 +1435,19 @@ impl MainWindowController {
                     key.post(&progress_ui, move |c| c.embedded_read_progress(id, f));
                 }
             };
-            let result = reader(&file, stream, &ticket.token, &mut progress).and_then(|doc| {
-                let dir = target.parent().map(Path::to_path_buf).unwrap_or_default();
-                std::fs::create_dir_all(&dir)
-                    .and_then(|()| std::fs::write(&target, doc.text.as_bytes()))
-                    .map(|()| target)
-                    .map_err(|e| ExtractError::Failed(e.to_string()))
-            });
+            let slot: SnapshotSlot = Arc::default();
+            let snapshot_ui = ui.clone();
+            let mut snapshot = |lines: Vec<Sentence>| {
+                if !mode.progressive {
+                    return;
+                }
+                // One post at a time: the UI thread takes the newest snapshot when it gets to it.
+                if slot.lock().replace(lines).is_none() {
+                    let slot = slot.clone();
+                    key.post(&snapshot_ui, move |c| c.embedded_read_snapshot(id, &slot));
+                }
+            };
+            let result = reader(&source, stream, &ticket.token, &mut progress, &mut snapshot);
             key.post(&ui, move |c| c.embedded_read_done(id, result));
         });
         if let Err(e) = spawned {
@@ -1383,28 +1461,62 @@ impl MainWindowController {
         }
     }
 
-    fn embedded_read_done(&self, id: u64, result: Result<PathBuf, ExtractError>) {
+    fn embedded_read_snapshot(&self, id: u64, slot: &SnapshotSlot) {
+        let lines = slot.lock().take();
+        if self.disposed.get() {
+            return;
+        }
+        let (Some(lines), Some(read)) = (lines, self.reads.borrow().current(id)) else { return };
+        self.apply_embedded(id, &read, lines, false);
+    }
+
+    /// Puts a progressive read's lines into the list (`complete`: its result). When the session changed since the
+    /// read's last snapshot (the user edited, a file was opened, a job started), the read stops there: lines the user
+    /// is now editing keep what they have (and the user is told the rest did not come in).
+    fn apply_embedded(&self, id: u64, read: &FinishedRead, lines: Vec<Sentence>, complete: bool) {
+        match self.vm.apply_embedded_snapshot(&read.video, read.stream, read.mark, lines, complete) {
+            SnapshotOutcome::Applied(mark) => self.reads.borrow_mut().applied(id, mark),
+            outcome => {
+                if !complete {
+                    let _ = self.reads.borrow_mut().cancel();
+                    self.sync_tracks();
+                }
+                match outcome {
+                    SnapshotOutcome::Edited => self.show_track_failure(media_tracks::embedded_read_partial()),
+                    // Nothing of it reached the list: a choice of the user's is reported like a late read.
+                    _ if !read.applied && !read.mode.automatic => self.show_track_failure(media_tracks::embedded_read_outdated()),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn embedded_read_done(&self, id: u64, result: Result<ExtractedSubtitle, ExtractError>) {
         if self.disposed.get() {
             return;
         }
         let current = self.reads.borrow_mut().finish(id);
         self.sync_tracks();
-        if let Ok(path) = &result {
-            // Deleted with the session's other scratch files on exit.
-            self.vm.register_temp_file(path.clone());
-        }
-        // Cancelled or replaced meanwhile (another track, another video): dropped.
+        // Cancelled or replaced meanwhile (another track, another video, an edit of the lines coming in): dropped.
         let Some(read) = current else { return };
         match result {
-            // Importing replaces the lines, clears undo and stops a job: not behind the user's back when they edited
-            // or a job started or ended during the read.
-            Ok(_) if !read.still_applies(self.vm.session_mark()) => self.show_track_failure(media_tracks::embedded_read_outdated()),
-            Ok(path) => self.import_subtitle_file(path),
+            // A track chosen for the user that cannot be read is not worth an error: they did not ask for it.
+            Err(e) if read.mode.automatic => eprintln!("[subtitles] embedded track {} not loaded: {e}", read.stream),
             Err(e) => {
                 if let Some(message) = media_tracks::embedded_read_failure(&e) {
                     self.show_track_failure(message);
                 }
             }
+            Ok(doc) if doc.sentences.is_empty() => {
+                if !read.mode.automatic {
+                    self.show_track_failure(media_tracks::embedded_read_empty());
+                }
+            }
+            Ok(doc) if read.mode.progressive => self.apply_embedded(id, &read, doc.sentences, true),
+            // Replacing the user's lines clears undo and stops a job: not behind their back when they edited or a job
+            // started or ended during the read.
+            Ok(_) if !read.still_applies(self.vm.session_mark()) => self.show_track_failure(media_tracks::embedded_read_outdated()),
+            Ok(doc) => self.vm.request_embedded_lines(&read.video, read.stream, doc.sentences),
         }
     }
 
@@ -2731,7 +2843,8 @@ impl MainWindowController {
             n.chrome.save_size(&*self.settings);
         }
         self.vm.finish_editing();
-        self.reads.borrow_mut().cancel();
+        // The read's thread stops at its next packet or I/O call (FFmpeg's interrupt callback).
+        let _ = self.reads.borrow_mut().cancel();
         self.player.borrow_mut().dispose();
         let outputs = self.player.borrow_mut().take_outputs();
         for o in outputs {

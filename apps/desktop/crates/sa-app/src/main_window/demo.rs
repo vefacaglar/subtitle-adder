@@ -333,7 +333,7 @@ pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
                 }
             }
             let reading = (scene == "tracks-reading").then_some((5, 0.42));
-            let menu = sa_viewmodels::media_tracks::TrackMenu::build(&tracks, reading, Some(4));
+            let menu = sa_viewmodels::media_tracks::TrackMenu::build(&tracks, reading, Some(4), true);
             let entries: Vec<MenuEntry> = super::menus::track_menu(&menu, mac).into_iter().map(super::controller::menu_entry).collect();
             main.set_menu_entries(ModelRc::new(VecModel::from(entries)));
             main.set_tracks_available(true);

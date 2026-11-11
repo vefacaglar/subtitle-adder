@@ -1020,6 +1020,57 @@
           }
         }
       }
+    },
+    "Kapalı": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Off"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kapalı"
+          }
+        }
+      }
+    },
+    "Parçada satır yok": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The track has no lines"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parçada satır yok"
+          }
+        }
+      }
+    },
+    "Videodaki altyazının yalnızca bir kısmı yüklendi: okunurken altyazı değişti. Parçayı yeniden seç.": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only part of the subtitles from the video was loaded: the subtitles changed while they were read. Choose the track again."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videodaki altyazının yalnızca bir kısmı yüklendi: okunurken altyazı değişti. Parçayı yeniden seç."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

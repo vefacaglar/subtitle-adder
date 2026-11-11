@@ -49,6 +49,19 @@ pub struct JobContext {
     pub awaiting_async: bool,
 }
 
+/// Lines that came out of an embedded subtitle track of the session's video (`crate::media_tracks`), not out of a
+/// file, a job or the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EmbeddedLines {
+    pub stream: usize,
+    /// Nothing changed them since they were read: not the user's work (no unsaved-changes prompt, never saved
+    /// automatically, replaced by another track without asking). Cleared for good by the first edit, translation,
+    /// save or export ([`Session::settle_embedded`]).
+    pub pristine: bool,
+    /// The read ran to the end (false while snapshots are still coming in).
+    pub complete: bool,
+}
+
 /// One video's state.
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -81,6 +94,10 @@ pub struct Session {
     pub batch_item_id: Option<Uuid>,
     pub asyncs: AsyncState,
     pub ctx: JobContext,
+    /// The lines are an embedded track of the video.
+    pub embedded: Option<EmbeddedLines>,
+    /// Sidecar subtitle lookups in flight for this session (an embedded track is not chosen for the user meanwhile).
+    pub sidecar_lookups: u32,
 }
 
 impl Session {
@@ -114,6 +131,8 @@ impl Session {
             batch_item_id: None,
             asyncs: AsyncState { run_id: Uuid::new_v4(), ..AsyncState::default() },
             ctx: JobContext::default(),
+            embedded: None,
+            sidecar_lookups: 0,
         }
     }
 
@@ -236,6 +255,26 @@ impl Session {
     pub fn has_content(&self) -> bool {
         !self.sentences.is_empty() || self.job.is_some() || self.is_working()
     }
+    /// The lines are an embedded track exactly as it was read (see [`EmbeddedLines::pristine`]).
+    pub fn embedded_pristine(&self) -> bool {
+        self.embedded.is_some_and(|e| e.pristine) && !self.has_unsaved_edits && self.translations.is_empty() && self.saved_subtitle_name.is_none()
+    }
+
+    /// Makes embedded lines the user's for good once anything changed them (an edit, a translation, a save); also
+    /// after an export ([`Self::embedded_owned`]). Run after every view-model edit.
+    pub fn settle_embedded(&mut self) {
+        if self.embedded.is_some_and(|e| e.pristine) && !self.embedded_pristine() {
+            self.embedded_owned();
+        }
+    }
+
+    /// The user did something with the embedded lines (exported them): they are theirs from now on.
+    pub fn embedded_owned(&mut self) {
+        if let Some(e) = self.embedded.as_mut() {
+            e.pristine = false;
+        }
+    }
+
     /// The path a subtitle of this session is saved next to.
     pub fn base_path(&self) -> Option<&Path> {
         self.video.as_deref().or(self.loaded_subtitle.as_deref())
@@ -422,11 +461,24 @@ impl Session {
         self.lines_source_language = None;
         self.loaded_subtitle = None;
         self.saved_by_run = false;
+        self.embedded = None;
     }
 
     /// Loads an imported subtitle file into this session.
     pub fn load(&mut self, subtitle: PathBuf, lines: Vec<Sentence>) {
-        self.loaded_subtitle = Some(subtitle);
+        self.replace_lines(Some(subtitle), lines);
+        self.embedded = None;
+    }
+
+    /// Loads lines read from embedded track `stream` of the video (no file behind them; not dirty).
+    pub fn load_embedded(&mut self, stream: usize, lines: Vec<Sentence>, complete: bool) {
+        self.replace_lines(None, lines);
+        self.embedded = Some(EmbeddedLines { stream, pristine: true, complete });
+    }
+
+    /// What every load resets: translations, drafts, selection, languages, saved state; status Finished.
+    fn replace_lines(&mut self, subtitle: Option<PathBuf>, lines: Vec<Sentence>) {
+        self.loaded_subtitle = subtitle;
         self.saved_by_run = false;
         self.saved_subtitle_name = None;
         self.has_unsaved_edits = false;

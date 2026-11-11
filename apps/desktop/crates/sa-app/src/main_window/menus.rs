@@ -280,7 +280,8 @@ pub fn explorer_row_menu(row: usize, is_folder: bool, mac: bool) -> Vec<Entry> {
 
 /// Player track menu (`sa_viewmodels::media_tracks::TrackMenu`): an `Ses` section with one entry per audio track (the
 /// playing one marked: radio on Windows, check mark on macOS), then, when the file has any, a `Videodaki altyazılar`
-/// section (the embedded track in the list checked; image tracks disabled with their hint).
+/// section ("Off" first while the list holds an unedited embedded track, the embedded track in the list checked; image
+/// tracks disabled with their hint).
 pub fn track_menu(menu: &TrackMenu, mac: bool) -> Vec<Entry> {
     let row = |i: &TrackItem, radio: bool| {
         let mut e = Entry::item(i.id.clone(), i.label.clone()).enabled(i.enabled);
@@ -324,6 +325,7 @@ mod tests {
         assert_eq!(only_audio.len(), 3, "no subtitle section without subtitle tracks");
         assert_eq!(MenuAction::parse("audio:2"), Some(MenuAction::Track(TrackChoice::Audio(2))));
         assert_eq!(MenuAction::parse("subtitle:3"), Some(MenuAction::Track(TrackChoice::Subtitle(3))));
+        assert_eq!(MenuAction::parse("subtitle:off"), Some(MenuAction::Track(TrackChoice::SubtitleOff)));
     }
 
     fn model(id: &str, backend: &str, downloaded: bool) -> EngineModel {
