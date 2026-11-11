@@ -2,10 +2,16 @@
 //!
 //! * Windows: every engine run gets its own Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; termination is
 //!   `TerminateJobObject` (the engine and every descendant such as `llama-server`), and closing the job handle (the
-//!   [`ChildHandle`] is dropped, or the app crashes) kills whatever is left. Engines start with `CREATE_NO_WINDOW`.
+//!   [`ChildHandle`] is dropped, or the app crashes) kills whatever is left. Engines start with `CREATE_NO_WINDOW`;
+//!   the long compute runs ([`EnginePriority::Background`]: `transcribe`, `translate`, `extract-audio`) also with
+//!   `BELOW_NORMAL_PRIORITY_CLASS` ([`creation_flags`]), so Whisper on every core never takes CPU from the player's
+//!   decode and UI threads, and their children (`llama-server`) inherit the class. The short commands the user
+//!   waits on (`preview`, `render`, `models`, `delete-model`) keep normal priority.
 //! * Unix (macOS): `kill(pid, SIGTERM)` only, never SIGKILL (the engine stops `llama-server` itself on SIGTERM), and
 //!   never for a pid that was already reaped: [`ChildHandle::wait_exit`] waits without reaping (`waitid(WNOWAIT)`)
-//!   and reaps under the same lock the terminator takes.
+//!   and reaps under the same lock the terminator takes. Background runs are made [`ENGINE_NICE_INCREMENT`] nicer
+//!   than the app right after the spawn (`setpriority` on the child's pid; no `pre_exec`, so std keeps using
+//!   `posix_spawn`), for the same reason; the engine's own children inherit it.
 
 use std::process::{Child, Command};
 use std::sync::Arc;
@@ -197,12 +203,49 @@ impl std::fmt::Debug for ChildHandle {
     }
 }
 
+/// The scheduling priority of one engine run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnginePriority {
+    /// Short commands the user waits on (`preview`, `render`, `models`, `delete-model`).
+    Normal,
+    /// Long compute runs (`transcribe`, `translate`, `extract-audio`): below the app, so playback stays smooth.
+    Background,
+}
+
+impl EnginePriority {
+    /// Decided by the subcommand (the first engine argument); the only place this is decided.
+    pub fn for_arguments(args: &[String]) -> Self {
+        match args.first().map(String::as_str) {
+            Some("transcribe" | "translate" | "extract-audio") => Self::Background,
+            _ => Self::Normal,
+        }
+    }
+}
+
+/// Windows `CREATE_NO_WINDOW`.
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Windows `BELOW_NORMAL_PRIORITY_CLASS`.
+pub const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+
+/// Windows creation flags of an engine launch: always no console; below normal for background runs.
+pub fn creation_flags(priority: EnginePriority) -> u32 {
+    match priority {
+        EnginePriority::Normal => CREATE_NO_WINDOW,
+        EnginePriority::Background => CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
+    }
+}
+
+/// Unix: how much nicer than the app a background engine runs (set right after the spawn; its children inherit it).
+pub const ENGINE_NICE_INCREMENT: i32 = 5;
+
 /// How engine processes are configured and terminated.
 pub trait ProcessControl: Send + Sync {
-    /// Before spawn: Windows `CREATE_NO_WINDOW`; macOS nothing special.
-    fn configure(&self, command: &mut Command);
-    /// After spawn: Windows assigns the child to a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
-    fn adopt(&self, child: &ChildHandle);
+    /// Before spawn: Windows [`creation_flags`] (no console; below-normal priority for background runs); Unix
+    /// nothing (no `pre_exec`, so std keeps using `posix_spawn`).
+    fn configure(&self, command: &mut Command, priority: EnginePriority);
+    /// After spawn: Windows assigns the child to a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; Unix makes a
+    /// background run [`ENGINE_NICE_INCREMENT`] nicer than the app (`setpriority`, errors ignored).
+    fn adopt(&self, child: &ChildHandle, priority: EnginePriority);
     /// Windows `TerminateJobObject` (whole tree); macOS `kill(pid, SIGTERM)` only if not reaped.
     fn terminate(&self, child: &ChildHandle);
 }
@@ -270,13 +313,12 @@ mod windows_impl {
     }
 
     impl ProcessControl for JobObjectControl {
-        fn configure(&self, command: &mut Command) {
+        fn configure(&self, command: &mut Command, priority: EnginePriority) {
             use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
+            command.creation_flags(creation_flags(priority));
         }
 
-        fn adopt(&self, child: &ChildHandle) {
+        fn adopt(&self, child: &ChildHandle, _priority: EnginePriority) {
             use std::os::windows::io::AsRawHandle;
             // SAFETY: plain Win32 calls on handles we own; the info struct outlives the call.
             unsafe {
@@ -319,12 +361,30 @@ mod windows_impl {
 mod unix_impl {
     use super::*;
 
+    /// Sets `pid` to the app's niceness plus [`ENGINE_NICE_INCREMENT`] (at most 19). Errors are ignored: the engine
+    /// then runs at the app's priority. Runs right after the spawn, long before the engine starts any child.
+    #[cfg(unix)]
+    fn lower_priority(pid: u32) {
+        // SAFETY: plain FFI calls; `getpriority` reads our own niceness, `setpriority` changes our own child's.
+        unsafe {
+            let own = libc::getpriority(libc::PRIO_PROCESS, 0);
+            let _ = libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, (own + ENGINE_NICE_INCREMENT).min(19));
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn lower_priority(_pid: u32) {}
+
     /// SIGTERM, never SIGKILL.
     pub struct SigtermControl;
 
     impl ProcessControl for SigtermControl {
-        fn configure(&self, _command: &mut Command) {}
-        fn adopt(&self, _child: &ChildHandle) {}
+        fn configure(&self, _command: &mut Command, _priority: EnginePriority) {}
+        fn adopt(&self, child: &ChildHandle, priority: EnginePriority) {
+            if priority == EnginePriority::Background {
+                lower_priority(child.pid);
+            }
+        }
         fn terminate(&self, child: &ChildHandle) {
             child.with_live_child(|c| {
                 // SAFETY: plain FFI call with a pid we spawned and have not reaped (checked under the reap lock).

@@ -787,3 +787,80 @@ fn log_diagnostic_redacts_the_launch_key() {
         vec![("translation".to_owned(), "background batch of 6 lines failed: HTTP 401: bad [redacted]".to_owned())]
     );
 }
+
+// MARK: process priority
+
+use sa_enginekit::process::EnginePriority;
+
+fn args(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// The launcher decides the priority from the subcommand, in one place: the long compute runs go to the background,
+/// the short commands the user waits on with a spinner stay at normal priority.
+#[test]
+fn only_the_long_compute_commands_run_in_the_background() {
+    for cmd in ["transcribe", "translate", "extract-audio"] {
+        assert_eq!(EnginePriority::for_arguments(&args(&[cmd, "--json"])), EnginePriority::Background, "{cmd}");
+    }
+    for cmd in ["preview", "render", "models", "delete-model"] {
+        assert_eq!(EnginePriority::for_arguments(&args(&[cmd, "--json"])), EnginePriority::Normal, "{cmd}");
+    }
+    assert_eq!(EnginePriority::for_arguments(&[]), EnginePriority::Normal);
+}
+
+/// Windows: the child gets the priority class of its run (no console either way); `llama-server`, started by a
+/// background `translate`, inherits below normal.
+#[cfg(windows)]
+#[test]
+fn background_engines_start_below_normal_priority_and_short_commands_at_normal() {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass, NORMAL_PRIORITY_CLASS};
+
+    use sa_enginekit::process::{CREATE_NO_WINDOW, creation_flags};
+    assert_eq!(creation_flags(EnginePriority::Background), CREATE_NO_WINDOW | 0x0000_4000);
+    assert_eq!(creation_flags(EnginePriority::Normal), CREATE_NO_WINDOW);
+    let control = sa_enginekit::process::platform_process_control();
+    for (priority, expected) in [(EnginePriority::Background, BELOW_NORMAL_PRIORITY_CLASS.0), (EnginePriority::Normal, NORMAL_PRIORITY_CLASS.0)] {
+        // `cmd.exe` with a piped stdin waits for input until killed.
+        let mut cmd = std::process::Command::new("cmd.exe");
+        cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        control.configure(&mut cmd, priority);
+        let child = cmd.spawn().expect("spawn cmd.exe");
+        let handle = sa_enginekit::process::ChildHandle::new(child);
+        control.adopt(&handle, priority);
+        let raw = handle.child().lock().as_ref().map(|c| c.as_raw_handle() as isize).expect("child");
+        // SAFETY: the handle belongs to the `Child` inside `handle`, which outlives the call.
+        let class = unsafe { GetPriorityClass(HANDLE(raw as *mut core::ffi::c_void)) };
+        control.terminate(&handle);
+        let _ = handle.wait_exit();
+        assert_eq!(class, expected, "{priority:?}");
+    }
+}
+
+/// Unix: a background run is `ENGINE_NICE_INCREMENT` nicer than the app (at most 19), set right after the spawn;
+/// a normal one keeps the app's niceness.
+#[cfg(unix)]
+#[test]
+fn background_engines_run_nicer_and_short_commands_at_the_apps_priority() {
+    let control = sa_enginekit::process::platform_process_control();
+    // SAFETY: plain FFI query of our own niceness.
+    let own = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+    for (priority, expected) in
+        [(EnginePriority::Background, (own + sa_enginekit::process::ENGINE_NICE_INCREMENT).min(19)), (EnginePriority::Normal, own)]
+    {
+        let mut cmd = std::process::Command::new("/bin/sleep");
+        cmd.arg("5");
+        control.configure(&mut cmd, priority);
+        let handle = sa_enginekit::process::ChildHandle::new(cmd.spawn().expect("spawn sleep"));
+        control.adopt(&handle, priority);
+        // SAFETY: plain FFI query of our own, not yet reaped child.
+        let niceness = unsafe { libc::getpriority(libc::PRIO_PROCESS, handle.pid as libc::id_t) };
+        handle.with_live_child(|c| {
+            let _ = c.kill();
+        });
+        let _ = handle.wait_exit();
+        assert_eq!(niceness, expected, "{priority:?}");
+    }
+}

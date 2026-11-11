@@ -594,7 +594,8 @@ impl Launcher {
                 cmd.stdin(Stdio::from(file));
             }
         }
-        self.control.configure(&mut cmd);
+        let priority = crate::process::EnginePriority::for_arguments(args);
+        self.control.configure(&mut cmd, priority);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -607,7 +608,7 @@ impl Launcher {
         let stdout = child.stdout.take();
         let child_stdin = child.stdin.take();
         let handle = ChildHandle::new(child);
-        self.control.adopt(&handle);
+        self.control.adopt(&handle, priority);
 
         if let (Some(mut pipe), Some(bytes)) = (child_stdin, payload) {
             let _ = std::thread::Builder::new().name("sa-engine-stdin".into()).spawn(move || {
