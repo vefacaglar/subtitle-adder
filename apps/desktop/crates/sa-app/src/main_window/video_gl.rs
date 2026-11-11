@@ -31,7 +31,9 @@
 //!   as `<dir>/frame-<pid>-<surface>-<n>-<pts>[-field2].png` for the first 3 frames after every load or jump, and
 //!   one frame every 2 s, so the shader's output can be checked without a screen capture. Each dump logs one
 //!   `[video] dump` line with the frame's format to stderr. At most two pictures wait for the writer; further dumps
-//!   are skipped meanwhile. A directory that cannot be created or written is reported once.
+//!   are skipped meanwhile. A directory that cannot be created or written is reported once. RGBA frames (the software
+//!   renderer: tone-mapped and deinterlaced by the player on the CPU) are dumped the same way as
+//!   `...-<pts>[-field2]-cpu.png` ([`VideoSurface::dump_rgba`]).
 //!
 //! Known limits:
 //! * Without a previous frame (the first frame after a load, a seek or a pts discontinuity, and so a paused still
@@ -51,6 +53,8 @@ use std::time::{Duration, Instant};
 
 use glow::HasContext;
 use sa_player::color::{ColorMode, ColorParams};
+// One rule for the GPU and the CPU (RGBA path) deinterlacer.
+use sa_player::soft::previous_frame_follows;
 use sa_player::{PlanarImage, PlaneLayout, VideoFrame};
 use slint::ComponentHandle;
 
@@ -455,6 +459,9 @@ impl VideoSurface {
     /// Forgets the frames (a new source, or the bridge shows an RGBA frame now).
     pub fn clear(&self) {
         if let Ok(mut s) = self.inner.try_borrow_mut() {
+            // The RGBA path clears before every frame it shows: only forgetting a GPU frame starts a new dump burst
+            // (RGBA dumps start one at a pts jump).
+            let had_frame = s.pending.is_some() || s.current.is_some() || s.shown.is_some();
             s.pending = None;
             s.current = None;
             s.shown = None;
@@ -463,10 +470,35 @@ impl VideoSurface {
                 // released, and the next interlaced frame is not compared against them.
                 g.forget_images();
             }
-            if let Some(d) = &mut s.dump {
+            if let Some(d) = &mut s.dump
+                && had_frame
+            {
                 d.policy.reset();
             }
         }
+    }
+
+    /// `SUBTITLE_ADDER_FRAME_DUMP` for an RGBA frame (the software renderer's picture, converted by the player on the
+    /// CPU): the GPU dumps' policy and writer, named `...-cpu.png`, so both paths can be compared frame by frame.
+    pub fn dump_rgba(&self, frame: &VideoFrame) {
+        let Ok(mut s) = self.inner.try_borrow_mut() else { return };
+        let Some(d) = s.dump.as_mut() else { return };
+        let (w, h, stride) = (frame.width as usize, frame.height as usize, frame.stride as usize);
+        if frame.planar.is_some() || w == 0 || h == 0 || stride < w * 4 || frame.rgba.len() < (h - 1) * stride + w * 4 {
+            return;
+        }
+        if !(d.policy.wants(frame.pts, Instant::now()) && d.has_room()) {
+            return;
+        }
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for r in 0..h {
+            rgba.extend_from_slice(&frame.rgba[r * stride..r * stride + w * 4]);
+        }
+        d.count += 1;
+        let field = if frame.second_field { "-field2" } else { "" };
+        let name = format!("frame-{}-{:04}-{:09.3}{field}-cpu.png", d.prefix, d.count, frame.pts);
+        eprintln!("[video] dump {name}: {w}x{h} RGBA (CPU conversion)");
+        d.send(DumpImage { name, width: w as u32, height: h as u32, rgba });
     }
 }
 
@@ -781,13 +813,6 @@ struct Saved {
 
 /// Texture units the conversion uses: the current frame's planes (0..3) and the previous frame's (3..6).
 const UNITS: usize = 6;
-
-/// Whether a frame at `previous` pts is the one right before a frame at `pts` (for motion detection): a step forward
-/// of at most 100 ms (a frame or two of interlaced video), not a seek or a new source.
-fn previous_frame_follows(previous: f64, pts: f64) -> bool {
-    let d = pts - previous;
-    d > 0.0 && d <= 0.1
-}
 
 /// The shader's layout code for `layout`.
 fn layout_code(layout: PlaneLayout) -> i32 {

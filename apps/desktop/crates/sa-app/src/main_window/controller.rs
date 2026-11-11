@@ -700,6 +700,7 @@ impl MainWindowController {
         let reuse = self.st.borrow_mut().spare_frame.take();
         let buf = frame_to_buffer(&frame, reuse);
         w.global::<MainBridge>().set_video_frame(slint::Image::from_rgba8(buf.clone()));
+        self.video.dump_rgba(&frame);
         let mut st = self.st.borrow_mut();
         st.spare_frame = st.frame.replace(buf);
     }
