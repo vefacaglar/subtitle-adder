@@ -7,7 +7,8 @@
 //!   whole file) enters background mode (`THREAD_MODE_BACKGROUND_BEGIN`: low CPU, very low I/O and memory priority,
 //!   so the player's own reads of the same disk go first) and leaves it when the guard is dropped.
 //! * macOS: pthread QoS classes (user-interactive for the presenter, user-initiated for the decoders, background for a
-//!   background read, which also puts its disk I/O in the throttled tier); CoreAudio's IO thread is real-time
+//!   background read, which also puts its disk I/O in the throttled tier, until its guard is dropped: the thread's
+//!   previous class comes back, so a caller's thread is not left throttled); CoreAudio's IO thread is real-time
 //!   already.
 //! * Elsewhere: nothing.
 //!
@@ -37,10 +38,18 @@ pub(crate) struct Guard {
     /// The thread is in background mode (left on drop: it must be left by the same thread).
     #[cfg(windows)]
     background: bool,
+    /// The class and relative priority the thread had before a background read lowered it (restored on drop).
+    #[cfg(target_os = "macos")]
+    restore: Option<(libc::qos_class_t, libc::c_int)>,
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some((class, relative)) = self.restore.take() {
+            // SAFETY: applies to the calling thread only (guards are not `Send`: the thread that lowered it).
+            let _ = unsafe { libc::pthread_set_qos_class_self_np(class, relative) };
+        }
         #[cfg(windows)]
         if let Some(h) = self.mmcss.take() {
             // SAFETY: `h` is the registration of this thread (guards are not `Send`).
@@ -69,6 +78,8 @@ pub(crate) fn raise(role: Role) -> Guard {
             mmcss: None,
             #[cfg(windows)]
             background: false,
+            #[cfg(target_os = "macos")]
+            restore: None,
         };
     }
     imp::raise(role)
@@ -135,17 +146,28 @@ mod imp {
         let class = match role {
             Role::Presenter => Some(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE),
             Role::AudioDecode | Role::VideoDecode => Some(libc::qos_class_t::QOS_CLASS_USER_INITIATED),
-            // Also throttles the thread's disk I/O behind the player's. Like the other classes it lasts until the
-            // thread ends: reads run on a worker thread of their own.
+            // Also throttles the thread's disk I/O behind the player's; undone when the guard is dropped (the read
+            // may run on a caller's thread, `extract_text_subtitles`).
             Role::BackgroundRead => Some(libc::qos_class_t::QOS_CLASS_BACKGROUND),
             // CoreAudio's IO thread is a real-time thread already; a QoS class would only lower it.
             Role::AudioOutput => None,
         };
+        let mut restore = None;
+        if role == Role::BackgroundRead {
+            let mut previous = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+            let mut relative: libc::c_int = 0;
+            // SAFETY: queries the calling thread; both out parameters point to locals.
+            if unsafe { libc::pthread_get_qos_class_np(libc::pthread_self(), &mut previous, &mut relative) } == 0 {
+                // A thread with no class set reads as unspecified, which cannot be set again: the default class.
+                let previous = if matches!(previous, libc::qos_class_t::QOS_CLASS_UNSPECIFIED) { libc::qos_class_t::QOS_CLASS_DEFAULT } else { previous };
+                restore = Some((previous, relative));
+            }
+        }
         if let Some(class) = class {
             // SAFETY: applies to the calling thread only.
             let _ = unsafe { libc::pthread_set_qos_class_self_np(class, 0) };
         }
-        Guard {}
+        Guard { restore }
     }
 }
 

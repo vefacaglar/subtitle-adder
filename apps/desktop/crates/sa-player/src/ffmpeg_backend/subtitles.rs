@@ -84,7 +84,9 @@ impl Drop for SubtitleGuard {
 
 /// Reads text subtitle stream `stream_index` of `path` with the default [`ExtractLimits`]. Blocking (run it off the
 /// UI and player threads); `progress` gets 0…1 as the read advances; cancelling `cancel` interrupts it (also a
-/// blocking read) with [`ExtractError::Cancelled`].
+/// blocking read) with [`ExtractError::Cancelled`]. The calling thread runs at background CPU and I/O priority
+/// while it reads (Windows background mode, macOS `QOS_CLASS_BACKGROUND`) and gets its previous priority back
+/// when it returns.
 pub fn extract_text_subtitles(
     path: impl Into<PathBuf>,
     stream_index: usize,
