@@ -24,7 +24,7 @@ unicode-segmentation = "=1.13.3"
 [features]
 # The default `ureq` HTTP fetcher of the connection test. Off only for the macOS cross-check from Windows
 # (`cargo check --target aarch64-apple-darwin -p sa-enginekit --no-default-features`), because ring's build script
-# needs an Apple C toolchain (ARCHITECTURE.md section 11).
+# needs an Apple C toolchain.
 default = ["ureq-fetch"]
 ureq-fetch = ["dep:ureq"]
 
