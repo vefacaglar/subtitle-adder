@@ -3,7 +3,8 @@
 //!
 //! The UI's fragment shader ([`glsl`]) and the CPU functions here use the same constants (the GLSL source is generated
 //! from them), so the unit tests below check the math the GPU runs. [`ColorParams::apply`] is the CPU mirror of the
-//! shader's `color_map` for one pixel.
+//! shader's `color_map` for one pixel; [`ToneLuts`] is the same mapping as lookup tables, which the CPU (software
+//! renderer) path runs per pixel (`crate::soft`).
 //!
 //! Pipeline per pixel (after the YUV matrix): SDR BT.709-ish content is left exactly as it is (mode 0). Otherwise the
 //! signal is linearized (BT.1886 gamma 2.4 for SDR, the PQ EOTF in nits, or the HLG inverse OETF + OOTF for a
@@ -244,6 +245,211 @@ impl ColorParams {
             }
         }
     }
+}
+
+/// Entries (plus one) of [`ToneLuts`]' signal → linear light table, over the signal 0..1.
+const DECODE_STEPS: usize = 4096;
+/// Entries (plus one) of the HLG OOTF gain table, over the square root of the scene luminance 0..1.
+const GAIN_STEPS: usize = 4096;
+/// Entries of the EETF scale table between the knee and the content peak.
+const EETF_ENTRIES: usize = 2048;
+/// Entries of the output encode table, over the square root of linear light 0..1 (the square root spreads the
+/// table's resolution where gamma 1/2.4 is steep, so the darkest codes are exact as well).
+const ENCODE_ENTRIES: usize = 65536;
+
+/// [`ColorParams::apply`] as lookup tables, for the CPU (software renderer) path: non-linear R'G'B' → display R'G'B'
+/// as 8-bit codes, a few table reads and multiplications per pixel instead of half a dozen `powf`.
+///
+/// Per pixel, in `apply`'s order: (1) every channel through `decode` (signal → nits for PQ, scene light for HLG,
+/// `v^2.4` for the gamut-only mode; linear interpolation); (2) HLG only: the OOTF gain from the scene luminance
+/// (`gain`, indexed by its square root); (3) the gamut matrix, negative components clipped to 0; (4) HDR only: the
+/// EETF as a scale factor of the largest component `m` (1 below the knee, the `eetf` table interpolated between the
+/// knee and the peak, `top / m` above the peak, where the curve is flat), divided by SDR white; (5) `encode`
+/// (gamma 1/2.4 to a code). The EETF cannot be a per-channel curve: its scale depends on max(R, G, B) after the
+/// gamut matrix. The unit tests bound the difference to `round(apply(rgb) * 255)`.
+#[derive(Debug, Clone)]
+pub struct ToneLuts {
+    params: ColorParams,
+    decode: Vec<f32>,
+    gain: Vec<f32>,
+    /// EETF knee and peak (nits); the EETF's output at and above the peak.
+    knee: f32,
+    peak: f32,
+    top: f32,
+    eetf_steps_per_nit: f32,
+    /// `eetf(m) / m / white` at `knee + i * (peak - knee) / (EETF_ENTRIES - 1)`.
+    eetf: Vec<f32>,
+    white_inv: f32,
+    encode: Vec<u8>,
+}
+
+impl ToneLuts {
+    pub fn new(p: &ColorParams) -> Self {
+        let decode = match p.mode {
+            ColorMode::None => Vec::new(),
+            ColorMode::Gamut => table(DECODE_STEPS + 1, |i| (i as f32 / DECODE_STEPS as f32).powf(SDR_GAMMA)),
+            ColorMode::Pq => table(DECODE_STEPS + 1, |i| pq_eotf(i as f32 / DECODE_STEPS as f32)),
+            ColorMode::Hlg => table(DECODE_STEPS + 1, |i| hlg_inverse_oetf(i as f32 / DECODE_STEPS as f32)),
+        };
+        let gain = if p.mode == ColorMode::Hlg {
+            table(GAIN_STEPS + 1, |i| {
+                let s = i as f32 / GAIN_STEPS as f32;
+                HLG_PEAK_NITS * (s * s).max(1e-6).powf(HLG_SYSTEM_GAMMA - 1.0)
+            })
+        } else {
+            Vec::new()
+        };
+        let [src, max_lum, ks] = [p.tone[0], p.tone[1], p.tone[2]];
+        let white = p.tone[3];
+        let hdr = matches!(p.mode, ColorMode::Pq | ColorMode::Hlg);
+        let (knee, peak, top) = if ks < 1.0 {
+            (pq_eotf(ks * src), pq_eotf(src), pq_eotf(max_lum * src))
+        } else {
+            // No compression: the EETF is the identity up to the peak, flat above it.
+            let peak = pq_eotf(src);
+            (peak, peak, peak)
+        };
+        let compress = hdr && peak > knee;
+        let span = (peak - knee).max(f32::MIN_POSITIVE);
+        let eetf = if compress {
+            table(EETF_ENTRIES, |i| {
+                let m = if i + 1 == EETF_ENTRIES { peak } else { knee + span * i as f32 / (EETF_ENTRIES - 1) as f32 };
+                eetf(m, [src, max_lum, ks]) / m / white
+            })
+        } else {
+            Vec::new()
+        };
+        let encode = if p.mode == ColorMode::None {
+            Vec::new()
+        } else {
+            (0..ENCODE_ENTRIES)
+                .map(|i| {
+                    let s = i as f64 / (ENCODE_ENTRIES - 1) as f64;
+                    ((s * s).powf(1.0 / SDR_GAMMA as f64) * 255.0).round() as u8
+                })
+                .collect()
+        };
+        Self {
+            params: *p,
+            decode,
+            gain,
+            knee,
+            peak,
+            top,
+            eetf_steps_per_nit: if compress { (EETF_ENTRIES - 1) as f32 / span } else { 0.0 },
+            eetf,
+            white_inv: 1.0 / white,
+            encode,
+        }
+    }
+
+    /// The parameters the tables were built for.
+    pub fn params(&self) -> &ColorParams {
+        &self.params
+    }
+
+    #[inline(always)]
+    fn decode(&self, v: f32) -> f32 {
+        let x = v.clamp(0.0, 1.0) * DECODE_STEPS as f32;
+        let i = (x as usize).min(DECODE_STEPS - 1);
+        let (a, b) = (self.decode[i], self.decode[i + 1]);
+        a + (b - a) * (x - i as f32)
+    }
+
+    #[inline(always)]
+    fn encode(&self, v: f32) -> u8 {
+        let i = (v.clamp(0.0, 1.0).sqrt() * (ENCODE_ENTRIES - 1) as f32 + 0.5) as usize;
+        self.encode[i.min(ENCODE_ENTRIES - 1)]
+    }
+
+    #[inline(always)]
+    fn gamut(&self, c: [f32; 3]) -> [f32; 3] {
+        let g = &self.params.gamut;
+        [
+            g[0][0] * c[0] + g[0][1] * c[1] + g[0][2] * c[2],
+            g[1][0] * c[0] + g[1][1] * c[1] + g[1][2] * c[2],
+            g[2][0] * c[0] + g[2][1] * c[1] + g[2][2] * c[2],
+        ]
+    }
+
+    /// The EETF scale (divided by SDR white) for a largest component of `m` nits.
+    #[inline(always)]
+    fn scale(&self, m: f32) -> f32 {
+        if m < self.knee {
+            self.white_inv
+        } else if m >= self.peak {
+            if m > 0.0 { self.top / m * self.white_inv } else { 0.0 }
+        } else {
+            let x = (m - self.knee) * self.eetf_steps_per_nit;
+            let i = (x as usize).min(EETF_ENTRIES - 2);
+            let (a, b) = (self.eetf[i], self.eetf[i + 1]);
+            a + (b - a) * (x - i as f32)
+        }
+    }
+
+    /// Non-linear source R'G'B' (after the YUV matrix) → display R'G'B' codes.
+    #[inline(always)]
+    pub fn map(&self, rgb: [f32; 3]) -> [u8; 3] {
+        match self.params.mode {
+            ColorMode::None => rgb.map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8),
+            ColorMode::Gamut => {
+                let lin = self.gamut(rgb.map(|v| self.decode(v)));
+                lin.map(|v| self.encode(v))
+            }
+            ColorMode::Pq | ColorMode::Hlg => {
+                let mut light = rgb.map(|v| self.decode(v));
+                if self.params.mode == ColorMode::Hlg {
+                    let l = self.params.luma;
+                    let ys = (light[0] * l[0] + light[1] * l[1] + light[2] * l[2]).clamp(0.0, 1.0);
+                    let x = ys.sqrt() * GAIN_STEPS as f32;
+                    let i = (x as usize).min(GAIN_STEPS - 1);
+                    let (a, b) = (self.gain[i], self.gain[i + 1]);
+                    let gain = a + (b - a) * (x - i as f32);
+                    light = light.map(|v| v * gain);
+                }
+                let lin = self.gamut(light).map(|v| v.max(0.0));
+                let m = lin[0].max(lin[1]).max(lin[2]);
+                if m <= 0.0 {
+                    return [0; 3];
+                }
+                let s = self.scale(m);
+                lin.map(|v| self.encode(v * s))
+            }
+        }
+    }
+}
+
+fn table(n: usize, f: impl Fn(usize) -> f32) -> Vec<f32> {
+    (0..n).map(f).collect()
+}
+
+/// The R'G'B' (0..1, clamped) of pixel (`x`, `y`) of the coded picture of `img`, converted the way the UI's shader
+/// converts it before `color_map`, with the nearest chroma sample (no chroma interpolation). A reference for tests of
+/// the GPU and the CPU conversion.
+pub fn yuv_to_rgb_reference(img: &PlanarImage, x: usize, y: usize) -> [f32; 3] {
+    let (range, k, scale) = yuv_uniforms(img);
+    let wide = img.bits > 8;
+    let sb = img.sample_bytes();
+    let sample = |plane: usize, px: usize, py: usize, comp: usize, comps: usize| -> f32 {
+        let (d, info) = img.plane(plane).expect("plane");
+        let o = py * info.stride + (px * comps + comp) * sb;
+        if wide { u16::from_le_bytes([d[o], d[o + 1]]) as f32 * scale } else { d[o] as f32 / 255.0 }
+    };
+    if img.layout == PlaneLayout::Packed {
+        return [0, 1, 2].map(|c| sample(0, x, y, c, 4));
+    }
+    let (sx, sy) = img.chroma_shift;
+    let (cx, cy) = (x >> sx, y >> sy);
+    let luma = sample(0, x, y, 0, 1);
+    let (u, v) = match img.layout {
+        PlaneLayout::SemiPlanar if img.swap_uv => (sample(1, cx, cy, 1, 2), sample(1, cx, cy, 0, 2)),
+        PlaneLayout::SemiPlanar => (sample(1, cx, cy, 0, 2), sample(1, cx, cy, 1, 2)),
+        PlaneLayout::Planar => (sample(1, cx, cy, 0, 1), sample(2, cx, cy, 0, 1)),
+        _ => (range[2], range[2]),
+    };
+    let yv = (luma - range[0]) * range[1];
+    let (u, v) = ((u - range[2]) * range[3], (v - range[2]) * range[3]);
+    [yv + k[0] * v, yv - k[1] * u - k[2] * v, yv + k[3] * u].map(|c| c.clamp(0.0, 1.0))
 }
 
 /// `(range, coefficients, sample scale)` uniforms of the YUV → R'G'B' step: normalized sample = bytes × scale (16-bit)
@@ -504,6 +710,85 @@ mod tests {
         assert_eq!(lit(2.0), "2.0");
         assert_eq!(lit(1e-7), "1e-7");
         assert!(!src.contains("{{"));
+    }
+
+    /// Deterministic pseudo-random numbers in 0..1 (xorshift64*).
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> f32 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 40) as f32 / (1u64 << 24) as f32
+        }
+    }
+
+    /// `ToneLuts::map` against `round(apply(rgb) * 255)` over a 33³ grid and 10 000 pseudo-random points, for every
+    /// mode the CPU path uses: (worst difference, worst difference where the reference code is above 2, mean).
+    fn lut_error(p: &ColorParams) -> (u8, u8, f64) {
+        let luts = ToneLuts::new(p);
+        let mut points = Vec::new();
+        for r in 0..33 {
+            for g in 0..33 {
+                for b in 0..33 {
+                    points.push([r, g, b].map(|v| v as f32 / 32.0));
+                }
+            }
+        }
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for _ in 0..10_000 {
+            points.push([rng.next(), rng.next(), rng.next()]);
+        }
+        let (mut worst, mut worst_lit, mut sum, mut n) = (0u8, 0u8, 0u64, 0u64);
+        for rgb in points {
+            let want = p.apply(rgb).map(|v| (v * 255.0).round() as u8);
+            let got = luts.map(rgb);
+            for k in 0..3 {
+                let d = got[k].abs_diff(want[k]);
+                worst = worst.max(d);
+                if want[k] > 2 {
+                    worst_lit = worst_lit.max(d);
+                }
+                sum += d as u64;
+                n += 1;
+            }
+        }
+        (worst, worst_lit, sum as f64 / n as f64)
+    }
+
+    #[test]
+    fn the_lookup_tables_match_apply_to_within_one_code() {
+        let mut cases = Vec::new();
+        for peak in [150.0f32, 203.0, 1000.0, 1200.0, 4000.0, 10000.0] {
+            // `hdr_peak_nits` never gives less than SDR white; 150 checks the uncompressed case all the same.
+            cases.push((format!("PQ {peak}"), ColorParams::new(Transfer::Pq, Primaries::Bt2020, peak)));
+        }
+        cases.push(("HLG".into(), ColorParams::new(Transfer::Hlg, Primaries::Bt2020, 0.0)));
+        cases.push(("PQ P3".into(), ColorParams::new(Transfer::Pq, Primaries::DisplayP3, 1000.0)));
+        cases.push(("gamut BT.2020".into(), ColorParams::new(Transfer::Sdr, Primaries::Bt2020, DEFAULT_PEAK_NITS)));
+        cases.push(("gamut P3".into(), ColorParams::new(Transfer::Sdr, Primaries::DisplayP3, DEFAULT_PEAK_NITS)));
+        cases.push(("none".into(), ColorParams::new(Transfer::Sdr, Primaries::Bt709, DEFAULT_PEAK_NITS)));
+        let mut report = Vec::new();
+        for (name, p) in &cases {
+            let (worst, worst_lit, mean) = lut_error(p);
+            eprintln!("{name}: worst {worst}, worst above code 2 {worst_lit}, mean {mean:.4}");
+            report.push((name.clone(), worst, worst_lit, mean));
+        }
+        for (name, worst, worst_lit, mean) in report {
+            // Measured: worst 1 everywhere (dark codes included), mean at most 0.0012.
+            assert!(worst_lit <= 1 && worst <= 1 && mean <= 0.01, "{name}: worst {worst} ({worst_lit} above code 2), mean {mean}");
+        }
+    }
+
+    #[test]
+    fn the_lookup_tables_are_rebuilt_only_for_other_parameters() {
+        let a = ColorParams::new(Transfer::Pq, Primaries::Bt2020, 1000.0);
+        let b = ColorParams::new(Transfer::Pq, Primaries::Bt2020, 1200.0);
+        assert_eq!(ToneLuts::new(&a).params(), &a);
+        assert_ne!(&a, &b, "a later MaxCLL changes the parameters (the cache key)");
+        assert_eq!(ToneLuts::new(&a).map([0.0; 3]), [0; 3]);
+        assert_eq!(ToneLuts::new(&a).map([1.0; 3]), [255; 3]);
     }
 
     #[test]

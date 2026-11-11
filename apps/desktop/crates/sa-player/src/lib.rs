@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 pub mod color;
 pub mod gate;
+pub mod soft;
 pub mod timeline;
 
 #[cfg(feature = "ffmpeg")]
