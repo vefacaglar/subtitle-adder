@@ -69,6 +69,23 @@ pub trait FileAssociations: Send + Sync {
     fn is_registered(&self) -> bool;
     /// "Varsayılan uygulamalar…": opens the Windows Default Apps page.
     fn open_default_apps_settings(&self);
+
+    /// A user's explicit choice (Settings): registers (`register`) or unregisters, as one ordered step. `before` runs
+    /// first and `after(ok)` last, both inside the same ordering section as the registry writes, so what they persist
+    /// (the opt-out) can never end up out of order with the registry, whoever else registers meanwhile (the launch
+    /// registration, another window). With `only_if_needed`, a registration is skipped (and reported as success)
+    /// when the registry already shows the app as registered. The default runs the steps without an ordering
+    /// section (test doubles); the Windows registrar overrides it.
+    fn apply_user_choice(&self, register: bool, only_if_needed: bool, before: &mut dyn FnMut(), after: &mut dyn FnMut(bool)) -> bool {
+        before();
+        let ok = if register {
+            (only_if_needed && self.is_registered()) || self.register()
+        } else {
+            self.unregister()
+        };
+        after(ok);
+        ok
+    }
 }
 
 /// Environment variable that replaces the app data folder (`%LOCALAPPDATA%\SubtitleAdder` /

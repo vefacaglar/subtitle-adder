@@ -368,18 +368,96 @@ fn file_associations_busy_state_ignores_clicks_until_the_result_arrives() {
         let v = m.view();
         assert!(v.associations_busy, "the toggle returned at once and the card is busy");
         assert!(!v.associations_registered && !v.associations_bar_open, "nothing shown before the result");
+        // The intent is on record before the registry writes start (the worker now waits inside them).
+        wait(&e, || e.f.settings.get_bool("fileAssociationsDisabled") == Some(false));
         m.toggle_associations();
         m.open_default_apps();
         pump(&e);
         assert!(m.view().associations_busy);
+        assert_eq!(*a.opened.lock(), 0);
     }
-    wait(&e, || !m.associations_busy());
-    pump(&e);
+    // The queued "Default apps…" click runs after the toggle, without another registry write.
+    wait(&e, || !m.associations_busy() && *a.opened.lock() == 1);
     let v = m.view();
     assert!(v.associations_registered && v.associations_bar_open);
     assert_eq!(v.associations_bar_severity, 1);
-    assert_eq!(*a.calls.lock(), 1, "the clicks made while busy were ignored");
-    assert_eq!(*a.opened.lock(), 0);
+    assert_eq!(*a.calls.lock(), 1, "the second toggle click made while busy was ignored");
+}
+
+/// The launch registration reaches the registry between the card's render and the click: the click still means
+/// "register" (what the card showed), and the result is registered, not an unregister.
+#[test]
+fn file_associations_toggle_follows_what_the_card_showed() {
+    let _g = SERIAL.lock();
+    let e = env();
+    let m = model(&e, Flavor::Windows);
+    let a = e.f.win.associations.clone().unwrap();
+    assert!(!m.view().associations_registered, "the card shows the register button");
+    *a.registered.lock() = true; // the launch worker finished meanwhile
+    m.toggle_associations();
+    wait(&e, || !m.associations_busy());
+    let v = m.view();
+    assert!(v.associations_registered);
+    assert_eq!(v.associations_bar_severity, 1);
+    assert_eq!(e.f.settings.get_bool("fileAssociationsDisabled"), Some(false));
+}
+
+/// A window closed while its action runs still records the intent with the registry change, but neither shows a
+/// result nor opens the Windows page.
+#[test]
+fn file_associations_closed_window_keeps_the_intent_and_opens_nothing() {
+    let _g = SERIAL.lock();
+    let e = env();
+    let m = model(&e, Flavor::Windows);
+    let a = e.f.win.associations.clone().unwrap();
+    *a.registered.lock() = true;
+    assert!(m.view().associations_registered);
+    {
+        let _slow = a.hold.lock();
+        m.toggle_associations(); // unregister
+        m.close();
+    }
+    wait(&e, || !m.associations_busy());
+    assert!(!*a.registered.lock());
+    assert_eq!(e.f.settings.get_bool("fileAssociationsDisabled"), Some(true), "the opt-out is kept");
+    assert!(!m.view().associations_bar_open);
+
+    let m = model(&e, Flavor::Windows);
+    {
+        let _slow = a.hold.lock();
+        m.open_default_apps(); // registers first
+        m.close();
+    }
+    wait(&e, || !m.associations_busy());
+    assert!(*a.registered.lock());
+    assert_eq!(e.f.settings.get_bool("fileAssociationsDisabled"), Some(false));
+    assert_eq!(*a.opened.lock(), 0, "a closed window does not open the Windows page");
+}
+
+/// Two Settings windows click opposite actions at the same time: whatever order they run in, the persisted opt-out
+/// matches the registry afterwards.
+#[test]
+fn file_associations_two_windows_leave_the_setting_consistent_with_the_registry() {
+    let _g = SERIAL.lock();
+    for first_registered in [false, true] {
+        let e = env();
+        let a = e.f.win.associations.clone().unwrap();
+        *a.registered.lock() = first_registered;
+        let one = model(&e, Flavor::Windows);
+        let _ = one.view();
+        *a.registered.lock() = !first_registered;
+        let two = model(&e, Flavor::Windows);
+        let _ = two.view();
+        {
+            let _slow = a.hold.lock();
+            one.toggle_associations();
+            two.toggle_associations();
+        }
+        wait(&e, || !one.associations_busy() && !two.associations_busy());
+        assert_eq!(*a.calls.lock(), 2);
+        let registered = *a.registered.lock();
+        assert_eq!(e.f.settings.get_bool("fileAssociationsDisabled"), Some(!registered), "setting and registry agree");
+    }
 }
 
 // MARK: Windows provider form

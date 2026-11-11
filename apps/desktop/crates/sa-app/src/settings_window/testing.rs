@@ -330,6 +330,8 @@ pub struct FakeAssociations {
     pub hold: Mutex<()>,
     pub calls: Mutex<usize>,
     pub fail: Mutex<bool>,
+    /// The registrar's ordering section (one user choice at a time, like the Windows `RegistrationGate`).
+    pub gate: Mutex<()>,
 }
 
 impl FakeAssociations {
@@ -356,6 +358,13 @@ impl FileAssociations for FakeAssociations {
     }
     fn open_default_apps_settings(&self) {
         *self.opened.lock() += 1;
+    }
+    fn apply_user_choice(&self, register: bool, only_if_needed: bool, before: &mut dyn FnMut(), after: &mut dyn FnMut(bool)) -> bool {
+        let _gate = self.gate.lock();
+        before();
+        let ok = if register { (only_if_needed && self.is_registered()) || self.write(true) } else { self.write(false) };
+        after(ok);
+        ok
     }
 }
 

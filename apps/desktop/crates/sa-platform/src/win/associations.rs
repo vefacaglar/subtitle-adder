@@ -303,6 +303,21 @@ impl FileAssociations for FileAssociationRegistrar {
     fn open_default_apps_settings(&self) {
         super::process::open_default_apps_settings();
     }
+
+    /// The whole choice under the gate: `before` (persist the intent), exactly the requested writes, `after(ok)`.
+    /// A launch registration that is still running finishes first; one that has not started never runs afterwards.
+    fn apply_user_choice(&self, register: bool, only_if_needed: bool, before: &mut dyn FnMut(), after: &mut dyn FnMut(bool)) -> bool {
+        let mut acted = self.gate.user_acted.lock();
+        *acted = true;
+        before();
+        let ok = if register {
+            (only_if_needed && self.is_registered()) || self.try_register().is_ok()
+        } else {
+            self.unregister_locked()
+        };
+        after(ok);
+        ok
+    }
 }
 
 impl FileAssociationRegistrar {
@@ -576,6 +591,38 @@ mod tests {
             });
             assert!(!settings.is_registered(), "a launch registration undid the unregister");
         }
+    }
+
+    /// A user choice runs `before`, exactly the requested writes and `after(ok)` in one gated section, and ends the
+    /// launch registration like `register` / `unregister` do.
+    #[test]
+    fn a_user_choice_persists_and_writes_in_one_gated_section() {
+        let s = scratch();
+        let gate = RegistrationGate::new();
+        let exe = PathBuf::from(r"C:\Program Files\Subtitle Adder\SubtitleAdder.exe");
+        let settings = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
+        let launch = FileAssociationRegistrar::with_root(&s.0, exe, None).with_gate(gate.clone());
+        let steps = std::cell::RefCell::new(Vec::new());
+        let ok = settings.apply_user_choice(
+            true,
+            false,
+            &mut || {
+                assert!(gate.user_acted.try_lock().is_none(), "before runs under the gate");
+                steps.borrow_mut().push(format!("before registered={}", settings.is_registered()));
+            },
+            &mut |ok| steps.borrow_mut().push(format!("after {ok} registered={}", settings.is_registered())),
+        );
+        assert!(ok);
+        assert_eq!(*steps.borrow(), ["before registered=false", "after true registered=true"]);
+        assert!(!launch.register_on_launch(), "the user acted");
+        // Already registered with `only_if_needed`: success without writes (a removed value stays removed).
+        let types = format!(r"{}\Software\Classes\Applications\SubtitleAdder.exe\SupportedTypes", s.0);
+        Key::open(&types, true).unwrap().delete_value(Some(".mp4"));
+        assert!(settings.apply_user_choice(true, true, &mut || {}, &mut |_| {}));
+        assert_eq!(Key::open(&types, false).unwrap().get(Some(".mp4")), None);
+        // Unregister is exactly that, whatever the probe key says.
+        assert!(settings.apply_user_choice(false, false, &mut || {}, &mut |_| {}));
+        assert!(!settings.is_registered());
     }
 
     /// While a launch registration writes, a Settings call waits for it (one writer per root at a time).
