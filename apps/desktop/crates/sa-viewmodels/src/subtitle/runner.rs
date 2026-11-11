@@ -252,6 +252,10 @@ impl Inner {
                 }
             }
             JobKind::Translate { reuse_existing, only } => {
+                // The list is not complete while a track of the video still comes in.
+                if c.st.is_foreground(sid) && c.st.embedded_read_of_fg().is_some() {
+                    return;
+                }
                 if self.prepare_translation(c, fx, sid, *reuse_existing, only.clone(), &settings).is_none() {
                     return;
                 }

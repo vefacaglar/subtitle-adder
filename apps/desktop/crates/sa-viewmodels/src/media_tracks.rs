@@ -48,7 +48,8 @@ pub struct TrackMenu {
 pub enum TrackChoice {
     Audio(usize),
     Subtitle(usize),
-    /// No embedded track: clears lines that are an unedited embedded track ([`TrackMenu::build`] offers it only then).
+    /// No embedded track for this video: clears lines that are an unedited embedded track, and none is chosen for
+    /// the user when the video opens again in this run of the app.
     SubtitleOff,
 }
 
@@ -86,8 +87,10 @@ pub fn has_choices(tracks: &MediaTracks) -> bool {
 
 impl TrackMenu {
     /// `reading`: the embedded track being read and its progress (0…1); `loaded`: the embedded track whose lines the
-    /// list holds now; `offer_off`: those lines are still exactly the track's (an "Off" entry first clears them).
-    pub fn build(tracks: &MediaTracks, reading: Option<(usize, f64)>, loaded: Option<usize>, offer_off: bool) -> Self {
+    /// list holds now, `loaded_pristine`: those lines are still exactly the track's. A file with a text track gets an
+    /// "Off" entry first: checked while nothing from the video is in the list, enabled then (it keeps a track from
+    /// being chosen for the user) and while the loaded lines are unedited (it clears them).
+    pub fn build(tracks: &MediaTracks, reading: Option<(usize, f64)>, loaded: Option<usize>, loaded_pristine: bool) -> Self {
         let audio = tracks
             .audio
             .iter()
@@ -124,11 +127,15 @@ impl TrackMenu {
                 }
             })
             .collect();
-        if offer_off && !subtitles.is_empty() {
-            subtitles.insert(
-                0,
-                TrackItem { id: SUBTITLE_OFF_ID.to_owned(), label: sa_core::l("Kapalı"), active: false, enabled: true, hint: String::new() },
-            );
+        if tracks.subtitles.iter().any(SubtitleTrack::is_text) {
+            let off = TrackItem {
+                id: SUBTITLE_OFF_ID.to_owned(),
+                label: sa_core::l("Kapalı"),
+                active: loaded.is_none() && reading.is_none(),
+                enabled: loaded.is_none() || loaded_pristine,
+                hint: String::new(),
+            };
+            subtitles.insert(0, off);
         }
         if collapse_images {
             // A Blu-ray remux carries dozens of PGS tracks: one disabled row says how many instead.
@@ -288,17 +295,34 @@ pub fn audio_track_failure(details: &str) -> LocalizedMessage {
 /// report).
 pub fn embedded_read_failure(error: &ExtractError) -> Option<LocalizedMessage> {
     let e = error.clone();
-    let reason = move || match &e {
-        ExtractError::Cancelled => String::new(),
-        ExtractError::NotText => sa_core::l("Bu parça metin altyazısı değil"),
-        ExtractError::TooLarge => sa_core::l("Altyazı parçası çok büyük"),
-        ExtractError::Failed(d) => details_text(d),
-    };
+    let reason = move || failure_reason(&e);
     match error {
         ExtractError::Cancelled => None,
         _ => Some(LocalizedMessage::new(format!("embedded-subtitle-failed:{error}"), move || {
             sa_core::l!("Videodaki altyazı okunamadı: %@", reason().as_str())
         })),
+    }
+}
+
+/// `Videodaki altyazının yalnızca bir kısmı yüklendi: %@`: a read that failed after some of its lines were shown
+/// (they stay); `None` for a cancelled read.
+pub fn embedded_read_failure_partial(error: &ExtractError) -> Option<LocalizedMessage> {
+    let e = error.clone();
+    match error {
+        ExtractError::Cancelled => None,
+        _ => Some(LocalizedMessage::new(format!("embedded-subtitle-partial-failed:{error}"), move || {
+            sa_core::l!("Videodaki altyazının yalnızca bir kısmı yüklendi: %@", failure_reason(&e).as_str())
+        })),
+    }
+}
+
+/// Why a read failed, in the UI language.
+fn failure_reason(e: &ExtractError) -> String {
+    match e {
+        ExtractError::Cancelled => String::new(),
+        ExtractError::NotText => sa_core::l("Bu parça metin altyazısı değil"),
+        ExtractError::TooLarge => sa_core::l("Altyazı parçası çok büyük"),
+        ExtractError::Failed(d) => details_text(d),
     }
 }
 
@@ -372,6 +396,14 @@ pub struct ReadMode {
     /// Snapshots go into the list while it reads (nothing the user made is in it); otherwise the complete track is
     /// applied at the end through the open-subtitle rules.
     pub progressive: bool,
+    /// The list holds an earlier read of this track that stopped early and was edited since: only the lines past
+    /// where it stopped are added at the end (`SubtitleViewModel::append_embedded_rest`).
+    pub resume: bool,
+}
+
+impl ReadMode {
+    /// A track chosen for the user on open (always into an empty list).
+    pub const AUTOMATIC: Self = Self { automatic: true, progressive: true, resume: false };
 }
 
 /// A read that ended or was cancelled while it was still the current one ([`EmbeddedSubtitleReads::finish`],
@@ -459,7 +491,12 @@ impl EmbeddedSubtitleReads {
 
     /// The current read when it is `id` (its snapshots may be applied).
     pub fn current(&self, id: u64) -> Option<FinishedRead> {
-        self.current.as_ref().filter(|r| r.id == id).map(|r| FinishedRead {
+        self.current.as_ref().filter(|r| r.id == id).and_then(|_| self.active())
+    }
+
+    /// The read in flight, whichever it is.
+    pub fn active(&self) -> Option<FinishedRead> {
+        self.current.as_ref().map(|r| FinishedRead {
             video: r.video.clone(),
             stream: r.stream,
             mark: r.mark,

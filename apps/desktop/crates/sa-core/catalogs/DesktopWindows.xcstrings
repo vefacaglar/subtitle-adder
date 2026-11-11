@@ -493,6 +493,40 @@
           }
         }
       }
+    },
+    "Videodaki altyazının yalnızca bir kısmı yüklendi: %@": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only part of the subtitles from the video was loaded: %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videodaki altyazının yalnızca bir kısmı yüklendi: %@"
+          }
+        }
+      }
+    },
+    "Kalan Satırları Ekle": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Remaining Lines"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kalan Satırları Ekle"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

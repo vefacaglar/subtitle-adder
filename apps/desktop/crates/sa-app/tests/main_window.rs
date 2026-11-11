@@ -824,7 +824,7 @@ fn manual_tracks() -> MediaTracks {
 /// A reader that answers every text track with one line after reporting half way; records what it was asked.
 fn fake_reader(asked: Arc<Mutex<Vec<(PathBuf, usize)>>>) -> SubtitleReader {
     Arc::new(
-        move |path: &std::path::Path, stream: usize, _cancel: &sa_core::cancel::CancellationToken, progress: &mut dyn FnMut(f64), _snapshot: &mut dyn FnMut(Vec<Sentence>)| {
+        move |path: &std::path::Path, stream: usize, _cancel: &sa_core::cancel::CancellationToken, progress: &mut dyn FnMut(f64), _snapshot: Option<&mut dyn FnMut(Vec<Sentence>)>| {
             asked.lock().push((path.to_path_buf(), stream));
             progress(0.5);
             Ok(embedded_doc(stream))
@@ -842,7 +842,7 @@ fn gated_reader() -> (SubtitleReader, crossbeam_channel::Sender<()>) {
     let (tx, rx) = crossbeam_channel::bounded::<()>(0);
     let rx = Arc::new(Mutex::new(rx));
     let reader: SubtitleReader = Arc::new(
-        move |_p: &std::path::Path, stream: usize, _c: &sa_core::cancel::CancellationToken, _f: &mut dyn FnMut(f64), _s: &mut dyn FnMut(Vec<Sentence>)| {
+        move |_p: &std::path::Path, stream: usize, _c: &sa_core::cancel::CancellationToken, _f: &mut dyn FnMut(f64), _s: Option<&mut dyn FnMut(Vec<Sentence>)>| {
             let _ = rx.lock().recv_timeout(std::time::Duration::from_secs(5));
             Ok(embedded_doc(stream))
         },
@@ -854,6 +854,7 @@ fn gated_reader() -> (SubtitleReader, crossbeam_channel::Sender<()>) {
 enum Step {
     Snapshot(Vec<Sentence>),
     Finish(Vec<Sentence>),
+    Fail(sa_player::ffmpeg_backend::ExtractError),
 }
 
 /// A reader driven by the test: each [`Step`] sent is a snapshot or the result. Records what it was asked and whether
@@ -862,6 +863,8 @@ struct Script {
     reader: SubtitleReader,
     steps: crossbeam_channel::Sender<Step>,
     asked: Arc<Mutex<Vec<(PathBuf, usize)>>>,
+    /// Per read: whether it was handed a snapshot callback (a progressive read).
+    progressive: Arc<Mutex<Vec<bool>>>,
     cancelled: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -869,17 +872,25 @@ fn scripted_reader() -> Script {
     let (tx, rx) = crossbeam_channel::unbounded::<Step>();
     let asked = Arc::new(Mutex::new(Vec::new()));
     let cancelled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (a, c) = (asked.clone(), cancelled.clone());
+    let progressive = Arc::new(Mutex::new(Vec::new()));
+    let (a, c, p) = (asked.clone(), cancelled.clone(), progressive.clone());
     let reader: SubtitleReader = Arc::new(
-        move |path: &std::path::Path, stream: usize, cancel: &sa_core::cancel::CancellationToken, _f: &mut dyn FnMut(f64), snapshot: &mut dyn FnMut(Vec<Sentence>)| {
+        move |path: &std::path::Path, stream: usize, cancel: &sa_core::cancel::CancellationToken, _f: &mut dyn FnMut(f64), mut snapshot: Option<&mut dyn FnMut(Vec<Sentence>)>| {
             a.lock().push((path.to_path_buf(), stream));
+            p.lock().push(snapshot.is_some());
             loop {
                 if cancel.is_cancelled() {
                     c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     return Err(sa_player::ffmpeg_backend::ExtractError::Cancelled);
                 }
                 match rx.recv_timeout(std::time::Duration::from_millis(10)) {
-                    Ok(Step::Snapshot(lines)) => snapshot(lines),
+                    // A read that does not fill the list as it goes gets no snapshot callback (none is built).
+                    Ok(Step::Snapshot(lines)) => {
+                        if let Some(snapshot) = snapshot.as_mut() {
+                            snapshot(lines);
+                        }
+                    }
+                    Ok(Step::Fail(e)) => return Err(e),
                     Ok(Step::Finish(lines)) => {
                         let events = lines.len();
                         return Ok(sa_player::ffmpeg_backend::ExtractedSubtitle { sentences: lines, events });
@@ -890,7 +901,7 @@ fn scripted_reader() -> Script {
             }
         },
     );
-    Script { reader, steps: tx, asked, cancelled }
+    Script { reader, steps: tx, asked, progressive, cancelled }
 }
 
 /// `(start, end, text)` lines as the reader hands them over (ids from 1).
@@ -945,11 +956,12 @@ fn the_track_menu_lists_both_sections_and_switches_the_audio_track() {
     r.main().invoke_menu_requested("tracks".into());
     let menu = r.menu();
     let titles: Vec<String> = menu.iter().map(|e| e.title.to_string()).collect();
-    assert_eq!(titles, vec!["Ses", "İngilizce (AAC, stereo)", "Türkçe — Yorum (AAC, mono)", "", "Videodaki altyazılar", "İngilizce (SRT)", "Türkçe (PGS)"]);
+    assert_eq!(titles, vec!["Ses", "İngilizce (AAC, stereo)", "Türkçe — Yorum (AAC, mono)", "", "Videodaki altyazılar", "Kapalı", "İngilizce (SRT)", "Türkçe (PGS)"]);
     assert!(menu[0].header && menu[4].header && menu[3].separator);
     assert!(menu[1].checked && menu[1].radio && !menu[2].checked);
-    assert!(menu[5].enabled && !menu[6].enabled);
-    assert_eq!(menu[6].hint, "Görüntü tabanlı, desteklenmiyor");
+    assert!(menu[5].checked, "\"Off\" holds while nothing from the video is loaded");
+    assert!(menu[6].enabled && !menu[7].enabled);
+    assert_eq!(menu[7].hint, "Görüntü tabanlı, desteklenmiyor");
     r.main().invoke_menu_activated("audio:2".into());
     r.pump();
     assert_eq!(r.backend.lock().selected, vec![2]);
@@ -1003,7 +1015,9 @@ fn choosing_an_embedded_text_track_loads_it_without_a_file_and_marks_it_in_the_m
     // Choosing the track that is already in the list does nothing (edits stay).
     r.vm.set_text(r.vm.sentences()[0].uid, "Düzeltildi");
     assert!(r.vm.has_unsaved_edits());
-    assert!(!r.menu_ids().contains(&"subtitle:off".to_owned()), "no Off once the lines are edited");
+    r.main().invoke_menu_requested("tracks".into());
+    let off = r.menu().into_iter().find(|e| e.id == "subtitle:off").expect("Off");
+    assert!(!off.enabled && !off.checked, "Off cannot clear edited lines");
     r.main().invoke_menu_activated("subtitle:3".into());
     r.pump();
     assert_eq!(asked.lock().len(), 1, "not read again");
@@ -1042,24 +1056,30 @@ fn a_read_that_ends_after_the_session_changed_is_not_imported_silently() {
     assert_eq!(r.vm.sentences()[0].text, "Gömülü parça 3");
 }
 
+/// M1: generating subtitles supersedes a read filling the list: it stops silently (the user changed nothing).
 #[test]
-fn a_read_that_ends_after_a_job_started_is_not_imported_silently() {
+fn generating_subtitles_while_a_track_is_read_stops_the_read_silently() {
     let (reader, release) = gated_reader();
     let r = rig_with(false, Some(reader));
     r.open_with_tracks("film.mkv", manual_tracks());
     r.main().invoke_menu_activated("subtitle:3".into());
     r.pump();
+    assert!(r.main().get_tracks_busy());
+    assert!(r.vm.can_generate(), "generating stays available while the track is read");
     r.vm.generate();
     let _call = r.env.next(common::CallKind::Transcribe);
     assert!(r.vm.is_working());
+    r.pump();
+    assert!(!r.main().get_tracks_busy(), "the read stopped when the job started");
     release.send(()).unwrap();
-    r.env.eventually("the read ended", || {
+    for _ in 0..10 {
         r.pump();
-        !r.main().get_tracks_busy()
-    });
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert!(r.vm.is_working(), "the job was not stopped");
     assert!(r.vm.sentences().is_empty());
-    assert!(r.main().get_error_open());
+    assert!(!r.main().get_error_open(), "a job start is not reported as the subtitles changing");
+    assert_eq!(r.vm.embedded_read_progress(), None);
 }
 
 /// L2: the track menu refills the shared menu entries only while they are its own, and another video closes it.
@@ -1133,7 +1153,7 @@ fn opening_another_video_drops_a_track_still_being_read() {
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let seen = cancelled.clone();
     let reader: SubtitleReader = Arc::new(
-        move |_p: &std::path::Path, _s: usize, cancel: &sa_core::cancel::CancellationToken, _progress: &mut dyn FnMut(f64), _snap: &mut dyn FnMut(Vec<Sentence>)| {
+        move |_p: &std::path::Path, _s: usize, cancel: &sa_core::cancel::CancellationToken, _progress: &mut dyn FnMut(f64), _snap: Option<&mut dyn FnMut(Vec<Sentence>)>| {
             // Blocks until the test lets it go, then reports how it ended.
             let _ = rx.lock().recv_timeout(std::time::Duration::from_secs(5));
             seen.store(cancel.is_cancelled(), std::sync::atomic::Ordering::SeqCst);
@@ -1228,8 +1248,18 @@ fn an_english_ui_gets_the_english_track_and_off_clears_it() {
     r.pump();
     assert!(r.rows().is_empty() && r.vm.sentences().is_empty());
     assert!(r.vm.embedded_lines().is_none());
-    assert!(!r.menu_ids().contains(&"subtitle:off".to_owned()));
+    r.main().invoke_menu_requested("tracks".into());
+    let off = r.menu().into_iter().find(|e| e.id == "subtitle:off").expect("Off");
+    assert!(off.checked && off.enabled, "Off is checked while nothing from the video is loaded");
     assert_eq!(script.asked.lock().len(), 1, "not read again");
+    // Remembered for the video in this run: opening it again chooses nothing.
+    r.open_video("other.mkv");
+    r.open_with_tracks("film.mkv", film_tracks());
+    for _ in 0..5 {
+        r.pump();
+    }
+    assert_eq!(script.asked.lock().len(), 1, "Off holds when the video opens again");
+    assert!(r.vm.sentences().is_empty());
 }
 
 #[test]
@@ -1324,4 +1354,196 @@ fn another_video_cancels_the_read_and_the_first_one_is_read_again_when_it_comes_
     assert_eq!(script.asked.lock().len(), 2);
     script.steps.send(Step::Finish(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
     r.env.eventually("loaded", || r.rows().len() == 2);
+}
+
+fn cancels(script: &Script) -> usize {
+    script.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Lets the UI thread run a few times (posts from worker threads included).
+fn settle(r: &Rig) {
+    for _ in 0..10 {
+        r.pump();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// H1 + M1: a batch run started while the video's track is being read into its list stops the read silently, drops
+/// the lines read so far and transcribes the video; while the read ran, saving waited and the status said why.
+#[test]
+fn a_batch_run_stops_a_read_in_flight_silently_and_transcribes_the_video() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    r.env.settings.set_string(sa_core::settings::keys::TRANSLATION_TARGET, "tr");
+    let video = r.open_with_tracks("h1/film.mkv", film_tracks());
+    r.env.eventually("reading", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("the first snapshot", || r.rows().len() == 2);
+    assert!(r.vm.embedded_read_progress().is_some());
+    assert!(!r.vm.can_save_subtitle() && !r.vm.can_translate() && !r.vm.can_export());
+    assert!(r.main().get_status_text().contains("Okunuyor… %"), "{}", r.main().get_status_text());
+    r.vm.add_playlist_videos_with_language(vec![video.clone()], "en");
+    r.vm.start_playlist();
+    r.pump();
+    assert!(!r.main().get_tracks_busy(), "the read stopped when the run started");
+    r.env.eventually("the reader saw the cancel", || cancels(&script) == 1);
+    let call = r.env.next(common::CallKind::Transcribe);
+    assert_eq!(call.record.video.as_deref(), Some(video.as_path()));
+    settle(&r);
+    assert!(r.vm.sentences().iter().all(|l| l.text != "Bir" && l.text != "İki"), "the track's lines went");
+    assert!(!r.main().get_error_open(), "nothing to report: the user changed nothing");
+    assert_eq!(r.vm.embedded_read_progress(), None);
+    assert_eq!(r.folder_of(&video), vec!["film.mkv"]);
+}
+
+/// Closing the window (and quitting) while a track is read, with a snapshot posted and not yet applied: nothing is
+/// written, nothing asks about unsaved changes.
+fn closing_while_a_track_is_read_writes_nothing(mac: bool) {
+    let script = scripted_reader();
+    let r = rig_with(mac, Some(script.reader.clone()));
+    let video = r.open_with_tracks("close/film.mkv", film_tracks());
+    r.env.eventually("reading", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir")]))).unwrap();
+    r.env.eventually("the first snapshot", || r.rows().len() == 1);
+    // Another snapshot is taken by the reader and posted, but the UI thread does not get to it before the close.
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    while !script.steps.is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    r.controller.detach();
+    settle(&r);
+    r.env.eventually("the reader saw the cancel", || cancels(&script) == 1);
+    assert!(!r.vm.has_unsaved_edits(), "no unsaved-changes question on close");
+    assert!(r.vm.pending_open().is_none());
+    assert_eq!(r.vm.embedded_read_progress(), None);
+    r.vm.shutdown();
+    settle(&r);
+    assert_eq!(r.folder_of(&video), vec!["film.mkv"]);
+}
+
+#[test]
+fn closing_while_a_track_is_read_writes_nothing_and_asks_nothing() {
+    closing_while_a_track_is_read_writes_nothing(false);
+}
+
+#[test]
+fn on_macos_closing_while_a_track_is_read_writes_nothing_and_asks_nothing() {
+    closing_while_a_track_is_read_writes_nothing(true);
+}
+
+/// L1: "Off" with text being typed into a line commits it and keeps the lines (they are the user's now).
+#[test]
+fn off_with_a_draft_being_typed_keeps_the_lines_with_the_draft() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    r.open_with_tracks("l1/film.mkv", film_tracks());
+    r.env.eventually("reading", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Finish(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("loaded", || r.rows().len() == 2 && !r.main().get_tracks_busy());
+    let uid = r.vm.sentences()[0].uid;
+    r.vm.select_row(uid);
+    r.vm.begin_editing(uid);
+    r.vm.set_draft(uid, "Yazıyorum");
+    r.main().invoke_menu_activated("subtitle:off".into());
+    r.pump();
+    assert_eq!(r.vm.sentences().len(), 2, "the lines stay");
+    assert_eq!(r.vm.sentences()[0].text, "Yazıyorum", "the draft was committed");
+    assert!(r.vm.has_unsaved_edits());
+}
+
+/// L1: switching to another track with a draft being typed commits it first; the other track then replaces the
+/// user's lines at the end of its read like opening a subtitle file (Windows: right away), never as it reads.
+#[test]
+fn switching_tracks_with_a_draft_being_typed_commits_it_and_reads_the_other_track_whole() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    r.open_with_tracks("l1b/film.mkv", film_tracks());
+    r.env.eventually("reading", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Finish(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("loaded", || r.rows().len() == 2 && !r.main().get_tracks_busy());
+    let uid = r.vm.sentences()[0].uid;
+    r.vm.select_row(uid);
+    r.vm.begin_editing(uid);
+    r.vm.set_draft(uid, "Yazıyorum");
+    r.main().invoke_menu_activated("subtitle:3".into());
+    r.env.eventually("the English track is read", || script.asked.lock().len() == 2);
+    assert_eq!(r.vm.sentences()[0].text, "Yazıyorum", "committed before the choice");
+    assert_eq!(script.progressive.lock().clone(), vec![true, false], "the user's lines are not filled in as it reads");
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "One")]))).unwrap();
+    settle(&r);
+    assert_eq!(r.vm.sentences()[0].text, "Yazıyorum");
+    script.steps.send(Step::Finish(track(&[(0.5, 1.5, "One"), (2.0, 3.0, "Two")]))).unwrap();
+    r.env.eventually("replaced at the end", || r.vm.sentences().first().is_some_and(|l| l.text == "One"));
+    assert!(r.vm.embedded_lines().is_some_and(|e| e.stream == 3 && e.complete));
+}
+
+/// L2: a read that fails part-way. Chosen for the user: its lines go, quietly. Chosen by the user: they stay and
+/// the user is told only part of the track was loaded.
+#[test]
+fn a_read_that_fails_part_way_drops_automatic_lines_and_reports_a_chosen_one() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    r.open_with_tracks("l2/film.mkv", film_tracks());
+    r.env.eventually("reading", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("the first snapshot", || r.rows().len() == 2);
+    script.steps.send(Step::Fail(sa_player::ffmpeg_backend::ExtractError::Failed("Disk okunamadı".into()))).unwrap();
+    r.env.eventually("the read ended", || {
+        r.pump();
+        !r.main().get_tracks_busy()
+    });
+    assert!(r.vm.sentences().is_empty(), "half of a track chosen for the user is dropped");
+    assert!(r.vm.embedded_lines().is_none());
+    assert!(!r.main().get_error_open());
+    assert_eq!(r.vm.embedded_read_progress(), None);
+    // The user chooses it now.
+    r.main().invoke_menu_activated("subtitle:5".into());
+    r.env.eventually("read again", || script.asked.lock().len() == 2);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("the first snapshot", || r.rows().len() == 2);
+    script.steps.send(Step::Fail(sa_player::ffmpeg_backend::ExtractError::Failed("Disk okunamadı".into()))).unwrap();
+    r.env.eventually("the read ended", || {
+        r.pump();
+        !r.main().get_tracks_busy()
+    });
+    assert_eq!(r.vm.sentences().len(), 2, "the user's choice keeps what was read");
+    assert!(r.main().get_error_open());
+    assert_eq!(r.main().get_error_text(), "Videodaki altyazının yalnızca bir kısmı yüklendi: Disk okunamadı");
+    assert!(r.vm.embedded_lines().is_some_and(|e| e.pristine && !e.complete));
+    assert!(!r.vm.has_unsaved_edits());
+}
+
+/// M2: the track chosen again after the user edited an early-stopped read: the rest is added after their lines,
+/// as one undo step.
+#[test]
+fn choosing_the_track_again_after_an_edit_stopped_its_read_adds_the_rest() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    r.open_with_tracks("m2/film.mkv", film_tracks());
+    r.env.eventually("reading", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("the first snapshot", || r.rows().len() == 2);
+    r.vm.set_text(r.vm.sentences()[1].uid, "Benim");
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki"), (4.0, 5.0, "Üç")]))).unwrap();
+    r.env.eventually("the read stopped", || cancels(&script) == 1);
+    r.pump();
+    r.main().invoke_error_closed();
+    let all = track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki"), (4.0, 5.0, "Üç"), (6.0, 7.0, "Dört")]);
+    r.main().invoke_menu_activated("subtitle:5".into());
+    r.env.eventually("read again", || script.asked.lock().len() == 2);
+    assert_eq!(script.progressive.lock().clone(), vec![true, false]);
+    script.steps.send(Step::Finish(all)).unwrap();
+    r.env.eventually("the rest", || r.vm.sentences().len() == 4);
+    let texts: Vec<String> = r.vm.sentences().into_iter().map(|l| l.text).collect();
+    assert_eq!(texts, vec!["Bir", "Benim", "Üç", "Dört"]);
+    assert!(!r.main().get_error_open());
+    // Complete now: chosen again, nothing is read.
+    r.main().invoke_menu_activated("subtitle:5".into());
+    r.pump();
+    assert_eq!(script.asked.lock().len(), 2);
+    r.vm.undo();
+    r.pump();
+    let texts: Vec<String> = r.vm.sentences().into_iter().map(|l| l.text).collect();
+    assert_eq!(texts, vec!["Bir", "Benim"]);
 }

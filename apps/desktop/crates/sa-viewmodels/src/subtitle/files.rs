@@ -145,18 +145,28 @@ impl Inner {
         let ui = self.svc.ui.clone();
         let fail_visible = st.policy.single_jobs_as_list_rows == SingleJobsAsListRows::RecentJobs;
         let flavor = st.policy.import_flavor;
+        let lookup = SidecarLookup { key, ui: ui.clone(), sid, done: false };
         let spawned = std::thread::Builder::new().name("sa-sidecar".into()).spawn(move || {
+            let mut lookup = lookup;
             let found = subtitle_import::find_sidecar_subtitle(&video).map(|sidecar| {
                 let parsed = subtitle_import::parse_file_with(&sidecar, flavor);
                 (sidecar, parsed)
             });
+            lookup.done = true;
             // Posted also when there is none: the lookup is over (an embedded track may be chosen now).
             key.post(&ui, move |inner| {
                 inner.edit(|i, c, fx| {
                     let Some(s) = c.st.session_mut(sid) else { return };
                     s.sidecar_lookups = s.sidecar_lookups.saturating_sub(1);
+                    if s.sidecar_lookups == 0 && c.st.is_foreground(sid) {
+                        // `SubtitleViewModel::embedded_auto_choice` stops waiting: listeners ask again.
+                        fx.ch(SubtitleChange::Status);
+                    }
+                    let Some(s) = c.st.session_mut(sid) else { return };
                     let Some((sidecar, parsed)) = found else { return };
-                    if !s.sentences.is_empty() || s.job.is_some() || s.status != JobStatus::Idle {
+                    // Empty and idle, or lines read from the video that nobody changed (the file wins over them).
+                    let replaceable = (s.sentences.is_empty() && s.status == JobStatus::Idle) || s.embedded_pristine();
+                    if !replaceable || s.job.is_some() || s.is_working() {
                         return;
                     }
                     match parsed {
@@ -221,7 +231,12 @@ impl Inner {
                 // Windows `OpenVideo`: a session without lines, translations, status or loaded file is reset and its
                 // sidecar looked up again (a subtitle may have appeared next to the video since). macOS evicts such
                 // sessions, so its next open creates (and loads) a fresh one anyway.
-                if existed.is_some() && !c.st.policy.evict_sessions && c.st.session(sid).is_some_and(Session::is_blank) {
+                // Lines read from the video nobody changed count as nothing here: a subtitle file found next to the
+                // video now replaces them.
+                if existed.is_some()
+                    && !c.st.policy.evict_sessions
+                    && c.st.session(sid).is_some_and(|s| s.is_blank() || (s.embedded_pristine() && s.job.is_none() && !s.is_working()))
+                {
                     if let Some(s) = c.st.session_mut(sid) {
                         s.detected_language = None;
                         s.saved_subtitle_name = None;
@@ -500,7 +515,19 @@ impl Inner {
     /// `save_subtitle_of(session, translated, format)`: renders, writes `<stem>.<fmt>` next to the video atomically
     /// off the UI thread.
     pub(crate) fn save_subtitle_of(&self, c: &mut Core, fx: &mut Fx, sid: SessionId, translated: Option<bool>, format: SubtitleFormat) {
+        self.save_subtitle(c, fx, sid, translated, format, false);
+    }
+
+    /// [`Self::save_subtitle_of`]; `automatic` (auto-save): never lines read from the video that nobody changed
+    /// ([`Session::may_write_automatically`]).
+    pub(crate) fn save_subtitle(&self, c: &mut Core, fx: &mut Fx, sid: SessionId, translated: Option<bool>, format: SubtitleFormat, automatic: bool) {
+        if automatic && c.st.session(sid).is_some_and(|s| !s.may_write_automatically()) {
+            return;
+        }
         let Some(s) = c.st.session(sid) else { return };
+        if c.st.is_foreground(sid) && c.st.embedded_read_of_fg().is_some() {
+            return;
+        }
         let use_translation = translated.unwrap_or(s.export_language == ExportLanguage::Translated) && s.has_translations();
         let Some(base) = s.base_path().map(Path::to_path_buf) else { return };
         let target = base.with_extension(format.raw());
@@ -571,19 +598,20 @@ impl Inner {
         let auto_save = settings.map(|s| s.auto_save).unwrap_or(c.st.auto_save);
         let format = settings.map(|s| s.export_format).unwrap_or(c.st.export_format);
         let Some(s) = c.st.session(sid) else { return };
-        // Lines read from the video are never written next to it behind the user's back (a translation, an edit or
-        // a save makes them the user's first; then `has_translations` decides as usual).
-        if !auto_save || s.embedded_pristine() || !s.has_translations() || !can_save(s) {
+        if !auto_save || !s.has_translations() || !can_save(s) {
             return;
         }
         let Some(dir) = s.base_path().and_then(|p| p.parent()) else { return };
         if !dir.is_dir() {
             return;
         }
-        self.save_subtitle_of(c, fx, sid, Some(true), format);
+        self.save_subtitle(c, fx, sid, Some(true), format, true);
     }
 
     pub(crate) fn export_to(&self, c: &mut Core, fx: &mut Fx, target: PathBuf) {
+        if c.st.embedded_read_of_fg().is_some() {
+            return;
+        }
         self.finish_editing(c, fx);
         let sid = c.st.foreground;
         let s = c.st.fg();
@@ -616,6 +644,10 @@ impl Inner {
     }
 
     pub(crate) fn render_foreground(&self, c: &mut Core, fx: &mut Fx, done: Box<dyn FnOnce(Option<String>)>) {
+        if c.st.embedded_read_of_fg().is_some() {
+            done(None);
+            return;
+        }
         self.finish_editing(c, fx);
         let sid = c.st.foreground;
         let s = c.st.fg();
@@ -647,5 +679,32 @@ impl Inner {
                 }
             }
         });
+    }
+}
+
+/// One sidecar lookup counted on its session (`Session::sidecar_lookups`): the count goes down when the lookup
+/// posts its result, or, should its thread end without doing so (a panic), when this is dropped.
+struct SidecarLookup {
+    key: crate::uiref::UiKey<Inner>,
+    ui: std::sync::Arc<dyn sa_core::dispatch::UiDispatcher>,
+    sid: SessionId,
+    done: bool,
+}
+
+impl Drop for SidecarLookup {
+    fn drop(&mut self) {
+        if !self.done {
+            let sid = self.sid;
+            self.key.post(&self.ui, move |inner| {
+                inner.edit(|_, c, fx| {
+                    if let Some(s) = c.st.session_mut(sid) {
+                        s.sidecar_lookups = s.sidecar_lookups.saturating_sub(1);
+                        if s.sidecar_lookups == 0 && c.st.is_foreground(sid) {
+                            fx.ch(SubtitleChange::Status);
+                        }
+                    }
+                })
+            });
+        }
     }
 }

@@ -58,8 +58,45 @@ pub struct EmbeddedLines {
     /// automatically, replaced by another track without asking). Cleared for good by the first edit, translation,
     /// save or export ([`Session::settle_embedded`]).
     pub pristine: bool,
-    /// The read ran to the end (false while snapshots are still coming in).
+    /// The read ran to the end (false while snapshots are still coming in, or when it stopped early).
     pub complete: bool,
+    /// Where the lines read so far end: the start (ms) of the last line of the last snapshot that went in, and how
+    /// many of that snapshot's lines start there. Choosing the track again after an early stop adds the lines past
+    /// this point ([`resume_after`]).
+    pub cutoff_ms: i64,
+    pub at_cutoff: u32,
+}
+
+impl EmbeddedLines {
+    /// Lines of `stream` as `lines` (sorted by start, as a read lists them) left them.
+    pub fn read(stream: usize, lines: &[Sentence], complete: bool) -> Self {
+        let cutoff_ms = lines.last().map_or(i64::MIN, |l| ms_key(l.start));
+        let at_cutoff = lines.iter().rev().take_while(|l| ms_key(l.start) == cutoff_ms).count() as u32;
+        Self { stream, pristine: true, complete, cutoff_ms, at_cutoff }
+    }
+}
+
+fn ms_key(t: f64) -> i64 {
+    (t * 1000.0).round_ties_even() as i64
+}
+
+/// The lines of a complete read (`all`, sorted by start) past the point an earlier read stopped at (`e`): every line
+/// starting later than its last line, and those starting at the same time beyond the ones it had.
+pub fn resume_after(e: &EmbeddedLines, all: Vec<Sentence>) -> Vec<Sentence> {
+    let mut skip_equal = e.at_cutoff as usize;
+    all.into_iter()
+        .filter(|l| {
+            let at = ms_key(l.start);
+            if at < e.cutoff_ms {
+                false
+            } else if at == e.cutoff_ms && skip_equal > 0 {
+                skip_equal -= 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
 }
 
 /// One video's state.
@@ -255,15 +292,35 @@ impl Session {
     pub fn has_content(&self) -> bool {
         !self.sentences.is_empty() || self.job.is_some() || self.is_working()
     }
-    /// The lines are an embedded track exactly as it was read (see [`EmbeddedLines::pristine`]).
+    /// The lines are an embedded track exactly as it was read (see [`EmbeddedLines::pristine`]), with no text being
+    /// typed into one of them either (an uncommitted draft that differs from its line is the user's work too).
     pub fn embedded_pristine(&self) -> bool {
+        self.embedded_unchanged() && !self.has_typed_draft()
+    }
+
+    /// [`Self::embedded_pristine`] without the drafts: nothing was committed, translated or saved.
+    fn embedded_unchanged(&self) -> bool {
         self.embedded.is_some_and(|e| e.pristine) && !self.has_unsaved_edits && self.translations.is_empty() && self.saved_subtitle_name.is_none()
     }
 
+    /// A text or translation draft whose text differs from what the line holds.
+    fn has_typed_draft(&self) -> bool {
+        let line = |uid| self.sentences.iter().find(|l| l.uid == uid);
+        self.draft.as_ref().is_some_and(|d| line(d.uid).is_none_or(|l| l.text != d.text))
+            || self.translation_draft.as_ref().is_some_and(|d| self.translations.get(&d.uid).is_none_or(|t| t.text != d.text))
+    }
+
+    /// Whether an automatic write (auto-save, a batch run's stage 3) may put these lines on disk: never lines read
+    /// from the video that nobody changed. Every automatic write path asks this.
+    pub fn may_write_automatically(&self) -> bool {
+        !self.embedded_pristine()
+    }
+
     /// Makes embedded lines the user's for good once anything changed them (an edit, a translation, a save); also
-    /// after an export ([`Self::embedded_owned`]). Run after every view-model edit.
+    /// after an export ([`Self::embedded_owned`]). Run after every view-model edit. A draft alone does not: it may
+    /// still be cancelled.
     pub fn settle_embedded(&mut self) {
-        if self.embedded.is_some_and(|e| e.pristine) && !self.embedded_pristine() {
+        if self.embedded.is_some_and(|e| e.pristine) && !self.embedded_unchanged() {
             self.embedded_owned();
         }
     }
@@ -472,8 +529,21 @@ impl Session {
 
     /// Loads lines read from embedded track `stream` of the video (no file behind them; not dirty).
     pub fn load_embedded(&mut self, stream: usize, lines: Vec<Sentence>, complete: bool) {
+        let embedded = EmbeddedLines::read(stream, &lines, complete);
         self.replace_lines(None, lines);
-        self.embedded = Some(EmbeddedLines { stream, pristine: true, complete });
+        self.embedded = Some(embedded);
+    }
+
+    /// Removes lines that are an embedded track nobody changed (a batch run, "Off", an abandoned read): the session
+    /// is as if nothing had been loaded.
+    pub fn drop_embedded(&mut self) {
+        self.set_sentences(Vec::new());
+        self.selection = None;
+        self.selected_uids.clear();
+        self.draft = None;
+        self.translation_draft = None;
+        self.embedded = None;
+        self.set_status(JobStatus::Idle);
     }
 
     /// What every load resets: translations, drafts, selection, languages, saved state; status Finished.
@@ -596,22 +666,44 @@ pub fn pairs(translated: &[Sentence], source: &[Sentence]) -> Vec<(Sentence, Sen
 }
 
 /// Keeps uids stable across partial snapshots (win-viewmodels §10.1 = mac-enginekit §13; banker's rounding kept).
+///
+/// Snapshots mostly repeat the list so far and add to its end, so the leading run of lines that match one to one
+/// (same timing and text, in the same place) keeps its uids by index and only the rest goes through the matching:
+/// the result is the same as matching everything (a matched prefix uses exactly the uids the matching would give
+/// it), at O(n) for an appended snapshot instead of a scan of the whole list for every new line.
 pub fn merge_sentences_preserving_uid(existing: &[Sentence], incoming: Vec<Sentence>) -> Vec<Sentence> {
     if existing.is_empty() {
         return incoming;
     }
-    type Key = (i64, i64, String);
-    let key = |s: &Sentence| -> Key {
-        ((s.start * 1000.0).round_ties_even() as i64, (s.end * 1000.0).round_ties_even() as i64, s.text.clone())
-    };
-    let mut queues: HashMap<Key, std::collections::VecDeque<Uuid>> = HashMap::new();
+    let prefix = existing.iter().zip(&incoming).take_while(|(a, b)| merge_key(a) == merge_key(b)).count();
+    let mut out = incoming;
+    for (line, old) in out.iter_mut().zip(existing).take(prefix) {
+        line.uid = old.uid;
+    }
+    let tail = out.split_off(prefix);
+    out.extend(merge_by_key(&existing[prefix..], tail));
+    out
+}
+
+type MergeKey = (i64, i64, String);
+
+fn merge_key(s: &Sentence) -> MergeKey {
+    ((s.start * 1000.0).round_ties_even() as i64, (s.end * 1000.0).round_ties_even() as i64, s.text.clone())
+}
+
+/// The matching itself: exact timing and text first (in order), then the same text starting within 1.5 s.
+fn merge_by_key(existing: &[Sentence], incoming: Vec<Sentence>) -> Vec<Sentence> {
+    if existing.is_empty() {
+        return incoming;
+    }
+    let mut queues: HashMap<MergeKey, std::collections::VecDeque<Uuid>> = HashMap::new();
     for s in existing {
-        queues.entry(key(s)).or_default().push_back(s.uid);
+        queues.entry(merge_key(s)).or_default().push_back(s.uid);
     }
     let mut used: HashSet<Uuid> = HashSet::new();
     let mut assigned: Vec<Option<Uuid>> = vec![None; incoming.len()];
     for (i, s) in incoming.iter().enumerate() {
-        if let Some(q) = queues.get_mut(&key(s)) {
+        if let Some(q) = queues.get_mut(&merge_key(s)) {
             while let Some(u) = q.pop_front() {
                 if used.insert(u) {
                     assigned[i] = Some(u);
@@ -639,6 +731,79 @@ pub fn merge_sentences_preserving_uid(existing: &[Sentence], incoming: Vec<Sente
             s
         })
         .collect()
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn line(start: f64, end: f64, text: &str) -> Sentence {
+        Sentence::new(0, start, end, text)
+    }
+
+    /// The matching applied to the whole lists (what the function did before the prefix shortcut).
+    fn reference(existing: &[Sentence], incoming: Vec<Sentence>) -> Vec<Sentence> {
+        merge_by_key(existing, incoming)
+    }
+
+    fn uids_of(lines: &[Sentence], existing: &[Sentence]) -> Vec<Option<usize>> {
+        lines.iter().map(|l| existing.iter().position(|e| e.uid == l.uid)).collect()
+    }
+
+    #[test]
+    fn the_prefix_shortcut_matches_exactly_like_the_full_matching() {
+        let a = [line(0.0, 1.0, "a"), line(1.0, 2.0, "b"), line(2.0, 3.0, "a"), line(3.0, 4.0, "c"), line(4.0, 5.0, "a")];
+        let cases: Vec<Vec<Sentence>> = vec![
+            // Appended.
+            vec![line(0.0, 1.0, "a"), line(1.0, 2.0, "b"), line(2.0, 3.0, "a"), line(3.0, 4.0, "c"), line(4.0, 5.0, "a"), line(5.0, 6.0, "d")],
+            // The last line's end moved, one added.
+            vec![line(0.0, 1.0, "a"), line(1.0, 2.0, "b"), line(2.0, 3.0, "a"), line(3.0, 4.0, "c"), line(4.0, 6.0, "a"), line(6.0, 7.0, "a")],
+            // Changed in the middle, reordered, duplicates.
+            vec![line(0.0, 1.0, "a"), line(2.0, 3.0, "a"), line(1.0, 2.0, "b"), line(1.2, 2.0, "c"), line(4.0, 5.0, "a"), line(0.0, 1.0, "a")],
+            // Shorter.
+            vec![line(0.0, 1.0, "a"), line(1.0, 2.0, "b")],
+            // Nothing in common at the start.
+            vec![line(0.5, 1.0, "a"), line(1.0, 2.0, "b"), line(2.0, 3.0, "a")],
+            vec![],
+        ];
+        for incoming in cases {
+            let fast = merge_sentences_preserving_uid(&a, incoming.clone());
+            let slow = reference(&a, incoming);
+            assert_eq!(uids_of(&fast, &a), uids_of(&slow, &a));
+            let fresh = |v: &[Sentence]| v.iter().filter(|l| !a.iter().any(|e| e.uid == l.uid)).count();
+            assert_eq!(fresh(&fast), fresh(&slow));
+        }
+    }
+
+    #[test]
+    fn the_rest_of_a_track_starts_after_the_lines_read_so_far_counting_equal_starts() {
+        let read = [line(0.0, 1.0, "a"), line(2.0, 3.0, "b"), line(2.0, 3.5, "c")];
+        let e = EmbeddedLines::read(3, &read, false);
+        assert_eq!((e.cutoff_ms, e.at_cutoff), (2000, 2));
+        let all = vec![line(0.0, 1.0, "a"), line(2.0, 3.0, "b"), line(2.0, 3.5, "c"), line(2.0, 4.0, "d"), line(5.0, 6.0, "e")];
+        let rest: Vec<String> = resume_after(&e, all).into_iter().map(|l| l.text).collect();
+        assert_eq!(rest, vec!["d", "e"]);
+        let none = EmbeddedLines::read(3, &[], false);
+        assert_eq!(resume_after(&none, vec![line(0.0, 1.0, "a")]).len(), 1, "nothing read: all of it");
+    }
+
+    #[test]
+    fn a_long_read_in_sixty_snapshots_stays_linear() {
+        let all: Vec<Sentence> = (0..50_000).map(|i| line(f64::from(i) * 0.25, f64::from(i) * 0.25 + 0.2, &format!("Line {i}"))).collect();
+        let started = std::time::Instant::now();
+        let mut list: Vec<Sentence> = Vec::new();
+        for step in 1..=60usize {
+            let n = all.len() * step / 60;
+            let snapshot: Vec<Sentence> = all[..n].iter().map(|l| Sentence::new(l.id, l.start, l.end, l.text.clone())).collect();
+            let before: Vec<Uuid> = list.iter().map(|l| l.uid).collect();
+            list = merge_sentences_preserving_uid(&list, snapshot);
+            assert!(list.iter().zip(&before).all(|(l, u)| l.uid == *u), "earlier lines keep their uids");
+        }
+        assert_eq!(list.len(), 50_000);
+        // The former full matching scanned the whole list for every new line (~10^9 comparisons here: minutes in a
+        // debug build); linear is well under a few seconds even unoptimised.
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+    }
 }
 
 /// `RevertedTranslations(from, to, valid)` (win-viewmodels §15.4): undoing an edit made before a re-translation never

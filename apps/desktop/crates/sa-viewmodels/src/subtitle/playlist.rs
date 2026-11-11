@@ -410,6 +410,17 @@ impl Inner {
                 st.playlist_notice = Some(PlaylistNotice { message: block, has_retry: true });
                 return None;
             }
+            // Lines read from a video that nobody changed are no lines to the run: it transcribes those videos.
+            let videos: Vec<PathBuf> = st
+                .playlist
+                .iter()
+                .filter(|p| matches!(p.state, PlaylistItemState::Pending | PlaylistItemState::Failed))
+                .map(|p| p.video_path.clone())
+                .collect();
+            for v in &videos {
+                i.drop_embedded_for_batch(c, fx, v);
+            }
+            let st = &mut c.st;
             let token = CancellationToken::new();
             st.playlist_running = true;
             st.playlist_run = Some(RunHandle { cancel: token.clone() });
@@ -483,6 +494,8 @@ impl Inner {
             };
             let sid = i.session_for(&mut c.st, fx, &it.video_path);
             i.dequeue(c, fx, sid);
+            // Also when the video's track was read after the run started (it is not chosen meanwhile, but chosen by hand).
+            i.drop_embedded_for_batch(c, fx, &it.video_path);
             let mut item_settings = settings.clone();
             item_settings.language = it.source_language.clone();
             item_settings.model = i.model_fitting(&it.source_language, &settings.model);
@@ -548,6 +561,10 @@ impl Inner {
         self.edit(|i, c, fx| {
             let it = c.st.playlist.iter().find(|p| p.id == item).cloned()?;
             let s = c.st.session(sid)?;
+            // Stage 3 writes next to the video: never lines read from it that nobody changed.
+            if !s.may_write_automatically() {
+                return None;
+            }
             let lines = s.sentences.clone();
             let pre_translated = s.translations.clone();
             let source = s.translation_source(&it.source_language);
@@ -679,7 +696,9 @@ impl Orchestrator {
         let (tx, rx) = bounded::<()>(1);
         let needs = !self.token.is_cancelled() && subtitle_import::find_sidecar_subtitle(video).is_none() && {
             let v = video.to_path_buf();
-            self.invoke(move |i| i.read(|c| c.st.existing_session(&v).and_then(|s| c.st.session(s)).is_none_or(|s| s.sentences.is_empty())))
+            self.invoke(move |i| {
+                i.read(|c| c.st.existing_session(&v).and_then(|s| c.st.session(s)).is_none_or(|s| s.sentences.is_empty() || s.embedded_pristine()))
+            })
                 .unwrap_or(false)
         };
         if needs {

@@ -52,16 +52,17 @@ fn labels_name_the_language_then_the_title_then_codec_and_channels() {
     let labels: Vec<&str> = menu.audio.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(labels, vec!["English (AAC, stereo)", "English — Commentary (AC-3, 5.1)", "Track 3 (Opus, mono)"]);
     let labels: Vec<&str> = menu.subtitles.iter().map(|i| i.label.as_str()).collect();
-    assert_eq!(labels, vec!["Turkish (SRT)", "English — SDH (ASS, forced)", "Japanese (PGS)"]);
+    assert_eq!(labels, vec!["Off", "Turkish (SRT)", "English — SDH (ASS, forced)", "Japanese (PGS)"]);
     lang.set(UiLanguage::Tr);
     let menu = TrackMenu::build(&sample(), None, None, false);
     assert_eq!(menu.audio[1].label, "İngilizce — Commentary (AC-3, 5.1)");
     assert_eq!(menu.audio[2].label, "Parça 3 (Opus, mono)");
-    assert_eq!(menu.subtitles[1].label, "İngilizce — SDH (ASS, zorunlu)");
+    assert_eq!(menu.subtitles[0].label, "Kapalı");
+    assert_eq!(menu.subtitles[2].label, "İngilizce — SDH (ASS, zorunlu)");
     // The same file on the macOS chain.
     drop(lang);
     let _mac = LanguageScope::new(CatalogChain::Mac, UiLanguage::En);
-    assert_eq!(TrackMenu::build(&sample(), None, None, false).subtitles[0].label, "Turkish (SRT)");
+    assert_eq!(TrackMenu::build(&sample(), None, None, false).subtitles[1].label, "Turkish (SRT)");
 }
 
 #[test]
@@ -93,14 +94,15 @@ fn the_playing_track_and_the_loaded_subtitle_are_marked_and_image_tracks_are_dis
     let active: Vec<bool> = menu.audio.iter().map(|i| i.active).collect();
     assert_eq!(active, vec![false, true, false]);
     assert!(menu.audio.iter().all(|i| i.enabled && i.hint.is_empty()));
-    assert_eq!(menu.subtitles.iter().map(|i| i.active).collect::<Vec<_>>(), vec![false, true, false]);
-    let image = &menu.subtitles[2];
+    // "Off" first, not checked: a track's lines are in the list.
+    assert_eq!(menu.subtitles.iter().map(|i| i.active).collect::<Vec<_>>(), vec![false, false, true, false]);
+    let image = &menu.subtitles[3];
     assert!(!image.enabled);
     assert_eq!(image.hint, "Image-based, not supported");
-    assert!(menu.subtitles[0].enabled && menu.subtitles[1].enabled);
+    assert!(menu.subtitles[1].enabled && menu.subtitles[2].enabled);
     // The ids parse back to what they stand for.
     assert_eq!(TrackChoice::parse(&menu.audio[0].id), Some(TrackChoice::Audio(1)));
-    assert_eq!(TrackChoice::parse(&menu.subtitles[2].id), Some(TrackChoice::Subtitle(6)));
+    assert_eq!(TrackChoice::parse(&menu.subtitles[3].id), Some(TrackChoice::Subtitle(6)));
     assert_eq!(TrackChoice::parse("audio:x"), None);
     assert_eq!(TrackChoice::parse("model:base"), None);
 }
@@ -109,11 +111,12 @@ fn the_playing_track_and_the_loaded_subtitle_are_marked_and_image_tracks_are_dis
 fn a_track_being_read_shows_its_progress_and_cannot_be_chosen_again() {
     let lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::En);
     let menu = TrackMenu::build(&sample(), Some((4, 0.427)), None, false);
-    assert!(!menu.subtitles[0].enabled);
-    assert_eq!(menu.subtitles[0].hint, "Reading… 42%");
-    assert!(menu.subtitles[1].enabled, "another track can be chosen (it replaces the read)");
+    assert!(!menu.subtitles[0].active, "\"Off\" is not checked while a track is read");
+    assert!(!menu.subtitles[1].enabled);
+    assert_eq!(menu.subtitles[1].hint, "Reading… 42%");
+    assert!(menu.subtitles[2].enabled, "another track can be chosen (it replaces the read)");
     lang.set(UiLanguage::Tr);
-    assert_eq!(TrackMenu::build(&sample(), Some((4, 0.427)), None, false).subtitles[0].hint, "Okunuyor… %42");
+    assert_eq!(TrackMenu::build(&sample(), Some((4, 0.427)), None, false).subtitles[1].hint, "Okunuyor… %42");
 }
 
 #[test]
@@ -136,8 +139,8 @@ fn mark(content: u64) -> SessionMark {
 #[test]
 fn one_read_at_a_time_and_a_cancelled_or_replaced_read_is_dropped() {
     let mut reads = EmbeddedSubtitleReads::default();
-    let auto = ReadMode { automatic: true, progressive: true };
-    let chosen = ReadMode { automatic: false, progressive: true };
+    let auto = ReadMode::AUTOMATIC;
+    let chosen = ReadMode { automatic: false, progressive: true, resume: false };
     let a = reads.start(Path::new("/v.mkv"), 4, mark(1), auto).expect("started");
     assert!(reads.start(Path::new("/v.mkv"), 4, mark(1), chosen).is_none(), "the same read is not started twice");
     assert!(!reads.current(a.id).unwrap().mode.automatic, "choosing the track being read makes the read the user's");
@@ -181,14 +184,14 @@ fn many_image_tracks_collapse_into_one_disabled_row_and_unsupported_text_tracks_
     for i in 0..MAX_LISTED_IMAGE_TRACKS - 1 {
         tracks.subtitles.push(sub(10 + i, Some("deu"), None, "hdmv_pgs_subtitle", SubtitleKind::Image, false));
     }
-    assert_eq!(TrackMenu::build(&tracks, None, None, false).subtitles.len(), 4 + MAX_LISTED_IMAGE_TRACKS - 1);
+    assert_eq!(TrackMenu::build(&tracks, None, None, false).subtitles.len(), 5 + MAX_LISTED_IMAGE_TRACKS - 1);
     // A Blu-ray remux: 30 PGS tracks become one row; the text tracks stay.
     for i in 0..30 {
         tracks.subtitles.push(sub(20 + i, Some("fra"), None, "hdmv_pgs_subtitle", SubtitleKind::Image, false));
     }
     let images = tracks.subtitles.iter().filter(|t| t.kind == SubtitleKind::Image).count();
     let menu = TrackMenu::build(&tracks, None, None, false);
-    assert_eq!(menu.subtitles.len(), 4, "{:?}", menu.subtitles);
+    assert_eq!(menu.subtitles.len(), 5, "{:?}", menu.subtitles);
     let summary = menu.subtitles.last().unwrap();
     assert_eq!((summary.id.as_str(), summary.enabled, summary.active), (IMAGE_SUMMARY_ID, false, false));
     assert_eq!(summary.label, format!("Image-based subtitle tracks: {images}"));
@@ -289,8 +292,13 @@ fn the_track_chosen_on_open_is_the_ui_languages_then_the_default_one() {
 }
 
 #[test]
-fn off_is_offered_first_while_the_lines_are_an_unedited_embedded_track() {
+fn off_comes_first_checked_while_nothing_is_loaded_and_enabled_while_it_can_clear() {
     let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::En);
+    // Nothing from the video in the list: "Off" is what holds (and choosing it keeps a track from being chosen).
+    let menu = TrackMenu::build(&sample(), None, None, false);
+    assert_eq!(menu.subtitles[0].id, SUBTITLE_OFF_ID);
+    assert!(menu.subtitles[0].active && menu.subtitles[0].enabled);
+    assert!(menu.subtitles[1..].iter().all(|i| !i.active));
     let menu = TrackMenu::build(&sample(), None, Some(4), true);
     assert_eq!(menu.subtitles[0].id, SUBTITLE_OFF_ID);
     assert_eq!(menu.subtitles[0].label, "Off");
@@ -298,7 +306,13 @@ fn off_is_offered_first_while_the_lines_are_an_unedited_embedded_track() {
     assert!(menu.subtitles[1].active, "the loaded track stays marked");
     assert_eq!(TrackChoice::parse(SUBTITLE_OFF_ID), Some(TrackChoice::SubtitleOff));
     assert_eq!(TrackChoice::SubtitleOff.id(), SUBTITLE_OFF_ID);
-    assert!(TrackMenu::build(&sample(), None, Some(4), false).subtitles.iter().all(|i| i.id != SUBTITLE_OFF_ID));
+    // Edited lines: "Off" cannot clear them.
+    let edited = TrackMenu::build(&sample(), None, Some(4), false);
+    assert!(!edited.subtitles[0].enabled && !edited.subtitles[0].active);
+    // No text track at all: no "Off".
+    let mut images = sample();
+    images.subtitles.retain(|t| t.kind == SubtitleKind::Image);
+    assert!(TrackMenu::build(&images, None, None, false).subtitles.iter().all(|i| i.id != SUBTITLE_OFF_ID));
 }
 
 fn lines(n: usize) -> Vec<sa_core::engine_types::Sentence> {
@@ -374,6 +388,13 @@ fn embedded_lines_grow_snapshot_by_snapshot_without_ever_being_dirty_or_saved() 
     assert!(!vm.has_unsaved_edits(), "not the user's work");
     assert_eq!(vm.loaded_subtitle(), None, "no file behind them");
     assert_eq!(vm.status(), sa_viewmodels::types::JobStatus::Finished);
+    // The automatic write (what auto-save runs) refuses them; written once the user changed them.
+    vm.save_automatically();
+    for _ in 0..20 {
+        env.pump();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(!video.with_extension("srt").exists(), "the automatic write refuses lines read from the video");
     // Nothing is written next to the video, by any automatic path, up to and including the exit.
     vm.open_video(Some(env.touch("films/other.mkv", "not really a video")));
     env.pump();
@@ -463,7 +484,10 @@ fn off_clears_unedited_embedded_lines_and_an_abandoned_read_leaves_nothing_behin
     assert!(vm.sentences().is_empty() && vm.embedded_lines().is_none());
     assert_eq!(vm.status(), sa_viewmodels::types::JobStatus::Idle);
     assert!(!vm.clear_embedded_lines(), "nothing left to clear");
-    // A read stopped half way by another video: its lines go, so the video opens empty again.
+    assert_eq!(vm.embedded_auto_choice(&video), AutoChoice::Refused, "\"Off\" holds for the video in this run");
+    // The user chooses a track again: a read stopped half way by another video; its lines go, so the video opens
+    // empty again.
+    vm.embedded_track_chosen();
     let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 4, vm.session_mark(), lines(2), false) else { panic!("applied") };
     let next = env.touch("next.mkv", "not really a video");
     vm.open_video(Some(next));
@@ -501,4 +525,240 @@ fn the_complete_track_over_the_users_lines_follows_the_open_subtitle_rules() {
     assert_eq!(vm.sentences().len(), 5);
     assert_eq!(vm.embedded_lines().map(|e| e.stream), Some(4));
     assert!(!vm.has_unsaved_edits());
+}
+
+/// The automatic-write guard (`Session::may_write_automatically`), driven through the write auto-save makes: it fails
+/// if the guard in `save_subtitle(automatic)` is removed.
+#[test]
+fn the_automatic_write_skips_unedited_embedded_lines_and_writes_them_once_edited() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let (vm, _catalog, video) = opened(&env, "guard/film.mkv");
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(2), true) else { panic!("applied") };
+    let srt = video.with_extension("srt");
+    vm.save_automatically();
+    for _ in 0..20 {
+        env.pump();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(!srt.exists(), "refused while the lines are the track's");
+    let uid = vm.sentences()[0].uid;
+    vm.select_row(uid);
+    vm.set_text(uid, "Benim");
+    vm.save_automatically();
+    env.eventually("written once edited", || srt.exists());
+}
+
+fn translate_everything(env: &Env) {
+    env.engine.set_script(|r| match r.kind {
+        common::CallKind::Transcribe => {
+            let name = r.video.as_ref().unwrap().file_stem().unwrap().to_string_lossy().into_owned();
+            Some(vec![Ok(sa_enginekit::events::EngineEvent::Result(sa_enginekit::events::EngineResult {
+                language: "en".into(),
+                duration: 1.0,
+                audio: String::new(),
+                outputs: vec![],
+                sentences: vec![common::s(1, 0.0, 1.0, &format!("Metin {name}"))],
+            }))])
+        }
+        common::CallKind::Translate => Some(vec![Ok(sa_enginekit::events::EngineEvent::Translation {
+            language: r.to.clone().unwrap(),
+            sentences: r.sentences.iter().map(|x| common::s(x.id, x.start, x.end, &format!("T:{}", x.text))).collect(),
+        })]),
+        common::CallKind::Extract => None,
+    });
+}
+
+fn playlist_states(vm: &sa_viewmodels::SubtitleViewModel) -> Vec<sa_viewmodels::types::PlaylistItemState> {
+    vm.playlist().iter().map(|p| p.state).collect()
+}
+
+/// H1: a batch run transcribes a video whose list holds an unedited embedded track (it is no lines to the run), and
+/// nothing made from the track is written.
+#[test]
+fn a_batch_run_transcribes_a_video_holding_an_unedited_embedded_track() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    env.settings.set_string(sa_core::settings::keys::TRANSLATION_TARGET, "tr");
+    translate_everything(&env);
+    let (vm, _catalog, video) = opened(&env, "h1/film.mkv");
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(3), true) else { panic!("applied") };
+    vm.add_playlist_videos_with_language(vec![video.clone()], "en");
+    vm.start_playlist();
+    env.eventually("completed", || playlist_states(&vm) == vec![sa_viewmodels::types::PlaylistItemState::Completed]);
+    let transcribed: Vec<_> = env.engine.calls_of(common::CallKind::Transcribe).iter().map(|c| c.video.clone()).collect();
+    assert_eq!(transcribed, vec![Some(video.clone())], "the video was transcribed");
+    let translated: Vec<String> = env.engine.calls_of(common::CallKind::Translate).iter().flat_map(|c| c.sentences.iter().map(|x| x.text.clone())).collect();
+    assert_eq!(translated, vec!["Metin film"], "the track's lines were never translated");
+    assert_eq!(std::fs::read_to_string(video.with_extension("srt")).unwrap(), "T:Metin film");
+}
+
+/// H1: a read filling the list when the run starts stops (the view model no longer waits for it), its lines go, and
+/// a late snapshot of it is not applied.
+#[test]
+fn a_batch_run_drops_the_lines_of_a_read_in_flight_and_ignores_its_late_snapshots() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    env.settings.set_string(sa_core::settings::keys::TRANSLATION_TARGET, "tr");
+    translate_everything(&env);
+    let (vm, _catalog, video) = opened(&env, "h1b/film.mkv");
+    let SnapshotOutcome::Applied(mark) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(2), false) else { panic!("applied") };
+    vm.set_embedded_read(&video, Some(0.3));
+    assert_eq!(vm.embedded_read_progress(), Some(0.3));
+    vm.add_playlist_videos_with_language(vec![video.clone()], "en");
+    assert_eq!(vm.embedded_auto_choice(&video), AutoChoice::Refused, "nothing is chosen for a queued video");
+    vm.start_playlist();
+    assert_eq!(vm.embedded_read_progress(), None, "the run does not wait for the read");
+    assert!(vm.sentences().iter().all(|l| !l.text.starts_with("Satır")), "the partial lines went");
+    assert_eq!(vm.apply_embedded_snapshot(&video, 3, mark, lines(4), false), SnapshotOutcome::Superseded);
+    assert_eq!(vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(4), false), SnapshotOutcome::Superseded);
+    env.eventually("completed", || playlist_states(&vm) == vec![sa_viewmodels::types::PlaylistItemState::Completed]);
+    assert_eq!(env.engine.calls_of(common::CallKind::Transcribe).len(), 1);
+    assert_eq!(std::fs::read_to_string(video.with_extension("srt")).unwrap(), "T:Metin film");
+}
+
+/// M1: while a read fills the list, it is not complete: translating, saving and exporting wait (the status says why);
+/// generating does not.
+#[test]
+fn while_a_read_fills_the_list_translating_saving_and_exporting_wait() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    env.settings.set_string(sa_core::settings::keys::SELECTED_LANGUAGE, "tr");
+    let (vm, _catalog, video) = opened(&env, "m1/film.mkv");
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(3), false) else { panic!("applied") };
+    vm.select_row(vm.sentences()[0].uid);
+    let (translate, selected, export, save) = (vm.can_translate(), vm.can_translate_selected(), vm.can_export(), vm.can_save_subtitle());
+    assert!(translate && selected && export && save, "available for the lines as they are");
+    vm.set_embedded_read(&video, Some(0.42));
+    assert!(!vm.can_translate() && !vm.can_translate_selected() && !vm.can_export() && !vm.can_save_subtitle());
+    assert!(vm.status_text().ends_with("Okunuyor… %42"), "{}", vm.status_text());
+    assert!(vm.can_generate(), "generating replaces the track's lines: available");
+    vm.translate();
+    vm.translate_selected();
+    vm.save_subtitle_next_to_video();
+    vm.export_to(video.with_extension("vtt"));
+    for _ in 0..20 {
+        env.pump();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(env.engine.calls_of(common::CallKind::Translate).is_empty());
+    let mut names: Vec<String> = std::fs::read_dir(video.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert_eq!(names, vec!["film.mkv"]);
+    // The read ends: all of it again.
+    vm.set_embedded_read(&video, None);
+    assert!(vm.can_translate() && vm.can_save_subtitle() && vm.can_export());
+    assert!(!vm.status_text().contains("Okunuyor"));
+}
+
+/// M2: an early-stopped read the user edited (a split, a delete) gets only the rest of the track added after the
+/// user's lines; one undo takes exactly those away.
+#[test]
+fn choosing_a_track_again_after_its_read_stopped_adds_only_the_rest() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let (vm, _catalog, video) = opened(&env, "m2/film.mkv");
+    let all = lines(10);
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), all[..4].to_vec(), false) else { panic!("applied") };
+    // The user splits line 1 (2.0–3.5) and deletes line 2 of what was read.
+    let second = vm.sentences()[1].uid;
+    vm.select_row(second);
+    assert!(vm.can_split_selected(2.7));
+    vm.split_selected(2.7);
+    let third = vm.sentences().into_iter().find(|l| l.text == "Satır 2").unwrap().uid;
+    vm.select_row(third);
+    vm.delete_selected();
+    env.pump();
+    assert_eq!(vm.sentences().len(), 4);
+    assert!(!vm.embedded_lines().unwrap().pristine);
+    assert!(vm.embedded_resumes(3), "the same track resumes");
+    assert!(!vm.embedded_resumes(4), "another track replaces");
+    let before: Vec<(uuid::Uuid, String, f64)> = vm.sentences().into_iter().map(|l| (l.uid, l.text, l.start)).collect();
+    assert_eq!(vm.append_embedded_rest(&video, 3, all.clone()), Some(6));
+    let after = vm.sentences();
+    assert_eq!(after.len(), 10);
+    let kept: Vec<(uuid::Uuid, String, f64)> = after[..4].iter().map(|l| (l.uid, l.text.clone(), l.start)).collect();
+    assert_eq!(kept, before, "the user's lines are untouched");
+    let added: Vec<&str> = after[4..].iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(added, vec!["Satır 4", "Satır 5", "Satır 6", "Satır 7", "Satır 8", "Satır 9"]);
+    let ids: Vec<i64> = after.iter().map(|l| l.id).collect();
+    assert_eq!(ids, (1..=10).collect::<Vec<i64>>(), "numbered again: ids stay unique");
+    let uids: std::collections::HashSet<uuid::Uuid> = after.iter().map(|l| l.uid).collect();
+    assert_eq!(uids.len(), 10);
+    assert!(vm.embedded_lines().unwrap().complete);
+    assert!(!vm.embedded_resumes(3), "read to the end now");
+    assert!(vm.has_unsaved_edits());
+    // One undo step removes exactly the added lines.
+    vm.undo();
+    let undone: Vec<(uuid::Uuid, String, f64)> = vm.sentences().into_iter().map(|l| (l.uid, l.text, l.start)).collect();
+    assert_eq!(undone, before);
+    // Another file replaced the lines meanwhile: nothing is added.
+    let srt = env.touch("m2/other.srt", "1\n00:00:00,500 --> 00:00:01,250\nDosya\n");
+    assert!(vm.load_subtitle_file(&srt));
+    assert_eq!(vm.append_embedded_rest(&video, 3, all), None);
+    assert_eq!(vm.sentences().len(), 1);
+}
+
+/// M4 (Windows): opening the video again looks for a subtitle next to it again, and one that appeared replaces lines
+/// read from the video that nobody changed.
+#[test]
+fn on_windows_a_subtitle_that_appeared_replaces_unedited_embedded_lines_when_the_video_opens_again() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let (vm, _catalog, video) = opened(&env, "m4/film.mkv");
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(3), true) else { panic!("applied") };
+    let other = env.touch("m4/other.mkv", "not really a video");
+    vm.open_video(Some(other));
+    env.pump();
+    let srt = env.touch("m4/film.srt", "1\n00:00:00,500 --> 00:00:01,250\nYandaki\n");
+    vm.open_video(Some(video.clone()));
+    env.eventually("the sidecar", || vm.sentences().len() == 1 && vm.sentences()[0].text == "Yandaki");
+    assert!(vm.embedded_lines().is_none());
+    assert_eq!(vm.loaded_subtitle(), Some(srt));
+    // Edited embedded lines stay the user's.
+    let edited = env.touch("m4b/film.mkv", "not really a video");
+    vm.open_video(Some(edited.clone()));
+    env.eventually("the sidecar lookup", || vm.embedded_auto_choice(&edited) != AutoChoice::Wait);
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&edited, 3, vm.session_mark(), lines(3), true) else { panic!("applied") };
+    let uid = vm.sentences()[0].uid;
+    vm.select_row(uid);
+    vm.set_text(uid, "Benim");
+    vm.open_video(Some(env.touch("m4b/other.mkv", "not really a video")));
+    env.pump();
+    env.touch("m4b/film.srt", "1\n00:00:00,500 --> 00:00:01,250\nYandaki\n");
+    vm.open_video(Some(edited));
+    for _ in 0..20 {
+        env.pump();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(vm.sentences().len(), 3);
+    assert_eq!(vm.sentences()[0].text, "Benim");
+}
+
+/// L1: text being typed into an embedded line is the user's work: no longer pristine, and "Off" commits it and keeps
+/// the lines.
+#[test]
+fn a_typed_draft_makes_embedded_lines_the_users_and_off_commits_it() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let (vm, _catalog, video) = opened(&env, "l1/film.mkv");
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(2), true) else { panic!("applied") };
+    let uid = vm.sentences()[0].uid;
+    vm.select_row(uid);
+    vm.begin_editing(uid);
+    assert!(vm.embedded_lines().unwrap().pristine, "an editor opened on a line changes nothing yet");
+    vm.set_draft(uid, "Yazıyorum");
+    assert!(!vm.embedded_lines().unwrap().pristine, "a typed draft counts as the user's work");
+    assert!(!vm.has_unsaved_edits(), "not committed yet");
+    assert!(!vm.clear_embedded_lines(), "\"Off\" commits the draft and keeps the lines");
+    assert_eq!(vm.sentences().len(), 2);
+    assert_eq!(vm.sentences()[0].text, "Yazıyorum");
+    assert!(vm.has_unsaved_edits());
+    // A draft typed back to the line's text is nothing.
+    let other = vm.sentences()[1].uid;
+    vm.begin_editing(other);
+    vm.set_draft(other, "x");
+    vm.set_draft(other, "Satır 1");
+    let s = vm.sentences();
+    assert_eq!(s[1].text, "Satır 1");
 }

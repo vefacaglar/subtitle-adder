@@ -161,6 +161,10 @@ pub(crate) struct State {
     pub mirroring_playlist: bool,
     /// Playlist stage 2 waits for these jobs to end.
     pub job_waiters: HashMap<(SessionId, Uuid), crossbeam_channel::Sender<()>>,
+    /// The progressive embedded subtitle read in flight (the video it fills, its progress): `embedded.rs`.
+    pub embedded_read: Option<(PathBuf, f64)>,
+    /// Path keys of the videos "Off" was chosen for in the track menu during this run of the app.
+    pub embedded_off: HashSet<String>,
 }
 
 impl State {
@@ -502,6 +506,8 @@ impl SubtitleViewModel {
             provider: ProviderSnapshot::default(),
             mirroring_playlist: false,
             job_waiters: HashMap::new(),
+            embedded_read: None,
+            embedded_off: HashSet::new(),
         };
         st.next_session = 1;
         st.sessions.insert(1, Session::new(1, None, display));
@@ -958,6 +964,15 @@ impl SubtitleViewModel {
                     }
                 }
                 _ if fg.is_async_translating => Self::async_label_text(fg.async_fraction),
+                // A track of the video is still coming in (translate, save and export wait for it).
+                JobStatus::Finished | JobStatus::Idle if s.embedded_read_of_fg().is_some() => {
+                    let reading = embedded_reading_text(s.embedded_read_of_fg().unwrap_or(0.0));
+                    if fg.status == JobStatus::Finished {
+                        format!("{} · {reading}", fg.finished_summary(s.policy.summary_language_placeholder))
+                    } else {
+                        reading
+                    }
+                }
                 JobStatus::Finished => fg.finished_summary(s.policy.summary_language_placeholder),
                 JobStatus::Failed { message } => message.text(),
                 JobStatus::Idle => {
@@ -1217,7 +1232,7 @@ impl SubtitleViewModel {
         });
     }
     pub fn can_translate(&self) -> bool {
-        self.has_sentences() && !self.is_working()
+        self.has_sentences() && !self.is_working() && self.embedded_read_progress().is_none()
     }
     pub fn translate(&self) {
         self.translate_with(false, None);
@@ -1231,7 +1246,7 @@ impl SubtitleViewModel {
         });
     }
     pub fn can_translate_selected(&self) -> bool {
-        self.read(|s| !s.fg().selected_uids.is_empty()) && !self.is_working()
+        self.read(|s| !s.fg().selected_uids.is_empty() && s.embedded_read_of_fg().is_none()) && !self.is_working()
     }
     pub fn translate_selected(&self) {
         if !self.can_translate_selected() {
@@ -1519,7 +1534,7 @@ impl SubtitleViewModel {
     // ----- export / save (rendering through the engine)
 
     pub fn can_export(&self) -> bool {
-        self.read(|s| !s.fg().sentences.is_empty() && !s.fg().status.is_working())
+        self.read(|s| !s.fg().sentences.is_empty() && !s.fg().status.is_working() && s.embedded_read_of_fg().is_none())
     }
     /// Renders the foreground (`ExportFormat`, `ExportsTranslation`) and writes `target` (UTF-8, no BOM).
     pub fn export_to(&self, target: PathBuf) {
@@ -1530,7 +1545,7 @@ impl SubtitleViewModel {
         self.inner.edit(|i, c, fx| i.render_foreground(c, fx, done));
     }
     pub fn can_save_subtitle(&self) -> bool {
-        self.read(|s| files::can_save(s.fg()))
+        self.read(|s| files::can_save(s.fg()) && s.embedded_read_of_fg().is_none())
     }
     /// `<video stem>.<fmt>` next to the video, atomic.
     pub fn save_subtitle_next_to_video(&self) {
@@ -1539,6 +1554,17 @@ impl SubtitleViewModel {
             let fg = c.st.foreground;
             let format = c.st.export_format;
             i.save_subtitle_of(c, fx, fg, None, format);
+        });
+    }
+    /// The write an automatic save makes for the foreground (what a finished translation's auto-save runs, without
+    /// its translation and setting checks), so tests can drive the automatic-write guard directly: lines read from
+    /// the video that nobody changed are never written (`Session::may_write_automatically`).
+    #[doc(hidden)]
+    pub fn save_automatically(&self) {
+        self.inner.edit(|i, c, fx| {
+            let fg = c.st.foreground;
+            let format = c.st.export_format;
+            i.save_subtitle(c, fx, fg, None, format, true);
         });
     }
     /// macOS export panel result: success marks the edits saved.
@@ -1770,4 +1796,9 @@ impl crate::providers_ui::PickerHost for SubtitleViewModel {
     fn set_translation_model(&self, id: &str) {
         SubtitleViewModel::set_translation_model(self, id);
     }
+}
+
+/// `Okunuyor… %N` (the track menu's hint for a track being read), for the status while a track fills the list.
+fn embedded_reading_text(fraction: f64) -> String {
+    l!("Okunuyor… %lld%%", (fraction.clamp(0.0, 1.0) * 100.0).floor() as i64)
 }
