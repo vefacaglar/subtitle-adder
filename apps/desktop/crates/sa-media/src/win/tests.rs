@@ -805,13 +805,14 @@ impl SessionProfiles {
                 found
             }),
             Arc::new(move || {
-                let hook = generation.on_check.lock().take();
-                if let Some((thread, f)) = hook {
-                    if std::thread::current().name() == Some(thread.as_str()) {
-                        f();
-                    } else {
-                        *generation.on_check.lock() = Some((thread, f));
-                    }
+                // Taken only by the named thread (other threads never touch it), then run outside the lock.
+                let hook = {
+                    let mut slot = generation.on_check.lock();
+                    let mine = slot.as_ref().is_some_and(|(thread, _)| std::thread::current().name() == Some(thread.as_str()));
+                    if mine { slot.take() } else { None }
+                };
+                if let Some((_, f)) = hook {
+                    f();
                 }
                 if generation.changing.load(Acquire) {
                     return None;
@@ -914,9 +915,11 @@ fn session_keyed_reads_proceed_while_the_profile_store_lock_is_held() {
 }
 
 /// A logout / login / switch that is still inside its critical section (the generation not yet published) already
-/// stops an open stream: its next cached chunk is refused, and the session stays ended when the change completes.
+/// keeps an open stream from using its key: the next cached chunk is refused. A change that then fails (a wrong
+/// password) leaves the stream's cache session usable; one that commits ends it for good.
 #[test]
 fn a_session_change_in_progress_stops_cached_reads_before_it_is_published() {
+    use std::sync::atomic::Ordering::Release;
     let fx = CacheFixture::new();
     let (path, raw) = fx.video("in_progress.mp4", 4 * CHUNK as usize, 23, 5);
     let profiles = Arc::new(SessionProfiles::default());
@@ -925,21 +928,31 @@ fn a_session_change_in_progress_stops_cached_reads_before_it_is_published() {
     play_through(&raw, &store, &path);
     let c = CHUNK as usize;
     let mut stream = cache_only_stream(raw.len(), &store, &path);
-    let mut first = vec![0u8; c];
-    std::io::Read::read_exact(&mut stream, &mut first).unwrap();
-    assert_eq!(first, raw[..c]);
+    let mut chunk = vec![0u8; c];
+    std::io::Read::read_exact(&mut stream, &mut chunk).unwrap();
+    assert_eq!(chunk, raw[..c]);
 
-    // The change has begun and is blocked (the store lock is held, nothing published yet).
-    profiles.changing.store(true, std::sync::atomic::Ordering::Release);
+    // A login attempt has begun and is blocked (the store lock is held, nothing published yet).
+    profiles.changing.store(true, Release);
     let blocked_inside = profiles.active.lock();
-    let mut next = vec![0u8; c];
-    assert!(std::io::Read::read(&mut stream, &mut next).is_err(), "the leaving user's chunk is refused");
+    assert!(std::io::Read::read(&mut stream, &mut chunk).is_err(), "the key is not used while the change runs");
     assert_eq!(stream.encrypted_cache_read_count(), 1);
     drop(blocked_inside);
-    // The change fails (nothing changed): the stream still does not use the key again.
-    profiles.changing.store(false, std::sync::atomic::Ordering::Release);
-    assert!(std::io::Read::read(&mut stream, &mut next).is_err());
-    assert_eq!(stream.encrypted_cache_read_count(), 1);
+    // The attempt fails (wrong password: no new generation): the same stream uses its cache again.
+    profiles.changing.store(false, Release);
+    std::io::Read::read_exact(&mut stream, &mut chunk).unwrap();
+    assert_eq!(chunk, raw[c..2 * c], "a failed login leaves the open stream's cache session usable");
+    assert_eq!(stream.encrypted_cache_read_count(), 2);
+
+    // A switch that commits: refused while in progress, and the session ends once it is published.
+    profiles.changing.store(true, Release);
+    assert!(std::io::Read::read(&mut stream, &mut chunk).is_err());
+    profiles.login("bob", 1);
+    profiles.changing.store(false, Release);
+    assert!(std::io::Read::read(&mut stream, &mut chunk).is_err(), "a committed switch ends the session");
+    profiles.login("alice", 4);
+    assert!(std::io::Read::read(&mut stream, &mut chunk).is_err(), "an ended session never becomes current again");
+    assert_eq!(stream.encrypted_cache_read_count(), 2);
     // A new stream opened afterwards uses the cache again.
     let mut fresh = cache_only_stream(raw.len(), &store, &path);
     let mut all = vec![0u8; raw.len()];
@@ -987,8 +1000,6 @@ fn a_chunk_queued_for_the_ssd_writer_before_a_switch_is_refused_after_it() {
     checked_rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the writer ran its check");
     stream.flush_pending();
     drop(stream);
-    // The writer decided right after its check; give its thread a moment to finish before looking.
-    std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(fx.vcache_files().is_empty(), "alice's chunk landed after the switch");
     profiles.login("alice", 6);
     let id = VideoCacheStore::compute_video_identity(Some(&path), raw.len() as i64, CHUNK);
@@ -996,9 +1007,11 @@ fn a_chunk_queued_for_the_ssd_writer_before_a_switch_is_refused_after_it() {
 }
 
 /// A paused stream (no reads at all) still loses its key copy soon after a logout: the watcher ends session-keyed
-/// sessions too.
+/// sessions too. While a session change is in progress it leaves the session alone; a failed change keeps it, a
+/// committed one ends it.
 #[test]
 fn the_watcher_ends_a_session_keyed_session_without_reads() {
+    use std::sync::atomic::Ordering::Release;
     let fx = CacheFixture::new();
     let profiles = Arc::new(SessionProfiles::default());
     profiles.login("alice", 2);
@@ -1010,16 +1023,21 @@ fn the_watcher_ends_a_session_keyed_session_without_reads() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(session.is_ended(), "ended by the watcher");
-    // A change in progress (no generation published) ends it too.
+
     profiles.login("alice", 2);
     let session = store.try_begin_session().expect("logged in");
-    profiles.changing.store(true, std::sync::atomic::Ordering::Release);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !session.is_ended() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(session.is_ended(), "ended while the change is in progress");
-    profiles.changing.store(false, std::sync::atomic::Ordering::Release);
+    profiles.changing.store(true, Release);
+    store.end_stale_sessions();
+    assert!(!session.is_ended(), "a change in progress does not end the session");
+    assert!(!store.is_session_current(&session), "but the key is not current meanwhile");
+    profiles.changing.store(false, Release); // the change failed
+    store.end_stale_sessions();
+    assert!(!session.is_ended() && store.is_session_current(&session));
+    profiles.changing.store(true, Release);
+    profiles.login("bob", 3); // this one commits
+    profiles.changing.store(false, Release);
+    store.end_stale_sessions();
+    assert!(session.is_ended(), "a committed switch ends it");
 }
 
 /// After a logout or a user switch an open stream's cache session ends at its next chunk (key copy zeroed): it

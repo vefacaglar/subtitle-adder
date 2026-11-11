@@ -49,8 +49,20 @@ pub type SessionKeyProvider = Arc<dyn Fn() -> Option<(u64, String, SecretKey32)>
 
 /// The current session generation, or `None` while a session change is in progress
 /// (`ProfileStore::settled_session_generation`). Must never block: it runs on every chunk read of a playback stream
-/// (the demux thread). A `None` ends the stream's cache session like a new generation does.
+/// (the demux thread). While it is `None` no chunk is read or written with a captured key (the stream reads its
+/// source for those chunks), but the session stays; a different generation ends it.
 pub type SessionGenerationProvider = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
+/// The outcome of a session currency check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Currency {
+    /// The key may be used.
+    Current,
+    /// A session change is in progress: do not use the key now, keep the session.
+    Paused,
+    /// The owner changed (or is gone): end the session.
+    Stale,
+}
 
 /// Where a store gets its key from.
 enum KeySource {
@@ -190,8 +202,9 @@ impl VideoCacheStore {
     /// Like [`Self::new`], for a key source that may block (the profile store lock): `keys` runs only when a stream
     /// opens (and on the session watcher thread); a chunk read or write compares the lock-free `generation` with the
     /// one its session was opened under, so the player's demux thread never waits for the profile store, and a
-    /// logout or user switch ends an open stream's session at its next chunk — already when the change begins
-    /// (`generation` is `None` while it is in progress). A change the profile store only learns about by re-reading
+    /// logout or user switch ends an open stream's session at its next chunk. From the moment a change begins
+    /// (`generation` is `None` while it is in progress) the key is not used; the session ends once the change commits
+    /// and stays usable if it fails (a wrong password, a taken name). A change the profile store only learns about by re-reading
     /// its file (another in-process store of the same file, another instance without a broker event) is noticed by
     /// the session watcher's full lookup within [`Self::SESSION_WATCH_INTERVAL`], not at the next chunk.
     pub fn with_session_keys(cache_dir: PathBuf, keys: SessionKeyProvider, generation: SessionGenerationProvider, max_bytes: Option<i64>) -> Arc<Self> {
@@ -283,9 +296,10 @@ impl VideoCacheStore {
         if username.trim().is_empty() {
             return None;
         }
-        // A session change under way (or finished since the lookup) would end the session at its first chunk.
+        // A change finished since the lookup would end the session at its first chunk. One still in progress does
+        // not prevent the session (its chunks wait until the change is decided).
         if let KeySource::Session { generation: current, .. } = &self.keys
-            && current() != generation
+            && current().is_some_and(|g| Some(g) != generation)
         {
             return None;
         }
@@ -333,36 +347,47 @@ impl VideoCacheStore {
     }
 
     /// The lock-free part of a currency check: with a session key source, the generation the session was opened
-    /// under must still be the current one (always true for a per-chunk source).
-    fn generation_current(&self, session: &CacheSession) -> bool {
+    /// under must still be the current one (always current for a per-chunk source). While a session change is in
+    /// progress (`generation` is `None`) the key must not be used, but the session is not ended: the change may
+    /// still fail and leave the session as it was.
+    fn generation_state(&self, session: &CacheSession) -> Currency {
         match &self.keys {
-            KeySource::PerChunk(_) => true,
-            KeySource::Session { generation, .. } => session.generation.is_some() && generation() == session.generation,
+            KeySource::PerChunk(_) => Currency::Current,
+            KeySource::Session { generation, .. } => match generation() {
+                None => Currency::Paused,
+                Some(g) if session.generation == Some(g) => Currency::Current,
+                Some(_) => Currency::Stale,
+            },
         }
     }
 
-    /// The full check against an owner looked up beforehand (never under the gate: the lookup may block).
-    fn matches_owner(&self, session: &CacheSession, state: &SessionKey, owner: Option<&(Option<u64>, String, SecretKey32)>) -> bool {
-        let Some((generation, username, key)) = owner else { return false };
-        !state.ended
-            && self.generation_current(session)
+    /// The full check against an owner looked up beforehand (never under the gate: the lookup may block). A missing
+    /// owner (logged out), another user, key or generation is stale; otherwise the lock-free state decides.
+    fn owner_state(&self, session: &CacheSession, state: &SessionKey, owner: Option<&(Option<u64>, String, SecretKey32)>) -> Currency {
+        let Some((generation, username, key)) = owner else { return Currency::Stale };
+        let same_owner = !state.ended
             && (generation.is_none() || *generation == session.generation)
             && eq_ordinal_ignore_case(username.trim(), &session.username)
-            && bool::from(key.expose().ct_eq(state.key.expose()))
+            && bool::from(key.expose().ct_eq(state.key.expose()));
+        if !same_owner {
+            return Currency::Stale;
+        }
+        self.generation_state(session)
     }
 
-    /// True while `session`'s profile is still the active, unlocked profile (a full lookup; may block on the
-    /// profile store, so not for the read path).
+    /// True while `session`'s profile is still the active, unlocked profile and no session change is in progress
+    /// (a full lookup; may block on the profile store, so not for the read path).
     pub fn is_session_current(&self, session: &CacheSession) -> bool {
         let owner = self.keys.lookup();
         let state = session.gate.lock();
-        self.matches_owner(session, &state, owner.as_ref())
+        self.owner_state(session, &state, owner.as_ref()) == Currency::Current
     }
 
     /// Ends every handed-out session whose profile is no longer the active, unlocked one (C# `EndStaleSessions`, run
     /// on every `StateChanged`). The session watcher calls it while sessions are live; the app may call it on a
     /// profile state change to end them at once. The owner is looked up once, before any session gate is taken, so
-    /// a slow profile store never holds up a stream's chunk read through the gate.
+    /// a slow profile store never holds up a stream's chunk read through the gate. A session whose profile is in the
+    /// middle of a session change is left alone until the change is decided.
     pub fn end_stale_sessions(&self) {
         let live: Vec<Arc<CacheSession>> = {
             let mut sessions = self.sessions.lock();
@@ -375,7 +400,7 @@ impl VideoCacheStore {
         let owner = self.keys.lookup();
         for session in live {
             let mut state = session.gate.lock();
-            if !self.matches_owner(&session, &state, owner.as_ref()) {
+            if self.owner_state(&session, &state, owner.as_ref()) == Currency::Stale {
                 CacheSession::end_locked(&mut state);
             }
         }
@@ -384,7 +409,9 @@ impl VideoCacheStore {
     /// Runs `work` with the session's key under its gate; a stale session is ended. File I/O stays out of `work`.
     ///
     /// The per-chunk path: with a session key source it takes no profile store lock at all (only the session's own
-    /// gate and the lock-free generation); a per-chunk source is looked up before the gate is taken.
+    /// gate and the lock-free generation); a per-chunk source is looked up before the gate is taken. While a session
+    /// change is in progress this call is refused (`None`, the stream falls back to its source for this chunk) and
+    /// the session stays: a change that commits ends it at the next check, one that fails leaves it usable.
     fn with_current_session<T>(&self, session: Option<&CacheSession>, work: impl FnOnce(&CacheSession, &[u8; 32]) -> T) -> Option<T> {
         let session = session?;
         let owner = match &self.keys {
@@ -395,15 +422,18 @@ impl VideoCacheStore {
         if state.ended {
             return None;
         }
-        let current = match &owner {
-            Some(owner) => self.matches_owner(session, &state, owner.as_ref()),
-            None => self.generation_current(session),
+        let currency = match &owner {
+            Some(owner) => self.owner_state(session, &state, owner.as_ref()),
+            None => self.generation_state(session),
         };
-        if !current {
-            CacheSession::end_locked(&mut state);
-            return None;
+        match currency {
+            Currency::Current => Some(work(session, state.key.expose())),
+            Currency::Paused => None,
+            Currency::Stale => {
+                CacheSession::end_locked(&mut state);
+                None
+            }
         }
-        Some(work(session, state.key.expose()))
     }
 
     fn chunk_path(&self, session: &CacheSession, key: &[u8; 32], identity: &str, index: i64) -> PathBuf {

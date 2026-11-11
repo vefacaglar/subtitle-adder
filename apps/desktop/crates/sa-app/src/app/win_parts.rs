@@ -141,8 +141,8 @@ impl WinParts {
 /// The encrypted chunk cache over the profile store. The vault key is read (under the profile store lock) only when
 /// a playback stream opens, together with its session generation; every chunk read and write of the stream then
 /// compares the store's lock-free generation, so the demux thread never waits for a profile save and a logout or user
-/// switch ends the stream's cache session (its key copy zeroized) at the next chunk, already while the change is
-/// still in progress.
+/// switch ends the stream's cache session (its key copy zeroized) at the next chunk; while the change is still in
+/// progress the key is not used, and a change that fails (a wrong password) leaves the session usable.
 fn video_cache_store(dir: PathBuf, profiles: &Arc<WinProfileStore>) -> Arc<VideoCacheStore> {
     let (key_profiles, generation_profiles) = (profiles.clone(), profiles.clone());
     VideoCacheStore::with_session_keys(
@@ -387,13 +387,19 @@ mod tests {
             let mut first = vec![0u8; c];
             std::io::Read::read_exact(&mut stream, &mut first).unwrap();
             assert_eq!(first, raw[..c]);
+            // A failed login (wrong password) changes no session: the open stream keeps using its cache.
+            assert!(profiles.login_user(&format!("ali-{change}"), "wrong", false).is_err());
+            let mut second = vec![0u8; c];
+            std::io::Read::read_exact(&mut stream, &mut second).unwrap();
+            assert_eq!(second, raw[c..2 * c]);
+            assert_eq!(stream.encrypted_cache_read_count(), 2);
             match change {
                 "logout" => profiles.logout_user(),
                 _ => profiles.register_user(&format!("veli-{change}"), "pw-5678", false).unwrap(),
             }
             let mut next = vec![0u8; c];
             assert!(std::io::Read::read(&mut stream, &mut next).is_err(), "{change}: no cached plaintext of the previous session");
-            assert_eq!(stream.encrypted_cache_read_count(), 1);
+            assert_eq!(stream.encrypted_cache_read_count(), 2);
             if change == "switch" {
                 profiles.logout_user();
             }

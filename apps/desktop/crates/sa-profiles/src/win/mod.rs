@@ -1662,7 +1662,7 @@ impl WinProfileStore {
             // Another instance logged out or deleted a profile: the resync below may end this process's session.
             // (A login elsewhere only restores a session here while none is active, and list events change no
             // session, so streams keep their key through those.)
-            let _change =
+            let change =
                 matches!(evt.kind, EventKind::ProfileLogout | EventKind::ProfileDeleted).then(|| self.state.begin_session_change());
             {
                 let mut st = self.state.lock();
@@ -1676,6 +1676,8 @@ impl WinProfileStore {
                     updated = true;
                 }
             }
+            // Lowered once the token is published, before anyone is notified (a handler may open a stream).
+            drop(change);
             if updated {
                 self.notify(ProfileChange::External);
             }
@@ -1698,7 +1700,7 @@ impl WinProfileStore {
         let salt = crypto::random_salt();
         let (hash, key) = crypto::derive(password, &salt, PBKDF2_ITERATIONS as u32);
         self.drain();
-        let _change = self.state.begin_session_change();
+        let change = self.state.begin_session_change();
         {
             let mut st = self.state.lock();
             let _m = netcompat::CrossProcessMutex::acquire(&self.mutex_name, 2000);
@@ -1750,6 +1752,8 @@ impl WinProfileStore {
             r.post_commit_events = Some(vec![self.profiles_event(EventKind::ProfileLogin), self.profiles_event(EventKind::ListChanged)]);
             self.submit(r);
         }
+        // Token published (state guard gone): lowered before the handlers run.
+        drop(change);
         self.notify(ProfileChange::Local);
         Ok(())
     }
@@ -1801,7 +1805,7 @@ impl WinProfileStore {
         }
         self.drain();
         let pre = self.preverify(&u, password);
-        let _change = self.state.begin_session_change();
+        let change = self.state.begin_session_change();
         {
             let mut st = self.state.lock();
             let _m = netcompat::CrossProcessMutex::acquire(&self.mutex_name, 2000);
@@ -1841,6 +1845,8 @@ impl WinProfileStore {
             st.last_error = None;
             self.save_auth_header(&mut st);
         }
+        // Token published (state guard gone): lowered before the handlers run.
+        drop(change);
         self.broker.publish(Topic::Profiles, self.profiles_event(EventKind::ProfileLogin));
         self.broker.publish(Topic::Profiles, self.profiles_event(EventKind::ListChanged));
         self.notify(ProfileChange::Local);
@@ -1850,7 +1856,7 @@ impl WinProfileStore {
     /// `Logout`.
     pub fn logout_user(&self) {
         self.drain();
-        let _change = self.state.begin_session_change();
+        let change = self.state.begin_session_change();
         let changed;
         {
             let mut st = self.state.lock();
@@ -1872,6 +1878,8 @@ impl WinProfileStore {
             st.user_logged_out_this_session = true;
             st.last_error = None;
         }
+        // Token published (state guard gone): lowered before the handlers run.
+        drop(change);
         if changed {
             self.broker.publish(Topic::Profiles, self.profiles_event(EventKind::ProfileLogout));
             self.notify(ProfileChange::Local);
@@ -1886,7 +1894,7 @@ impl WinProfileStore {
         }
         self.drain();
         let pre = self.preverify(&u, password);
-        let _change = self.state.begin_session_change();
+        let change = self.state.begin_session_change();
         {
             let mut st = self.state.lock();
             let _m = netcompat::CrossProcessMutex::acquire(&self.mutex_name, 2000);
@@ -1921,6 +1929,8 @@ impl WinProfileStore {
             r.post_commit_events = Some(vec![self.profiles_event(EventKind::ProfileDeleted), self.profiles_event(EventKind::ListChanged)]);
             self.submit(r);
         }
+        // Token published (state guard gone): lowered before the handlers run.
+        drop(change);
         self.notify(ProfileChange::Local);
         Ok(())
     }
@@ -2721,7 +2731,8 @@ impl ProfileStore for WinProfileStore {
     }
     /// Lock-free: raised by `register_user`, `login_user`, `logout_user`, `delete_user` and the resync after another
     /// instance's logout / delete, from before they take the state lock until their token is published. A failed
-    /// operation (wrong password, taken name) raises it too: a stream then continues uncached from its source.
+    /// operation (wrong password, taken name) raises it too: an open stream reads its source meanwhile and uses its
+    /// cache again afterwards (the token did not change).
     fn session_change_in_progress(&self) -> bool {
         self.state.session_change_in_progress()
     }

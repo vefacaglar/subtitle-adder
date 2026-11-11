@@ -230,8 +230,8 @@ pub trait ProfileStore: Send + Sync {
 
     /// Lock-free: true from the start of an operation that may change the session (login, register, logout, delete;
     /// raised before it waits for the store lock) until its new generation is published. A consumer holding a
-    /// captured key ([`Self::active_vault_key_in_session`]) stops using it meanwhile; if the operation then fails,
-    /// nothing changed and the consumer simply goes on without the key. Default: never (test doubles).
+    /// captured key ([`Self::active_vault_key_in_session`]) does not use it meanwhile; if the operation then fails,
+    /// the generation is unchanged and the consumer may use its key again. Default: never (test doubles).
     fn session_change_in_progress(&self) -> bool {
         false
     }
