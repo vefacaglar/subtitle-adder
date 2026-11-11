@@ -460,7 +460,7 @@ impl VideoSurface {
     pub fn clear(&self) {
         if let Ok(mut s) = self.inner.try_borrow_mut() {
             // The RGBA path clears before every frame it shows: only forgetting a GPU frame starts a new dump burst
-            // (RGBA dumps start one at a pts jump).
+            // here (a new video resets it through `reset_dumps`; a pts jump starts one too).
             let had_frame = s.pending.is_some() || s.current.is_some() || s.shown.is_some();
             s.pending = None;
             s.current = None;
@@ -475,6 +475,15 @@ impl VideoSurface {
             {
                 d.policy.reset();
             }
+        }
+    }
+
+    /// A new video: the next frames start a new dump burst (`SUBTITLE_ADDER_FRAME_DUMP`), whichever path shows them.
+    pub fn reset_dumps(&self) {
+        if let Ok(mut s) = self.inner.try_borrow_mut()
+            && let Some(d) = &mut s.dump
+        {
+            d.policy.reset();
         }
     }
 

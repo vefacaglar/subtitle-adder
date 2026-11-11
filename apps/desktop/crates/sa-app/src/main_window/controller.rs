@@ -591,6 +591,7 @@ impl MainWindowController {
             st.spare_frame = None;
         }
         self.video.clear();
+        self.video.reset_dumps();
         if let Some(w) = self.win() {
             w.global::<MainBridge>().set_video_frame(slint::Image::default());
         }
