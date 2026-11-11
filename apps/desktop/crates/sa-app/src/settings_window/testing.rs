@@ -321,20 +321,35 @@ impl WinSettingsOps for FakeWinOps {
     }
 }
 
+/// Associations in memory. `hold` stands for slow registry writes: `register` / `unregister` wait while a test holds
+/// it; `calls` counts them; `fail` makes them report failure (changing nothing).
 #[derive(Default)]
 pub struct FakeAssociations {
     pub registered: Mutex<bool>,
     pub opened: Mutex<usize>,
+    pub hold: Mutex<()>,
+    pub calls: Mutex<usize>,
+    pub fail: Mutex<bool>,
+}
+
+impl FakeAssociations {
+    fn write(&self, registered: bool) -> bool {
+        let _hold = self.hold.lock();
+        *self.calls.lock() += 1;
+        if *self.fail.lock() {
+            return false;
+        }
+        *self.registered.lock() = registered;
+        true
+    }
 }
 
 impl FileAssociations for FakeAssociations {
     fn register(&self) -> bool {
-        *self.registered.lock() = true;
-        true
+        self.write(true)
     }
     fn unregister(&self) -> bool {
-        *self.registered.lock() = false;
-        true
+        self.write(false)
     }
     fn is_registered(&self) -> bool {
         *self.registered.lock()

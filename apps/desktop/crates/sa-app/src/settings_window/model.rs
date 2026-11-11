@@ -87,6 +87,13 @@ pub enum PendingConfirm {
     DeleteProvider(Uuid),
 }
 
+/// What a file-association worker did: `true` = it succeeded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssocOutcome {
+    Registered(bool),
+    Unregistered(bool),
+}
+
 /// The open confirmation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confirm {
@@ -114,6 +121,10 @@ struct State {
     cache_used: Option<i64>,
     cache_busy: bool,
     assoc_bar: Option<(i32, String)>,
+    /// A registration / unregistration runs on a worker.
+    assoc_busy: bool,
+    /// The registry state read after this window's last action (`None` until one finished: read live).
+    assoc_registered: Option<bool>,
     // providers
     keys: HashMap<Uuid, ProviderKey>,
     key_epochs: HashMap<Uuid, u64>,
@@ -235,6 +246,8 @@ pub struct View {
     pub cache_gb: i64,
     pub clear_cache_enabled: bool,
     pub associations_registered: bool,
+    /// A registration / unregistration is running (the card ignores clicks meanwhile).
+    pub associations_busy: bool,
     pub associations_bar_open: bool,
     pub associations_bar_severity: i32,
     pub associations_bar_text: String,
@@ -809,38 +822,112 @@ impl SettingsModel {
         self.changed();
     }
 
+    /// The registration state shown on the card: the outcome of the last action of this window, else a live read.
     fn associations_registered(&self) -> bool {
+        if let Some(registered) = self.state.borrow().assoc_registered {
+            return registered;
+        }
         self.deps.win.as_ref().and_then(|w| w.associations()).is_some_and(|a| a.is_registered())
     }
 
-    pub fn toggle_associations(&self) {
-        let Some(a) = self.deps.win.as_ref().and_then(|w| w.associations()) else { return };
-        let bar = if a.is_registered() {
-            if a.unregister() {
-                self.deps.settings.set_bool(keys::FILE_ASSOCIATIONS_DISABLED, true);
-                (0, sa_core::l("Dosya türü ilişkilendirmeleri kaldırıldı."))
-            } else {
-                (2, sa_core::l("Dosya türü ilişkilendirmeleri kaldırılamadı."))
+    /// True while a registration / unregistration of this window runs (further clicks are ignored).
+    pub fn associations_busy(&self) -> bool {
+        self.state.borrow().assoc_busy
+    }
+
+    /// Marks the card busy and returns the associations, or `None` (nothing to do, or an action already runs).
+    fn begin_associations_job(&self) -> Option<std::sync::Arc<dyn sa_core::platform::FileAssociations>> {
+        let a = self.deps.win.as_ref().and_then(|w| w.associations())?;
+        {
+            let mut st = self.state.borrow_mut();
+            if st.closed || st.assoc_busy {
+                return None;
             }
-        } else if a.register() {
-            self.deps.settings.set_bool(keys::FILE_ASSOCIATIONS_DISABLED, false);
-            (
+            st.assoc_busy = true;
+        }
+        self.changed();
+        Some(a)
+    }
+
+    /// The card's switch: the registry writes (a few hundred values plus a shell notification) run on a worker; the
+    /// result comes back to the UI thread ([`Self::finish_associations`]).
+    pub fn toggle_associations(&self) {
+        let Some(a) = self.begin_associations_job() else { return };
+        let key = self.ui_key();
+        let ui = self.deps.ui.clone();
+        let settings = self.deps.settings.clone();
+        let spawned = std::thread::Builder::new().name("sa-settings-associations".into()).spawn(move || {
+            let outcome = if a.is_registered() {
+                AssocOutcome::Unregistered(a.unregister())
+            } else {
+                AssocOutcome::Registered(a.register())
+            };
+            // Persisted here, so the opt-out matches the registry even when the window closes meanwhile.
+            match outcome {
+                AssocOutcome::Unregistered(true) => settings.set_bool(keys::FILE_ASSOCIATIONS_DISABLED, true),
+                AssocOutcome::Registered(true) => settings.set_bool(keys::FILE_ASSOCIATIONS_DISABLED, false),
+                _ => {}
+            }
+            let registered = a.is_registered();
+            key.post(&ui, move |m| m.finish_associations(outcome, registered));
+        });
+        if spawned.is_err() {
+            self.state.borrow_mut().assoc_busy = false;
+            self.changed();
+        }
+    }
+
+    fn finish_associations(&self, outcome: AssocOutcome, registered: bool) {
+        {
+            let mut st = self.state.borrow_mut();
+            st.assoc_busy = false;
+            st.assoc_registered = Some(registered);
+        }
+        if self.is_closed() {
+            return;
+        }
+        let bar = match outcome {
+            AssocOutcome::Unregistered(true) => (0, sa_core::l("Dosya türü ilişkilendirmeleri kaldırıldı.")),
+            AssocOutcome::Unregistered(false) => (2, sa_core::l("Dosya türü ilişkilendirmeleri kaldırılamadı.")),
+            AssocOutcome::Registered(true) => (
                 1,
                 sa_core::l(
                     "Video ve altyazı dosya türleri Windows'a kaydedildi. “Varsayılan uygulamalar…”dan Subtitle Adder'ı varsayılan oynatıcı yapabilirsin.",
                 ),
-            )
-        } else {
-            (2, sa_core::l("Dosya türleri Windows'a kaydedilemedi."))
+            ),
+            AssocOutcome::Registered(false) => (2, sa_core::l("Dosya türleri Windows'a kaydedilemedi.")),
         };
         self.state.borrow_mut().assoc_bar = Some(bar);
         self.changed();
     }
 
+    /// "Varsayılan uygulamalar…": registers first when needed (on a worker), then opens the Windows page.
     pub fn open_default_apps(&self) {
-        let Some(a) = self.deps.win.as_ref().and_then(|w| w.associations()) else { return };
-        if !a.is_registered() && a.register() {
-            self.deps.settings.set_bool(keys::FILE_ASSOCIATIONS_DISABLED, false);
+        let Some(a) = self.begin_associations_job() else { return };
+        let key = self.ui_key();
+        let ui = self.deps.ui.clone();
+        let settings = self.deps.settings.clone();
+        let spawned = std::thread::Builder::new().name("sa-settings-default-apps".into()).spawn(move || {
+            if !a.is_registered() && a.register() {
+                settings.set_bool(keys::FILE_ASSOCIATIONS_DISABLED, false);
+            }
+            let registered = a.is_registered();
+            key.post(&ui, move |m| m.finish_default_apps(a, registered));
+        });
+        if spawned.is_err() {
+            self.state.borrow_mut().assoc_busy = false;
+            self.changed();
+        }
+    }
+
+    fn finish_default_apps(&self, a: std::sync::Arc<dyn sa_core::platform::FileAssociations>, registered: bool) {
+        {
+            let mut st = self.state.borrow_mut();
+            st.assoc_busy = false;
+            st.assoc_registered = Some(registered);
+        }
+        if self.is_closed() {
+            return;
         }
         a.open_default_apps_settings();
         self.changed();
@@ -1918,6 +2005,7 @@ impl SettingsModel {
             cache_gb,
             clear_cache_enabled: !st.cache_busy && st.cache_used.unwrap_or(0) > 0,
             associations_registered: self.associations_registered(),
+            associations_busy: st.assoc_busy,
             associations_bar_open: st.assoc_bar.is_some(),
             associations_bar_severity: st.assoc_bar.as_ref().map(|b| b.0).unwrap_or(0),
             associations_bar_text: st.assoc_bar.as_ref().map(|b| b.1.clone()).unwrap_or_default(),

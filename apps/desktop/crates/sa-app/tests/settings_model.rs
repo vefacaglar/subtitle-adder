@@ -310,21 +310,76 @@ fn file_associations_toggle_and_default_apps() {
     let _g = SERIAL.lock();
     let e = env();
     let m = model(&e, Flavor::Windows);
+    let a = e.f.win.associations.clone().unwrap();
     assert!(!m.view().associations_registered);
     m.toggle_associations();
+    // The registry work runs on a worker; the result arrives through the UI queue.
+    wait(&e, || !m.associations_busy());
     let v = m.view();
-    assert!(v.associations_registered && v.associations_bar_open);
+    assert!(v.associations_registered && v.associations_bar_open && !v.associations_busy);
     assert_eq!(v.associations_bar_severity, 1);
     assert_eq!(e.f.settings.get_bool("fileAssociationsDisabled"), Some(false));
     m.toggle_associations();
+    wait(&e, || !m.associations_busy());
     let v = m.view();
     assert!(!v.associations_registered);
     assert_eq!(v.associations_bar_severity, 0);
     assert_eq!(v.associations_bar_text, "Dosya türü ilişkilendirmeleri kaldırıldı.");
     assert_eq!(e.f.settings.get_bool("fileAssociationsDisabled"), Some(true));
     m.open_default_apps();
+    wait(&e, || !m.associations_busy());
     assert!(m.view().associations_registered, "default apps registers first");
-    assert_eq!(*e.f.win.associations.as_ref().unwrap().opened.lock(), 1);
+    assert_eq!(*a.opened.lock(), 1);
+    assert_eq!(e.f.settings.get_bool("fileAssociationsDisabled"), Some(false));
+    assert_eq!(*a.calls.lock(), 3);
+    // Already registered: the page opens without another registry write.
+    m.open_default_apps();
+    wait(&e, || !m.associations_busy());
+    assert_eq!((*a.opened.lock(), *a.calls.lock()), (2, 3));
+}
+
+#[test]
+fn file_associations_failure_shows_the_error_bar_and_the_real_state() {
+    let _g = SERIAL.lock();
+    let e = env();
+    let m = model(&e, Flavor::Windows);
+    let a = e.f.win.associations.clone().unwrap();
+    *a.fail.lock() = true;
+    m.toggle_associations();
+    wait(&e, || !m.associations_busy());
+    let v = m.view();
+    assert!(!v.associations_registered, "a failed registration leaves the card off");
+    assert_eq!(v.associations_bar_severity, 2);
+    assert_eq!(v.associations_bar_text, "Dosya türleri Windows'a kaydedilemedi.");
+    assert_eq!(e.f.settings.get_bool("fileAssociationsDisabled"), None, "nothing persisted on failure");
+}
+
+/// While the registry work runs the UI thread is free, the card is busy and further clicks are ignored; the bar and
+/// the switch change only when the result arrives.
+#[test]
+fn file_associations_busy_state_ignores_clicks_until_the_result_arrives() {
+    let _g = SERIAL.lock();
+    let e = env();
+    let m = model(&e, Flavor::Windows);
+    let a = e.f.win.associations.clone().unwrap();
+    {
+        let _slow = a.hold.lock();
+        m.toggle_associations();
+        let v = m.view();
+        assert!(v.associations_busy, "the toggle returned at once and the card is busy");
+        assert!(!v.associations_registered && !v.associations_bar_open, "nothing shown before the result");
+        m.toggle_associations();
+        m.open_default_apps();
+        pump(&e);
+        assert!(m.view().associations_busy);
+    }
+    wait(&e, || !m.associations_busy());
+    pump(&e);
+    let v = m.view();
+    assert!(v.associations_registered && v.associations_bar_open);
+    assert_eq!(v.associations_bar_severity, 1);
+    assert_eq!(*a.calls.lock(), 1, "the clicks made while busy were ignored");
+    assert_eq!(*a.opened.lock(), 0);
 }
 
 // MARK: Windows provider form

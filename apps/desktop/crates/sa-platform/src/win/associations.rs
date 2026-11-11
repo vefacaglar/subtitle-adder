@@ -1,6 +1,7 @@
 //! HKCU self-registration (win-ui-main §3; C# `FileAssociationRegistrar`, registry layout byte-exact, no elevation).
 //! Registered on every launch unless `fileAssociationsDisabled` is true, and only when the binary is
-//! `SubtitleAdder.exe` ([`should_register_on_launch`]).
+//! `SubtitleAdder.exe` ([`should_register_on_launch`]). The launch registration and the Settings actions are ordered
+//! by a process-wide [`RegistrationGate`]: one writer at a time, and the launch one never runs after the user acted.
 //!
 //! The C#-era media extensions ([`MEDIA_EXTENSIONS`]) and [`SUBTITLE_EXTENSIONS`] get the C# tree exactly. The other
 //! accepted media extensions ([`OPEN_WITH_ONLY_MEDIA_EXTENSIONS`]) are a deliberate addition: only an
@@ -11,7 +12,9 @@
 //! "choose an app" prompt, while the two values leave the default alone.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
+use parking_lot::Mutex;
 use sa_core::platform::FileAssociations;
 use windows::Win32::Foundation::{ERROR_SUCCESS, WIN32_ERROR};
 use windows::Win32::System::Registry::{
@@ -73,33 +76,75 @@ pub fn icon_path() -> Option<PathBuf> {
     Some(dir.join("Assets").join("AppIcon.ico"))
 }
 
+/// Orders every registration and unregistration of one registry root: one runs at a time, and the launch-time
+/// registration gives way to the user. The launch worker runs only while no explicit (Settings) call has been made in
+/// this process; once one has, a launch registration that had not started its writes yet does nothing, so an
+/// unregister from Settings is never undone by it.
+#[derive(Debug, Default)]
+pub struct RegistrationGate {
+    /// `true` once an explicit `register()` / `unregister()` ran (or started) in this process.
+    user_acted: Mutex<bool>,
+}
+
+impl RegistrationGate {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// The gate of the real `HKCU` root, shared by every [`FileAssociationRegistrar::new`] in the process.
+    pub fn process() -> Arc<Self> {
+        static GATE: OnceLock<Arc<RegistrationGate>> = OnceLock::new();
+        GATE.get_or_init(RegistrationGate::new).clone()
+    }
+}
+
 pub struct FileAssociationRegistrar {
     /// Prefix of every key path under HKCU (`""` in production; a scratch subtree in tests).
     root: String,
     exe: Option<PathBuf>,
     icon: Option<String>,
     notify_shell: bool,
+    gate: Arc<RegistrationGate>,
 }
 
 impl FileAssociationRegistrar {
     pub fn new() -> Self {
-        Self { root: String::new(), exe: None, icon: None, notify_shell: true }
+        Self { root: String::new(), exe: None, icon: None, notify_shell: true, gate: RegistrationGate::process() }
     }
 
-    /// Writes below `HKCU\<root>` with a fixed exe and icon and no shell notification (tests).
+    /// Writes below `HKCU\<root>` with a fixed exe and icon and no shell notification (tests). Gets its own
+    /// [`RegistrationGate`]; registrars that stand for one process share one through [`Self::with_gate`].
     pub fn with_root(root: &str, exe: PathBuf, icon: Option<String>) -> Self {
-        Self { root: format!("{}\\", root.trim_end_matches('\\')), exe: Some(exe), icon, notify_shell: false }
+        Self { root: format!("{}\\", root.trim_end_matches('\\')), exe: Some(exe), icon, notify_shell: false, gate: RegistrationGate::new() }
     }
 
-    /// Registers on a worker thread when [`should_register_on_launch`]; every error is swallowed.
+    /// The same registrar ordered by `gate`.
+    pub fn with_gate(mut self, gate: Arc<RegistrationGate>) -> Self {
+        self.gate = gate;
+        self
+    }
+
+    /// Registers on a worker thread when [`should_register_on_launch`]; every error is swallowed. Ordered with the
+    /// Settings actions through the process gate (see [`Self::register_on_launch`]).
     pub fn register_on_launch_in_background(file_associations_disabled: Option<bool>) {
         let Ok(exe) = std::env::current_exe() else { return };
         let data_dir_override = std::env::var_os(sa_core::platform::DATA_DIR_ENV).is_some_and(|v| !v.is_empty());
         if should_register_on_launch(&exe, file_associations_disabled) && !is_scratch_instance(&exe, data_dir_override) {
             let _ = std::thread::Builder::new().name("sa-file-associations".into()).spawn(|| {
-                let _ = FileAssociationRegistrar::new().register();
+                let _ = FileAssociationRegistrar::new().register_on_launch();
             });
         }
+    }
+
+    /// The launch-time registration: waits for a running Settings action, and does nothing (returns `false`) once
+    /// the user registered or unregistered in this process. Otherwise registers, holding the gate for the whole
+    /// write, so a Settings action that comes in meanwhile runs after it.
+    pub fn register_on_launch(&self) -> bool {
+        let acted = self.gate.user_acted.lock();
+        if *acted {
+            return false;
+        }
+        self.try_register().is_ok()
     }
 
     fn key(&self, path: &str) -> String {
@@ -234,11 +279,35 @@ impl Default for FileAssociationRegistrar {
 }
 
 impl FileAssociations for FileAssociationRegistrar {
+    /// An explicit registration (Settings): ordered after a running launch registration, and ends the launch one.
     fn register(&self) -> bool {
+        let mut acted = self.gate.user_acted.lock();
+        *acted = true;
         self.try_register().is_ok()
     }
 
+    /// An explicit unregistration (Settings): ordered after a running launch registration, and a launch registration
+    /// that has not started yet never runs afterwards.
     fn unregister(&self) -> bool {
+        let mut acted = self.gate.user_acted.lock();
+        *acted = true;
+        self.unregister_locked()
+    }
+
+    fn is_registered(&self) -> bool {
+        Key::open(&self.key(&format!(r"Software\Classes\{MEDIA_PROG_ID}\shell\open\command")), false)
+            .and_then(|k| k.get(None))
+            .is_some_and(|v| !v.trim().is_empty())
+    }
+
+    fn open_default_apps_settings(&self) {
+        super::process::open_default_apps_settings();
+    }
+}
+
+impl FileAssociationRegistrar {
+    /// [`FileAssociations::unregister`] without the gate (the caller holds it).
+    fn unregister_locked(&self) -> bool {
         for ext in dotted_media_extensions() {
             self.unregister_extension(&ext, MEDIA_PROG_ID);
         }
@@ -259,16 +328,6 @@ impl FileAssociations for FileAssociationRegistrar {
         }
         self.notify();
         ok
-    }
-
-    fn is_registered(&self) -> bool {
-        Key::open(&self.key(&format!(r"Software\Classes\{MEDIA_PROG_ID}\shell\open\command")), false)
-            .and_then(|k| k.get(None))
-            .is_some_and(|v| !v.trim().is_empty())
-    }
-
-    fn open_default_apps_settings(&self) {
-        super::process::open_default_apps_settings();
     }
 }
 
@@ -468,6 +527,75 @@ mod tests {
                 assert_eq!(get_at(root, &assoc, Some(ext)), None, "{ext}");
             }
         }
+    }
+
+    /// A user's unregister (Settings) wins over the launch registration in every order: the launch one either ran
+    /// first (and is then removed) or has not started its writes and never runs.
+    #[test]
+    fn launch_registration_never_undoes_a_settings_unregister() {
+        let exe = PathBuf::from(r"C:\Program Files\Subtitle Adder\SubtitleAdder.exe");
+        // The launch worker has not started when the user unregisters: it does nothing afterwards.
+        let s = scratch();
+        let gate = RegistrationGate::new();
+        let settings = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
+        let launch = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
+        assert!(settings.unregister());
+        assert!(!launch.register_on_launch(), "skipped after the user acted");
+        assert!(!settings.is_registered());
+        // An explicit register is still honored, and a late launch one stays a no-op that removes nothing.
+        assert!(settings.register());
+        assert!(!launch.register_on_launch());
+        assert!(settings.is_registered());
+        drop(s);
+
+        // The launch registration ran first: the unregister that follows removes it.
+        let s = scratch();
+        let gate = RegistrationGate::new();
+        let settings = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
+        let launch = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
+        assert!(launch.register_on_launch());
+        assert!(settings.is_registered());
+        assert!(settings.unregister());
+        assert!(!settings.is_registered());
+        drop(s);
+
+        // Racing: whichever takes the gate first, the end state is unregistered.
+        for _ in 0..3 {
+            let s = scratch();
+            let gate = RegistrationGate::new();
+            let settings = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
+            let launch = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
+            let start = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    start.wait();
+                    launch.register_on_launch();
+                });
+                start.wait();
+                assert!(settings.unregister());
+            });
+            assert!(!settings.is_registered(), "a launch registration undid the unregister");
+        }
+    }
+
+    /// While a launch registration writes, a Settings call waits for it (one writer per root at a time).
+    #[test]
+    fn settings_calls_wait_for_a_running_launch_registration() {
+        let s = scratch();
+        let gate = RegistrationGate::new();
+        let exe = PathBuf::from(r"C:\Program Files\Subtitle Adder\SubtitleAdder.exe");
+        let settings = FileAssociationRegistrar::with_root(&s.0, exe, None).with_gate(gate.clone());
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let held = gate.user_acted.lock();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let ok = settings.unregister();
+                done_tx.send(ok).unwrap();
+            });
+            assert!(done_rx.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "ran while the gate was held");
+            drop(held);
+            assert_eq!(done_rx.recv_timeout(std::time::Duration::from_secs(10)), Ok(true));
+        });
     }
 
     #[test]
