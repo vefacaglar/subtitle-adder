@@ -24,10 +24,20 @@ and deinterlacing on the CPU in `sa_player::soft`).
   `to_rgb` (luma direct, chroma bilinear, the sample-aspect stretch per row); interlaced frames are deinterlaced per
   plane with the shader's rule (against the previous frame as decoded, `soft::previous_frame_follows` shared with the
   shader path) and handed over field by field, the second field dropped before its conversion when it is already
-  late. Interlaced SDR frames are converted by swscale after deinterlacing; plain SDR progressive frames take swscale
-  alone, as before. Known deviations from the shader (motion measured per plane, chroma deinterlaced before
-  upsampling) are listed in `soft.rs`. Measured (release, 1080p): PQ 6.5 ns/px on 4 threads (21 on one), HLG 10,
-  SDR 2.2; 1080i25 and 1080p24 HDR10 play with no dropped frames. libavfilter (`bwdif`/`yadif`), swscale's and
+  late. Interlaced SDR frames with a planar description and no alpha are converted by swscale after deinterlacing;
+  interlaced SDR formats without a planar description (swscale's RGBA, deinterlaced) and with alpha (shown opaque,
+  like the shader) go through the kernel; plain SDR progressive frames take swscale alone, as before. Frames above
+  1440p (2560 × 1440 pixels) on the kernel route are converted at half width and height (2 × 2 luma averaged, chroma
+  at the output resolution, one tone mapping per output pixel), so 4K costs what 1080p costs; `VideoFrame::video_size`
+  keeps the video's size for `natural_size` / `SizeChanged`, and the UI scales the buffer with the video's aspect.
+  Large interlaced SDR frames keep full size through swscale (interlaced video above 1080i does not exist in
+  practice). Stripes run on persistent workers with the decode thread's priority (one per 0.25 Mpx, up to the
+  hardware threads minus two, at most 8); a panicking stripe converts the frame again on the decode thread. Known
+  deviations from the shader (motion measured per plane, chroma deinterlaced before upsampling) are listed in
+  `soft.rs`. Measured (release, 12 hardware threads, 8 stripes): PQ 3.9-4.9 ns/px at 1080p (22-24 on one thread),
+  HLG 6.8-10, SDR 1.4-2.4; at half size 3.4-3.6 ns per source pixel (HLG 5.1-5.4), so a 4K HDR frame takes ~30 ms.
+  1080i25, 1080p24 HDR10 and 2160p24 HDR10 play with no dropped frames; 2160p60 HDR10 drops up to ~4 % (testsrc2
+  clips, which decode far faster than real 4K content). libavfilter (`bwdif`/`yadif`), swscale's and
   zscale's tone mapping, a 3D LUT and an RGB48 + LUT pass were rejected: other curves than the shader's, the `filter`
   feature, or a frame of latency.
 - `SUBTITLE_ADDER_FRAME_DUMP=<dir>` dumps the GPU path's converted pictures and, as `...-cpu.png`, the RGBA path's.
