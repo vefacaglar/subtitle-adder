@@ -997,6 +997,24 @@ fn buffered_stream_surface() {
     assert_eq!(mime_type(Some("a.xyz")), "video/mp4");
 }
 
+/// Every accepted extension has a MIME type of its own kind: audio ones `audio/*`, video ones never `audio/*`, and
+/// only the MP4 family falls on the `video/mp4` default.
+#[test]
+fn every_accepted_extension_has_a_mime_type() {
+    let mp4_family = ["mp4", "m4v", "mpg4", "mp4v", "f4v"];
+    for ext in sa_core::media_types::VIDEO_EXTENSIONS {
+        let mime = mime_type(Some(&format!("C:\\v\\a.{}", ext.to_uppercase())));
+        assert!(!mime.starts_with("audio/"), "{ext}: {mime}");
+        assert_eq!(mime == "video/mp4", mp4_family.contains(ext), "{ext}: {mime}");
+    }
+    for ext in sa_core::media_types::AUDIO_EXTENSIONS {
+        let mime = mime_type(Some(&format!("a.{ext}")));
+        assert!(mime.starts_with("audio/"), "{ext}: {mime}");
+    }
+    assert_eq!(mime_type(Some("a.vob")), "video/mpeg");
+    assert_eq!(mime_type(Some("a.mka")), "audio/x-matroska");
+}
+
 #[test]
 fn read_ahead_prefetches_and_the_file_stream_persists_in_the_background() {
     let fx = CacheFixture::new();
