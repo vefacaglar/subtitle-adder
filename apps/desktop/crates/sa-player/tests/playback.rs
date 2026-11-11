@@ -699,10 +699,11 @@ fn a_playing_file_can_be_renamed_and_deleted_on_windows() {
     assert!(!rec.snapshot().iter().any(|e| matches!(e, PlayerEvent::Failed { .. })));
 }
 
-/// Every extension both apps accept (`MediaFileTypes` / `VideoTypes`: 14 video, 8 audio) opens, with a typical codec
-/// pairing for that container (plus AV1, which Media Foundation and AVFoundation play): duration, natural size and
-/// the first frame for video, no size for audio. This pins the decoders and demuxers the FFmpeg build must carry to
-/// match the platform players.
+/// Every extension the former apps accepted (`MediaFileTypes` / `VideoTypes`: 14 video, 8 audio) opens, with a
+/// typical codec pairing for that container (plus AV1, which Media Foundation and AVFoundation play): duration,
+/// natural size and the first frame for video, no size for audio. This pins the decoders and demuxers the FFmpeg
+/// build must carry to match the platform players. A few cheap containers of the wider `sa_core::media_types` list
+/// follow (VOB, Ogg Theora, ASF, MXF, DV, Matroska audio, raw AC-3, AIFF); every case's extension must be accepted.
 #[test]
 fn every_media_extension_the_apps_accept_opens() {
     let Some(ff) = common::ffmpeg_cli() else {
@@ -739,7 +740,22 @@ fn every_media_extension_the_apps_accept_opens() {
         ("tone.ogg", ao(48000, &["-c:a", "libvorbis"]), false),
         ("tone.opus", ao(48000, &["-c:a", "libopus"]), false),
         ("tone.wma", ao(44100, &["-c:a", "wmav2", "-f", "asf"]), false),
+        // Additions of the wider accepted list.
+        ("mpeg2-ac3.vob", av("160x120", 48000, &["-c:v", "mpeg2video", "-c:a", "ac3", "-f", "vob"]), true),
+        ("theora-vorbis.ogv", av("160x120", 48000, &["-c:v", "libtheora", "-c:a", "libvorbis"]), true),
+        ("wmv2-wmav2.asf", av("160x120", 44100, &["-c:v", "wmv2", "-c:a", "wmav2"]), true),
+        ("mpeg2-pcm.mxf", av("160x120", 48000, &["-c:v", "mpeg2video", "-c:a", "pcm_s16le"]), true),
+        ("dv-pcm.dv", av("720x576", 48000, &["-c:v", "dvvideo", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-ac", "2", "-f", "dv"]), true),
+        ("tone.mka", ao(48000, &["-c:a", "libvorbis"]), false),
+        ("tone.ac3", ao(48000, &["-c:a", "ac3"]), false),
+        ("tone.aiff", ao(48000, &["-c:a", "pcm_s16be"]), false),
     ];
+    for (name, _, video) in &cases {
+        let ext = name.rsplit('.').next().unwrap();
+        let accepted =
+            if *video { sa_core::media_types::is_video_extension(ext) } else { sa_core::media_types::is_audio_extension(ext) };
+        assert!(accepted, "{name}: not an accepted {} extension", if *video { "video" } else { "audio" });
+    }
     let dir = common::fixtures_dir().join("formats");
     std::fs::create_dir_all(&dir).unwrap();
     for (name, args, video) in cases {
