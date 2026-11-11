@@ -5,8 +5,10 @@
 //! cargo test -p sa-player --release --test measure -- --ignored --nocapture --test-threads=1
 //! ```
 //!
-//! A simulated UI thread takes every `FrameReady`, fetches the frame and copies it into a reused buffer (what the
-//! app does with `SharedPixelBuffer`), so the handoff cost is part of the measurement.
+//! A simulated UI thread takes every `FrameReady`, fetches the frame and copies it into a reused buffer, so the handoff
+//! cost is part of the measurement: the RGBA frame (what the app does with `SharedPixelBuffer` without the GPU path),
+//! or, for the `*_planar` variants, every plane of the YUV frame (`set_planar_output(true)`, what the app's GPU path
+//! uploads at render time; the copy stands in for the driver's upload copy).
 
 #![cfg(feature = "ffmpeg")]
 
@@ -21,6 +23,7 @@ use sa_player::{MediaPlayerBackend, MediaSource, PlayerEvent};
 struct Report {
     clip: &'static str,
     audio: bool,
+    planar: bool,
     seconds: f64,
     expected: f64,
     shown_by_ui: u64,
@@ -43,11 +46,12 @@ fn jitter(samples: &[(Instant, f64)]) -> (f64, f64, f64) {
     (pick(0.5), pick(0.99), *late.last().unwrap())
 }
 
-fn measure(c: Clip, fps: f64, audio: bool, play_for: Duration) -> Option<Report> {
+fn measure(c: Clip, fps: f64, audio: bool, planar: bool, play_for: Duration) -> Option<Report> {
     let path = common::clip(c)?;
     let (tx, rx) = crossbeam_channel::unbounded::<PlayerEvent>();
     let mut p = FfmpegPlayer::with_options(PlayerOptions { audio_output: audio, ..PlayerOptions::default() });
     p.set_volume(0.0);
+    p.set_planar_output(planar);
     p.set_event_sink(Box::new(move |e| {
         let _ = tx.send(e);
     }));
@@ -76,8 +80,20 @@ fn measure(c: Clip, fps: f64, audio: bool, play_for: Duration) -> Option<Report>
         match rx.recv_timeout(Duration::from_millis(20)) {
             Ok(PlayerEvent::FrameReady { .. }) => {
                 if let Some(f) = p.latest_frame() {
-                    ui_buffer.resize(f.rgba.len(), 0);
-                    ui_buffer.copy_from_slice(&f.rgba);
+                    match &f.planar {
+                        Some(img) => {
+                            assert!(planar, "planar frame without planar output");
+                            ui_buffer.clear();
+                            for i in 0..img.plane_count() {
+                                let (bytes, _) = img.plane(i).expect("plane");
+                                ui_buffer.extend_from_slice(bytes);
+                            }
+                        }
+                        None => {
+                            ui_buffer.resize(f.rgba.len(), 0);
+                            ui_buffer.copy_from_slice(&f.rgba);
+                        }
+                    }
                     shown += 1;
                     let now = Instant::now();
                     samples.push((now, f.pts));
@@ -98,6 +114,7 @@ fn measure(c: Clip, fps: f64, audio: bool, play_for: Duration) -> Option<Report>
     Some(Report {
         clip: c.file_name(),
         audio: audio && had_audio,
+        planar,
         seconds: media_seconds,
         expected: media_seconds * fps,
         shown_by_ui: shown,
@@ -111,9 +128,10 @@ fn measure(c: Clip, fps: f64, audio: bool, play_for: Duration) -> Option<Report>
 fn print(r: &Report) {
     let missing = (r.expected - r.shown_by_ui as f64).max(0.0);
     eprintln!(
-        "{:<22} audio={:<5} played={:>5.2}s expected={:>5.0} ui_shown={:>5} presented={:>5} dropped={:>4} missing={:>4.0} ({:.2}%) max_gap={:.1}ms late p50/p99/max={:.1}/{:.1}/{:.1}ms",
+        "{:<22} audio={:<5} planar={:<5} played={:>5.2}s expected={:>5.0} ui_shown={:>5} presented={:>5} dropped={:>4} missing={:>4.0} ({:.2}%) max_gap={:.1}ms late p50/p99/max={:.1}/{:.1}/{:.1}ms",
         r.clip,
         r.audio,
+        r.planar,
         r.seconds,
         r.expected,
         r.shown_by_ui,
@@ -128,9 +146,9 @@ fn print(r: &Report) {
     );
 }
 
-fn run(c: Clip, fps: f64) {
+fn run(c: Clip, fps: f64, planar: bool) {
     for audio in [true, false] {
-        let Some(r) = measure(c, fps, audio, Duration::from_secs(8)) else {
+        let Some(r) = measure(c, fps, audio, planar, Duration::from_secs(8)) else {
             eprintln!("skipped: no ffmpeg CLI");
             return;
         };
@@ -145,25 +163,49 @@ fn run(c: Clip, fps: f64) {
 #[test]
 #[ignore = "real-time measurement"]
 fn dropped_frames_1080p60_h264() {
-    run(Clip::Hd60H264, 60.0);
+    run(Clip::Hd60H264, 60.0, false);
+}
+
+#[test]
+#[ignore = "real-time measurement"]
+fn dropped_frames_1080p60_h264_planar() {
+    run(Clip::Hd60H264, 60.0, true);
 }
 
 #[test]
 #[ignore = "real-time measurement"]
 fn dropped_frames_1080p30_hevc() {
-    run(Clip::Hd30Hevc, 30.0);
+    run(Clip::Hd30Hevc, 30.0, false);
+}
+
+#[test]
+#[ignore = "real-time measurement"]
+fn dropped_frames_1080p30_hevc_planar() {
+    run(Clip::Hd30Hevc, 30.0, true);
 }
 
 #[test]
 #[ignore = "real-time measurement"]
 fn dropped_frames_1080p60_hevc_10bit() {
-    run(Clip::Hd60Hevc10, 60.0);
+    run(Clip::Hd60Hevc10, 60.0, false);
+}
+
+#[test]
+#[ignore = "real-time measurement"]
+fn dropped_frames_1080p60_hevc_10bit_planar() {
+    run(Clip::Hd60Hevc10, 60.0, true);
 }
 
 #[test]
 #[ignore = "real-time measurement"]
 fn dropped_frames_1080p30_vp9() {
-    run(Clip::Hd30Vp9, 30.0);
+    run(Clip::Hd30Vp9, 30.0, false);
+}
+
+#[test]
+#[ignore = "real-time measurement"]
+fn dropped_frames_1080p30_vp9_planar() {
+    run(Clip::Hd30Vp9, 30.0, true);
 }
 
 /// Seek latency (paused, exact seek: from `seek` to the target frame being available) on every 1080p clip.
