@@ -4,13 +4,10 @@ use std::path::Path;
 
 use crate::text::{eq_ordinal_ignore_case, upper_ordinal};
 
-/// `MediaLibraryIndex.SupportedExtensions` (ordered).
-pub const SUPPORTED_EXTENSIONS: [&str; 22] = [
-    ".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".wmv", ".mpg", ".mpeg", ".ts", ".mts", ".m2ts", ".3gp", ".flv",
-    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma",
-];
-/// Audio extensions.
-pub const AUDIO_EXTENSIONS: [&str; 8] = [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"];
+/// `MediaLibraryIndex.SupportedExtensions` (ordered; without dots): the C# list widened by [`sa_core::media_types`].
+pub const SUPPORTED_EXTENSIONS: &[&str] = &sa_core::media_types::MEDIA_EXTENSIONS;
+/// Audio extensions (without dots).
+pub const AUDIO_EXTENSIONS: &[&str] = sa_core::media_types::AUDIO_EXTENSIONS;
 /// `SubtitleParser.Extensions` (sidecar lookup order).
 pub const SIDECAR_EXTENSIONS: [&str; 5] = [".srt", ".vtt", ".ass", ".ssa", ".json"];
 
@@ -61,19 +58,20 @@ pub fn directory_name(path: &str) -> Option<&str> {
     Some(&path[..end])
 }
 
+/// The extension (without its dot) is in `set` (dot-less), `OrdinalIgnoreCase`.
 fn ext_in(path: &str, set: &[&str]) -> bool {
     let ext = extension(path);
-    !ext.is_empty() && set.iter().any(|e| eq_ordinal_ignore_case(e, ext))
+    !ext.is_empty() && set.iter().any(|e| eq_ordinal_ignore_case(e, &ext[1..]))
 }
 
 /// `MediaLibraryIndex.IsMediaFile`.
 pub fn is_media_file(path: &str) -> bool {
-    !path.trim().is_empty() && ext_in(path, &SUPPORTED_EXTENSIONS)
+    !path.trim().is_empty() && ext_in(path, SUPPORTED_EXTENSIONS)
 }
 
 /// `MediaLibraryIndex.IsAudioFile`.
 pub fn is_audio_file(path: &str) -> bool {
-    !path.trim().is_empty() && ext_in(path, &AUDIO_EXTENSIONS)
+    !path.trim().is_empty() && ext_in(path, AUDIO_EXTENSIONS)
 }
 
 /// `Path.GetFullPath` (`GetFullPathNameW` through `std::path::absolute`); `None` where .NET throws.
@@ -206,6 +204,9 @@ mod tests {
         assert!(!is_media_file("   "));
         assert!(is_audio_file("a.Flac"));
         assert!(!is_audio_file("a.mp4"));
+        assert!(is_media_file("x.VOB") && !is_audio_file("x.vob"));
+        assert!(is_media_file("x.mka") && is_audio_file("x.AIFF"));
+        assert!(!is_media_file("x.") && !is_media_file("x.srt"));
     }
 
     #[test]

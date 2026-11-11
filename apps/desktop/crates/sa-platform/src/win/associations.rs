@@ -21,11 +21,19 @@ pub const CAPABILITIES_PATH: &str = r"Software\SubtitleAdder\Capabilities";
 pub const APPLICATION_DESCRIPTION: &str = "Subtitle Adder \u{2014} Media Player & AI Subtitle Studio";
 pub const EXE_NAME: &str = "SubtitleAdder.exe";
 
-pub const MEDIA_EXTENSIONS: [&str; 22] = [
-    ".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm", ".wmv", ".mpg", ".mpeg", ".ts", ".mts", ".m2ts", ".3gp", ".flv",
-    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma",
-];
+/// The associated media extensions (without dots): only the C#-era 22 of [`sa_core::media_types`], deliberately not
+/// the whole accepted list. [`FileAssociationRegistrar::register_extension`] also writes the per-user default
+/// (`HKCU\Software\Classes\.<ext>\(Default)`) when that value is empty, and an HKCU default overrides the machine-wide
+/// one (HKLM) wherever the user has made no explicit choice, so registering the additions (`.vob`, `.ogv`, `.mka`, …)
+/// would take over their default handler on machines where VLC or another player owns them system-wide. The app
+/// still opens every accepted extension from the dialog, drag and drop and the command line.
+pub const MEDIA_EXTENSIONS: &[&str] = &sa_core::media_types::CSHARP_MEDIA_EXTENSIONS;
 pub const SUBTITLE_EXTENSIONS: [&str; 4] = [".srt", ".vtt", ".ass", ".ssa"];
+
+/// [`MEDIA_EXTENSIONS`] with their dots (`.mp4`), in order.
+fn dotted_media_extensions() -> impl Iterator<Item = String> {
+    MEDIA_EXTENSIONS.iter().map(|e| format!(".{e}"))
+}
 
 /// Step 1.1.6: the running exe is `SubtitleAdder.exe` (case-insensitive) and `fileAssociationsDisabled` is not true.
 pub fn should_register_on_launch(exe: &Path, file_associations_disabled: Option<bool>) -> bool {
@@ -112,8 +120,8 @@ impl FileAssociationRegistrar {
             Key::create(&format!(r"{app}\DefaultIcon"))?.set(None, &icon)?;
             Key::create(&format!(r"{app}\shell\open\command"))?.set(None, &command)?;
             let types = Key::create(&format!(r"{app}\SupportedTypes"))?;
-            for ext in MEDIA_EXTENSIONS.iter().chain(SUBTITLE_EXTENSIONS.iter()) {
-                types.set(Some(ext), "")?;
+            for ext in dotted_media_extensions().chain(SUBTITLE_EXTENSIONS.iter().map(|e| (*e).to_owned())) {
+                types.set(Some(&ext), "")?;
             }
         }
         {
@@ -122,16 +130,16 @@ impl FileAssociationRegistrar {
             cap.set(Some("ApplicationDescription"), APPLICATION_DESCRIPTION)?;
             cap.set(Some("ApplicationIcon"), &icon)?;
             let assoc = Key::create(&self.key(&format!(r"{CAPABILITIES_PATH}\FileAssociations")))?;
-            for ext in MEDIA_EXTENSIONS {
-                assoc.set(Some(ext), MEDIA_PROG_ID)?;
+            for ext in dotted_media_extensions() {
+                assoc.set(Some(&ext), MEDIA_PROG_ID)?;
             }
             for ext in SUBTITLE_EXTENSIONS {
                 assoc.set(Some(ext), SUBTITLE_PROG_ID)?;
             }
         }
         Key::create(&self.key(r"Software\RegisteredApplications"))?.set(Some(APP_REGISTERED_NAME), CAPABILITIES_PATH)?;
-        for ext in MEDIA_EXTENSIONS {
-            self.register_extension(ext, MEDIA_PROG_ID)?;
+        for ext in dotted_media_extensions() {
+            self.register_extension(&ext, MEDIA_PROG_ID)?;
         }
         for ext in SUBTITLE_EXTENSIONS {
             self.register_extension(ext, SUBTITLE_PROG_ID)?;
@@ -192,8 +200,8 @@ impl FileAssociations for FileAssociationRegistrar {
     }
 
     fn unregister(&self) -> bool {
-        for ext in MEDIA_EXTENSIONS {
-            self.unregister_extension(ext, MEDIA_PROG_ID);
+        for ext in dotted_media_extensions() {
+            self.unregister_extension(&ext, MEDIA_PROG_ID);
         }
         for ext in SUBTITLE_EXTENSIONS {
             self.unregister_extension(ext, SUBTITLE_PROG_ID);
@@ -324,6 +332,18 @@ mod tests {
     }
 
     #[test]
+    fn only_the_csharp_era_media_extensions_are_associated() {
+        use sa_core::media_types::{AUDIO_EXTENSIONS, CSHARP_AUDIO_COUNT, CSHARP_VIDEO_COUNT, MEDIA_EXTENSIONS as ACCEPTED, VIDEO_EXTENSIONS};
+        assert_eq!(MEDIA_EXTENSIONS.len(), 22);
+        assert_eq!(MEDIA_EXTENSIONS[..CSHARP_VIDEO_COUNT], VIDEO_EXTENSIONS[..CSHARP_VIDEO_COUNT]);
+        assert_eq!(MEDIA_EXTENSIONS[CSHARP_VIDEO_COUNT..], AUDIO_EXTENSIONS[..CSHARP_AUDIO_COUNT]);
+        assert!(MEDIA_EXTENSIONS.iter().all(|e| ACCEPTED.contains(e)));
+        assert!(ACCEPTED.len() > MEDIA_EXTENSIONS.len());
+        assert_eq!(dotted_media_extensions().next().as_deref(), Some(".mp4"));
+        assert_eq!(dotted_media_extensions().last().as_deref(), Some(".wma"));
+    }
+
+    #[test]
     fn launch_rule_needs_the_exact_exe_name_and_no_opt_out() {
         assert!(should_register_on_launch(Path::new(r"C:\a\SubtitleAdder.exe"), None));
         assert!(should_register_on_launch(Path::new(r"C:\a\subtitleadder.EXE"), Some(false)));
@@ -374,6 +394,10 @@ mod tests {
         assert_eq!(get(r"Software\Classes\.mkv", None).as_deref(), Some("VLC.mkv"));
         assert_eq!(get(r"Software\Classes\.mkv\OpenWithProgids", Some("SubtitleAdder.Media")).as_deref(), Some(""));
         assert_eq!(get(r"Software\Classes\.srt\OpenWithProgids", Some("SubtitleAdder.Subtitle")).as_deref(), Some(""));
+        // Accepted, but deliberately not associated (see `MEDIA_EXTENSIONS`).
+        assert!(Key::open(&format!(r"{root}\Software\Classes\.vob"), false).is_none());
+        assert_eq!(get(r"Software\Classes\Applications\SubtitleAdder.exe\SupportedTypes", Some(".vob")), None);
+        assert_eq!(get(&format!(r"{CAPABILITIES_PATH}\FileAssociations"), Some(".mka")), None);
         // Idempotent.
         assert!(r.register());
 

@@ -1085,7 +1085,7 @@ impl MainWindowController {
                     detail = format!("{detail} · {}", dir.to_string_lossy());
                 }
                 let is_audio = r.path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-                    ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "wma"].iter().any(|a| a.eq_ignore_ascii_case(e))
+                    sa_core::media_types::AUDIO_EXTENSIONS.iter().any(|a| a.eq_ignore_ascii_case(e))
                 });
                 ExplorerRowData {
                     path: s(r.path.to_string_lossy().into_owned()),

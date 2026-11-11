@@ -157,11 +157,18 @@ fn media_file_types() {
     }
     assert!(AUDIO.iter().all(|a| is_audio(Path::new(&format!("a.{a}")))));
     assert!(!is_audio(Path::new("a.mp4")));
+    for ext in ["vob", "ogv", "mxf", "rmvb", "m2ts"] {
+        assert!(is_media(Path::new(&format!("a.{ext}"))) && !is_audio(Path::new(&format!("a.{ext}"))), "{ext}");
+    }
+    for ext in ["mka", "ac3", "aiff", "ape", "dsf"] {
+        assert!(is_audio(Path::new(&format!("a.{}", ext.to_uppercase()))), "{ext}");
+    }
     assert_eq!(media_extensions().count(), VIDEO.len() + AUDIO.len());
-    assert_eq!(media_extensions().count(), 22);
+    assert_eq!(media_extensions().collect::<Vec<_>>(), sa_core::media_types::MEDIA_EXTENSIONS.to_vec());
+    assert!(media_extensions().count() > 22, "wider than the C#-era 22");
     let mut all: Vec<_> = media_extensions().collect();
     all.sort_unstable();
     all.dedup();
-    assert_eq!(all.len(), 22);
+    assert_eq!(all.len(), VIDEO.len() + AUDIO.len());
     assert_eq!(media_extensions().next(), Some("mp4"));
 }

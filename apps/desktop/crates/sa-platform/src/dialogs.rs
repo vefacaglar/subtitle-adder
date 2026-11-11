@@ -20,12 +20,9 @@ use sa_core::engine_types::SubtitleFormat;
 use sa_core::future::LocalBoxFuture;
 use sa_core::platform::{Alert, AlertButtonRole, AlertResponse, FileFilter};
 
-/// The 22 media extensions of the Windows pickers and file associations (`MainWindow.VideoTypes`,
-/// `FileAssociationRegistrar.MediaExtensions`) and of the macOS video picker (`MediaFileTypes.mediaExtensions`).
-pub const MEDIA_EXTENSIONS: [&str; 22] = [
-    "mp4", "mov", "m4v", "mkv", "avi", "webm", "wmv", "mpg", "mpeg", "ts", "mts", "m2ts", "3gp", "flv", "mp3", "wav",
-    "m4a", "aac", "flac", "ogg", "opus", "wma",
-];
+/// The media extensions of the Windows pickers (`MainWindow.VideoTypes`, widened) and of the macOS video picker
+/// (`MediaFileTypes.mediaExtensions`): [`sa_core::media_types::MEDIA_EXTENSIONS`].
+pub const MEDIA_EXTENSIONS: &[&str] = &sa_core::media_types::MEDIA_EXTENSIONS;
 
 /// `SubtitleParser.Extensions` (both apps).
 pub const SUBTITLE_EXTENSIONS: [&str; 5] = ["srt", "vtt", "ass", "ssa", "json"];
@@ -65,10 +62,13 @@ pub fn filter_extensions_for(filter: &FileFilter, flavor: DialogFlavor) -> Vec<&
 }
 
 /// The filter's display name: WinRT pickers show the pattern list, so the dialog shows the same (`*.srt; *.vtt`);
-/// a one-format export shows the upper-cased format (`SRT`, win-ui-main §18.4). Never localized text.
+/// a one-format export shows the upper-cased format (`SRT`, win-ui-main §18.4). The media filter's ~100 patterns
+/// would make the type box unusable, so it shows a localized label instead
+/// ([`sa_core::media_types::media_filter_label`]); the pattern list still filters.
 pub fn filter_name(filter: &FileFilter, flavor: DialogFlavor) -> String {
     match filter {
         FileFilter::Subtitle(f) => f.raw().to_uppercase(),
+        FileFilter::Videos => sa_core::media_types::media_filter_label(),
         other => filter_extensions_for(other, flavor).iter().map(|e| format!("*.{e}")).collect::<Vec<_>>().join("; "),
     }
 }
@@ -348,8 +348,12 @@ mod tests {
 
     #[test]
     fn filters_follow_each_platform() {
-        assert_eq!(filter_extensions_for(&FileFilter::Videos, DialogFlavor::Windows).len(), 22);
+        assert_eq!(filter_extensions_for(&FileFilter::Videos, DialogFlavor::Windows), sa_core::media_types::MEDIA_EXTENSIONS);
+        assert_eq!(filter_extensions_for(&FileFilter::Videos, DialogFlavor::Mac), sa_core::media_types::MEDIA_EXTENSIONS);
         assert_eq!(filter_extensions_for(&FileFilter::Videos, DialogFlavor::Windows)[..4], ["mp4", "mov", "m4v", "mkv"]);
+        assert!(filter_extensions_for(&FileFilter::Videos, DialogFlavor::Windows).contains(&"vob"));
+        let label = filter_name(&FileFilter::Videos, DialogFlavor::Windows);
+        assert!(!label.is_empty() && !label.contains("*."), "{label}");
         assert_eq!(filter_extensions_for(&FileFilter::Subtitles, DialogFlavor::Windows), ["srt", "vtt", "ass", "ssa", "json"]);
         assert_eq!(filter_extensions_for(&FileFilter::Subtitles, DialogFlavor::Mac), ["srt", "vtt", "ass", "ssa", "json", "txt"]);
         assert_eq!(filter_extensions_for(&FileFilter::Subtitle(SubtitleFormat::Vtt), DialogFlavor::Mac), ["vtt"]);
@@ -361,11 +365,12 @@ mod tests {
     #[test]
     fn media_extensions_match_the_core_list_as_a_set() {
         let mut a: Vec<_> = MEDIA_EXTENSIONS.to_vec();
-        let mut b: Vec<_> = sa_core::subtitle_import::COMPANION_VIDEO_EXTENSIONS.iter().map(|e| &e[1..]).collect();
+        let mut b: Vec<_> = sa_core::subtitle_import::COMPANION_VIDEO_EXTENSIONS.to_vec();
         a.sort();
         b.sort();
         assert_eq!(a, b);
         assert_eq!(MEDIA_EXTENSIONS.to_vec(), sa_core::subtitle_import::MAC_MEDIA_EXTENSIONS.to_vec());
+        assert_eq!(MEDIA_EXTENSIONS, sa_core::media_types::MEDIA_EXTENSIONS);
     }
 
     #[test]

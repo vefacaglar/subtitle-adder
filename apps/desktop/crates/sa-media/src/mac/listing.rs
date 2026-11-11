@@ -8,11 +8,8 @@ use super::path;
 use crate::schema::{DirectorySnapshot, IndexedMediaFile};
 use crate::text::{lower_key, nfc, ordered_cmp};
 
-/// `MediaFileTypes.mediaExtensions` (video then audio, lower-case, without the dot).
-pub const MEDIA_EXTENSIONS: [&str; 22] = [
-    "mp4", "mov", "m4v", "mkv", "avi", "webm", "wmv", "mpg", "mpeg", "ts", "mts", "m2ts", "3gp", "flv", "mp3", "wav",
-    "m4a", "aac", "flac", "ogg", "opus", "wma",
-];
+/// `MediaFileTypes.mediaExtensions` (video then audio, lower-case, without the dot; [`sa_core::media_types`]).
+pub const MEDIA_EXTENSIONS: &[&str] = &sa_core::media_types::MEDIA_EXTENSIONS;
 /// `SubtitleParser.extensions` (badge lookup order).
 pub const SUBTITLE_EXTENSIONS: [&str; 5] = ["srt", "vtt", "ass", "ssa", "json"];
 
@@ -171,6 +168,8 @@ mod tests {
         assert!(!is_media(".mp4"));
         assert!(!is_media("mp4"));
         assert!(!is_media("a.mp4.bak"));
+        assert!(is_media("a.VOB") && is_media("a.mka") && is_media("a.dvr-ms"));
+        assert!(!is_media("a.srt"));
         assert_eq!(stem("Film.tr.srt"), "Film.tr");
         assert_eq!(stem(".hidden"), ".hidden");
     }

@@ -120,8 +120,7 @@ pub fn title_bar_double_click(action: Option<&str>, miniaturize: Option<bool>) -
 
 /// `MediaFileTypes.isAudio` (no picture to show).
 pub fn is_audio(path: &Path) -> bool {
-    const AUDIO: [&str; 8] = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "wma"];
-    path.extension().map(|e| e.to_string_lossy().to_lowercase()).is_some_and(|e| AUDIO.contains(&e.as_str()))
+    path.extension().map(|e| e.to_string_lossy().to_lowercase()).is_some_and(|e| sa_core::media_types::is_audio_extension(&e))
 }
 
 /// Thumbnail time: a tenth of the way in, at most 30 s (0 for an unknown duration).

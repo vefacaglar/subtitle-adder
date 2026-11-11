@@ -34,7 +34,7 @@ impl HubFlavor {
 }
 
 /// Audio-only extensions (macOS shows `waveform` instead of `film`).
-pub const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "wma", "aiff", "aif", "caf"];
+pub const AUDIO_EXTENSIONS: &[&str] = sa_core::media_types::AUDIO_EXTENSIONS;
 
 pub fn is_audio(path: &Path) -> bool {
     path.extension().map(|e| e.to_string_lossy().to_lowercase()).is_some_and(|e| AUDIO_EXTENSIONS.contains(&e.as_str()))
