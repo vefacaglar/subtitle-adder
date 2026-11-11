@@ -1,6 +1,14 @@
 //! HKCU self-registration (win-ui-main §3; C# `FileAssociationRegistrar`, registry layout byte-exact, no elevation).
 //! Registered on every launch unless `fileAssociationsDisabled` is true, and only when the binary is
 //! `SubtitleAdder.exe` ([`should_register_on_launch`]).
+//!
+//! The C#-era media extensions ([`MEDIA_EXTENSIONS`]) and [`SUBTITLE_EXTENSIONS`] get the C# tree exactly. The other
+//! accepted media extensions ([`OPEN_WITH_ONLY_MEDIA_EXTENSIONS`]) are a deliberate addition: only an
+//! `Applications\SubtitleAdder.exe\SupportedTypes` value and a `Capabilities\FileAssociations` value, so the app is
+//! listed as an "Open with" handler (and under Settings › Default apps) without ever becoming their default handler.
+//! No `HKCU\Software\Classes\.<ext>` key is created, read or deleted for them: measured on Windows 11, a per-user
+//! `.<ext>\OpenWithProgids` entry alone turns a machine-wide default nobody chose (HKLM `.dts` = `VLC.dts`) into the
+//! "choose an app" prompt, while the two values leave the default alone.
 
 use std::path::{Path, PathBuf};
 
@@ -21,18 +29,29 @@ pub const CAPABILITIES_PATH: &str = r"Software\SubtitleAdder\Capabilities";
 pub const APPLICATION_DESCRIPTION: &str = "Subtitle Adder \u{2014} Media Player & AI Subtitle Studio";
 pub const EXE_NAME: &str = "SubtitleAdder.exe";
 
-/// The associated media extensions (without dots): only the C#-era 22 of [`sa_core::media_types`], deliberately not
-/// the whole accepted list. [`FileAssociationRegistrar::register_extension`] also writes the per-user default
+/// The fully associated media extensions (without dots): the C#-era 22 of [`sa_core::media_types`], registered exactly
+/// as the C# app did. [`FileAssociationRegistrar::register_extension`] also writes the per-user default
 /// (`HKCU\Software\Classes\.<ext>\(Default)`) when that value is empty, and an HKCU default overrides the machine-wide
-/// one (HKLM) wherever the user has made no explicit choice, so registering the additions (`.vob`, `.ogv`, `.mka`, …)
-/// would take over their default handler on machines where VLC or another player owns them system-wide. The app
-/// still opens every accepted extension from the dialog, drag and drop and the command line.
+/// one (HKLM) wherever the user has made no explicit choice, so the rest of the accepted list (`.vob`, `.ogv`, `.mka`,
+/// …) is not registered this way: it would take over their default handler on machines where VLC or another player
+/// owns them system-wide. Those are only listed as "Open with" types, see [`OPEN_WITH_ONLY_MEDIA_EXTENSIONS`].
 pub const MEDIA_EXTENSIONS: &[&str] = &sa_core::media_types::CSHARP_MEDIA_EXTENSIONS;
+/// The other accepted media extensions (without dots): registered as `SupportedTypes` and
+/// `Capabilities\FileAssociations` values only, which make the app a recommended "Open with" handler and keep the
+/// existing default. Their `Software\Classes\.<ext>` keys are never touched; not even an `OpenWithProgids` entry is
+/// written, because on Windows 11 that alone replaces a machine-wide default the user never chose with the
+/// "choose an app" prompt.
+pub const OPEN_WITH_ONLY_MEDIA_EXTENSIONS: &[&str] = &sa_core::media_types::OPEN_WITH_ONLY_MEDIA_EXTENSIONS;
 pub const SUBTITLE_EXTENSIONS: [&str; 4] = [".srt", ".vtt", ".ass", ".ssa"];
 
 /// [`MEDIA_EXTENSIONS`] with their dots (`.mp4`), in order.
 fn dotted_media_extensions() -> impl Iterator<Item = String> {
     MEDIA_EXTENSIONS.iter().map(|e| format!(".{e}"))
+}
+
+/// [`OPEN_WITH_ONLY_MEDIA_EXTENSIONS`] with their dots (`.vob`), in order.
+fn dotted_open_with_only_extensions() -> impl Iterator<Item = String> {
+    OPEN_WITH_ONLY_MEDIA_EXTENSIONS.iter().map(|e| format!(".{e}"))
 }
 
 /// Step 1.1.6: the running exe is `SubtitleAdder.exe` (case-insensitive) and `fileAssociationsDisabled` is not true.
@@ -144,8 +163,28 @@ impl FileAssociationRegistrar {
         for ext in SUBTITLE_EXTENSIONS {
             self.register_extension(ext, SUBTITLE_PROG_ID)?;
         }
+        self.register_open_with_only_best_effort(&app);
         self.notify();
         Ok(())
+    }
+
+    /// The [`OPEN_WITH_ONLY_MEDIA_EXTENSIONS`] values (`SupportedTypes` and `Capabilities\FileAssociations` only; no
+    /// `Software\Classes\.<ext>` key), after the strict C#-era tree is written. Best effort: an error on one of them
+    /// skips only that value and never makes `register()` fail or skip the shell notification, so a machine that
+    /// registered cleanly before these additions still does. `unregister()` needs nothing extra: both values live in
+    /// trees it deletes.
+    fn register_open_with_only_best_effort(&self, app: &str) {
+        let types = Key::create(&format!(r"{app}\SupportedTypes")).ok();
+        // Declarative only: lets Settings › Default apps offer the app for these types; sets no default.
+        let assoc = Key::create(&self.key(&format!(r"{CAPABILITIES_PATH}\FileAssociations"))).ok();
+        for ext in dotted_open_with_only_extensions() {
+            if let Some(types) = &types {
+                let _ = types.set(Some(&ext), "");
+            }
+            if let Some(assoc) = &assoc {
+                let _ = assoc.set(Some(&ext), MEDIA_PROG_ID);
+            }
+        }
     }
 
     fn register_prog_id(&self, prog_id: &str, friendly: &str, icon: &str, command: &str) -> Result<(), WIN32_ERROR> {
@@ -332,15 +371,103 @@ mod tests {
     }
 
     #[test]
-    fn only_the_csharp_era_media_extensions_are_associated() {
+    fn csharp_era_extensions_are_fully_associated_and_the_rest_are_open_with_only() {
         use sa_core::media_types::{AUDIO_EXTENSIONS, CSHARP_AUDIO_COUNT, CSHARP_VIDEO_COUNT, MEDIA_EXTENSIONS as ACCEPTED, VIDEO_EXTENSIONS};
         assert_eq!(MEDIA_EXTENSIONS.len(), 22);
         assert_eq!(MEDIA_EXTENSIONS[..CSHARP_VIDEO_COUNT], VIDEO_EXTENSIONS[..CSHARP_VIDEO_COUNT]);
         assert_eq!(MEDIA_EXTENSIONS[CSHARP_VIDEO_COUNT..], AUDIO_EXTENSIONS[..CSHARP_AUDIO_COUNT]);
         assert!(MEDIA_EXTENSIONS.iter().all(|e| ACCEPTED.contains(e)));
-        assert!(ACCEPTED.len() > MEDIA_EXTENSIONS.len());
         assert_eq!(dotted_media_extensions().next().as_deref(), Some(".mp4"));
         assert_eq!(dotted_media_extensions().last().as_deref(), Some(".wma"));
+        // Every accepted extension is in exactly one of the two lists.
+        assert_eq!(OPEN_WITH_ONLY_MEDIA_EXTENSIONS.len(), 81);
+        assert_eq!(MEDIA_EXTENSIONS.len() + OPEN_WITH_ONLY_MEDIA_EXTENSIONS.len(), ACCEPTED.len());
+        assert!(ACCEPTED.iter().all(|e| MEDIA_EXTENSIONS.contains(e) != OPEN_WITH_ONLY_MEDIA_EXTENSIONS.contains(e)));
+        assert_eq!(dotted_open_with_only_extensions().next().as_deref(), Some(".vob"));
+        assert!(dotted_open_with_only_extensions().all(|e| !SUBTITLE_EXTENSIONS.contains(&e.as_str())));
+    }
+
+    fn get_at(root: &str, p: &str, n: Option<&str>) -> Option<String> {
+        Key::open(&format!(r"{root}\{p}"), false).and_then(|k| k.get(n))
+    }
+
+    /// `HKCU\<path>` and everything below it as sorted `key|` / `key|name|data` lines (relative to `path`); empty when
+    /// the key does not exist. String values only (all the tests write).
+    fn dump(path: &str) -> Vec<String> {
+        use windows::Win32::Foundation::ERROR_NO_MORE_ITEMS;
+        use windows::Win32::System::Registry::{RegEnumKeyExW, RegEnumValueW};
+        use windows::core::PWSTR;
+        fn walk(path: &str, rel: &str, out: &mut Vec<String>) {
+            let Some(k) = Key::open(path, false) else { return };
+            out.push(format!("{rel}|"));
+            for i in 0.. {
+                let mut name = [0u16; 512];
+                let mut name_len = name.len() as u32;
+                let r = unsafe { RegEnumValueW(k.0, i, Some(PWSTR(name.as_mut_ptr())), &mut name_len, None, None, None, None) };
+                if r == ERROR_NO_MORE_ITEMS {
+                    break;
+                }
+                assert_eq!(r, ERROR_SUCCESS);
+                let n = String::from_utf16(&name[..name_len as usize]).unwrap();
+                let data = k.get(if n.is_empty() { None } else { Some(&n) }).unwrap();
+                out.push(format!("{rel}|{n}|{data}"));
+            }
+            for i in 0.. {
+                let mut name = [0u16; 512];
+                let mut len = name.len() as u32;
+                let r = unsafe { RegEnumKeyExW(k.0, i, Some(PWSTR(name.as_mut_ptr())), &mut len, None, None, None, None) };
+                if r == ERROR_NO_MORE_ITEMS {
+                    break;
+                }
+                assert_eq!(r, ERROR_SUCCESS);
+                let sub = String::from_utf16(&name[..len as usize]).unwrap();
+                walk(&format!(r"{path}\{sub}"), &format!(r"{rel}\{sub}"), out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(path, "", &mut out);
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn open_with_only_extensions_never_touch_their_classes_keys() {
+        let s = scratch();
+        let root = &s.0;
+        let classes = |ext: &str| format!(r"{root}\Software\Classes\{ext}");
+        let ogv = Key::create(&classes(".ogv")).unwrap();
+        ogv.set(None, "VLC.ogv").unwrap();
+        ogv.set(Some("Content Type"), "video/ogg").unwrap();
+        drop(ogv);
+        Key::create(&format!(r"{}\OpenWithProgids", classes(".ogv"))).unwrap().set(Some("VLC.ogv"), "").unwrap();
+        Key::create(&format!(r"{}\ShellEx", classes(".ogv"))).unwrap();
+        Key::create(&classes(".mxf")).unwrap();
+        let seeded = [dump(&classes(".ogv")), dump(&classes(".mxf")), dump(&classes(".vob"))];
+        assert_eq!(seeded[1], ["|"]);
+        assert!(seeded[2].is_empty());
+        let unchanged = || {
+            assert_eq!([dump(&classes(".ogv")), dump(&classes(".mxf")), dump(&classes(".vob"))], seeded);
+            assert!(Key::open(&classes(".vob"), false).is_none());
+        };
+        let types = r"Software\Classes\Applications\SubtitleAdder.exe\SupportedTypes";
+        let assoc = format!(r"{CAPABILITIES_PATH}\FileAssociations");
+        let r = FileAssociationRegistrar::with_root(root, PathBuf::from(r"C:\Program Files\Subtitle Adder\SubtitleAdder.exe"), None);
+        for _ in 0..2 {
+            assert!(r.register());
+            unchanged();
+            for ext in [".ogv", ".mxf", ".vob"] {
+                assert_eq!(get_at(root, types, Some(ext)).as_deref(), Some(""), "{ext}");
+                assert_eq!(get_at(root, &assoc, Some(ext)).as_deref(), Some(MEDIA_PROG_ID), "{ext}");
+            }
+        }
+        for _ in 0..2 {
+            assert!(r.unregister());
+            unchanged();
+            for ext in [".ogv", ".mxf", ".vob"] {
+                assert_eq!(get_at(root, types, Some(ext)), None, "{ext}");
+                assert_eq!(get_at(root, &assoc, Some(ext)), None, "{ext}");
+            }
+        }
     }
 
     #[test]
@@ -394,12 +521,16 @@ mod tests {
         assert_eq!(get(r"Software\Classes\.mkv", None).as_deref(), Some("VLC.mkv"));
         assert_eq!(get(r"Software\Classes\.mkv\OpenWithProgids", Some("SubtitleAdder.Media")).as_deref(), Some(""));
         assert_eq!(get(r"Software\Classes\.srt\OpenWithProgids", Some("SubtitleAdder.Subtitle")).as_deref(), Some(""));
-        // Accepted, but deliberately not associated (see `MEDIA_EXTENSIONS`).
-        assert!(Key::open(&format!(r"{root}\Software\Classes\.vob"), false).is_none());
-        assert_eq!(get(r"Software\Classes\Applications\SubtitleAdder.exe\SupportedTypes", Some(".vob")), None);
-        assert_eq!(get(&format!(r"{CAPABILITIES_PATH}\FileAssociations"), Some(".mka")), None);
+        // Accepted additions: SupportedTypes and Capabilities only, no `Software\Classes\.<ext>` key at all (see
+        // `OPEN_WITH_ONLY_MEDIA_EXTENSIONS`).
+        for ext in [".vob", ".mka"] {
+            assert!(Key::open(&format!(r"{root}\Software\Classes\{ext}"), false).is_none(), "{ext}");
+            assert_eq!(get(r"Software\Classes\Applications\SubtitleAdder.exe\SupportedTypes", Some(ext)).as_deref(), Some(""));
+            assert_eq!(get(&format!(r"{CAPABILITIES_PATH}\FileAssociations"), Some(ext)).as_deref(), Some("SubtitleAdder.Media"));
+        }
         // Idempotent.
         assert!(r.register());
+        assert!(Key::open(&format!(r"{root}\Software\Classes\.vob"), false).is_none());
 
         assert!(r.unregister());
         assert!(!r.is_registered());
@@ -410,6 +541,10 @@ mod tests {
         assert!(Key::open(&format!(r"{root}\Software\SubtitleAdder"), false).is_none());
         assert!(Key::open(&format!(r"{root}\Software\Classes\Applications\SubtitleAdder.exe"), false).is_none());
         assert!(Key::open(&format!(r"{root}\Software\Classes\SubtitleAdder.Media"), false).is_none());
+        // The additions never had a key; the C#-era ones keep the C# app's (empty) keys.
+        assert!(Key::open(&format!(r"{root}\Software\Classes\.vob"), false).is_none());
+        assert!(Key::open(&format!(r"{root}\Software\Classes\.mka"), false).is_none());
+        assert!(Key::open(&format!(r"{root}\Software\Classes\.mp4\OpenWithProgids"), false).is_some());
         // Unregistering twice is fine.
         assert!(r.unregister());
     }

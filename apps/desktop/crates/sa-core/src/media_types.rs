@@ -1,6 +1,7 @@
 //! The media file types the desktop app accepts: the single source of truth for the open dialog filter, drag and
 //! drop, the explorer listing and media index, the companion-video search of a subtitle file, the MIME lookup of the
-//! buffered stream and (C#-era subset only) the Windows file associations.
+//! buffered stream and the Windows file associations (the C#-era subset as full associations, the rest as "Open with"
+//! handler listings only).
 //!
 //! Extensions are lower-case ASCII without the dot. Every consumer keeps its own matching rule (Rust `to_lowercase`,
 //! .NET `OrdinalIgnoreCase`, `URL.pathExtension`), only the lists come from here.
@@ -51,10 +52,21 @@ const CSHARP_LEN: usize = CSHARP_VIDEO_COUNT + CSHARP_AUDIO_COUNT;
 /// Video then audio (macOS `MediaFileTypes.mediaExtensions` order; the macOS companion search order).
 pub const MEDIA_EXTENSIONS: [&str; MEDIA_LEN] = concat(VIDEO_EXTENSIONS, VIDEO_EXTENSIONS.len(), AUDIO_EXTENSIONS, AUDIO_EXTENSIONS.len());
 
-/// The former C# app's 22 (video then audio), which the Windows file associations keep registering: the additions are
-/// not associated, see `sa_platform::win::associations`.
+/// The former C# app's 22 (video then audio), which the Windows file associations register exactly as the C# app did
+/// (including the per-user default when none is set); see `sa_platform::win::associations`.
 pub const CSHARP_MEDIA_EXTENSIONS: [&str; CSHARP_LEN] =
     concat(VIDEO_EXTENSIONS, CSHARP_VIDEO_COUNT, AUDIO_EXTENSIONS, CSHARP_AUDIO_COUNT);
+
+/// The accepted extensions the C# app did not have ([`MEDIA_EXTENSIONS`] minus [`CSHARP_MEDIA_EXTENSIONS`], video
+/// then audio, in order). The Windows file associations list the app as an "Open with" handler for these through
+/// `SupportedTypes` and `Capabilities\FileAssociations` values only, without touching their `Software\Classes\.<ext>`
+/// keys, so the default handler never changes; see `sa_platform::win::associations`.
+pub const OPEN_WITH_ONLY_MEDIA_EXTENSIONS: [&str; MEDIA_LEN - CSHARP_LEN] = concat(
+    VIDEO_EXTENSIONS.split_at(CSHARP_VIDEO_COUNT).1,
+    VIDEO_EXTENSIONS.len() - CSHARP_VIDEO_COUNT,
+    AUDIO_EXTENSIONS.split_at(CSHARP_AUDIO_COUNT).1,
+    AUDIO_EXTENSIONS.len() - CSHARP_AUDIO_COUNT,
+);
 
 /// Windows companion-video probe order (C# `SubtitleParser.VideoExtensions`): `mp4`, `mkv`, then the rest of
 /// [`MEDIA_EXTENSIONS`] in order.
@@ -179,5 +191,15 @@ mod tests {
         assert!(is_video_extension("vob") && !is_audio_extension("vob"));
         assert!(is_audio_extension("mka") && is_media_extension("mka") && !is_video_extension("mka"));
         assert!(!is_media_extension("MP4"), "callers lower-case first");
+    }
+
+    #[test]
+    fn open_with_only_extensions_are_the_accepted_ones_minus_the_csharp_ones_in_order() {
+        let expected: Vec<&str> = MEDIA_EXTENSIONS.iter().copied().filter(|e| !CSHARP_MEDIA_EXTENSIONS.contains(e)).collect();
+        assert_eq!(OPEN_WITH_ONLY_MEDIA_EXTENSIONS.to_vec(), expected);
+        assert_eq!(OPEN_WITH_ONLY_MEDIA_EXTENSIONS.len(), 81);
+        assert_eq!(OPEN_WITH_ONLY_MEDIA_EXTENSIONS.first(), Some(&"vob"));
+        assert_eq!(OPEN_WITH_ONLY_MEDIA_EXTENSIONS.last(), Some(&"oma"));
+        assert!(OPEN_WITH_ONLY_MEDIA_EXTENSIONS.contains(&"mka") && OPEN_WITH_ONLY_MEDIA_EXTENSIONS.contains(&"ogv"));
     }
 }

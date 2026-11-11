@@ -536,6 +536,36 @@ impl Drop for Scratch {
     }
 }
 
+/// The dump lines (and value sizes) the Rust registrar writes beyond the C# tree: for every accepted media extension
+/// the C# app did not have, a `SupportedTypes` value and a `Capabilities\FileAssociations` value (no
+/// `Software\Classes\.<ext>` key). Both lists are in the dump's ordinal order.
+fn open_with_only_additions() -> (Vec<String>, Vec<String>) {
+    use sa_platform::win::associations::{MEDIA_PROG_ID, OPEN_WITH_ONLY_MEDIA_EXTENSIONS};
+    let types = r"Software\Classes\Applications\SubtitleAdder.exe\SupportedTypes";
+    let assoc = r"Software\SubtitleAdder\Capabilities\FileAssociations";
+    let prog_id_size = (MEDIA_PROG_ID.encode_utf16().count() + 1) * 2;
+    let (mut lines, mut sizes) = (Vec::new(), Vec::new());
+    for ext in OPEN_WITH_ONLY_MEDIA_EXTENSIONS {
+        lines.push(format!("{types}|.{ext}|String|"));
+        lines.push(format!("{assoc}|.{ext}|String|{MEDIA_PROG_ID}"));
+        sizes.push(format!("{types}|.{ext}|String|2"));
+        sizes.push(format!("{assoc}|.{ext}|String|{prog_id_size}"));
+    }
+    for v in [&mut lines, &mut sizes] {
+        v.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    }
+    assert_eq!(lines.len(), 81 * 2);
+    (lines, sizes)
+}
+
+/// `dump` without the `expected` lines, which must all be in it (exactly once); the rest keeps its order.
+fn split_off(dump: Vec<String>, expected: &[String], what: &str) -> Vec<String> {
+    let set: std::collections::HashSet<&String> = expected.iter().collect();
+    let (removed, rest): (Vec<String>, Vec<String>) = dump.into_iter().partition(|l| set.contains(l));
+    assert_eq!(removed, expected, "the {what} the additions write");
+    rest
+}
+
 #[test]
 fn file_associations_write_and_remove_the_csharp_registry_tree() {
     use sa_core::platform::FileAssociations;
@@ -551,18 +581,24 @@ fn file_associations_write_and_remove_the_csharp_registry_tree() {
         let unregistered = strings(&case["unregistered"]);
         let rust = |s: &Scratch| FileAssociationRegistrar::with_root(&s.0, PathBuf::from(exe), icon.clone());
 
-        // Rust writes the C# tree, value for value (and byte size for byte size), and registering again changes
-        // nothing.
+        // Rust writes the C# tree, value for value (and byte size for byte size), plus exactly the "Open with"
+        // entries of the additions, and registering again changes nothing.
         let rs = Scratch::new("rs");
         raw::materialize(&rs.0, &seed);
         assert!(!rust(&rs).is_registered());
         assert!(rust(&rs).register());
+        let (extra_lines, extra_sizes) = open_with_only_additions();
         let (lines, sizes) = raw::dump(&rs.0);
+        let lines = split_off(lines, &extra_lines, "lines");
+        let sizes = split_off(sizes, &extra_sizes, "sizes");
         assert_eq!(lines, registered, "Rust and C# registrations differ (icon {icon:?})");
         assert_eq!(sizes, strings(&case["registered_sizes"]), "value sizes (icon {icon:?})");
         assert!(rust(&rs).register());
-        assert_eq!(rs.dump(), registered);
-        // Removing it leaves what C# left after removing its own tree; removing twice is fine.
+        let (lines, sizes) = raw::dump(&rs.0);
+        assert_eq!(split_off(lines, &extra_lines, "lines"), registered);
+        assert_eq!(split_off(sizes, &extra_sizes, "sizes"), strings(&case["registered_sizes"]), "sizes after registering again");
+        // Removing it leaves exactly what C# left after removing its own tree (the additions' values live in trees
+        // that are deleted); removing twice is fine.
         assert!(rust(&rs).unregister());
         assert_eq!(rs.dump(), unregistered);
         assert!(!rust(&rs).is_registered());
@@ -577,6 +613,14 @@ fn file_associations_write_and_remove_the_csharp_registry_tree() {
         assert!(rust(&cs).unregister());
         assert_eq!(cs.dump(), unregistered);
         assert_eq!(rust(&cs).is_registered(), case["is_registered_after_unregister"].as_bool().unwrap());
+
+        // Upgrade: Rust registering over the tree C# wrote yields the C# tree plus exactly the additions.
+        let up = Scratch::new("up");
+        raw::materialize(&up.0, &registered);
+        assert!(rust(&up).register());
+        let (lines, sizes) = raw::dump(&up.0);
+        assert_eq!(split_off(lines, &extra_lines, "lines"), registered, "upgrade over the C# tree (icon {icon:?})");
+        assert_eq!(split_off(sizes, &extra_sizes, "sizes"), strings(&case["registered_sizes"]), "upgrade sizes (icon {icon:?})");
     }
 }
 
