@@ -25,18 +25,13 @@ use crate::text::trim_dotnet;
 /// Open-picker filter and recognition order.
 pub const EXTENSIONS: [&str; 5] = [".srt", ".vtt", ".ass", ".ssa", ".json"];
 
-/// Companion video search order.
-pub const COMPANION_VIDEO_EXTENSIONS: [&str; 22] = [
-    ".mp4", ".mkv", ".mov", ".m4v", ".avi", ".webm", ".wmv", ".mpg", ".mpeg", ".ts", ".mts", ".m2ts", ".3gp", ".flv",
-    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma",
-];
+/// Windows companion video search order (without dots; C# `SubtitleParser.VideoExtensions` first, the additions of
+/// [`crate::media_types`] after them).
+pub const COMPANION_VIDEO_EXTENSIONS: &[&str] = &crate::media_types::COMPANION_PROBE_ORDER;
 
 /// macOS `MediaFileTypes.media` order (video then audio; mac-enginekit §11), used by the listing-based companion
 /// search.
-pub const MAC_MEDIA_EXTENSIONS: [&str; 22] = [
-    "mp4", "mov", "m4v", "mkv", "avi", "webm", "wmv", "mpg", "mpeg", "ts", "mts", "m2ts", "3gp", "flv", "mp3", "wav",
-    "m4a", "aac", "flac", "ogg", "opus", "wma",
-];
+pub const MAC_MEDIA_EXTENSIONS: &[&str] = &crate::media_types::MEDIA_EXTENSIONS;
 
 /// Which app's import behavior to follow (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -164,7 +159,7 @@ pub fn find_companion_video_windows(subtitle_path: &Path) -> Option<PathBuf> {
     if stem.is_empty() {
         return None;
     }
-    let first = |base: &str| COMPANION_VIDEO_EXTENSIONS.iter().map(|ext| dir.join(format!("{base}{ext}"))).find(|c| c.is_file());
+    let first = |base: &str| COMPANION_VIDEO_EXTENSIONS.iter().map(|ext| dir.join(format!("{base}.{ext}"))).find(|c| c.is_file());
     if let Some(found) = first(stem) {
         return Some(found);
     }
@@ -202,7 +197,7 @@ pub fn find_companion_video_listing(subtitle_path: &Path) -> Option<PathBuf> {
         candidates.push(stem[..dot].to_owned());
     }
     for candidate in candidates {
-        for ext in MAC_MEDIA_EXTENSIONS {
+        for ext in MAC_MEDIA_EXTENSIONS.iter() {
             if let Some(real) = media.get(&fold(&format!("{candidate}.{ext}"))) {
                 return Some(dir.join(real));
             }

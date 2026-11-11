@@ -12,6 +12,7 @@ pub mod engine_types;
 pub mod folding;
 pub mod future;
 pub mod l10n;
+pub mod media_types;
 pub mod models;
 pub mod platform;
 pub mod secrets;

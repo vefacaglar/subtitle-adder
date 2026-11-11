@@ -714,6 +714,23 @@
           }
         }
       }
+    },
+    "Video ve ses dosyaları": {
+      "comment": "Added by the Rust desktop app (open panel: the media type filter's name; same text as the Windows catalog).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video and audio files"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video ve ses dosyaları"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

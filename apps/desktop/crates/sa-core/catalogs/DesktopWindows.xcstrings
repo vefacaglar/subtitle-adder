@@ -136,6 +136,23 @@
           }
         }
       }
+    },
+    "Video ve ses dosyaları": {
+      "comment": "Added by the Rust desktop app (open dialog: the media type filter's name; the filter itself lists every accepted extension).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video and audio files"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video ve ses dosyaları"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

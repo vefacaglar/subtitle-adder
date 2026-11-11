@@ -296,6 +296,21 @@ fn companion_prefers_exact_stem_and_tries_extensions_in_order() {
     }
 }
 
+/// The widened list (`sa_core::media_types`): new extensions are found, and come after the former ones of the same kind
+/// (video before audio, as before).
+#[test]
+fn companion_finds_the_added_extensions_after_the_former_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), &["Dvd.vob", "Dvd.wma", "Old.vob", "Old.flv", "Song.mka", "Song.opus", "Tape.ac3"]);
+    for find in [find_companion_video_windows, find_companion_video_listing] {
+        let found = |name: &str| file_name(find(&dir.path().join(name)));
+        assert_eq!(found("Old.srt").as_deref(), Some("Old.flv"), "former video before an added one");
+        assert_eq!(found("Dvd.tr.srt").as_deref(), Some("Dvd.vob"), "videos (added ones too) before audio");
+        assert_eq!(found("Song.srt").as_deref(), Some("Song.opus"), "former audio before an added one");
+        assert_eq!(found("Tape.srt").as_deref(), Some("Tape.ac3"));
+    }
+}
+
 #[test]
 fn listing_companion_is_case_insensitive_keeps_the_real_name_and_normalizes() {
     let dir = tempfile::tempdir().unwrap();
