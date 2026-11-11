@@ -71,7 +71,7 @@ them does not build.
   runs on a worker thread of the app (never the UI or player threads) at background priority (`priority.rs`
   `Role::BackgroundRead`: Windows `THREAD_MODE_BACKGROUND_BEGIN`, which also lowers the thread's I/O and memory
   priority so the player's reads of the same disk go first, left again when the read ends; macOS the background QoS
-  class, whose disk I/O is throttled too), is cancellable through FFmpeg's interrupt callback (another video, the
+  class, whose disk I/O is throttled too, and the thread's previous class restored when it ends), is cancellable through FFmpeg's interrupt callback (another video, the
   window closing; a blocking read returns at its next I/O call) and stops with an error past 100 000 events or 16 MiB
   of text (`ExtractLimits`). Packets go through FFmpeg's subtitle decoder (ASS events for every text codec: SubRip,
   ASS/SSA, mov_text, WebVTT). Their text is made plain here, the one clean-up there is (override blocks and drawing
@@ -82,23 +82,50 @@ them does not build.
   only the bridge to the importer). While it reads it hands over snapshots of every line so far: the first line at
   once, then at most every 250 ms (20 µs per line when longer: a 50 000-event track gets one a second, since each is
   applied to the whole list on the UI thread). The app keeps only the newest snapshot not yet applied (one post in
-  flight). Matroska interleaves subtitles with the video by time, so the film's first lines arrive within moments.
+  flight; the one it replaces is freed outside the slot's lock), and a read that does not fill the list as it goes
+  gets no snapshot callback at all (`extract_text_subtitles`: no list built every 250 ms). Matroska interleaves subtitles with the video by time, so the film's first lines arrive within moments.
 - The app side (`sa_viewmodels::media_tracks`, `subtitle/embedded.rs`, `controller.rs`): when a video opens and the
   session is empty and idle, with no subtitle file next to it loaded or still being looked for (the sidecar lookup
-  counts itself on the session; the controller asks again from its 100 ms timer while it runs), `auto_track` picks
-  the UI language's text track (non-forced first), else the default one. A read into an empty list or over an
-  unedited embedded track is progressive: each snapshot goes in through `apply_embedded_snapshot`, merged by
-  `merge_sentences_preserving_uid` like the engine's `partial` snapshots (rows keep their keys, `sync_keyed` grows
-  the list in place), and only while the session still has the mark the previous snapshot left
+  counts itself on the session, through a guard that also counts down if its thread dies, and reports its end as a
+  status change; the controller asks again then and from its 100 ms timer), no job, no batch run, the video not
+  waiting in the batch list and "Off" not chosen for it in this run of the app (`State::embedded_off`),
+  `auto_track` picks the UI language's text track (non-forced first), else the default one. A read into an empty
+  list or over an unedited embedded track is progressive: each snapshot goes in through `apply_embedded_snapshot`,
+  merged by `merge_sentences_preserving_uid` like the engine's `partial` snapshots (rows keep their keys,
+  `sync_keyed` grows the list in place), and only while the session still has the mark the previous snapshot left
   (`media_tracks::SessionMark`); an edit stops the read there and says so, anything else replacing the lines stops it
-  silently. A read over the user's lines applies the complete track at the end through the open-subtitle rules
-  (`request_embedded_lines`: macOS asks when edits would be lost). Embedded lines carry `Session::embedded`
-  (`EmbeddedLines { stream, pristine, complete }`): loading them leaves the session clean, auto-save skips them
-  (`auto_save_translation_if_enabled` checks `embedded_pristine`), macOS evicts such a session like a rebuildable
-  one, and the first edit, translation, save or export makes them the user's for good (`settle_embedded` after every
-  view-model edit). A half-read track is removed when another video opens (`abandon_embedded_read`), so it is read
-  again next time. Image tracks (PGS, VobSub, DVB) are listed but disabled; more than three collapse into one summary
-  row.
+  silently. The merge matches the leading run of lines that are equal one to one by index and only the rest by the
+  matching (the same result: those lines get exactly the uids the matching would give them), so a growing prefix
+  costs O(n) per snapshot instead of a scan of the list per new line (50 000 lines in 60 snapshots stay linear,
+  `session.rs` `merge_tests`).
+- While a progressive read fills the foreground's list, the view model knows it (`set_embedded_read`; the
+  controller reports the start, every 2 % of progress and every end): translating (all, missing or selected),
+  saving and exporting are unavailable and refuse, and the status shows `Okunuyor… %N` after the summary.
+  Generating stays available; a job or a batch run starting is seen by the controller as a change of the session
+  mark's job or working state, and it cancels the read silently (never "the subtitles changed"), dropping lines
+  nobody touched. A read over the user's lines applies the complete track at the end through the open-subtitle rules
+  (`request_embedded_lines`: macOS asks when edits would be lost or a job stopped) unless the lines changed
+  meanwhile.
+- Embedded lines carry `Session::embedded` (`EmbeddedLines { stream, pristine, complete, cutoff_ms, at_cutoff }`).
+  `embedded_pristine` (no committed edit, translation, save, and no typed draft that differs from its line) is what
+  "nobody changed them" means everywhere: loading them leaves the session clean, macOS evicts such a session like a
+  rebuildable one, the Windows reopen of a video looks for a sidecar again and a subtitle file found then replaces
+  them, and a batch run treats them as no lines (`start_playlist` and `stage2_begin` drop them, and the read filling
+  them, before the video is processed, so it is transcribed). Automatic writes go through
+  `Session::may_write_automatically`: auto-save's `save_subtitle(automatic: true)` and the run's stage 3 `hand_off`
+  refuse such lines (`save_automatically`, a hidden test hook, drives the guard). The first committed edit,
+  translation, save or export makes them the user's for good (`settle_embedded` after every view-model edit; a draft
+  alone does not, since it may be cancelled).
+- A track chosen again after its read stopped early (an edit) adds only its rest: the read runs whole, without
+  snapshots (`ReadMode::resume`), and `append_embedded_rest` appends the lines starting after the last line of the
+  last snapshot that went in (lines at that same start beyond the ones it had count as new), renumbers (ids stay
+  unique) and records it as one undo step (`Kalan Satırları Ekle`) that removes exactly those lines. The user's lines,
+  split, merged or deleted, are untouched. Choosing a track commits a draft first; "Off" commits it too, then clears
+  only unedited lines, and is remembered per video for the run (it is checked while nothing from the video is in the
+  list). A read that fails part-way drops a track chosen for the user (quietly) and keeps one the user chose
+  (`Videodaki altyazının yalnızca bir kısmı yüklendi: …`). A half-read track is removed when another video opens
+  (`abandon_embedded_read`), so it is read again next time. Image tracks (PGS, VobSub, DVB) are listed but disabled;
+  more than three collapse into one summary row.
 - The read opens the file directly (`MediaSource::File`), not through the Windows `BufferedVideoStream`: it bypasses
   the encrypted SSD chunk cache and reads Matroska through to the end, at background I/O priority so playback keeps
   its share of a slow drive.
