@@ -146,7 +146,7 @@ pub struct MainWindowController {
     menu_entries: Rc<VecModel<MenuEntry>>,
     timer: slint::Timer,
     /// `SUBTITLE_ADDER_PLAYER_STATS=1`: player counters on stderr once a second (diagnostics).
-    stats: Option<Cell<Instant>>,
+    stats: Option<StatsLog>,
     key: Cell<Option<UiKey<MainWindowController>>>,
     disposed: Cell<bool>,
     /// Windows: the attached native chrome and the accent watcher (`attach_native_chrome`).
@@ -196,6 +196,30 @@ fn to_menu_entry(e: Entry) -> MenuEntry {
         hint: e.hint.into(),
         level: e.level,
         submenu: e.submenu,
+    }
+}
+
+/// `SUBTITLE_ADDER_PLAYER_STATS=1`: the once-a-second `[player-stats]` line, written to stderr by a background thread
+/// (a write to a redirected stderr can block the UI thread for milliseconds, which would show up as a late frame in
+/// the very measurement the line is for).
+struct StatsLog {
+    last: Cell<Instant>,
+    lines: std::sync::mpsc::Sender<String>,
+}
+
+impl StatsLog {
+    fn from_env() -> Option<Self> {
+        std::env::var_os("SUBTITLE_ADDER_PLAYER_STATS").filter(|v| v == "1")?;
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::Builder::new()
+            .name("player-stats".into())
+            .spawn(move || {
+                while let Ok(line) = rx.recv() {
+                    eprintln!("{line}");
+                }
+            })
+            .ok()?;
+        Some(Self { last: Cell::new(Instant::now()), lines: tx })
     }
 }
 
@@ -256,7 +280,7 @@ impl MainWindowController {
             target_items: Rc::new(VecModel::default()),
             menu_entries: Rc::new(VecModel::default()),
             timer: slint::Timer::default(),
-            stats: std::env::var_os("SUBTITLE_ADDER_PLAYER_STATS").filter(|v| v == "1").map(|_| Cell::new(Instant::now())),
+            stats: StatsLog::from_env(),
             key: Cell::new(None),
             disposed: Cell::new(false),
             #[cfg(windows)]
@@ -370,12 +394,12 @@ impl MainWindowController {
         }
         self.player.borrow_mut().tick();
         self.drain_player();
-        if let Some(last) = &self.stats {
-            if last.get().elapsed() >= Duration::from_secs(1) {
-                last.set(Instant::now());
+        if let Some(stats) = &self.stats {
+            if stats.last.get().elapsed() >= Duration::from_secs(1) {
+                stats.last.set(Instant::now());
                 if let Some(line) = self.player.borrow().diagnostics() {
                     let (uploads, renders, gpu) = (self.video.uploads(), self.video.renders(), self.video.available());
-                    eprintln!("[player-stats] {line} gpu={gpu} uploaded={uploads} renders={renders}");
+                    let _ = stats.lines.send(format!("[player-stats] {line} gpu={gpu} uploaded={uploads} renders={renders}"));
                 }
             }
         }
