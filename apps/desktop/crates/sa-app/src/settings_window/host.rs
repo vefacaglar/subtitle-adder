@@ -624,6 +624,7 @@ pub fn push(window: &ui::SettingsWindow, view: &View, flavor: Flavor) {
     set!(get_cache_gb, set_cache_gb, view.cache_gb as i32);
     set!(get_clear_cache_enabled, set_clear_cache_enabled, view.clear_cache_enabled);
     set!(get_associations_registered, set_associations_registered, view.associations_registered);
+    set!(get_associations_busy, set_associations_busy, view.associations_busy);
     set!(get_associations_bar_open, set_associations_bar_open, view.associations_bar_open);
     set!(get_associations_bar_severity, set_associations_bar_severity, view.associations_bar_severity);
     set!(get_associations_bar_text, set_associations_bar_text, s(&view.associations_bar_text));

@@ -52,9 +52,13 @@ pub fn begin_with(args: impl IntoIterator<Item = OsString>, mut coordinator: Sin
 
 /// Steps 6–7: registers the file associations in the background unless `fileAssociationsDisabled` is true (only
 /// for `SubtitleAdder.exe`, errors swallowed), then sets the process UI language of system dialogs.
-pub fn after_settings(settings: &dyn SettingsStore, language: UiLanguage) {
+///
+/// `opted_out_now` re-reads the persisted opt-out (the settings file as it is on disk, not only this process's
+/// copy); the worker calls it under the registration gate right before writing, so another instance's unregister
+/// that flushed its opt-out after this one started is not undone.
+pub fn after_settings(settings: &dyn SettingsStore, opted_out_now: Box<dyn Fn() -> bool + Send>, language: UiLanguage) {
     let disabled = settings.get_bool(sa_core::settings::keys::FILE_ASSOCIATIONS_DISABLED);
-    FileAssociationRegistrar::register_on_launch_in_background(disabled);
+    FileAssociationRegistrar::register_on_launch_in_background(disabled, opted_out_now);
     super::folders::set_process_ui_language(language);
 }
 

@@ -126,22 +126,24 @@ impl FileAssociationRegistrar {
 
     /// Registers on a worker thread when [`should_register_on_launch`]; every error is swallowed. Ordered with the
     /// Settings actions through the process gate (see [`Self::register_on_launch`]).
-    pub fn register_on_launch_in_background(file_associations_disabled: Option<bool>) {
+    pub fn register_on_launch_in_background(file_associations_disabled: Option<bool>, opted_out_now: Box<dyn Fn() -> bool + Send>) {
         let Ok(exe) = std::env::current_exe() else { return };
         let data_dir_override = std::env::var_os(sa_core::platform::DATA_DIR_ENV).is_some_and(|v| !v.is_empty());
         if should_register_on_launch(&exe, file_associations_disabled) && !is_scratch_instance(&exe, data_dir_override) {
-            let _ = std::thread::Builder::new().name("sa-file-associations".into()).spawn(|| {
-                let _ = FileAssociationRegistrar::new().register_on_launch();
+            let _ = std::thread::Builder::new().name("sa-file-associations".into()).spawn(move || {
+                let _ = FileAssociationRegistrar::new().register_on_launch(&*opted_out_now);
             });
         }
     }
 
     /// The launch-time registration: waits for a running Settings action, and does nothing (returns `false`) once
-    /// the user registered or unregistered in this process. Otherwise registers, holding the gate for the whole
-    /// write, so a Settings action that comes in meanwhile runs after it.
-    pub fn register_on_launch(&self) -> bool {
+    /// the user registered or unregistered in this process, or when `opted_out_now` (the persisted opt-out, read
+    /// again under the gate right before writing) says another instance unregistered since this one read its
+    /// settings. Otherwise registers, holding the gate for the whole write, so a Settings action that comes in
+    /// meanwhile runs after it.
+    pub fn register_on_launch(&self, opted_out_now: &dyn Fn() -> bool) -> bool {
         let acted = self.gate.user_acted.lock();
-        if *acted {
+        if *acted || opted_out_now() {
             return false;
         }
         self.try_register().is_ok()
@@ -555,11 +557,11 @@ mod tests {
         let settings = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
         let launch = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
         assert!(settings.unregister());
-        assert!(!launch.register_on_launch(), "skipped after the user acted");
+        assert!(!launch.register_on_launch(&|| false), "skipped after the user acted");
         assert!(!settings.is_registered());
         // An explicit register is still honored, and a late launch one stays a no-op that removes nothing.
         assert!(settings.register());
-        assert!(!launch.register_on_launch());
+        assert!(!launch.register_on_launch(&|| false));
         assert!(settings.is_registered());
         drop(s);
 
@@ -568,7 +570,7 @@ mod tests {
         let gate = RegistrationGate::new();
         let settings = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
         let launch = FileAssociationRegistrar::with_root(&s.0, exe.clone(), None).with_gate(gate.clone());
-        assert!(launch.register_on_launch());
+        assert!(launch.register_on_launch(&|| false));
         assert!(settings.is_registered());
         assert!(settings.unregister());
         assert!(!settings.is_registered());
@@ -584,7 +586,7 @@ mod tests {
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     start.wait();
-                    launch.register_on_launch();
+                    launch.register_on_launch(&|| false);
                 });
                 start.wait();
                 assert!(settings.unregister());
@@ -614,7 +616,7 @@ mod tests {
         );
         assert!(ok);
         assert_eq!(*steps.borrow(), ["before registered=false", "after true registered=true"]);
-        assert!(!launch.register_on_launch(), "the user acted");
+        assert!(!launch.register_on_launch(&|| false), "the user acted");
         // Already registered with `only_if_needed`: success without writes (a removed value stays removed).
         let types = format!(r"{}\Software\Classes\Applications\SubtitleAdder.exe\SupportedTypes", s.0);
         Key::open(&types, true).unwrap().delete_value(Some(".mp4"));
@@ -623,6 +625,26 @@ mod tests {
         // Unregister is exactly that, whatever the probe key says.
         assert!(settings.apply_user_choice(false, false, &mut || {}, &mut |_| {}));
         assert!(!settings.is_registered());
+    }
+
+    /// Another instance unregisters after this one read its settings at startup: the launch registration re-reads
+    /// the persisted opt-out under the gate, right before writing, and does nothing.
+    #[test]
+    fn launch_registration_rereads_the_persisted_opt_out_under_the_gate() {
+        let s = scratch();
+        let exe = PathBuf::from(r"C:\Program Files\Subtitle Adder\SubtitleAdder.exe");
+        let launch = FileAssociationRegistrar::with_root(&s.0, exe, None);
+        let reads = std::cell::Cell::new(0);
+        let opted_out = || {
+            assert!(launch.gate.user_acted.try_lock().is_none(), "read under the gate");
+            reads.set(reads.get() + 1);
+            true
+        };
+        assert!(!launch.register_on_launch(&opted_out));
+        assert_eq!(reads.get(), 1);
+        assert!(!launch.is_registered(), "nothing written after the late opt-out");
+        assert!(launch.register_on_launch(&|| false), "still registers when not opted out");
+        assert!(launch.is_registered());
     }
 
     /// While a launch registration writes, a Settings call waits for it (one writer per root at a time).

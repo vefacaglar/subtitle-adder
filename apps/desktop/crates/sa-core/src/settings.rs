@@ -43,7 +43,9 @@ pub trait SettingsStore: Send + Sync {
         let _ = (key, value);
     }
     fn remove(&self, key: &str);
-    /// Local changes (macOS: also external changes from another process).
+    /// Local changes (macOS: also external changes from another process). Handlers run on the writing thread, which
+    /// may be a worker holding a lock: the file-association worker writes `fileAssociationsDisabled` while the
+    /// registration gate is held, so a handler must never call the `FileAssociations` methods.
     fn subscribe(&self, handler: Box<dyn Fn(&str) + Send + Sync>) -> Subscription;
     /// Writes pending changes synchronously (exit path).
     fn flush(&self);
@@ -388,6 +390,12 @@ impl JsonFileSettingsStore {
     pub fn reload(&self) {
         let reloaded = Self::load(&self.path);
         self.state.lock().values = reloaded;
+    }
+
+    /// `key` as a bool as it is in the file right now (another instance's flushed write included), without touching
+    /// the in-memory map; `None` when absent, not a bool, or the file is missing or unreadable.
+    pub fn persisted_bool(&self, key: &str) -> Option<bool> {
+        read::bool(Self::load(&self.path).get(key))
     }
 
     /// A deep copy of the value map (tests, diagnostics).

@@ -376,12 +376,14 @@ fn file_associations_busy_state_ignores_clicks_until_the_result_arrives() {
         assert!(m.view().associations_busy);
         assert_eq!(*a.opened.lock(), 0);
     }
-    // The queued "Default apps…" click runs after the toggle, without another registry write.
-    wait(&e, || !m.associations_busy() && *a.opened.lock() == 1);
+    wait(&e, || !m.associations_busy());
+    pump(&e);
     let v = m.view();
-    assert!(v.associations_registered && v.associations_bar_open);
+    assert!(v.associations_registered && v.associations_bar_open && !v.associations_busy);
     assert_eq!(v.associations_bar_severity, 1);
-    assert_eq!(*a.calls.lock(), 1, "the second toggle click made while busy was ignored");
+    // The buttons are disabled while busy (`associations_busy`); clicks that still arrive are ignored.
+    assert_eq!(*a.calls.lock(), 1, "the toggle click made while busy was ignored");
+    assert_eq!(*a.opened.lock(), 0, "the Default apps click made while busy was ignored");
 }
 
 /// The launch registration reaches the registry between the card's render and the click: the click still means

@@ -76,6 +76,10 @@ pub trait FileAssociations: Send + Sync {
     /// registration, another window). With `only_if_needed`, a registration is skipped (and reported as success)
     /// when the registry already shows the app as registered. The default runs the steps without an ordering
     /// section (test doubles); the Windows registrar overrides it.
+    ///
+    /// Called on a worker thread. Settings writes in `before` / `after` notify the settings store's subscribers right
+    /// there, on that worker and while the registration gate is held: a settings subscriber must never call these
+    /// association methods (it would wait for the gate it is called under).
     fn apply_user_choice(&self, register: bool, only_if_needed: bool, before: &mut dyn FnMut(), after: &mut dyn FnMut(bool)) -> bool {
         before();
         let ok = if register {

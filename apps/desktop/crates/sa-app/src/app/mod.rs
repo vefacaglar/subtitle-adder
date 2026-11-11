@@ -192,7 +192,13 @@ impl AppShell {
         };
         #[cfg(windows)]
         if options.startup_side_effects {
-            sa_platform::win::startup::after_settings(settings.as_ref(), language.effective());
+            // The opt-out as this process has it, or as another instance flushed it since (read from the file).
+            let opted_out_now: Box<dyn Fn() -> bool + Send> = {
+                let store = json_settings.clone();
+                let key = sa_core::settings::keys::FILE_ASSOCIATIONS_DISABLED;
+                Box::new(move || store.get_bool(key) == Some(true) || store.persisted_bool(key) == Some(true))
+            };
+            sa_platform::win::startup::after_settings(settings.as_ref(), opted_out_now, language.effective());
         }
         #[cfg(target_os = "macos")]
         if options.startup_side_effects {

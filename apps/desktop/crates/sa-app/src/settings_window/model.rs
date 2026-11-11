@@ -134,8 +134,6 @@ struct State {
     assoc_busy: bool,
     /// The registry state read after this window's last action (`None` until one finished: read live).
     assoc_registered: Option<bool>,
-    /// "Varsayılan uygulamalar…" was clicked while an action ran: it runs when that one finishes.
-    assoc_pending_default_apps: bool,
     // providers
     keys: HashMap<Uuid, ProviderKey>,
     key_epochs: HashMap<Uuid, u64>,
@@ -871,19 +869,9 @@ impl SettingsModel {
         self.run_associations_job(a, !shown, AssocJob::Toggle);
     }
 
-    /// "Varsayılan uygulamalar…": registers first when needed (on a worker), then opens the Windows page. A click
-    /// while another association action runs is kept and runs right after it.
+    /// "Varsayılan uygulamalar…": registers first when needed (on a worker), then opens the Windows page. Both card
+    /// buttons are disabled while an action runs (`associations_busy`); a click that still arrives is ignored.
     pub fn open_default_apps(&self) {
-        {
-            let mut st = self.state.borrow_mut();
-            if st.closed {
-                return;
-            }
-            if st.assoc_busy {
-                st.assoc_pending_default_apps = true;
-                return;
-            }
-        }
         let Some(a) = self.begin_associations_job() else { return };
         self.run_associations_job(a, true, AssocJob::DefaultApps);
     }
@@ -924,11 +912,7 @@ impl SettingsModel {
             key.post(&ui, move |m| m.finish_associations(worker, job, outcome, registered));
         });
         if spawned.is_err() {
-            {
-                let mut st = self.state.borrow_mut();
-                st.assoc_busy = false;
-                st.assoc_pending_default_apps = false;
-            }
+            self.state.borrow_mut().assoc_busy = false;
             self.show_associations_outcome(if register { AssocOutcome::Registered(false) } else { AssocOutcome::Unregistered(false) });
         }
     }
@@ -940,12 +924,11 @@ impl SettingsModel {
         outcome: AssocOutcome,
         registered: bool,
     ) {
-        let pending = {
+        {
             let mut st = self.state.borrow_mut();
             st.assoc_busy = false;
             st.assoc_registered = Some(registered);
-            std::mem::take(&mut st.assoc_pending_default_apps)
-        };
+        }
         if self.is_closed() {
             return;
         }
@@ -955,9 +938,6 @@ impl SettingsModel {
                 a.open_default_apps_settings();
                 self.changed();
             }
-        }
-        if pending {
-            self.open_default_apps();
         }
     }
 

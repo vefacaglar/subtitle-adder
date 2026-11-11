@@ -256,10 +256,12 @@ export component GeneralPage inherits VerticalLayout {
                         spacing: 8px;
                         Button {
                             text: SettingsBridge.associations-registered ? Loc.t("Kaydı kaldır") : Loc.t("Dosya türlerini kaydet");
+                            enabled: !SettingsBridge.associations-busy;
                             clicked => { SettingsBridge.associations-toggle(); }
                         }
                         Button {
                             text: Loc.t("Varsayılan uygulamalar…");
+                            enabled: !SettingsBridge.associations-busy;
                             clicked => { SettingsBridge.default-apps(); }
                         }
                     }
