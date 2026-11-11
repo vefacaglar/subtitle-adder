@@ -38,6 +38,8 @@ pub(crate) struct PlayerShared {
     pub planar: AtomicBool,
     /// Decode in hardware when the stream allows it.
     pub hardware: AtomicBool,
+    /// Tests: every hardware decoder fails as on a GPU without support for the codec (`hw` module docs).
+    pub simulate_hw_failure: AtomicBool,
 }
 
 impl PlayerShared {
@@ -49,6 +51,7 @@ impl PlayerShared {
             gate: PlayerSessionGate::new(),
             planar: AtomicBool::new(false),
             hardware: AtomicBool::new(hardware),
+            simulate_hw_failure: AtomicBool::new(false),
         }
     }
 }
@@ -80,6 +83,7 @@ pub(crate) struct Info {
 const VIDEO_QUEUE_PACKETS: usize = 90;
 const AUDIO_QUEUE_PACKETS: usize = 150;
 const MAX_QUEUED_BYTES: usize = 48 * 1024 * 1024;
+/// Decoded frames queued for the presenter (an interlaced frame is queued as two fields: twice the items).
 const FRAME_QUEUE: usize = 4;
 const AUDIO_RING_SECONDS: f64 = 0.3;
 /// Waits up to this long before a due frame use a precise sleep instead of the condvar.
@@ -345,14 +349,7 @@ impl Control {
 
     /// Records a seek: everything queued becomes stale, the clock stands at the target until its frame is shown.
     pub fn request_seek(&self, seconds: f64) {
-        let duration = self.info.lock().duration;
-        let target = if !seconds.is_finite() {
-            0.0
-        } else if duration > 0.0 {
-            seconds.clamp(0.0, duration)
-        } else {
-            seconds.max(0.0)
-        };
+        let target = self.clamp_target(seconds);
         {
             // A seek whose frame is not on screen yet finishes first, and only the newest of the seeks requested
             // meanwhile runs after it (`run_deferred_seek`): a stream of seeks (dragging the slider, a held arrow
@@ -374,6 +371,35 @@ impl Control {
             *deferred = None;
             *self.seek_started.lock() = Instant::now();
         }
+        self.start_seek(target);
+    }
+
+    fn clamp_target(&self, seconds: f64) -> f64 {
+        let duration = self.info.lock().duration;
+        if !seconds.is_finite() {
+            0.0
+        } else if duration > 0.0 {
+            seconds.clamp(0.0, duration)
+        } else {
+            seconds.max(0.0)
+        }
+    }
+
+    /// Restarts decoding from the keyframe at or before `at` (the video decoder was replaced and starts without
+    /// one), bypassing the seek deferral: a deferred seek would leave the new decoder with the packets after the
+    /// keyframe the failed decoder consumed. A seek the user requested meanwhile (deferred) is the target instead.
+    fn restart_decoding(&self, at: f64) {
+        let target = {
+            let mut deferred = self.deferred_seek.lock();
+            let t = deferred.take().unwrap_or(at);
+            *self.seek_started.lock() = Instant::now();
+            t
+        };
+        self.start_seek(self.clamp_target(target));
+    }
+
+    /// Starts a seek to `target` (clamped): a new serial, flushed queues, the clock at the target, the demuxer asked.
+    fn start_seek(&self, target: f64) {
         let serial = self.serial.fetch_add(1, Ordering::AcqRel) + 1;
         *self.seek_target.lock() = (serial, target);
         // Flush before the demuxer can see the request (it is published last): flushing afterwards could drop the
@@ -463,6 +489,8 @@ pub(crate) struct VideoTrack {
     dec: codec::decoder::Video,
     /// The decoder was set up for hardware decoding.
     hw: bool,
+    /// It is a hardware-only alternative decoder (`hw::HwDecoder::hardware_only`).
+    hw_only: bool,
     params: codec::Parameters,
     tb: Rational,
     layout: StreamLayout,
@@ -481,14 +509,15 @@ fn software_threads() -> usize {
 }
 
 /// Opens the video decoder: in hardware when `hardware` and the stream suit it (single-threaded; the GPU does the
-/// work), else in software with frame threads. Returns the decoder and whether it was set up for hardware.
+/// work), else in software with frame threads. Returns the decoder, whether it was set up for hardware and whether it
+/// is a hardware-only alternative decoder.
 ///
 /// The hardware decoder is the codec's default decoder when that has a hardware config for the platform, else another
 /// (native) decoder of the same codec that has one: FFmpeg's default AV1 decoder is `libdav1d`, which has none, so AV1
 /// decodes through the native `av1` decoder (hardware only). The software decoder is always the default one, so a
 /// fall-back from hardware never lands on a decoder that cannot decode without the GPU.
-fn open_video_decoder(params: &codec::Parameters, tb: Rational, hardware: bool) -> Result<(codec::decoder::Video, bool), ffmpeg_next::Error> {
-    if hardware && let Some(hw_codec) = unsafe { hw::decoder_for(params.as_ptr()) } {
+fn open_video_decoder(params: &codec::Parameters, tb: Rational, hardware: bool) -> Result<(codec::decoder::Video, bool, bool), ffmpeg_next::Error> {
+    if hardware && let Some(choice) = unsafe { hw::decoder_for(params.as_ptr()) } {
         let mut cctx = codec::context::Context::from_parameters(params.clone())?;
         let attached = unsafe {
             (*cctx.as_mut_ptr()).pkt_timebase = tb.into();
@@ -496,9 +525,9 @@ fn open_video_decoder(params: &codec::Parameters, tb: Rational, hardware: bool) 
         };
         if attached {
             cctx.set_threading(codec::threading::Config { kind: codec::threading::Type::Frame, count: 1 });
-            let codec = unsafe { ffmpeg_next::Codec::wrap(hw_codec) };
+            let codec = unsafe { ffmpeg_next::Codec::wrap(choice.codec) };
             match cctx.decoder().open_as(codec).and_then(|o| o.video()) {
-                Ok(dec) => return Ok((dec, true)),
+                Ok(dec) => return Ok((dec, true, choice.hardware_only)),
                 Err(e) => eprintln!("[player] hardware decoder did not open ({e}); decoding in software"),
             }
         }
@@ -506,7 +535,7 @@ fn open_video_decoder(params: &codec::Parameters, tb: Rational, hardware: bool) 
     let mut cctx = codec::context::Context::from_parameters(params.clone())?;
     unsafe { (*cctx.as_mut_ptr()).pkt_timebase = tb.into() };
     cctx.set_threading(codec::threading::Config { kind: codec::threading::Type::Frame, count: software_threads() });
-    Ok((cctx.decoder().video()?, false))
+    Ok((cctx.decoder().video()?, false, false))
 }
 
 fn open_streams(input: &mut OpenedInput, hardware: bool) -> Result<Streams, OpenFailure> {
@@ -535,7 +564,7 @@ fn open_streams(input: &mut OpenedInput, hardware: bool) -> Result<Streams, Open
         let params = s.parameters().clone();
         // A video track without a decoder fails the load (the macOS player then tries the engine preview), as
         // Media Foundation and AVFoundation do.
-        let (dec, hw) = open_video_decoder(&params, tb, hardware).map_err(|e| match e {
+        let (dec, hw, hw_only) = open_video_decoder(&params, tb, hardware).map_err(|e| match e {
             ffmpeg_next::Error::Other { .. } | ffmpeg_next::Error::Unknown => {
                 OpenFailure::new(ffmpeg_next::Error::DecoderNotFound.to_string(), FailureKind::UnsupportedFormat)
             }
@@ -548,7 +577,7 @@ fn open_streams(input: &mut OpenedInput, hardware: bool) -> Result<Streams, Open
             StreamLayout { rotation, container_sar: (c.num, c.den), codec_sar: (p.num, p.den) }
         };
         let hdr = unsafe { HdrLevels::of_stream(s.as_ptr()) };
-        out.video = Some((i, VideoTrack { dec, hw, params, tb, layout, frame_dur: fps.clamp(1.0 / 240.0, 1.0), hdr }));
+        out.video = Some((i, VideoTrack { dec, hw, hw_only, params, tb, layout, frame_dur: fps.clamp(1.0 / 240.0, 1.0), hdr }));
     }
     if let Some(i) = audio_index {
         let s = ictx.stream(i).expect("audio stream");
@@ -815,8 +844,10 @@ fn seconds(ts: i64, tb: Rational, start: f64) -> f64 {
 
 fn video_main(ctl: Arc<Control>, track: VideoTrack) {
     let _priority = priority::raise(priority::Role::VideoDecode);
-    let VideoTrack { mut dec, hw: mut hw_decoder, params, tb, layout, frame_dur, hdr } = track;
-    let mut out = FrameOutput { conv: Converter::new(), download: Download::default(), hdr, last_interlaced_pts: None };
+    let VideoTrack { mut dec, hw: mut hw_decoder, hw_only, params, tb, layout, frame_dur, hdr } = track;
+    let codec_id = unsafe { (*params.as_ptr()).codec_id };
+    let simulate_failure = ctl.player.simulate_hw_failure.load(Ordering::Relaxed) || hw::simulate_failure_from_env();
+    let mut out = FrameOutput { conv: Converter::new(), download: Download::default(), hdr, fields: FieldPacer::default() };
     let start = ctl.start_time();
     let mut serial = 0u64;
     let mut target = 0.0;
@@ -827,7 +858,7 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
     let mut has_skipped = false;
     let mut next_pts = 0.0;
     let mut f = frame::Video::empty();
-    let mut hw_health = HwHealth::default();
+    let mut hw_health = HwHealth::new(hw_only, frame_dur);
     loop {
         if ctl.stopped() {
             return;
@@ -845,16 +876,23 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
             emitted = false;
             has_skipped = false;
             next_pts = target;
+            out.fields.reset();
+            hw_health.flushed();
         }
         let at_eof = item.packet.is_none();
         let sent = match &item.packet {
+            // Simulated failure: the packet is consumed and fails, as on a GPU that cannot decode the codec.
+            Some(_) if hw_decoder && simulate_failure => Err(ffmpeg_next::Error::Other { errno: ffi::ENOSYS }),
             Some(p) => dec.send_packet(p),
             None => dec.send_eof(),
         };
+        if hw_decoder && !at_eof {
+            hw_health.packet();
+        }
         let mut fall_back = false;
         if let Err(e) = sent {
             if !matches!(e, ffmpeg_next::Error::Eof) && !at_eof {
-                if hw_decoder && hw_health.failed(&e) {
+                if hw_decoder && (hw_health.failed(&e) || hw_health.stalled()) {
                     fall_back = true;
                 } else {
                     // Damaged packet: keep going with the next one.
@@ -891,8 +929,10 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
                         continue;
                     }
                     if emitted && ctl.clock.is_running() && pts + dur < ctl.clock.now() - 0.02 {
-                        // Hopelessly late: don't spend a download or conversion on it.
+                        // Hopelessly late: don't spend a download or conversion on it. The next frame's fields are
+                        // paced from its own duration (the gap to the frame before spans the dropped one).
                         ctl.stats.dropped_decoder.fetch_add(1, Ordering::Relaxed);
+                        out.fields.reset();
                         continue;
                     }
                     match push_frame(&ctl, &mut out, raw, layout, serial, pts, dur) {
@@ -941,39 +981,77 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
                 }
             }
         }
+        if hw_decoder && !fall_back && hw_health.stalled() {
+            eprintln!("[player] hardware decoder produced no frame from {} packets", hw_health.packets_without_frame);
+            fall_back = true;
+        }
         if fall_back {
             eprintln!("[player] hardware decoding failed for this stream; decoding in software");
-            let Ok((sw, _)) = open_video_decoder(&params, tb, false) else {
+            if hw_only && !simulate_failure {
+                // This GPU cannot decode the codec: later loads go straight to the software decoder.
+                hw::remember_hardware_only_failure(codec_id);
+            }
+            let Ok((sw, _, _)) = open_video_decoder(&params, tb, false) else {
                 eprintln!("[player] software video decoder unavailable");
                 return;
             };
             dec = sw;
             hw_decoder = false;
-            hw_health = HwHealth::default();
+            hw_health = HwHealth::new(false, frame_dur);
             f = frame::Video::empty();
             last_skipped = frame::Video::empty();
             has_skipped = false;
-            // Decode again from the keyframe before where playback stands (the new decoder starts without one).
-            let at = if emitted { ctl.position() } else { target };
-            ctl.request_seek(at);
+            out.fields.reset();
+            // Decode again from the keyframe at or before where playback stands: the new decoder starts without one,
+            // and the packets up to here went to the failed decoder.
+            let at = if emitted { ctl.clock.now() } else { target };
+            ctl.restart_decoding(at);
         }
     }
 }
 
-/// Decode errors of a hardware decoder: it is given up on an error before its first frame, or after
-/// `HW_ERRORS_IN_A_ROW` errors without a frame in between (a single damaged packet does not end hardware decoding).
-#[derive(Debug, Default)]
+/// Health of a hardware decoder. It is given up after `HW_ERRORS_IN_A_ROW` errors without a frame in between (a
+/// damaged packet, such as the first ones of a TS capture that starts in the middle of a GOP, does not end hardware
+/// decoding), at its first error before any frame when it is a hardware-only alternative decoder (it cannot decode
+/// in software at all: the GPU cannot decode the codec), and when it takes `stall_packets` packets since the last
+/// flush or frame without handing over a frame (a decoder that only ever asks for more input).
+#[derive(Debug)]
 struct HwHealth {
+    hardware_only: bool,
     frames: u64,
     errors_in_a_row: u32,
+    packets_without_frame: u32,
+    stall_packets: u32,
 }
 
 const HW_ERRORS_IN_A_ROW: u32 = 3;
+/// A hardware decoder stalls after this many packets without a frame, or 2 s of stream if that is more.
+const HW_STALL_PACKETS: u32 = 60;
 
 impl HwHealth {
+    fn new(hardware_only: bool, frame_dur: f64) -> Self {
+        let two_seconds = if frame_dur > 0.0 { (2.0 / frame_dur).ceil() as u32 } else { 0 };
+        Self { hardware_only, frames: 0, errors_in_a_row: 0, packets_without_frame: 0, stall_packets: HW_STALL_PACKETS.max(two_seconds) }
+    }
+
     fn frame(&mut self) {
         self.frames += 1;
         self.errors_in_a_row = 0;
+        self.packets_without_frame = 0;
+    }
+
+    /// A packet was sent to the decoder.
+    fn packet(&mut self) {
+        self.packets_without_frame = self.packets_without_frame.saturating_add(1);
+    }
+
+    /// The decoder was flushed (a seek): its stall count starts again.
+    fn flushed(&mut self) {
+        self.packets_without_frame = 0;
+    }
+
+    fn stalled(&self) -> bool {
+        self.packets_without_frame >= self.stall_packets
     }
 
     /// Records `e` (ignoring "needs more input" / end of stream); true when hardware decoding should be given up.
@@ -983,9 +1061,31 @@ impl HwHealth {
             ffmpeg_next::Error::Other { errno } if *errno == ffi::EAGAIN => false,
             _ => {
                 self.errors_in_a_row += 1;
-                self.frames == 0 || self.errors_in_a_row >= HW_ERRORS_IN_A_ROW
+                (self.hardware_only && self.frames == 0) || self.errors_in_a_row >= HW_ERRORS_IN_A_ROW
             }
         }
+    }
+}
+
+/// Paces the second field of interlaced frames: half the distance to the previous interlaced frame (what the stream
+/// really runs at), or half the frame's duration when there is no previous frame to measure against.
+#[derive(Debug, Default)]
+struct FieldPacer {
+    last_pts: Option<f64>,
+}
+
+impl FieldPacer {
+    /// The field period of an interlaced frame at `pts` lasting `dur`.
+    fn half(&mut self, pts: f64, dur: f64) -> f64 {
+        let gap = self.last_pts.map(|p| pts - p).filter(|g| *g > 1.0 / 240.0 && *g < 0.25 && *g < dur * 2.5);
+        self.last_pts = Some(pts);
+        gap.unwrap_or(dur) * 0.5
+    }
+
+    /// The next frame does not follow the last one measured (a seek, a dropped frame, a progressive frame, a new
+    /// decoder).
+    fn reset(&mut self) {
+        self.last_pts = None;
     }
 }
 
@@ -995,8 +1095,7 @@ struct FrameOutput {
     download: Download,
     /// The stream's HDR light levels (from its side data, updated by frames that carry them).
     hdr: HdrLevels,
-    /// The pts of the previous frame when it was interlaced (paces the second field).
-    last_interlaced_pts: Option<f64>,
+    fields: FieldPacer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1053,22 +1152,20 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
             VideoFrame::from_rgba(w, h, w * 4, pts, rgba)
         }
     };
-    // An interlaced frame is shown field by field (the UI deinterlaces): its second field half a frame later. The
-    // field period is half the distance to the previous interlaced frame (what the stream really runs at), or half
-    // the frame's duration.
+    // An interlaced frame is shown field by field (the UI deinterlaces): its second field half a frame later
+    // (`FieldPacer`). The queue holds as many frames either way: twice the items for fields.
     let interlaced = frame.planar.as_ref().is_some_and(|p| p.interlaced);
+    let capacity = if interlaced { FRAME_QUEUE * 2 } else { FRAME_QUEUE };
     let mut items = Vec::with_capacity(2);
     if interlaced {
-        let gap = out.last_interlaced_pts.map(|p| pts - p).filter(|g| *g > 1.0 / 240.0 && *g < 0.25 && *g < dur * 2.5);
-        out.last_interlaced_pts = Some(pts);
-        let half = gap.unwrap_or(dur) * 0.5;
+        let half = out.fields.half(pts, dur);
         let mut second = frame.clone();
         second.second_field = true;
         second.pts = pts + half;
         items.push(DecodedFrame { serial, pts, duration: half, frame });
         items.push(DecodedFrame { serial, pts: pts + half, duration: (dur - half).max(half), frame: second });
     } else {
-        out.last_interlaced_pts = None;
+        out.fields.reset();
         items.push(DecodedFrame { serial, pts, duration: dur, frame });
     }
     for item in items {
@@ -1077,7 +1174,7 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
             if ctl.stopped() || ctl.serial.load(Ordering::Acquire) != serial {
                 return Pushed::Skipped;
             }
-            if q.len() < FRAME_QUEUE {
+            if q.len() < capacity {
                 break;
             }
             ctl.frames.space.wait_for(&mut q, Duration::from_millis(20));
@@ -1306,17 +1403,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_hardware_decoder_is_given_up_before_its_first_frame_or_after_repeated_errors() {
+    fn a_hardware_decoder_is_given_up_after_repeated_errors_or_a_hardware_only_one_at_its_first() {
         let bad = ffmpeg_next::Error::InvalidData;
+        let nosys = ffmpeg_next::Error::Other { errno: ffi::ENOSYS };
         let again = ffmpeg_next::Error::Other { errno: ffi::EAGAIN };
-        let mut h = HwHealth::default();
+        let mut h = HwHealth::new(true, 1.0 / 30.0);
         assert!(!h.failed(&again) && !h.failed(&ffmpeg_next::Error::Eof), "needing input is not an error");
-        assert!(h.failed(&bad), "an error before any frame: the GPU cannot decode this stream");
-        let mut h = HwHealth::default();
+        assert!(h.failed(&nosys), "a hardware-only decoder failing before any frame: the GPU cannot decode this codec");
+        // The default decoder: damaged packets before the first frame (a capture starting mid-GOP) are survived.
+        let mut h = HwHealth::new(false, 1.0 / 30.0);
+        assert!(!h.failed(&bad) && !h.failed(&bad));
+        assert!(h.failed(&bad), "three errors in a row");
+        let mut h = HwHealth::new(true, 1.0 / 30.0);
         h.frame();
         assert!(!h.failed(&bad) && !h.failed(&bad), "one damaged packet is not the end of hardware decoding");
         h.frame();
         assert!(!h.failed(&bad) && !h.failed(&bad));
         assert!(h.failed(&bad), "three errors in a row");
+    }
+
+    #[test]
+    fn a_hardware_decoder_that_never_outputs_stalls_after_60_packets_or_two_seconds() {
+        let mut h = HwHealth::new(false, 1.0 / 25.0);
+        for _ in 0..59 {
+            h.packet();
+        }
+        assert!(!h.stalled());
+        h.packet();
+        assert!(h.stalled());
+        h.frame();
+        assert!(!h.stalled(), "a frame resets the count");
+        for _ in 0..59 {
+            h.packet();
+        }
+        h.flushed();
+        h.packet();
+        assert!(!h.stalled(), "so does a flush (seek)");
+        // 120 fps: two seconds are 240 packets.
+        let mut h = HwHealth::new(false, 1.0 / 120.0);
+        (0..239).for_each(|_| h.packet());
+        assert!(!h.stalled());
+        h.packet();
+        assert!(h.stalled());
+    }
+
+    #[test]
+    fn second_fields_are_paced_from_the_frame_before_unless_it_does_not_precede_this_one() {
+        let mut p = FieldPacer::default();
+        let dur = 0.04;
+        assert!((p.half(1.0, dur) - 0.02).abs() < 1e-9, "no previous frame: half the duration");
+        assert!((p.half(1.04, dur) - 0.02).abs() < 1e-9);
+        // The stream really runs faster than its frame durations say: the measured gap wins.
+        assert!((p.half(1.073, dur) - 0.0165).abs() < 1e-9);
+        // A dropped frame (gap of two frames) or a seek: the caller resets, and the frame's own duration paces it.
+        p.reset();
+        assert!((p.half(1.153, dur) - 0.02).abs() < 1e-9);
+        p.reset();
+        assert!((p.half(1.233, dur) - 0.02).abs() < 1e-9);
+        // Without the reset a gap of two frames would put the second field on the next frame's first field.
+        assert!((p.half(1.313, dur) - 0.04).abs() < 1e-9);
+        // A backward jump or a gap beyond 2.5 frames is never measured.
+        assert!((p.half(0.5, dur) - 0.02).abs() < 1e-9);
+        assert!((p.half(0.62, dur) - 0.02).abs() < 1e-9);
     }
 }

@@ -976,16 +976,7 @@ fn every_pixel_format_is_handed_over_as_planes() {
 /// Interlaced frames carry their field order and are handed over twice, the second field half a frame later.
 #[test]
 fn interlaced_frames_are_handed_over_field_by_field() {
-    let Some(path) = common::custom_clip(
-        "interlaced-tff.ts",
-        &[
-            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=50", "-t", "2", "-vf", "tinterlace=interleave_top,fieldorder=tff",
-            "-c:v", "mpeg2video", "-flags", "+ildct+ilme", "-top", "1", "-b:v", "4M", "-f", "mpegts",
-        ],
-    ) else {
-        eprintln!("skipped: no ffmpeg CLI");
-        return;
-    };
+    let Some(path) = interlaced_clip() else { return };
     let rec = Recorder::default();
     let mut p = player(false, true);
     rec.attach(&mut p);
@@ -1121,6 +1112,130 @@ fn av1_decodes_on_the_gpu_through_the_native_decoder_or_falls_back_to_software()
         }
         p.dispose();
     }
+}
+
+/// The first frame a player hands over after `start` (a load or a seek), then the frames up to `until` (pts).
+fn frames_after(p: &mut FfmpegPlayer, until: f64) -> Vec<f64> {
+    let mut seen = Vec::new();
+    common::wait_until(T, || {
+        if let Some(f) = p.latest_frame() {
+            seen.push(f.pts);
+        }
+        seen.last().is_some_and(|t| *t >= until)
+    });
+    seen
+}
+
+/// A hardware decoder that fails on its first packets (simulated: each packet is consumed and fails, as on a GPU that
+/// cannot decode the codec) is replaced by the software decoder, which starts again from the keyframe: the first
+/// frame shown is the one at the position, not one after the packets the failed decoder consumed, and playback runs
+/// on from there. The same when the failure happens while a seek waits for its frame, and with a user seek deferred
+/// meanwhile. (On a machine without a hardware decoding device this runs in software and passes trivially.)
+#[test]
+fn a_hardware_fall_back_restarts_from_the_keyframe_at_the_position() {
+    // Keyframes at 0, 1 and 2 s (30 fps, GOP 30).
+    let path = clip_or_skip!(Clip::SmallVideoOnly);
+    let new = || {
+        let mut p = player(true, true);
+        p.simulate_hardware_failure(true);
+        let rec = Recorder::default();
+        rec.attach(&mut p);
+        (p, rec)
+    };
+    // A load: the frame at 0 first (the failed decoder consumed the keyframe and the frames after it).
+    let (mut p, rec) = new();
+    let g = p.load(Some(MediaSource::File(path.clone())), false);
+    opened(&rec, g);
+    let first = frame_where(&mut p, T, |_| true).expect("first frame");
+    assert!(first.pts.abs() < 0.01, "first frame at {}", first.pts);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(p.latest_frame().is_none_or(|f| f.pts.abs() < 0.01), "paused: nothing else is shown");
+    assert_eq!(p.stats().hardware, 0);
+    p.play();
+    let seen = frames_after(&mut p, 1.2);
+    assert!(seen.first().is_some_and(|t| *t < 0.3) && seen.windows(2).all(|w| w[1] >= w[0]), "{seen:?}");
+    assert!(seen.last().is_some_and(|t| *t >= 1.2), "{seen:?}");
+    p.dispose();
+
+    // A seek requested before the source opened: its frame (1.033 s, decoded from the keyframe at 1 s) first.
+    let (mut p, rec) = new();
+    let g = p.load(Some(MediaSource::File(path.clone())), false);
+    p.seek(1.04);
+    opened(&rec, g);
+    let first = frame_where(&mut p, T, |_| true).expect("first frame");
+    assert!((first.pts - 1.0 / 30.0 - 1.0).abs() < 0.01, "first frame at {}", first.pts);
+    assert_eq!(p.position(), 1.04);
+    p.play();
+    let seen = frames_after(&mut p, 1.6);
+    assert!(seen.first().is_some_and(|t| *t < 1.3) && seen.windows(2).all(|w| w[1] >= w[0]), "{seen:?}");
+    p.dispose();
+
+    // A seek while the load's frame is not on screen yet (deferred, or run at once if the frame came first): only the
+    // frame at 0 and the target's frame are ever shown.
+    let (mut p, rec) = new();
+    let g = p.load(Some(MediaSource::File(path)), false);
+    opened(&rec, g);
+    p.seek(2.04);
+    let target = 2.0 + 1.0 / 30.0;
+    let mut seen = Vec::new();
+    common::wait_until(T, || {
+        if let Some(f) = p.latest_frame() {
+            seen.push(f.pts);
+        }
+        seen.last().is_some_and(|t| (t - target).abs() < 0.01)
+    });
+    assert!(seen.iter().all(|t| t.abs() < 0.01 || (t - target).abs() < 0.01), "{seen:?}");
+    assert!(seen.last().is_some_and(|t| (t - target).abs() < 0.01), "{seen:?}");
+    assert_eq!(p.stats().hardware, 0);
+    p.dispose();
+}
+
+/// The second field of an interlaced frame lands half a frame after its first field, also right after seeks (the
+/// field period is not measured against a frame of the previous position).
+#[test]
+fn second_fields_stay_half_a_frame_after_the_first_across_seeks() {
+    let Some(path) = interlaced_clip() else { return };
+    let rec = Recorder::default();
+    let mut p = player(false, true);
+    rec.attach(&mut p);
+    let g = p.load(Some(MediaSource::File(path)), false);
+    opened(&rec, g);
+    let first = frame_where(&mut p, T, |_| true).expect("first frame");
+    // 25 frames/s: first fields on a 40 ms grid, second fields 20 ms after them.
+    let offset = first.pts.rem_euclid(0.04);
+    p.play();
+    let mut seen = Vec::new();
+    for target in [0.4, 0.52, 0.6, 0.72, 0.84, 1.0, 1.08, 1.2] {
+        p.seek(target);
+        let until = Instant::now() + Duration::from_millis(150);
+        while Instant::now() < until {
+            if let Some(f) = p.latest_frame() {
+                seen.push((f.pts, f.second_field));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    let seconds: Vec<f64> = seen.iter().filter(|(_, s)| *s).map(|(t, _)| *t).collect();
+    assert!(!seconds.is_empty(), "{seen:?}");
+    for t in &seconds {
+        let phase = (t - offset).rem_euclid(0.04);
+        assert!((phase - 0.02).abs() < 0.004, "second field at {t} (phase {phase}): {seen:?}");
+    }
+    p.dispose();
+}
+
+fn interlaced_clip() -> Option<std::path::PathBuf> {
+    let c = common::custom_clip(
+        "interlaced-tff.ts",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=50", "-t", "2", "-vf", "tinterlace=interleave_top,fieldorder=tff",
+            "-c:v", "mpeg2video", "-flags", "+ildct+ilme", "-top", "1", "-b:v", "4M", "-f", "mpegts",
+        ],
+    );
+    if c.is_none() {
+        eprintln!("skipped: no ffmpeg CLI or encoder");
+    }
+    c
 }
 
 #[test]

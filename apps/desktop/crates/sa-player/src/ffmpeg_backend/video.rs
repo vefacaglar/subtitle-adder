@@ -505,7 +505,11 @@ pub(crate) unsafe fn planar_image(
             }
             *plane = Some((data as *const u8, PlaneInfo { width: pw, rows, stride: stride as usize, row_bytes }));
         }
-        // Untagged 8-bit gray is full range (as swscale, and so the RGBA path, treats it; deeper gray is limited).
+        // Untagged gray has the range the RGBA path gives it (measured, see the test
+        // `untagged_gray_has_the_range_the_rgba_path_gives_it`): swscale never applies a range conversion to 8-bit
+        // gray (the `full_range = 0` passed to `sws_setColorspaceDetails` for untagged frames has no effect on it), so
+        // untagged 8-bit gray is full range, while untagged 9–16-bit gray is limited. A frame tagged limited is shown
+        // limited here even at 8 bits, where swscale (the RGBA path) still shows it full range.
         let full_range = match (*props).color_range {
             ffi::AVColorRange::AVCOL_RANGE_JPEG => true,
             ffi::AVColorRange::AVCOL_RANGE_MPEG => forced_full,
@@ -686,6 +690,52 @@ mod tests {
         let short = unsafe { HdrLevels::parse(Some((&m as *const MasteringDisplay as *const u8, 8)), None) };
         assert_eq!(short, HdrLevels::default());
         assert_eq!(short.peak_nits(), crate::color::DEFAULT_PEAK_NITS);
+    }
+
+    /// A `w`×1 gray frame of `fmt` holding `values` (in the format's own scale), with `range`.
+    fn gray_frame(fmt: ffmpeg_next::format::Pixel, values: &[u16], range: ffi::AVColorRange) -> ffmpeg_next::frame::Video {
+        let mut f = ffmpeg_next::frame::Video::new(fmt, values.len() as u32, 2);
+        let wide = planar_format(unsafe { (*f.as_ptr()).format }).is_some_and(|(p, _)| p.bits > 8);
+        let stride = f.stride(0);
+        let data = f.data_mut(0);
+        for row in 0..2 {
+            for (i, v) in values.iter().enumerate() {
+                if wide {
+                    data[row * stride + i * 2..row * stride + i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+                } else {
+                    data[row * stride + i] = *v as u8;
+                }
+            }
+        }
+        unsafe { (*f.as_mut_ptr()).color_range = range };
+        f
+    }
+
+    /// What swscale's RGBA path makes of untagged gray, and the planar path's range for the same frame.
+    #[test]
+    fn untagged_gray_has_the_range_the_rgba_path_gives_it() {
+        use ffmpeg_next::format::Pixel;
+        let _ = ffmpeg_next::init();
+        for (fmt, scale) in [(Pixel::GRAY8, 1u16), (Pixel::GRAY10LE, 4), (Pixel::GRAY16LE, 257)] {
+            for range in [ffi::AVColorRange::AVCOL_RANGE_UNSPECIFIED, ffi::AVColorRange::AVCOL_RANGE_MPEG, ffi::AVColorRange::AVCOL_RANGE_JPEG] {
+                let values: Vec<u16> = [0u16, 16, 128, 235, 255].iter().map(|v| v * scale).collect();
+                let f = gray_frame(fmt, &values, range);
+                let mut conv = Converter::new();
+                let (w, _, rgba) = unsafe { conv.convert(f.as_ptr(), Geometry { width: values.len() as u32, height: 2, quarter_turns: 0 }) }.expect("swscale");
+                let reds: Vec<u8> = (0..w as usize).map(|i| rgba[i * 4]).collect();
+                let owner = unsafe { crate::ffmpeg_backend::hw::OwnedFrame::reference(f.as_ptr()) }.expect("ref");
+                let img = unsafe { planar_image(Box::new(owner), f.as_ptr(), f.as_ptr(), Geometry { width: w, height: 2, quarter_turns: 0 }, &HdrLevels::default()) }
+                    .expect("planar");
+                // Limited range maps 16 to black and 235 to white; full range keeps 16 dark gray.
+                let sws_full = reds[1] > 8;
+                if fmt == Pixel::GRAY8 && range == ffi::AVColorRange::AVCOL_RANGE_MPEG {
+                    // swscale ignores the range of 8-bit gray (always full); the planar path follows the tag.
+                    assert!(sws_full && !img.full_range, "swscale gave {reds:?}");
+                } else {
+                    assert_eq!(img.full_range, sws_full, "{fmt:?} {range:?}: swscale gave {reds:?}");
+                }
+            }
+        }
     }
 
     #[test]

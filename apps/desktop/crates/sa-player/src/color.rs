@@ -9,6 +9,12 @@
 //! signal is linearized (BT.1886 gamma 2.4 for SDR, the PQ EOTF in nits, or the HLG inverse OETF + OOTF for a
 //! 1000-nit display), converted to BT.709 primaries, tone-mapped for HDR (BT.2390 EETF on the largest component, from
 //! the content's peak to SDR reference white, 203 nits, which becomes 1.0) and encoded again with gamma 1/2.4.
+//!
+//! Known limits (accepted for now):
+//! * Components that are negative after the gamut conversion (colours outside BT.709) are clipped to 0 before the
+//!   tone curve, so saturated wide-gamut colours lose hue accuracy instead of being gamut-mapped.
+//! * The content peak trusts the stream's MaxCLL (then the mastering peak): a stream that understates MaxCLL has
+//!   highlights above it clipped rather than rolled off.
 
 use crate::{PlanarImage, PlaneLayout, Primaries, Transfer};
 

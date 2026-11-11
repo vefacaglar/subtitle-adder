@@ -1,8 +1,25 @@
 //! Hardware video decoding: D3D11VA on Windows, VideoToolbox on macOS (nothing elsewhere), as Media Foundation and
-//! AVFoundation decode on the GPU. A stream is decoded in hardware when the codec has a device-type hardware config
-//! for the platform and the stream is 4:2:0 at 8 or 10 bits (what the GPU decoders handle); otherwise, when the
-//! device cannot be created, or when the decoder still picks a software format (an unsupported profile, an old
-//! GPU), it is decoded in software. `SUBTITLE_ADDER_HWDEC=0` turns hardware decoding off.
+//! AVFoundation decode on the GPU. A stream is decoded in hardware when it is 4:2:0 at 8 or 10 bits (what the GPU
+//! decoders handle) and a native decoder of its codec has a device-type hardware config for the platform
+//! ([`decoder_for`]): the codec's default decoder when it has one, else another native decoder of the same codec
+//! (AV1: the default `libdav1d` has none, the native `av1` decoder has one). Wrappers of external libraries and
+//! vendor decoders are never used. Otherwise, and when the device cannot be created, the stream is decoded in software.
+//!
+//! The decode thread (`session::video_main`) falls back to the software (default) decoder, restarting from the
+//! keyframe before the current position, when the hardware decoder:
+//! * hands over a software frame (the GPU cannot decode this profile; FFmpeg's default decoders then decode in
+//!   software, single-threaded);
+//! * fails on its first packet while it is a hardware-only alternative decoder (AV1's native decoder has no software
+//!   path: a GPU without AV1 decoding fails with ENOSYS), which is also remembered for the rest of the process, so
+//!   later loads of that codec go straight to software;
+//! * fails three times in a row without a frame in between (a single damaged packet, such as the start of a TS
+//!   capture in the middle of a GOP, does not end hardware decoding);
+//! * takes many packets (at least 60, or 2 s of stream) after a flush without handing over any frame;
+//! * hands over a frame that cannot be downloaded.
+//!
+//! `SUBTITLE_ADDER_HWDEC=0` turns hardware decoding off. `SUBTITLE_ADDER_HWDEC_FAIL=1` (diagnostics) makes every
+//! hardware decoder fail as a GPU without support for the codec would (each packet errors with ENOSYS), to exercise
+//! the fall-back; such simulated failures are not remembered. Tests use `FfmpegPlayer::simulate_hardware_failure`.
 //!
 //! Decoded GPU surfaces are downloaded once into reusable system-memory frames (NV12 / P010): one copy, no per-frame
 //! buffer allocation. The UI uploads those planes and converts them to RGB on the GPU.
@@ -67,6 +84,30 @@ pub(crate) fn allowed() -> bool {
     })
 }
 
+/// `SUBTITLE_ADDER_HWDEC_FAIL=1`: simulate a failing hardware decoder (see the module docs).
+pub(crate) fn simulate_failure_from_env() -> bool {
+    static FAIL: OnceLock<bool> = OnceLock::new();
+    *FAIL.get_or_init(|| {
+        let v = std::env::var("SUBTITLE_ADDER_HWDEC_FAIL").unwrap_or_default().to_ascii_lowercase();
+        matches!(v.trim(), "1" | "on" | "yes" | "true")
+    })
+}
+
+/// Codecs whose hardware-only alternative decoder failed in this process.
+static FAILED_HARDWARE_ONLY: std::sync::Mutex<Vec<ffi::AVCodecID>> = std::sync::Mutex::new(Vec::new());
+
+/// Remembers that the hardware-only decoder of `id` failed: later loads decode `id` in software at once.
+pub(crate) fn remember_hardware_only_failure(id: ffi::AVCodecID) {
+    let mut f = FAILED_HARDWARE_ONLY.lock().unwrap_or_else(|e| e.into_inner());
+    if !f.contains(&id) {
+        f.push(id);
+    }
+}
+
+fn hardware_only_failed(id: ffi::AVCodecID) -> bool {
+    FAILED_HARDWARE_ONLY.lock().unwrap_or_else(|e| e.into_inner()).contains(&id)
+}
+
 /// Creates the device on a background thread (it takes 0.2–1 s on first use: driver and GPU setup), so the first
 /// load opens its source meanwhile instead of waiting for it first.
 pub(crate) fn warm_up() {
@@ -105,7 +146,7 @@ pub(crate) fn is_hw_format(format: c_int) -> bool {
 /// Whether a stream of `codec` with codec parameters `par` should be decoded in hardware.
 pub(crate) unsafe fn suitable(codec: *const ffi::AVCodec, par: *const ffi::AVCodecParameters) -> bool {
     let Some((ty, hw_fmt)) = PLATFORM else { return false };
-    if !allowed() || codec.is_null() || par.is_null() {
+    if codec.is_null() || par.is_null() {
         return false;
     }
     unsafe {
@@ -143,16 +184,33 @@ pub(crate) unsafe fn suitable(codec: *const ffi::AVCodec, par: *const ffi::AVCod
 /// The decoder to decode a stream with codec parameters `par` in hardware: the codec's default decoder when it suits
 /// ([`suitable`]), else the first other native decoder of the same codec that does (AV1: the default `libdav1d` has
 /// no hardware config, the native `av1` decoder has one). Wrappers of external libraries and vendor decoders
-/// (`*_cuvid`, `*_qsv`, `*_amf`, ...) are never picked. `None`: decode in software.
-pub(crate) unsafe fn decoder_for(par: *const ffi::AVCodecParameters) -> Option<*const ffi::AVCodec> {
-    if PLATFORM.is_none() || !allowed() || par.is_null() {
+/// (`*_cuvid`, `*_qsv`, `*_amf`, ...) are never picked. `None`: decode in software (with the default decoder). The
+/// alternative decoder is skipped for a codec whose hardware-only decoder already failed in this process.
+pub(crate) unsafe fn decoder_for(par: *const ffi::AVCodecParameters) -> Option<HwDecoder> {
+    unsafe { pick_decoder(par, allowed(), hardware_only_failed) }
+}
+
+/// The decoder [`decoder_for`] picked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HwDecoder {
+    pub codec: *const ffi::AVCodec,
+    /// Not the codec's default decoder: one that decodes only on the GPU (it cannot fall back inside itself).
+    pub hardware_only: bool,
+}
+
+/// [`decoder_for`] with the process state passed in (tests).
+unsafe fn pick_decoder(par: *const ffi::AVCodecParameters, allowed: bool, failed: impl Fn(ffi::AVCodecID) -> bool) -> Option<HwDecoder> {
+    if PLATFORM.is_none() || !allowed || par.is_null() {
         return None;
     }
     unsafe {
         let id = (*par).codec_id;
         let default = ffi::avcodec_find_decoder(id);
         if suitable(default, par) {
-            return Some(default);
+            return Some(HwDecoder { codec: default, hardware_only: false });
+        }
+        if failed(id) {
+            return None;
         }
         let mut opaque: *mut std::ffi::c_void = ptr::null_mut();
         loop {
@@ -161,7 +219,7 @@ pub(crate) unsafe fn decoder_for(par: *const ffi::AVCodecParameters) -> Option<*
                 return None;
             }
             if c != default && (*c).id == id && ffi::av_codec_is_decoder(c) != 0 && (*c).wrapper_name.is_null() && suitable(c, par) {
-                return Some(c);
+                return Some(HwDecoder { codec: c, hardware_only: true });
             }
         }
     }
@@ -237,5 +295,95 @@ impl Download {
             }
             Some(dst)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ffi::AVCodecID as Id;
+
+    struct Params(*mut ffi::AVCodecParameters);
+
+    impl Params {
+        fn new(id: Id, format: AVPixelFormat) -> Self {
+            let p = unsafe { ffi::avcodec_parameters_alloc() };
+            assert!(!p.is_null());
+            unsafe {
+                (*p).codec_type = ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
+                (*p).codec_id = id;
+                (*p).format = format as c_int;
+                (*p).width = 1920;
+                (*p).height = 1080;
+            }
+            Self(p)
+        }
+    }
+
+    impl Drop for Params {
+        fn drop(&mut self) {
+            unsafe { ffi::avcodec_parameters_free(&mut self.0) };
+        }
+    }
+
+    fn name(c: *const ffi::AVCodec) -> String {
+        unsafe { std::ffi::CStr::from_ptr((*c).name).to_string_lossy().into_owned() }
+    }
+
+    const IDS: [Id; 8] = [
+        Id::AV_CODEC_ID_H264,
+        Id::AV_CODEC_ID_HEVC,
+        Id::AV_CODEC_ID_AV1,
+        Id::AV_CODEC_ID_VP9,
+        Id::AV_CODEC_ID_VP8,
+        Id::AV_CODEC_ID_MPEG2VIDEO,
+        Id::AV_CODEC_ID_VC1,
+        Id::AV_CODEC_ID_MPEG4,
+    ];
+
+    #[test]
+    fn the_hardware_decoder_is_never_a_wrapper_and_av1_uses_the_native_decoder() {
+        let _ = ffmpeg_next::init();
+        for id in IDS {
+            for fmt in [AVPixelFormat::AV_PIX_FMT_YUV420P, AVPixelFormat::AV_PIX_FMT_YUV420P10LE] {
+                let par = Params::new(id, fmt);
+                if let Some(d) = unsafe { pick_decoder(par.0, true, |_| false) } {
+                    assert!(unsafe { (*d.codec).wrapper_name.is_null() }, "{id:?}: {}", name(d.codec));
+                    assert_eq!(unsafe { (*d.codec).id }, id);
+                    let default = unsafe { ffi::avcodec_find_decoder(id) };
+                    assert_eq!(d.hardware_only, d.codec != default, "{id:?}");
+                }
+                // Hardware decoding off: the default (software) decoder.
+                assert_eq!(unsafe { pick_decoder(par.0, false, |_| false) }, None, "{id:?}");
+            }
+        }
+        // AV1: when the default decoder is a wrapper (libdav1d) and the native `av1` decoder has a hardware config for
+        // this platform, the native one is picked, unless it failed before in this process.
+        let par = Params::new(Id::AV_CODEC_ID_AV1, AVPixelFormat::AV_PIX_FMT_YUV420P10LE);
+        let default = unsafe { ffi::avcodec_find_decoder(Id::AV_CODEC_ID_AV1) };
+        let native = unsafe { ffi::avcodec_find_decoder_by_name(c"av1".as_ptr()) };
+        let default_is_wrapper = !default.is_null() && unsafe { !(*default).wrapper_name.is_null() };
+        let native_hw = !native.is_null() && unsafe { suitable(native, par.0) };
+        let picked = unsafe { pick_decoder(par.0, true, |_| false) };
+        eprintln!("AV1 default {:?}, native hardware config {native_hw}: picked {:?}", (!default.is_null()).then(|| name(default)), picked.map(|d| name(d.codec)));
+        if default_is_wrapper && native_hw {
+            assert_eq!(picked.map(|d| (name(d.codec), d.hardware_only)), Some(("av1".to_owned(), true)));
+            assert_eq!(unsafe { pick_decoder(par.0, true, |id| id == Id::AV_CODEC_ID_AV1) }, None, "a remembered failure means software");
+            assert!(unsafe { pick_decoder(par.0, true, |id| id == Id::AV_CODEC_ID_HEVC) }.is_some());
+        }
+        if PLATFORM.is_none() {
+            assert_eq!(picked, None);
+        }
+    }
+
+    #[test]
+    fn a_hardware_only_failure_is_remembered_per_codec() {
+        // A codec id no test decodes in hardware.
+        let id = Id::AV_CODEC_ID_VC1;
+        assert!(!hardware_only_failed(id));
+        remember_hardware_only_failure(id);
+        remember_hardware_only_failure(id);
+        assert!(hardware_only_failed(id));
+        assert!(!hardware_only_failed(Id::AV_CODEC_ID_H264));
     }
 }

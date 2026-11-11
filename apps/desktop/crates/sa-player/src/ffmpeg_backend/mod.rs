@@ -183,6 +183,14 @@ impl FfmpegPlayer {
         }
     }
 
+    /// Tests: from the next load on, every hardware decoder of this player fails as on a GPU that cannot decode the
+    /// codec (each packet errors with ENOSYS), so the software fall-back runs. Process-wide:
+    /// `SUBTITLE_ADDER_HWDEC_FAIL=1`. Simulated failures are not remembered (the `hw` module docs).
+    #[doc(hidden)]
+    pub fn simulate_hardware_failure(&mut self, on: bool) {
+        self.shared.simulate_hw_failure.store(on, Ordering::Relaxed);
+    }
+
     fn stop_session(&mut self) {
         if let Some(s) = self.session.take() {
             // The threads exit on their own; the demux thread joins the others and frees FFmpeg state.
