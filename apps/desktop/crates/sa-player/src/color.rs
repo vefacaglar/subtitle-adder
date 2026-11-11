@@ -270,17 +270,18 @@ const ENCODE_ENTRIES: usize = 65536;
 #[derive(Debug, Clone)]
 pub struct ToneLuts {
     params: ColorParams,
-    decode: Vec<f32>,
-    gain: Vec<f32>,
+    // Fixed-size tables: the clamped indices need no bounds checks.
+    decode: Box<[f32; DECODE_STEPS + 1]>,
+    gain: Box<[f32; GAIN_STEPS + 1]>,
     /// EETF knee and peak (nits); the EETF's output at and above the peak.
     knee: f32,
     peak: f32,
     top: f32,
     eetf_steps_per_nit: f32,
     /// `eetf(m) / m / white` at `knee + i * (peak - knee) / (EETF_ENTRIES - 1)`.
-    eetf: Vec<f32>,
+    eetf: Box<[f32; EETF_ENTRIES]>,
     white_inv: f32,
-    encode: Vec<u8>,
+    encode: Box<[u8; ENCODE_ENTRIES]>,
 }
 
 impl ToneLuts {
@@ -331,15 +332,15 @@ impl ToneLuts {
         };
         Self {
             params: *p,
-            decode,
-            gain,
+            decode: fixed(decode),
+            gain: fixed(gain),
             knee,
             peak,
             top,
             eetf_steps_per_nit: if compress { (EETF_ENTRIES - 1) as f32 / span } else { 0.0 },
-            eetf,
+            eetf: fixed(eetf),
             white_inv: 1.0 / white,
-            encode,
+            encode: fixed(encode),
         }
     }
 
@@ -358,8 +359,8 @@ impl ToneLuts {
 
     #[inline(always)]
     fn encode(&self, v: f32) -> u8 {
-        let i = (v.clamp(0.0, 1.0).sqrt() * (ENCODE_ENTRIES - 1) as f32 + 0.5) as usize;
-        self.encode[i.min(ENCODE_ENTRIES - 1)]
+        // 65536 entries: every u16 is an index.
+        self.encode[(v.clamp(0.0, 1.0).sqrt() * (ENCODE_ENTRIES - 1) as f32 + 0.5) as u16 as usize]
     }
 
     #[inline(always)]
@@ -421,6 +422,12 @@ impl ToneLuts {
 
 fn table(n: usize, f: impl Fn(usize) -> f32) -> Vec<f32> {
     (0..n).map(f).collect()
+}
+
+/// `v` as a fixed-size table (zeros when `v` is empty: a table the mode does not use).
+fn fixed<T: Copy + Default, const N: usize>(mut v: Vec<T>) -> Box<[T; N]> {
+    v.resize(N, T::default());
+    v.into_boxed_slice().try_into().unwrap_or_else(|_| unreachable!("resized to N"))
 }
 
 /// The R'G'B' (0..1, clamped) of pixel (`x`, `y`) of the coded picture of `img`, converted the way the UI's shader
