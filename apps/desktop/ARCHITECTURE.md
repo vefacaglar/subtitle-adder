@@ -20,8 +20,8 @@ OpenGL shader (`sa-app/src/main_window/video_gl.rs`), or swscale RGBA for the so
 - AV1: the default decoder (`libdav1d`) has no hardware config, so hardware decoding uses the native `av1` decoder;
   a stream the GPU cannot decode goes back to `libdav1d`.
 - Thread priorities (`ffmpeg_backend/priority.rs`): presenter and audio decode in MMCSS "Playback", the cpal output
-  callback in "Pro Audio", video decode above normal (Windows); pthread QoS classes (macOS). Off with
-  `SUBTITLE_ADDER_THREAD_PRIORITY=0`.
+  callback in "Pro Audio", video decode above normal, embedded subtitle reads in background mode (Windows); pthread
+  QoS classes (macOS). Off with `SUBTITLE_ADDER_THREAD_PRIORITY=0`.
 
 Tracks (`ffmpeg_backend/tracks.rs`, `subtitles.rs`; the menu model is `sa_viewmodels::media_tracks`). After the input
 opens, the demux thread lists every audio and subtitle stream (language/title tags, codec, channels, default/forced,
@@ -42,21 +42,42 @@ them does not build.
   the serials. The output device stays open, because swresample is rebuilt per input format (another rate or layout
   needs no reopen). A paused player stays paused, and the audio clock (master) resumes from the restarted packets. At
   EOF the switch takes effect at the next seek. With no output device only the active track changes.
-- Reading an embedded text subtitle track (`extract_text_subtitles`) uses its own demuxer, with every other stream
-  set to `AVDISCARD_ALL`, so it never touches the playing session. It runs on a worker thread of the app (never the
-  UI or player threads) and is cancellable through FFmpeg's interrupt callback; it stops with an error past 100 000
-  events or 16 MiB of text (`ExtractLimits`). Packets go through FFmpeg's subtitle decoder (ASS events for every text
-  codec: SubRip, ASS/SSA, mov_text, WebVTT). Their text is made plain here (override blocks and drawing events
-  dropped, FFmpeg's escapes undone; a tagless `{…}` block is kept as text except in ASS/SSA tracks, where it is a
-  comment) and written as the app's JSON sentence list under `embedded-subtitles/` in the app's temp work folder
-  (registered as a session scratch file, deleted on exit). JSON, because both other importers strip `{…}` as markup.
-  The app then imports that file through the same path as a subtitle file the user picked (`sa_core::subtitle_import`,
-  same confirmation and replacement rules), unless the session's lines, translations or job changed while the read
-  ran (`media_tracks::SessionMark`): then it reports that and leaves the lines alone. Image tracks (PGS, VobSub, DVB)
-  are listed but disabled; more than three collapse into one summary row.
+- Reading an embedded text subtitle track (`stream_text_subtitles`; `extract_text_subtitles` without snapshots)
+  uses its own demuxer, with every other stream set to `AVDISCARD_ALL`, so it never touches the playing session. It
+  runs on a worker thread of the app (never the UI or player threads) at background priority (`priority.rs`
+  `Role::BackgroundRead`: Windows `THREAD_MODE_BACKGROUND_BEGIN`, which also lowers the thread's I/O and memory
+  priority so the player's reads of the same disk go first, left again when the read ends; macOS the background QoS
+  class, whose disk I/O is throttled too), is cancellable through FFmpeg's interrupt callback (another video, the
+  window closing; a blocking read returns at its next I/O call) and stops with an error past 100 000 events or 16 MiB
+  of text (`ExtractLimits`). Packets go through FFmpeg's subtitle decoder (ASS events for every text codec: SubRip,
+  ASS/SSA, mov_text, WebVTT). Their text is made plain here, the one clean-up there is (override blocks and drawing
+  events dropped, FFmpeg's escapes undone; a tagless `{…}` block is kept as text except in ASS/SSA tracks, where it is
+  a comment), and the events become the app's sentences directly (`sentences_of`: sorted by start, open ends at the
+  next later start, ids from 1, millisecond timings), bit for bit what importing them as the app's JSON sentence list
+  gave (tested under both import flavors); no file is written any more (the former JSON file in the work folder was
+  only the bridge to the importer). While it reads it hands over snapshots of every line so far: the first line at
+  once, then at most every 250 ms (20 µs per line when longer: a 50 000-event track gets one a second, since each is
+  applied to the whole list on the UI thread). The app keeps only the newest snapshot not yet applied (one post in
+  flight). Matroska interleaves subtitles with the video by time, so the film's first lines arrive within moments.
+- The app side (`sa_viewmodels::media_tracks`, `subtitle/embedded.rs`, `controller.rs`): when a video opens and the
+  session is empty and idle, with no subtitle file next to it loaded or still being looked for (the sidecar lookup
+  counts itself on the session; the controller asks again from its 100 ms timer while it runs), `auto_track` picks
+  the UI language's text track (non-forced first), else the default one. A read into an empty list or over an
+  unedited embedded track is progressive: each snapshot goes in through `apply_embedded_snapshot`, merged by
+  `merge_sentences_preserving_uid` like the engine's `partial` snapshots (rows keep their keys, `sync_keyed` grows
+  the list in place), and only while the session still has the mark the previous snapshot left
+  (`media_tracks::SessionMark`); an edit stops the read there and says so, anything else replacing the lines stops it
+  silently. A read over the user's lines applies the complete track at the end through the open-subtitle rules
+  (`request_embedded_lines`: macOS asks when edits would be lost). Embedded lines carry `Session::embedded`
+  (`EmbeddedLines { stream, pristine, complete }`): loading them leaves the session clean, auto-save skips them
+  (`auto_save_translation_if_enabled` checks `embedded_pristine`), macOS evicts such a session like a rebuildable
+  one, and the first edit, translation, save or export makes them the user's for good (`settle_embedded` after every
+  view-model edit). A half-read track is removed when another video opens (`abandon_embedded_read`), so it is read
+  again next time. Image tracks (PGS, VobSub, DVB) are listed but disabled; more than three collapse into one summary
+  row.
 - The read opens the file directly (`MediaSource::File`), not through the Windows `BufferedVideoStream`: it bypasses
-  the encrypted SSD chunk cache and, on a slow drive, competes with playback for I/O while it runs (Matroska is read
-  through to the end). Left as is: reads are user-started, one at a time and cancellable.
+  the encrypted SSD chunk cache and reads Matroska through to the end, at background I/O priority so playback keeps
+  its share of a slow drive.
 - Test hooks (`#[doc(hidden)]`): `use_audio_tap` replaces the device with a virtual real-time output that records
   `(pts, samples)` blocks, and `simulate_audio_decoder_failure` makes opening a given audio stream fail.
 
@@ -66,7 +87,7 @@ Dependencies of `sa-player` (feature `ffmpeg`):
 |---|---|---|
 | `ffmpeg-next` (workspace features `codec`, `format`, `software-resampling`, `software-scaling`) | all | decode, swscale, swresample; no `filter` feature (deinterlacing runs in the shader) |
 | `cpal` | all | audio output |
-| `windows` (`Win32_Foundation`, `Win32_System_Threading`) | Windows | `SetThreadPriority`, `AvSetMmThreadCharacteristicsW` |
-| `libc` | macOS | `pthread_set_qos_class_self_np` |
+| `windows` (`Win32_Foundation`, `Win32_System_Threading`) | Windows | `SetThreadPriority` (incl. `THREAD_MODE_BACKGROUND_BEGIN/END`), `AvSetMmThreadCharacteristicsW` |
+| `libc` | macOS | `pthread_set_qos_class_self_np` (incl. `QOS_CLASS_BACKGROUND`) |
 
 `windows` and `libc` were already workspace dependencies (no new crate, no version change).
