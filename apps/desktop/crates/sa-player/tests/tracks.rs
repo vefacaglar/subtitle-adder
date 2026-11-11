@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 
 use common::{Recorder, custom_clip, fixtures_dir, is_opened, wait_until};
 use sa_core::cancel::CancellationToken;
-use sa_player::ffmpeg_backend::{AudioTap, ExtractError, FfmpegPlayer, PlayerOptions, extract_text_subtitles};
+use sa_player::ffmpeg_backend::{
+    AudioTap, ExtractError, FfmpegPlayer, PlayerOptions, StreamOptions, extract_text_subtitles, stream_text_subtitles,
+};
 use sa_player::{MediaPlayerBackend, MediaSource, PlayerEvent, SubtitleKind};
 
 const T: Duration = Duration::from_secs(10);
@@ -303,11 +305,53 @@ fn a_video_without_audio_lists_no_audio_track() {
 
 fn lines(path: PathBuf, stream: usize) -> Vec<(f64, f64, String)> {
     let mut seen = Vec::new();
-    let out = extract_text_subtitles(path, stream, &CancellationToken::new(), &mut |f| seen.push(f)).expect("extracted");
-    assert_eq!(out.extension, "json");
+    let out = extract_text_subtitles(path.clone(), stream, &CancellationToken::new(), &mut |f| seen.push(f)).expect("extracted");
     assert_eq!(seen.last(), Some(&1.0), "progress ends at 1");
     assert!(seen.windows(2).all(|w| w[0] <= w[1]), "progress only grows: {seen:?}");
-    sa_core::subtitle_import::parse(&out.text, Some(out.extension)).into_iter().map(|s| (s.start, s.end, s.text)).collect()
+    assert_eq!(out.events, out.sentences.len());
+    assert!(out.sentences.iter().enumerate().all(|(i, s)| s.id == i as i64 + 1));
+    // The progressive read ends on the very same list, and its snapshots grow towards it.
+    let streamed = streamed(path, stream, Duration::ZERO);
+    assert_eq!(key(&streamed.result.sentences), key(&out.sentences), "progressive and plain reads agree");
+    streamed.check_growth();
+    out.sentences.into_iter().map(|s| (s.start, s.end, s.text)).collect()
+}
+
+type Key = Vec<(i64, u64, u64, String)>;
+
+fn key(lines: &[sa_core::engine_types::Sentence]) -> Key {
+    lines.iter().map(|s| (s.id, s.start.to_bits(), s.end.to_bits(), s.text.clone())).collect()
+}
+
+struct Streamed {
+    result: sa_player::ffmpeg_backend::ExtractedSubtitle,
+    snapshots: Vec<Vec<sa_core::engine_types::Sentence>>,
+}
+
+impl Streamed {
+    /// Every snapshot holds more lines than the one before, and all but its last line (whose open end may still
+    /// move) are the result's first lines; the last one has the result's start and text.
+    fn check_growth(&self) {
+        assert!(self.snapshots.windows(2).all(|w| w[0].len() < w[1].len()), "snapshots grow");
+        let last = &self.result.sentences;
+        let same = |a: &sa_core::engine_types::Sentence, b: &sa_core::engine_types::Sentence| {
+            (a.id, a.start.to_bits(), a.end.to_bits(), &a.text) == (b.id, b.start.to_bits(), b.end.to_bits(), &b.text)
+        };
+        for snap in &self.snapshots {
+            assert!(!snap.is_empty() && snap.len() <= last.len());
+            let n = snap.len() - 1;
+            assert!(snap[..n].iter().zip(last).all(|(a, b)| same(a, b)), "a snapshot is a prefix of the result");
+            let (a, b) = (&snap[n], &last[n]);
+            assert_eq!((a.start.to_bits(), &a.text), (b.start.to_bits(), &b.text));
+        }
+    }
+}
+
+fn streamed(path: PathBuf, stream: usize, interval: Duration) -> Streamed {
+    let mut snapshots = Vec::new();
+    let options = StreamOptions { interval, ..StreamOptions::default() };
+    let result = stream_text_subtitles(path, stream, options, &CancellationToken::new(), &mut |_| {}, &mut |s| snapshots.push(s)).expect("streamed");
+    Streamed { result, snapshots }
 }
 
 fn srt_lines() -> Vec<(f64, f64, String)> {
@@ -508,4 +552,111 @@ fn a_best_audio_stream_that_cannot_be_decoded_falls_back_at_open() {
     r.p.play();
     assert!(wait_until(T, || r.p.position() > 0.8));
     assert!(near(r.tone(0.2, 0.7), HIGH), "{} Hz", r.tone(0.2, 0.7));
+}
+
+// ------------------------------------------------------------------------------------------------ progressive reads
+
+/// `n` SubRip events 0.25 s apart, each 0.2 s long, with distinct texts.
+fn many_events_srt(n: usize) -> String {
+    let t = |ms: usize| format!("{:02}:{:02}:{:02},{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
+    let mut out = String::with_capacity(n * 48);
+    for i in 0..n {
+        let start = i * 250;
+        out.push_str(&format!("{}\n{} --> {}\nLine number {i}\n\n", i + 1, t(start), t(start + 200)));
+    }
+    out
+}
+
+/// A Matroska file holding only a SubRip track of `n` events (stream 0, the subtitle input stream-copied).
+fn many_events_mkv(n: usize) -> Option<PathBuf> {
+    let srt = fixtures_dir().join(format!("many-{n}.srt"));
+    if !srt.exists() {
+        std::fs::write(&srt, many_events_srt(n)).expect("srt");
+    }
+    let srt = srt.to_string_lossy().into_owned();
+    custom_clip(&format!("tracks-many-{n}-v1.mkv"), &["-i", &srt, "-map", "0:s", "-c:s", "copy"])
+}
+
+#[test]
+fn a_progressive_read_hands_over_growing_snapshots_in_file_order_and_ends_on_the_plain_result() {
+    let path = or_skip!(many_events_mkv(3_000));
+    // Interval zero: a snapshot whenever a line came in.
+    let s = streamed(path.clone(), 0, Duration::ZERO);
+    assert_eq!(s.result.sentences.len(), 3_000);
+    assert_eq!(s.snapshots.len(), 3_000, "one per line read");
+    assert_eq!(s.snapshots[0].len(), 1, "the first line goes out at once");
+    assert_eq!(s.snapshots[0][0].text, "Line number 0");
+    s.check_growth();
+    let plain = extract_text_subtitles(path, 0, &CancellationToken::new(), &mut |_| {}).expect("plain");
+    assert_eq!(key(&s.result.sentences), key(&plain.sentences));
+    let last = &plain.sentences[2_999];
+    assert_eq!((last.start, last.end, last.text.as_str()), (749.75, 749.95, "Line number 2999"));
+}
+
+#[test]
+fn the_default_interval_spaces_snapshots_out() {
+    let path = or_skip!(many_events_mkv(3_000));
+    let mut times = Vec::new();
+    let started = Instant::now();
+    let result = stream_text_subtitles(path, 0, StreamOptions::default(), &CancellationToken::new(), &mut |_| {}, &mut |_| {
+        times.push(started.elapsed())
+    })
+    .expect("streamed");
+    assert_eq!(result.sentences.len(), 3_000);
+    assert!(!times.is_empty());
+    assert!(times.windows(2).all(|w| w[1] - w[0] >= Duration::from_millis(250)), "at most one snapshot per 250 ms: {times:?}");
+}
+
+#[test]
+fn a_large_track_streams_within_the_caps_and_a_cancel_stops_it_at_once() {
+    let path = or_skip!(many_events_mkv(40_000));
+    let started = Instant::now();
+    let s = streamed(path.clone(), 0, StreamOptions::default().interval);
+    assert_eq!(s.result.sentences.len(), 40_000);
+    assert!(started.elapsed() < Duration::from_secs(60), "{:?}", started.elapsed());
+    s.check_growth();
+    // Past the event cap the read is refused, snapshots or not.
+    let limits = sa_player::ExtractLimits { max_events: 10_000, ..sa_player::ExtractLimits::default() };
+    let r = stream_text_subtitles(path.clone(), 0, StreamOptions { limits, interval: Duration::ZERO }, &CancellationToken::new(), &mut |_| {}, &mut |_| {});
+    assert_eq!(r, Err(ExtractError::TooLarge));
+    // Cancelled from another thread during the first snapshot: it returns promptly and hands nothing more over.
+    let token = CancellationToken::new();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let canceller = {
+        let token = token.clone();
+        std::thread::spawn(move || {
+            rx.recv().unwrap();
+            token.cancel();
+            Instant::now()
+        })
+    };
+    let mut snapshots = 0usize;
+    let mut tx = Some(tx);
+    let options = StreamOptions { interval: Duration::ZERO, ..StreamOptions::default() };
+    let r = stream_text_subtitles(path, 0, options, &token, &mut |_| {}, &mut |_| {
+        snapshots += 1;
+        if let Some(tx) = tx.take() {
+            tx.send(()).unwrap();
+            while !token.is_cancelled() {
+                std::thread::yield_now();
+            }
+        }
+    });
+    let cancelled_at = canceller.join().unwrap();
+    assert_eq!(r, Err(ExtractError::Cancelled));
+    assert!(cancelled_at.elapsed() < Duration::from_millis(500), "stopped {:?} after the cancel", cancelled_at.elapsed());
+    assert_eq!(snapshots, 1, "nothing after the cancel");
+}
+
+#[test]
+fn mov_text_and_webvtt_tracks_stream_too() {
+    let path = or_skip!(mov_text_mp4());
+    let s = streamed(path, 1, Duration::ZERO);
+    assert_eq!(s.result.sentences.len(), 2);
+    assert_eq!(s.snapshots.first().map(Vec::len), Some(1));
+    s.check_growth();
+    let path = or_skip!(text_tracks_mkv());
+    let s = streamed(path, 2, Duration::ZERO);
+    assert_eq!(s.result.sentences.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), vec!["First cue", "second {x} cue"]);
+    s.check_growth();
 }

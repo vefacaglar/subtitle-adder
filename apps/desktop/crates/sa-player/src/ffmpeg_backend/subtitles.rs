@@ -1,18 +1,23 @@
-//! Embedded text subtitle tracks read out of a media file, for the subtitle importer.
+//! Embedded text subtitle tracks read out of a media file into the subtitle list.
 //!
 //! A track is read with its own demuxer (not the player's: playback is never touched), every other stream discarded
 //! so the demuxer hands over only that track's packets (MP4 reads just those samples; Matroska and the rest still
 //! read through the file, FFmpeg has no cue-based subtitle-only read). Each packet goes through FFmpeg's own decoder
 //! for the codec (subrip, ass/ssa, mov_text, webvtt, text), which turns every format into ASS dialogue events. Their
 //! text is turned into plain text here ([`plain_text`]: override blocks dropped, FFmpeg's escapes undone, drawing
-//! events skipped) and written as the app's JSON sentence list, which `sa_core::subtitle_import` reads verbatim (an
-//! `.ass` or `.srt` file would lose literal `{…}` there, which both importers strip as markup). Timings are on the
-//! player's clock (the container start time subtracted).
+//! events skipped) and handed over as the app's sentences ([`sentences_of`]): the list importing them as the app's
+//! JSON sentence file gives, without writing one. Timings are on the player's clock (the container start time
+//! subtracted).
+//!
+//! [`stream_text_subtitles`] also hands over growing snapshots while it reads, so the lines read so far show before
+//! the end of a long Matroska file is reached. Every read runs at background priority, CPU and disk
+//! (`priority::Role::BackgroundRead`): it reads the same file, often from the same disk, as playback.
 
 use std::ffi::{CStr, c_char};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use ffmpeg_next::ffi;
 use ffmpeg_next::{Packet, codec};
@@ -20,19 +25,39 @@ use sa_core::cancel::CancellationToken;
 use sa_core::engine_types::Sentence;
 
 use super::io;
+use super::priority;
 use super::tracks;
 use crate::{ExtractLimits, MediaSource, SubtitleKind};
 
 pub use crate::ExtractError;
 
-/// The events of a text track as the app's JSON sentence list.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The events of a text track as the app's sentences.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedSubtitle {
-    /// `[{"id":1,"start":…,"end":…,"text":…,"words":[]}, …]` in start order, millisecond timings.
-    pub text: String,
-    /// The extension the importer reads `text` as.
-    pub extension: &'static str,
+    /// In start order (decode order for equal starts), ids from 1, millisecond timings.
+    pub sentences: Vec<Sentence>,
     pub events: usize,
+}
+
+/// How [`stream_text_subtitles`] reads and hands over snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamOptions {
+    pub limits: ExtractLimits,
+    /// At most one snapshot per this long (longer for a long list: [`snapshot_interval`]).
+    pub interval: Duration,
+}
+
+impl Default for StreamOptions {
+    fn default() -> Self {
+        Self { limits: ExtractLimits::default(), interval: Duration::from_millis(250) }
+    }
+}
+
+/// The time between snapshots once `lines` lines were read: `base`, or 20 µs per line when that is longer (each
+/// snapshot is applied to the whole list on the UI thread; a 50 000-event track gets one a second). A zero `base`
+/// sends one whenever lines came in (tests).
+pub fn snapshot_interval(base: Duration, lines: usize) -> Duration {
+    if base.is_zero() { base } else { base.max(Duration::from_micros(20 * lines as u64)) }
 }
 
 #[derive(Debug, Clone)]
@@ -77,14 +102,42 @@ pub fn extract_text_subtitles_with(
     cancel: &CancellationToken,
     progress: &mut dyn FnMut(f64),
 ) -> Result<ExtractedSubtitle, ExtractError> {
+    read_track(path.into(), stream_index, limits, cancel, progress, None)
+}
+
+/// [`extract_text_subtitles`] that also hands `snapshot` every line read so far (listed as the result lists them:
+/// sorted, open ends resolved against what was read) whenever new lines came in and [`snapshot_interval`] passed
+/// since the last one; the first line goes out as soon as it is read. The result holds the complete list (no last
+/// snapshot is sent for it).
+pub fn stream_text_subtitles(
+    path: impl Into<PathBuf>,
+    stream_index: usize,
+    options: StreamOptions,
+    cancel: &CancellationToken,
+    progress: &mut dyn FnMut(f64),
+    snapshot: &mut dyn FnMut(Vec<Sentence>),
+) -> Result<ExtractedSubtitle, ExtractError> {
+    read_track(path.into(), stream_index, options.limits, cancel, progress, Some((options.interval, snapshot)))
+}
+
+fn read_track(
+    path: PathBuf,
+    stream_index: usize,
+    limits: ExtractLimits,
+    cancel: &CancellationToken,
+    progress: &mut dyn FnMut(f64),
+    mut snapshots: Option<(Duration, &mut dyn FnMut(Vec<Sentence>))>,
+) -> Result<ExtractedSubtitle, ExtractError> {
     let _ = ffmpeg_next::init();
+    // Reverted when the read ends (the calling thread may go on with other work).
+    let _background = priority::raise(priority::Role::BackgroundRead);
     let stop = Arc::new(AtomicBool::new(false));
     {
         let s = stop.clone();
         cancel.on_cancel(move || s.store(true, Ordering::SeqCst));
     }
     let cancelled = || stop.load(Ordering::SeqCst);
-    let mut input = io::open_input(MediaSource::File(path.into()), stop.clone()).map_err(|f| {
+    let mut input = io::open_input(MediaSource::File(path), stop.clone()).map_err(|f| {
         if cancelled() { ExtractError::Cancelled } else { ExtractError::Failed(f.message) }
     })?;
     let literal_blocks;
@@ -123,16 +176,27 @@ pub fn extract_text_subtitles_with(
     let mut events: Vec<Event> = Vec::new();
     let mut text_bytes = 0usize;
     let mut reported = 0.0f64;
+    // `None` until the first snapshot: the first line goes out at once.
+    let mut last_snapshot: Option<Instant> = None;
+    let mut sent = 0usize;
     loop {
         if cancelled() {
             return Err(ExtractError::Cancelled);
+        }
+        if let Some((interval, send)) = snapshots.as_mut()
+            && events.len() > sent
+            && last_snapshot.is_none_or(|t| t.elapsed() >= snapshot_interval(*interval, events.len()))
+        {
+            send(sentences_of(&events));
+            sent = events.len();
+            last_snapshot = Some(Instant::now());
         }
         let mut packet = Packet::empty();
         match packet.read(input.input()) {
             Ok(()) => {}
             Err(ffmpeg_next::Error::Eof) => break,
             Err(ffmpeg_next::Error::Other { errno }) if errno == ffi::EAGAIN => {
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
             Err(_) if cancelled() => return Err(ExtractError::Cancelled),
@@ -182,9 +246,7 @@ pub fn extract_text_subtitles_with(
         }
     }
     progress(1.0);
-    let n = events.len();
-    let text = json_document(events).map_err(ExtractError::Failed)?;
-    Ok(ExtractedSubtitle { text, extension: "json", events: n })
+    Ok(ExtractedSubtitle { sentences: sentences_of(&events), events: events.len() })
 }
 
 /// The raw ASS texts of the rectangles of one decoded subtitle: an ASS rectangle's `Text` field (FFmpeg's event line
@@ -307,16 +369,19 @@ fn ms(t: f64) -> f64 {
     (t.max(0.0) * 1000.0).round() / 1000.0
 }
 
-/// Sorts the events by start (decode order for equal starts), gives open ones an end (the next later start, found
-/// with one backward pass) and writes the JSON sentence list.
-fn json_document(mut events: Vec<Event>) -> Result<String, String> {
-    events.sort_by(|a, b| a.start.total_cmp(&b.start).then(a.order.cmp(&b.order)));
-    // next_later[i]: the first start after events[i].start (events with equal starts share it).
-    let mut next_later: Vec<Option<f64>> = vec![None; events.len()];
-    for i in (0..events.len().saturating_sub(1)).rev() {
-        next_later[i] = if events[i + 1].start > events[i].start { Some(events[i + 1].start) } else { next_later[i + 1] };
+/// The events as sentences: sorted by start (decode order for equal starts), open ones given an end (the next later
+/// start, found with one backward pass), ids from 1, millisecond timings. Exactly what importing them as the app's
+/// JSON sentence list gives (`sa_core::subtitle_import`, checked in the tests), without the round trip.
+fn sentences_of(events: &[Event]) -> Vec<Sentence> {
+    let mut order: Vec<&Event> = events.iter().collect();
+    // Stable and adaptive: a track read in start order (nearly every one) is one pass.
+    order.sort_by(|a, b| a.start.total_cmp(&b.start).then(a.order.cmp(&b.order)));
+    // next_later[i]: the first start after order[i].start (events with equal starts share it).
+    let mut next_later: Vec<Option<f64>> = vec![None; order.len()];
+    for i in (0..order.len().saturating_sub(1)).rev() {
+        next_later[i] = if order[i + 1].start > order[i].start { Some(order[i + 1].start) } else { next_later[i + 1] };
     }
-    let sentences: Vec<Sentence> = events
+    order
         .iter()
         .enumerate()
         .map(|(i, e)| {
@@ -326,8 +391,7 @@ fn json_document(mut events: Vec<Event>) -> Result<String, String> {
             });
             Sentence::new(i as i64 + 1, ms(e.start), ms(end.max(e.start)), e.text.clone())
         })
-        .collect();
-    Sentence::encode_list(&sentences).map_err(|e| e.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -365,28 +429,60 @@ mod tests {
     }
 
     #[test]
-    fn open_events_end_at_the_next_later_start_and_the_document_parses_back() {
+    fn open_events_end_at_the_next_later_start_and_import_back_identically() {
         let events = vec![
             Event { start: 5.0, end: None, order: 1, text: "second".into() },
             Event { start: 1.0, end: Some(2.5), order: 0, text: "first, with {braces}".into() },
             Event { start: 5.0, end: None, order: 3, text: "same start".into() },
             Event { start: 30.0, end: None, order: 2, text: "last".into() },
         ];
-        let doc = json_document(events).unwrap();
-        let lines = sa_core::subtitle_import::parse(&doc, Some("json"));
-        let got: Vec<(f64, f64, &str)> = lines.iter().map(|s| (s.start, s.end, s.text.as_str())).collect();
+        let lines = sentences_of(&events);
+        let got: Vec<(i64, f64, f64, &str)> = lines.iter().map(|s| (s.id, s.start, s.end, s.text.as_str())).collect();
         assert_eq!(
             got,
-            vec![(1.0, 2.5, "first, with {braces}"), (5.0, 15.0, "second"), (5.0, 15.0, "same start"), (30.0, 33.0, "last")]
+            vec![(1, 1.0, 2.5, "first, with {braces}"), (2, 5.0, 15.0, "second"), (3, 5.0, 15.0, "same start"), (4, 30.0, 33.0, "last")]
         );
+        // The list importing them as the app's JSON sentence file gives (the former path, through a file in the work
+        // folder), under both import flavors.
+        let doc = Sentence::encode_list(&lines).unwrap();
+        let key = |s: &Sentence| (s.id, s.start.to_bits(), s.end.to_bits(), s.text.clone(), s.speaker, s.words.len(), s.needs_review);
+        for flavor in [sa_core::subtitle_import::ImportFlavor::Windows, sa_core::subtitle_import::ImportFlavor::Mac] {
+            let imported = sa_core::subtitle_import::parse_with(&doc, Some("json"), flavor);
+            assert_eq!(imported.iter().map(key).collect::<Vec<_>>(), lines.iter().map(key).collect::<Vec<_>>());
+        }
     }
 
     #[test]
-    fn many_events_are_written_in_linear_time() {
+    fn odd_timings_import_back_bit_for_bit() {
+        let events: Vec<Event> = (0..2000)
+            .map(|i| Event {
+                start: f64::from(i) * 0.0337 + 0.000_499_9,
+                end: (i % 3 == 0).then(|| f64::from(i) * 0.0337 + 1.234_56),
+                order: i as usize,
+                text: format!("l{i}"),
+            })
+            .collect();
+        let lines = sentences_of(&events);
+        let imported = sa_core::subtitle_import::parse(&Sentence::encode_list(&lines).unwrap(), Some("json"));
+        assert_eq!(imported.len(), lines.len());
+        assert!(imported.iter().zip(&lines).all(|(a, b)| a.start.to_bits() == b.start.to_bits() && a.end.to_bits() == b.end.to_bits()));
+    }
+
+    #[test]
+    fn snapshots_slow_down_for_long_lists() {
+        let base = Duration::from_millis(250);
+        assert_eq!(snapshot_interval(base, 0), base);
+        assert_eq!(snapshot_interval(base, 2_000), base);
+        assert_eq!(snapshot_interval(base, 50_000), Duration::from_secs(1));
+        assert_eq!(snapshot_interval(Duration::ZERO, 50_000), Duration::ZERO);
+    }
+
+    #[test]
+    fn many_events_are_listed_in_linear_time() {
         let events: Vec<Event> = (0..50_000).map(|i| Event { start: f64::from(i / 2), end: None, order: i as usize, text: "x".into() }).collect();
-        let t = std::time::Instant::now();
-        let doc = json_document(events).unwrap();
-        assert!(t.elapsed() < std::time::Duration::from_secs(5));
-        assert!(doc.starts_with("[{\"id\":1,"));
+        let t = Instant::now();
+        let lines = sentences_of(&events);
+        assert!(t.elapsed() < Duration::from_secs(5));
+        assert_eq!((lines.len(), lines[0].id, lines[49_999].id), (50_000, 1, 50_000));
     }
 }

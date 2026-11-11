@@ -33,7 +33,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::{FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, NativeStackInfo, PlayerEvent, VideoFrame};
 use session::{Control, PlayerShared};
 
-pub use subtitles::{ExtractError, ExtractedSubtitle, extract_text_subtitles, extract_text_subtitles_with};
+pub use subtitles::{
+    ExtractError, ExtractedSubtitle, StreamOptions, extract_text_subtitles, extract_text_subtitles_with, snapshot_interval, stream_text_subtitles,
+};
 
 /// One block a virtual output device ([`AudioTap`]) played: interleaved samples (volume applied) and the media time
 /// of the first one.
