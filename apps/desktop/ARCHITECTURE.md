@@ -7,7 +7,8 @@ noted here).
 ## §7 `sa-player` (video player)
 
 Video path: demux → decode (D3D11VA / VideoToolbox through FFmpeg's hwaccel, else software) → planes for the UI's
-OpenGL shader (`sa-app/src/main_window/video_gl.rs`), or swscale RGBA for the software renderer.
+OpenGL shader (`sa-app/src/main_window/video_gl.rs`), or RGBA for the software renderer (swscale, with tone mapping
+and deinterlacing on the CPU in `sa_player::soft`).
 
 - Every pixel format reaches the GPU path: planar / semi-planar / gray YUV (any subsampling up to 4:1:0, 8–16-bit
   little-endian, read from the pixel format descriptor) as the decoder's own planes, everything else (RGB, palette,
@@ -17,6 +18,19 @@ OpenGL shader (`sa-app/src/main_window/video_gl.rs`), or swscale RGBA for the so
   SDR BT.709 content takes the plain matrix conversion unchanged.
 - Interlaced frames are handed over once per field; the shader deinterlaces (motion-adaptive against the previous
   frame, bob where it moved). `SUBTITLE_ADDER_DEINTERLACE=0` shows them woven.
+- The RGBA path (software renderer: `SLINT_BACKEND=winit-software`, a GL setup or render failure, renderer teardown)
+  shows the same picture in pure Rust (`sa_player::soft`): HDR / wide-gamut frames go through `color::ToneLuts`
+  (`ColorParams::apply` as lookup tables, within one code of it) in a striped kernel that mirrors the shader's
+  `to_rgb` (luma direct, chroma bilinear, the sample-aspect stretch per row); interlaced frames are deinterlaced per
+  plane with the shader's rule (against the previous frame as decoded, `soft::previous_frame_follows` shared with the
+  shader path) and handed over field by field, the second field dropped before its conversion when it is already
+  late. Interlaced SDR frames are converted by swscale after deinterlacing; plain SDR progressive frames take swscale
+  alone, as before. Known deviations from the shader (motion measured per plane, chroma deinterlaced before
+  upsampling) are listed in `soft.rs`. Measured (release, 1080p): PQ 6.5 ns/px on 4 threads (21 on one), HLG 10,
+  SDR 2.2; 1080i25 and 1080p24 HDR10 play with no dropped frames. libavfilter (`bwdif`/`yadif`), swscale's and
+  zscale's tone mapping, a 3D LUT and an RGB48 + LUT pass were rejected: other curves than the shader's, the `filter`
+  feature, or a frame of latency.
+- `SUBTITLE_ADDER_FRAME_DUMP=<dir>` dumps the GPU path's converted pictures and, as `...-cpu.png`, the RGBA path's.
 - AV1: the default decoder (`libdav1d`) has no hardware config, so hardware decoding uses the native `av1` decoder;
   a stream the GPU cannot decode goes back to `libdav1d`.
 - Thread priorities (`ffmpeg_backend/priority.rs`): presenter and audio decode in MMCSS "Playback", the cpal output
@@ -85,7 +99,7 @@ Dependencies of `sa-player` (feature `ffmpeg`):
 
 | Crate | Where | Why |
 |---|---|---|
-| `ffmpeg-next` (workspace features `codec`, `format`, `software-resampling`, `software-scaling`) | all | decode, swscale, swresample; no `filter` feature (deinterlacing runs in the shader) |
+| `ffmpeg-next` (workspace features `codec`, `format`, `software-resampling`, `software-scaling`) | all | decode, swscale, swresample; no `filter` feature (deinterlacing runs in the shader, or in `sa_player::soft` for the RGBA path) |
 | `cpal` | all | audio output |
 | `windows` (`Win32_Foundation`, `Win32_System_Threading`) | Windows | `SetThreadPriority` (incl. `THREAD_MODE_BACKGROUND_BEGIN/END`), `AvSetMmThreadCharacteristicsW` |
 | `libc` | macOS | `pthread_set_qos_class_self_np` (incl. `QOS_CLASS_BACKGROUND`) |
