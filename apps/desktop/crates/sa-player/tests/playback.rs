@@ -1109,6 +1109,47 @@ fn rgba_path_tone_maps_hdr10_and_hlg_like_the_shader() {
     }
 }
 
+/// Above 1440p the RGBA path tone-maps at half width and height: the buffer is half size, the video keeps its size
+/// (`video_size`, `natural_size`), and flat areas keep the shader's colour.
+#[test]
+fn large_hdr_frames_are_tone_mapped_at_half_size() {
+    let Some(path) = hdr10_clip_of("hdr10-bars-1600p.mkv", "smptehdbars=size=2560x1600:rate=10") else {
+        eprintln!("skipped: no ffmpeg CLI or libx265");
+        return;
+    };
+    let img = first_frame(&mut player(false, true), &path).planar.expect("planar");
+    let mut p = player(false, false);
+    let f = first_frame(&mut p, &path);
+    assert!(f.planar.is_none());
+    assert_eq!((f.width, f.height, f.stride, f.video_size), (1280, 800, 1280 * 4, (2560, 1600)));
+    assert_eq!(p.natural_size(), Some((2560, 1600)), "the frame size is not the video size");
+    assert!(p.stats().soft_tonemapped >= 1);
+    let params = sa_player::color::ColorParams::for_image(&img);
+    let reference = |x: usize, y: usize| sa_player::color::yuv_to_rgb_reference(&img, x, y);
+    let (mut flat, mut worst) = (0, 0f32);
+    for y in (4..796).step_by(7) {
+        for x in (4..1276).step_by(7) {
+            let (sx, sy) = (2 * x, 2 * y);
+            let rgb = reference(sx, sy);
+            let is_flat = [(sx - 6, sy), (sx + 6, sy), (sx, sy - 6), (sx, sy + 6)]
+                .iter()
+                .all(|&(a, b)| reference(a, b).iter().zip(rgb).all(|(c, r)| (c - r).abs() < 0.5 / 255.0));
+            if !is_flat {
+                continue;
+            }
+            flat += 1;
+            let want = params.apply(rgb).map(|c| c * 255.0);
+            let o = y * f.stride as usize + x * 4;
+            for k in 0..3 {
+                worst = worst.max((f.rgba[o + k] as f32 - want[k]).abs());
+            }
+        }
+    }
+    eprintln!("half size: worst in flat areas {worst} ({flat} pixels)");
+    assert!(flat > 1000 && worst <= 1.5, "worst {worst} over {flat} flat pixels");
+    p.dispose();
+}
+
 /// Vertical comb strength of a picture given as rows of luma: how much rows stick out from both neighbours in the
 /// same direction (the teeth of two fields captured at different times), averaged.
 fn comb(rows: &[Vec<f32>]) -> f64 {
@@ -1164,7 +1205,11 @@ fn rgba_path_deinterlaces_field_by_field() {
     p.dispose();
     let worst = combs.iter().cloned().fold(0.0, f64::max);
     eprintln!("woven comb {woven_comb:.6}, deinterlaced comb worst {worst:.6}; {s:?}");
-    assert!(seen.iter().any(|(_, s)| *s), "no second fields: {seen:?}");
+    // Every frame handed over makes two fields: the second one converted, or dropped as late on a slow machine (so
+    // this does not depend on the machine's speed). Two frames of slack for the one in flight at the snapshot.
+    let frames = s.decoded - s.dropped_decoder;
+    assert!(s.soft_deinterlaced + s.dropped_fields + 4 >= 2 * frames, "{s:?}");
+    assert!(seen.iter().any(|(_, s)| *s) || s.dropped_fields > 0, "no second fields: {seen:?} {s:?}");
     for w in seen.windows(2) {
         let d = w[1].0 - w[0].0;
         if w[0].1 != w[1].1 && d > 0.0 && d < 0.03 {

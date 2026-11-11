@@ -118,6 +118,8 @@ pub struct PlaybackStats {
     pub soft_tonemapped: u64,
     /// RGBA fields deinterlaced on the CPU.
     pub soft_deinterlaced: u64,
+    /// RGBA second fields dropped as late before their conversion (fields, not frames: not in [`Self::dropped`]).
+    pub dropped_fields: u64,
 }
 
 impl PlaybackStats {
@@ -233,6 +235,7 @@ impl FfmpegPlayer {
             planar: s.stats.planar.load(Ordering::Relaxed),
             soft_tonemapped: s.stats.soft_tonemapped.load(Ordering::Relaxed),
             soft_deinterlaced: s.stats.soft_deinterlaced.load(Ordering::Relaxed),
+            dropped_fields: s.stats.dropped_fields.load(Ordering::Relaxed),
         }
     }
 
@@ -360,8 +363,8 @@ impl MediaPlayerBackend for FfmpegPlayer {
         self.session.as_ref()?;
         let s = self.stats();
         Some(format!(
-            "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={} soft_tonemapped={} soft_deinterlaced={}",
-            s.decoded, s.hardware, s.planar, s.presented, s.dropped_late, s.dropped_decoder, s.soft_tonemapped, s.soft_deinterlaced
+            "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={} dropped_fields={} soft_tonemapped={} soft_deinterlaced={}",
+            s.decoded, s.hardware, s.planar, s.presented, s.dropped_late, s.dropped_decoder, s.dropped_fields, s.soft_tonemapped, s.soft_deinterlaced
         ))
     }
 

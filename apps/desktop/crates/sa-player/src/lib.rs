@@ -5,11 +5,12 @@
 //! * Feature `ffmpeg` (default): [`ffmpeg_backend::FfmpegPlayer`] — demux/decode with `ffmpeg-next` 8.1 (hardware
 //!   decoding through D3D11VA on Windows and VideoToolbox on macOS, software otherwise), video handed over either as
 //!   the decoder's YUV planes (the UI converts them to RGB on the GPU; [`MediaPlayerBackend::set_planar_output`]) or
-//!   converted to RGBA (swscale; HDR tone mapping and deinterlacing on the CPU in [`soft`]), audio resampled by swresample to the output format and played through `cpal`
-//!   (WASAPI / CoreAudio); the audio clock is the master clock (video frames are shown when their pts is due, late
-//!   frames dropped). The backend also lists the file's audio and subtitle streams ([`MediaTracks`]), switches the
-//!   audio track while playing or paused, and reads embedded text subtitle tracks
-//!   (`ffmpeg_backend::subtitles::extract_text_subtitles`). View models depend on this crate **without** the feature.
+//!   converted to RGBA (swscale; HDR tone mapping and deinterlacing on the CPU in [`soft`]), audio resampled by
+//!   swresample to the output format and played through `cpal` (WASAPI / CoreAudio); the audio clock is the master
+//!   clock (video frames are shown when their pts is due, late frames dropped). The backend also lists the file's
+//!   audio and subtitle streams ([`MediaTracks`]), switches the audio track while playing or paused, and reads embedded
+//!   text subtitle tracks (`ffmpeg_backend::subtitles::extract_text_subtitles`). View models depend on this crate
+//!   **without** the feature.
 //!
 //! This replaces both IMFMediaEngine (Windows) and AVPlayer (macOS) with one decoder. Windows feeds the stream through
 //! `sa_media::win::BufferedVideoStream` (custom AVIO context), so the encrypted SSD chunk cache keeps working.
@@ -29,7 +30,8 @@ pub mod ffmpeg_backend;
 pub use gate::{PlayerEventToken, PlayerSessionGate, SourceId};
 pub use timeline::PlaybackTimeline;
 
-/// A decoded video frame. `width` × `height` is the size as shown (sample aspect ratio and rotation applied).
+/// A decoded video frame. `width` × `height` is the size as shown (sample aspect ratio and rotation applied), or half
+/// of it for large RGBA frames ([`VideoFrame::video_size`]).
 ///
 /// RGBA output (the default): `rgba` holds RGBA8, tightly packed (`stride == width * 4`) unless stated, and `planar`
 /// is `None`. Planar output ([`MediaPlayerBackend::set_planar_output`]): `planar` holds the decoder's YUV planes
@@ -56,12 +58,16 @@ pub struct VideoFrame {
     pub planar: Option<Arc<PlanarImage>>,
     /// The second of the two fields of an interlaced frame (always false for progressive frames).
     pub second_field: bool,
+    /// The video's size as shown (what `natural_size` and `SizeChanged` report). Equal to `width` × `height` except
+    /// for RGBA frames converted at half size (above 1440p on the CPU tone-mapping path, [`soft::half_size`]), whose
+    /// buffer is half as wide and high: show them scaled to this size's aspect.
+    pub video_size: (u32, u32),
 }
 
 impl VideoFrame {
-    /// An RGBA frame.
+    /// An RGBA frame (`video_size` = its size).
     pub fn from_rgba(width: u32, height: u32, stride: u32, pts: f64, rgba: Arc<Vec<u8>>) -> Self {
-        Self { width, height, stride, pts, rgba, planar: None, second_field: false }
+        Self { width, height, stride, pts, rgba, planar: None, second_field: false, video_size: (width, height) }
     }
 }
 

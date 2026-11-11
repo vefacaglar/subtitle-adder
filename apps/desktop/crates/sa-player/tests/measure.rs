@@ -240,6 +240,20 @@ fn clip_1080p24_hdr10() -> Option<std::path::PathBuf> {
     )
 }
 
+/// 2160p HDR10 at `rate` frames/s (HEVC 10-bit PQ / BT.2020, MaxCLL 1000), with audio, cached as `name`.
+fn clip_2160p_hdr10(name: &str, rate: u32) -> Option<std::path::PathBuf> {
+    let src = format!("testsrc2=size=3840x2160:rate={rate}");
+    common::custom_clip(
+        name,
+        &[
+            "-f", "lavfi", "-i", &src, "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "10",
+            "-c:v", "libx265", "-preset", "ultrafast", "-g", "60", "-x265-params",
+            "log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:hdr10=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400",
+            "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc", "-c:a", "aac",
+        ],
+    )
+}
+
 /// The RGBA path (software renderer) on `path`: `rate` pictures per second (fields for interlaced clips); at most
 /// `missing_share` of them may be missing on screen.
 fn run_rgba(name: &'static str, path: Option<std::path::PathBuf>, rate: f64, missing_share: f64) {
@@ -268,6 +282,21 @@ fn dropped_frames_1080i25_rgba() {
 #[ignore = "real-time measurement"]
 fn dropped_frames_1080p24_hdr10_rgba() {
     run_rgba("1080p24-hdr10.mkv", clip_1080p24_hdr10(), 24.0, 0.02);
+}
+
+/// 2160p24 HDR10 through the RGBA path: tone-mapped at half size (1920 × 1080 buffers).
+#[test]
+#[ignore = "real-time measurement"]
+fn dropped_frames_2160p24_hdr10_rgba() {
+    run_rgba("2160p24-hdr10.mkv", clip_2160p_hdr10("2160p24-hdr10.mkv", 24), 24.0, 0.02);
+}
+
+/// 2160p60 HDR10 through the RGBA path. Reported, not asserted beyond "playback runs on": where decoding plus the
+/// conversion take longer than a frame lasts, frames are dropped (the clock never waits for video).
+#[test]
+#[ignore = "real-time measurement"]
+fn dropped_frames_2160p60_hdr10_rgba() {
+    run_rgba("2160p60-hdr10.mkv", clip_2160p_hdr10("2160p60-hdr10.mkv", 60), 60.0, 1.0);
 }
 
 /// A 1920 × 1080 10-bit frame (P010 when `msb`, else yuv420p10le) of smooth gradients, HDR10.
@@ -334,6 +363,8 @@ fn convert_rgba_ns_per_pixel_1080p() {
         t.elapsed().as_secs_f64() * 1e9 / runs as f64 / px
     };
     let mut dst = vec![0u8; 1920 * 1080 * 4];
+    let pool = soft::StripePool::new(soft::max_stripes() - 1, std::sync::Arc::new(|| Box::new(()) as Box<dyn std::any::Any>));
+    eprintln!("{} hardware threads, up to {} stripes", std::thread::available_parallelism().map_or(1, |n| n.get()), soft::max_stripes());
     for msb in [false, true] {
         let img = hdr_frame(msb);
         let fmt = if msb { "P010" } else { "yuv420p10le" };
@@ -343,14 +374,18 @@ fn convert_rgba_ns_per_pixel_1080p() {
                 p = ColorParams::new(transfer, if transfer == sa_player::Transfer::Sdr { sa_player::Primaries::Bt709 } else { img.primaries }, img.peak_nits);
             }
             let luts = ToneLuts::new(&p);
-            let stripes = soft::stripes_for(1920 * 1080);
-            let one = time(&mut || assert!(soft::convert_rgba(&img, 1920, &luts, false, &mut dst, 1)));
-            let many = time(&mut || assert!(soft::convert_rgba(&img, 1920, &luts, false, &mut dst, stripes)));
-            let wide = time(&mut || {
-                let mut d = vec![0u8; 2560 * 1080 * 4];
-                assert!(soft::convert_rgba(&img, 2560, &luts, false, &mut d, stripes));
-            });
-            eprintln!("convert_rgba {fmt} {mode}: {one:.2} ns/px on 1 thread, {many:.2} ns/px on {stripes} stripes, {wide:.2} ns/output px stretched to 2560");
+            let opts = soft::ConvertOptions::default();
+            let stripes = soft::stripes_for(1920 * 1080).min(pool.workers() + 1);
+            let one = time(&mut || assert!(soft::convert_rgba(&img, 1920, &luts, opts, &mut dst, None)));
+            let many = time(&mut || assert!(soft::convert_rgba(&img, 1920, &luts, opts, &mut dst, Some(&pool))));
+            let mut d = vec![0u8; 2560 * 1080 * 4];
+            let wide = time(&mut || assert!(soft::convert_rgba(&img, 2560, &luts, opts, &mut d, Some(&pool))));
+            // Half size: ns per source pixel.
+            let half = soft::ConvertOptions { half: true, ..opts };
+            let halved = time(&mut || assert!(soft::convert_rgba(&img, 960, &luts, half, &mut dst, Some(&pool))));
+            eprintln!(
+                "convert_rgba {fmt} {mode}: {one:.2} ns/px on 1 thread, {many:.2} ns/px on {stripes} stripes, {wide:.2} ns/output px stretched to 2560, {halved:.2} ns/source px at half size"
+            );
         }
         let prev = hdr_frame(msb);
         let mut planes: Vec<Vec<u8>> = (0..img.plane_count()).map(|i| vec![0u8; img.plane(i).unwrap().0.len()]).collect();

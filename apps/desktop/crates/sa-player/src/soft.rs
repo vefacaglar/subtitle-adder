@@ -15,7 +15,12 @@
 //! * [`convert_rgba`]: the shader's `to_rgb` + `color_map` per output pixel: luma straight from its row (unscaled) or
 //!   linearly interpolated across the sample-aspect stretch, chroma bilinear (two chroma rows interpolated once per
 //!   output row, then horizontally per pixel) or, for a deinterlaced 4:2:0 frame, from the same-field chroma row the
-//!   shader picks; the colour mapping through [`ToneLuts`]. Output rows are split into stripes run on scoped threads.
+//!   shader picks; the colour mapping through [`ToneLuts`]. Output rows are split into stripes (one per 0.25 Mpx,
+//!   up to the hardware threads minus two, at most 8) run on a persistent [`StripePool`]; a panicking stripe makes
+//!   that frame convert again on the calling thread instead of unwinding into the decode thread. Frames above 1440p
+//!   ([`HALF_SIZE_ABOVE`]) are converted at half width and height ([`ConvertOptions::half`]: 2 × 2 luma averaged in the
+//!   signal domain, chroma sampled at the output resolution, one colour mapping per output pixel), so 4K costs what
+//!   1080p costs; the software renderer scales the picture to the window anyway.
 //!
 //! Known deviations from the shader (small, documented for the comparison of frame dumps):
 //! * The motion measure is taken per sample of each plane (interleaved U and V separately), where the shader takes the
@@ -163,14 +168,104 @@ pub fn deinterlace_planes(cur: &PlanarImage, prev: Option<&PlanarImage>, bottom:
     }
 }
 
-/// How many stripes (threads) [`convert_rgba`] should split a picture of `pixels` output pixels into: one below
-/// 0.3 Mpx, else half the hardware threads, 1..=4 (the decoder threads and the UI need the rest).
+
+/// Frames above this many pixels are converted at half width and half height on the kernel route
+/// ([`ConvertOptions::half`]): 2560 × 1440. At the measured ~6.5 ns per pixel for PQ on four threads (HLG ~10), a
+/// 1440p frame takes ~24 ms (HLG ~37 ms), which still fits 24-30 fps; a 4K frame would take ~54 ms (HLG ~83), more than
+/// a 24 fps frame lasts. The software renderer scales the picture to the window anyway, which at 4K is nearly always
+/// smaller than the video.
+pub const HALF_SIZE_ABOVE: usize = 2560 * 1440;
+
+/// Whether a frame of `pixels` (display size) is converted at half size on the kernel route.
+pub fn half_size(pixels: usize) -> bool {
+    pixels > HALF_SIZE_ABOVE
+}
+
+/// The most stripes a conversion is split into on this machine: the hardware threads minus two (the decoder's
+/// threads and the UI), 1..=8.
+pub fn max_stripes() -> usize {
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| (std::thread::available_parallelism().map_or(1, |n| n.get()).saturating_sub(2)).clamp(1, 8))
+}
+
+/// How many stripes [`convert_rgba`] splits a picture of `pixels` output pixels into: one per 0.25 Mpx, at most
+/// [`max_stripes`] (one below 0.5 Mpx).
 pub fn stripes_for(pixels: usize) -> usize {
-    static THREADS: OnceLock<usize> = OnceLock::new();
-    if pixels < 300_000 {
-        return 1;
+    (pixels / 250_000).clamp(1, max_stripes())
+}
+
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
+/// Persistent worker threads for the stripes of [`convert_rgba`] (no thread is spawned per frame). `init` runs once on
+/// every worker before its first job and what it returns lives as long as the worker (a thread-priority guard).
+pub struct StripePool {
+    jobs: Option<crossbeam_channel::Sender<Job>>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl StripePool {
+    pub fn new(workers: usize, init: std::sync::Arc<dyn Fn() -> Box<dyn std::any::Any> + Send + Sync>) -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded::<Job>();
+        let workers = (0..workers)
+            .filter_map(|i| {
+                let rx = rx.clone();
+                let init = init.clone();
+                std::thread::Builder::new()
+                    .name(format!("player-stripe-{i}"))
+                    .spawn(move || {
+                        let _state = init();
+                        while let Ok(job) = rx.recv() {
+                            job();
+                        }
+                    })
+                    .ok()
+            })
+            .collect();
+        Self { jobs: Some(tx), workers }
     }
-    *THREADS.get_or_init(|| (std::thread::available_parallelism().map_or(1, |n| n.get()) / 2).clamp(1, 4))
+
+    /// Worker threads (a run uses them plus the calling thread).
+    pub fn workers(&self) -> usize {
+        self.workers.len()
+    }
+
+    /// Runs `task(i)` for every `i` in `0..n`: `i ≥ 1` on the workers, 0 on this thread, and waits for all of them.
+    /// False when a task panicked (the panic is caught; the other tasks still ran to completion).
+    pub fn run(&self, n: usize, task: &(dyn Fn(usize) + Sync)) -> bool {
+        let (done_tx, done_rx) = crossbeam_channel::bounded::<bool>(n.max(1));
+        let mut sent = 0;
+        let mut ok = true;
+        for i in 1..n {
+            // SAFETY: the borrow's lifetime is erased for the worker. This function does not return before every job
+            // it sent has run (each reports through `done`, also when the task panics: `catch_unwind`), or has been
+            // dropped unrun (its `done` sender is dropped with it, ending the wait below).
+            let task_static: &'static (dyn Fn(usize) + Sync) = unsafe { std::mem::transmute(task) };
+            let done = done_tx.clone();
+            let job: Job = Box::new(move || {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task_static(i))).is_ok();
+                let _ = done.send(r);
+            });
+            match self.jobs.as_ref().map(|j| j.send(job)) {
+                Some(Ok(())) => sent += 1,
+                _ => ok &= std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(i))).is_ok(),
+            }
+        }
+        drop(done_tx);
+        ok &= std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(0))).is_ok();
+        for _ in 0..sent {
+            ok &= done_rx.recv().unwrap_or(false);
+        }
+        ok
+    }
+}
+
+impl Drop for StripePool {
+    fn drop(&mut self) {
+        self.jobs = None;
+        for w in self.workers.drain(..) {
+            let _ = w.join();
+        }
+    }
 }
 
 /// A horizontal interpolation tap: samples `i0` and `i1` (edge-clamped), weight `f` of `i1`.
@@ -207,10 +302,16 @@ struct Kernel<'a> {
     y: (&'a [u8], usize),
     /// Planar: U and V planes; semi-planar: the interleaved plane (twice).
     c: [(&'a [u8], usize); 2],
-    h: usize,
+    /// Source luma width (samples per row; packed: pixels).
+    w: usize,
+    /// Output size.
+    oh: usize,
     ow: usize,
     cw: usize,
     ch: usize,
+    /// Half size: output row `y` is the average of luma rows `2y` and `2y + 1`, interpolated across the row like a
+    /// scaled one (two samples per output pixel: their average).
+    half: bool,
     luma_x: Option<Vec<Tap>>,
     chroma_x: Vec<Tap>,
     /// Normalized luma = sample × ya − yb, chroma = sample × ca − cb (`to_rgb`'s range step folded in).
@@ -224,7 +325,8 @@ struct Kernel<'a> {
 }
 
 impl Kernel<'_> {
-    /// The chroma (normalized U, V per chroma column) for output row `y`.
+    /// The chroma (normalized U, V per chroma column) for output row `y`. At half size the same bilinear mapping
+    /// lands 4:2:0 chroma rows exactly on the output rows and averages the two rows of 4:2:2 / 4:4:4 chroma.
     fn chroma_row<S: Sample>(&self, y: usize, buf: &mut [f32]) {
         let (c0, c1, fy) = if self.chroma_fields {
             // The shader's `fetch_row`: the nearest chroma row of the same field.
@@ -232,7 +334,7 @@ impl Kernel<'_> {
             let crow = (2 * (i / 2) + y % 2).min(self.ch - 1);
             (crow, crow, 0.0)
         } else {
-            let p = (y as f64 + 0.5) * self.ch as f64 / self.h as f64 - 0.5;
+            let p = (y as f64 + 0.5) * self.ch as f64 / self.oh as f64 - 0.5;
             let i = p.floor();
             let last = self.ch as i64 - 1;
             ((i as i64).clamp(0, last) as usize, (i as i64 + 1).clamp(0, last) as usize, (p - i) as f32)
@@ -263,20 +365,35 @@ impl Kernel<'_> {
     fn rows<S: Sample>(&self, y0: usize, out: &mut [u8]) {
         let ow = self.ow;
         let has_chroma = matches!(self.layout, PlaneLayout::Planar | PlaneLayout::SemiPlanar);
+        let packed = self.layout == PlaneLayout::Packed;
+        let comps = if packed { 4 } else { 1 };
         let mut cbuf = vec![0f32; self.cw * 2];
+        // Half size: the sum of the two source rows (signal domain, exact integer sums), halved with the scale.
+        let mut sums = if self.half { vec![0f32; self.w * comps] } else { Vec::new() };
         let [k0, k1, k2, k3] = self.k;
+        let (yd, ys) = self.y;
         for (j, o) in out.chunks_exact_mut(ow * 4).enumerate() {
             let y = y0 + j;
-            let (yd, ys) = self.y;
-            let yrow = &yd[y * ys..];
-            if self.layout == PlaneLayout::Packed {
+            let yrow: &[u8] = if self.half { &yd[2 * y * ys..] } else { &yd[y * ys..] };
+            if self.half {
+                let next = &yd[(2 * y + 1) * ys..];
+                for (i, s) in sums.iter_mut().enumerate() {
+                    *s = if packed { (yrow[i] as u32 + next[i] as u32) as f32 } else { (S::get(yrow, i) + S::get(next, i)) as f32 };
+                }
+            }
+            if packed {
                 for x in 0..ow {
-                    let c = match &self.luma_x {
-                        None => [0, 1, 2].map(|k| yrow[4 * x + k] as f32),
-                        Some(t) => {
+                    let c = match (&self.luma_x, self.half) {
+                        (None, _) => [0, 1, 2].map(|k| yrow[4 * x + k] as f32),
+                        (Some(t), false) => {
                             let t = t[x];
                             let (a, b) = (4 * t.i0 as usize, 4 * t.i1 as usize);
                             [0, 1, 2].map(|k| lerp(yrow[a + k] as f32, yrow[b + k] as f32, t.f))
+                        }
+                        (Some(t), true) => {
+                            let t = t[x];
+                            let (a, b) = (4 * t.i0 as usize, 4 * t.i1 as usize);
+                            [0, 1, 2].map(|k| 0.5 * lerp(sums[a + k], sums[b + k], t.f))
                         }
                     };
                     let px = self.luts.map(c.map(|v| v * (1.0 / 255.0)));
@@ -288,11 +405,15 @@ impl Kernel<'_> {
                 self.chroma_row::<S>(y, &mut cbuf);
             }
             for x in 0..ow {
-                let yv = match &self.luma_x {
-                    None => S::get(yrow, x) as f32,
-                    Some(t) => {
+                let yv = match (&self.luma_x, self.half) {
+                    (None, _) => S::get(yrow, x) as f32,
+                    (Some(t), false) => {
                         let t = t[x];
                         lerp(S::get(yrow, t.i0 as usize) as f32, S::get(yrow, t.i1 as usize) as f32, t.f)
+                    }
+                    (Some(t), true) => {
+                        let t = t[x];
+                        0.5 * lerp(sums[t.i0 as usize], sums[t.i1 as usize], t.f)
                     }
                 };
                 let l = yv * self.ya - self.yb;
@@ -310,14 +431,40 @@ impl Kernel<'_> {
     }
 }
 
-/// Converts `img` (unrotated) to RGBA8 at `out_w` × its coded height (the display size before rotation: only the
+/// How [`convert_rgba`] samples the picture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConvertOptions {
+    /// The image is a deinterlaced 4:2:0 frame, whose chroma rows belong to alternating fields (sampled as the shader
+    /// samples them while deinterlacing). Ignored at half size.
+    pub chroma_fields: bool,
+    /// Half size ([`half_size`]): `out_w` is half the display width and the output has half the coded rows (rounded
+    /// down); each output pixel averages a 2 × 2 block of luma (across the sample-aspect stretch, if any), chroma is
+    /// sampled at the output resolution, and the colour mapping runs once per output pixel.
+    pub half: bool,
+}
+
+/// The output height of [`convert_rgba`] for `img`.
+pub fn output_rows(img: &PlanarImage, opts: ConvertOptions) -> usize {
+    let h = img.coded_height as usize;
+    if opts.half { (h / 2).max(1) } else { h }
+}
+
+/// Converts `img` (unrotated) to RGBA8 at `out_w` × [`output_rows`] (the display size before rotation: only the
 /// width carries the sample aspect ratio) into `dst` (tightly packed), with the colour mapping `luts` (built for
-/// `ColorParams::for_image(img)`). `chroma_fields`: `img` is a deinterlaced 4:2:0 frame, whose chroma rows belong to
-/// alternating fields (sampled as the shader samples them while deinterlacing). `stripes` threads (1: this thread
-/// only; see [`stripes_for`]). False when `dst` is too small or a plane is missing.
-pub fn convert_rgba(img: &PlanarImage, out_w: u32, luts: &ToneLuts, chroma_fields: bool, dst: &mut [u8], stripes: usize) -> bool {
+/// `ColorParams::for_image(img)`). Rows are split into [`stripes_for`] stripes run on `pool` (and this thread). A
+/// stripe that panics makes the frame convert again on this thread alone; false when that panics too, when `dst` is
+/// too small or a plane is missing.
+pub fn convert_rgba(img: &PlanarImage, out_w: u32, luts: &ToneLuts, opts: ConvertOptions, dst: &mut [u8], pool: Option<&StripePool>) -> bool {
+    let rows = output_rows(img, opts);
+    convert_striped(img, out_w, luts, opts, dst, pool, stripes_for(out_w as usize * rows))
+}
+
+/// [`convert_rgba`] in `stripes` stripes (at most the pool's workers + 1).
+fn convert_striped(img: &PlanarImage, out_w: u32, luts: &ToneLuts, opts: ConvertOptions, dst: &mut [u8], pool: Option<&StripePool>, stripes: usize) -> bool {
     let (w, h, ow) = (img.coded_width as usize, img.coded_height as usize, out_w as usize);
-    if w == 0 || h == 0 || ow == 0 || dst.len() < ow * h * 4 {
+    let half = opts.half && h >= 2 && w >= 2;
+    let oh = if half { h / 2 } else { h };
+    if w == 0 || h == 0 || ow == 0 || dst.len() < ow * oh * 4 {
         return false;
     }
     let Some((yd, yi)) = img.plane(0) else { return false };
@@ -344,11 +491,13 @@ pub fn convert_rgba(img: &PlanarImage, out_w: u32, luts: &ToneLuts, chroma_field
         luts,
         y: (yd, yi.stride),
         c,
-        h,
+        w,
+        oh,
         ow,
         cw: cw.max(1),
         ch: ch.max(1),
-        luma_x: (ow != w).then(|| taps(w, ow)),
+        half,
+        luma_x: (ow != w || half).then(|| taps(w, ow)),
         chroma_x: taps(cw.max(1), ow),
         ya: if packed { 1.0 } else { unit * range[1] },
         yb: if packed { 0.0 } else { range[0] * range[1] },
@@ -356,32 +505,30 @@ pub fn convert_rgba(img: &PlanarImage, out_w: u32, luts: &ToneLuts, chroma_field
         cb: range[2] * range[3],
         k,
         swap: img.swap_uv,
-        chroma_fields: chroma_fields && matches!(img.layout, PlaneLayout::Planar | PlaneLayout::SemiPlanar) && img.chroma_shift.1 == 1,
+        chroma_fields: opts.chroma_fields && !half && matches!(img.layout, PlaneLayout::Planar | PlaneLayout::SemiPlanar) && img.chroma_shift.1 == 1,
     };
     let wide = img.bits > 8 && !packed;
     let run = |y0: usize, out: &mut [u8]| {
         if wide { kernel.rows::<u16>(y0, out) } else { kernel.rows::<u8>(y0, out) }
     };
-    let dst = &mut dst[..ow * h * 4];
-    let stripes = stripes.clamp(1, h);
-    if stripes == 1 {
-        run(0, dst);
-        return true;
-    }
-    let rows_per = h.div_ceil(stripes);
-    std::thread::scope(|s| {
-        let mut chunks = dst.chunks_mut(rows_per * ow * 4).enumerate().peekable();
-        while let Some((i, chunk)) = chunks.next() {
-            let run = &run;
-            if chunks.peek().is_none() {
-                // The last stripe on this thread.
-                run(i * rows_per, chunk);
-            } else {
-                s.spawn(move || run(i * rows_per, chunk));
-            }
+    let dst = &mut dst[..ow * oh * 4];
+    let stripes = pool.map_or(1, |p| stripes.min(p.workers() + 1)).clamp(1, oh);
+    if stripes > 1
+        && let Some(pool) = pool
+    {
+        let rows_per = oh.div_ceil(stripes);
+        let chunks: Vec<std::sync::Mutex<&mut [u8]>> = dst.chunks_mut(rows_per * ow * 4).map(std::sync::Mutex::new).collect();
+        let task = |i: usize| {
+            let mut chunk = chunks[i].lock().unwrap_or_else(|e| e.into_inner());
+            run(i * rows_per, &mut chunk);
+        };
+        if pool.run(chunks.len(), &task) {
+            return true;
         }
-    });
-    true
+        drop(chunks);
+        eprintln!("[player] a conversion stripe panicked; converting the frame on one thread");
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(0, dst))).is_ok()
 }
 
 #[cfg(test)]
@@ -629,7 +776,8 @@ mod tests {
         let (w, h) = (img.coded_width as usize, img.coded_height as usize);
         let ow = out_w as usize;
         let mut dst = vec![0u8; ow * h * 4];
-        assert!(convert_rgba(img, out_w, &luts, false, &mut dst, stripes));
+        let pool = test_pool();
+        assert!(convert_striped(img, out_w, &luts, ConvertOptions::default(), &mut dst, Some(&pool), stripes));
         let mut worst = 0u8;
         for y in 0..h {
             for x in 0..ow {
@@ -669,14 +817,22 @@ mod tests {
     fn stripes_give_the_same_picture_as_one_thread() {
         let img = blocks(true, HDR10);
         let luts = ToneLuts::new(&ColorParams::for_image(&img));
-        let mut one = vec![0u8; 80 * 32 * 4];
-        let mut four = vec![1u8; 80 * 32 * 4];
-        assert!(convert_rgba(&img, 80, &luts, false, &mut one, 1));
-        assert!(convert_rgba(&img, 80, &luts, false, &mut four, 4));
-        assert_eq!(one, four);
-        assert!(!convert_rgba(&img, 80, &luts, false, &mut four[..100], 1), "too small a buffer");
+        let pool = test_pool();
+        let opts = ConvertOptions::default();
+        for half in [false, true] {
+            let opts = ConvertOptions { half, ..opts };
+            let mut one = vec![0u8; 80 * 32 * 4];
+            let mut four = vec![1u8; 80 * 32 * 4];
+            assert!(convert_rgba(&img, 80, &luts, opts, &mut one, None));
+            assert!(convert_striped(&img, 80, &luts, opts, &mut four, Some(&pool), 4));
+            let n = 80 * output_rows(&img, opts) * 4;
+            assert_eq!(one[..n], four[..n], "half={half}");
+        }
+        let mut small = vec![0u8; 100];
+        assert!(!convert_rgba(&img, 80, &luts, opts, &mut small, None), "too small a buffer");
         assert_eq!(stripes_for(1000), 1);
-        assert!((1..=4).contains(&stripes_for(1920 * 1080)));
+        assert!((1..=8).contains(&stripes_for(1920 * 1080)) && stripes_for(1920 * 1080) <= max_stripes());
+        assert!(stripes_for(3840 * 2160) >= stripes_for(1280 * 720));
     }
 
     #[test]
@@ -689,7 +845,7 @@ mod tests {
         let img = image(f, (4, 8), color, false, vec![(vec![128; 32], 4, 4, 8), (u, 2, 2, 4), (vec![128; 8], 2, 2, 4)]);
         let luts = ToneLuts::new(&ColorParams::for_image(&img));
         let mut dst = vec![0u8; 4 * 8 * 4];
-        assert!(convert_rgba(&img, 4, &luts, true, &mut dst, 1));
+        assert!(convert_rgba(&img, 4, &luts, ConvertOptions { chroma_fields: true, half: false }, &mut dst, None));
         // Blue grows with U: luma rows 0..8 take chroma rows 0, 1, 0, 1, 2, 3, 2, 3.
         let blue: Vec<u8> = (0..8).map(|y| dst[y * 16 + 2]).collect();
         let want_row = [0, 1, 0, 1, 2, 3, 2, 3];
@@ -700,8 +856,65 @@ mod tests {
         assert!(blue[0] < blue[2 + 2] && blue[1] > blue[5], "{blue:?}");
         // Progressive (bilinear) sampling differs.
         let mut prog = vec![0u8; dst.len()];
-        assert!(convert_rgba(&img, 4, &luts, false, &mut prog, 1));
+        assert!(convert_rgba(&img, 4, &luts, ConvertOptions::default(), &mut prog, None));
         assert_ne!(prog, dst);
+    }
+
+    fn test_pool() -> StripePool {
+        StripePool::new(3, std::sync::Arc::new(|| Box::new(()) as Box<dyn std::any::Any>))
+    }
+
+    #[test]
+    fn half_size_averages_two_by_two_blocks_and_keeps_flat_colours() {
+        let hlg = ColorInfo { transfer: Transfer::Hlg, ..HDR10 };
+        for color in [HDR10, hlg] {
+            for msb in [false, true] {
+                let img = blocks(msb, color);
+                let params = ColorParams::for_image(&img);
+                let luts = ToneLuts::new(&params);
+                let opts = ConvertOptions { half: true, chroma_fields: true };
+                assert_eq!(output_rows(&img, opts), 16);
+                let mut dst = vec![0u8; 32 * 16 * 4];
+                assert!(convert_rgba(&img, 32, &luts, opts, &mut dst, None));
+                // Every 8 x 8 output block is its 16 x 16 source block (inside, away from the chroma edges).
+                for y in (1..7).chain(9..15) {
+                    for x in (1..7).chain(9..15).chain(17..23).chain(25..31) {
+                        let want = params.apply(yuv_to_rgb_reference(&img, x * 2, y * 2)).map(|v| (v * 255.0).round() as u8);
+                        let o = (y * 32 + x) * 4;
+                        for k in 0..3 {
+                            assert!(dst[o + k].abs_diff(want[k]) <= 1, "msb={msb} ({x}, {y}): {:?} vs {want:?}", &dst[o..o + 3]);
+                        }
+                    }
+                }
+            }
+        }
+        // A luma checkerboard averages to its mean (8-bit full-range gray: exact).
+        let f = PlanarFormat { layout: PlaneLayout::Gray, bits: 8, msb_aligned: false, chroma_shift: (0, 0), swap_uv: false };
+        let px: Vec<u8> = (0..64).map(|i| if (i % 8 + i / 8) % 2 == 0 { 100 } else { 200 }).collect();
+        let img = image(f, (8, 8), ColorInfo { full_range: true, ..ColorInfo::default() }, false, vec![(px, 8, 8, 8)]);
+        let luts = ToneLuts::new(&ColorParams::for_image(&img));
+        let mut dst = vec![0u8; 4 * 4 * 4];
+        assert!(convert_rgba(&img, 4, &luts, ConvertOptions { half: true, ..Default::default() }, &mut dst, None));
+        assert!(dst.chunks(4).all(|p| p == [150, 150, 150, 255]), "{dst:?}");
+        assert!(half_size(3840 * 2160) && !half_size(2560 * 1440) && !half_size(1920 * 1080));
+    }
+
+    #[test]
+    fn a_panicking_stripe_is_reported_after_every_stripe_ran() {
+        let pool = test_pool();
+        let ran = std::sync::atomic::AtomicUsize::new(0);
+        let ok = pool.run(4, &|i| {
+            ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if i == 2 {
+                panic!("stripe {i}");
+            }
+        });
+        assert!(!ok);
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 4);
+        // The pool keeps working.
+        assert!(pool.run(4, &|_| ()));
+        // A panic on the calling thread (stripe 0) is caught as well.
+        assert!(!pool.run(2, &|i| assert_ne!(i, 0)));
     }
 
     #[test]

@@ -87,6 +87,8 @@ pub(crate) struct Stats {
     /// RGBA pictures (frames or fields) tone-mapped / deinterlaced on the CPU.
     pub soft_tonemapped: AtomicU64,
     pub soft_deinterlaced: AtomicU64,
+    /// RGBA second fields dropped as late before their conversion.
+    pub dropped_fields: AtomicU64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -104,7 +106,7 @@ const VIDEO_QUEUE_PACKETS: usize = 90;
 const AUDIO_QUEUE_PACKETS: usize = 150;
 const MAX_QUEUED_BYTES: usize = 48 * 1024 * 1024;
 /// Decoded frames queued for the presenter (an interlaced frame is queued as two fields: twice the items).
-const FRAME_QUEUE: usize = 4;
+pub(crate) const FRAME_QUEUE: usize = 4;
 const AUDIO_RING_SECONDS: f64 = 0.3;
 /// Waits up to this long before a due frame use a precise sleep instead of the condvar.
 const PRECISE_WAIT: f64 = 0.02;
@@ -491,7 +493,7 @@ impl Control {
     }
 
     fn publish(&self, f: DecodedFrame) {
-        let size = (f.frame.width, f.frame.height);
+        let size = f.frame.video_size;
         *self.last_frame_end.lock() = f.pts + f.duration;
         let changed = {
             let mut i = self.info.lock();
@@ -1270,7 +1272,7 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
             let (w, h) = geo.display_size();
             ctl.stats.planar.fetch_add(1, Ordering::Relaxed);
             out.soft_prev = None;
-            frame = Some(VideoFrame { width: w, height: h, stride: 0, pts, rgba: empty_rgba(), planar: Some(Arc::new(img)), second_field: false });
+            frame = Some(VideoFrame { width: w, height: h, stride: 0, pts, rgba: empty_rgba(), planar: Some(Arc::new(img)), second_field: false, video_size: (w, h) });
         }
     }
     // RGBA path: HDR / wide-gamut frames are tone-mapped and interlaced ones deinterlaced on the CPU (`crate::soft`),
@@ -1288,7 +1290,10 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
                 out.soft_prev = None;
             }
             soft = Some((source, prev));
-            VideoFrame::from_rgba(w, h, w * 4, pts, rgba)
+            let mut f = VideoFrame::from_rgba(w, h, w * 4, pts, rgba);
+            // Large tone-mapped frames come at half size; the video keeps its size.
+            f.video_size = geo.display_size();
+            f
         }
     };
     // An interlaced frame is shown field by field (the UI or the RGBA path deinterlaces): its second field half a
@@ -1316,14 +1321,15 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
                 return first;
             }
             if ctl.clock.is_running() && pts + dur < ctl.clock.now() - 0.02 {
-                // Too late to convert: dropped as the decoder drops late frames.
-                ctl.stats.dropped_decoder.fetch_add(1, Ordering::Relaxed);
+                // Too late to convert: dropped as the decoder drops late frames (counted as a field).
+                ctl.stats.dropped_fields.fetch_add(1, Ordering::Relaxed);
                 return Pushed::Queued;
             }
             let Some((w, h, rgba)) = (unsafe { out.conv.convert_soft(&source, src, geo, prev.as_deref(), true) }) else { return Pushed::Queued };
             count_soft(ctl, &source);
             let mut second = VideoFrame::from_rgba(w, h, w * 4, pts + half, rgba);
             second.second_field = true;
+            second.video_size = geo.display_size();
             second
         }
         (None, None) => return first,

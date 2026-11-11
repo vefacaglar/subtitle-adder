@@ -120,8 +120,12 @@ impl Drop for Scaler {
 /// Converts frames; owned by the video decode thread.
 pub(crate) struct Converter {
     scaler: Option<Scaler>,
-    pool: Vec<Arc<Vec<u8>>>,
+    /// Output buffers per length (most recently used length first; at most two lengths: the packed route alternates
+    /// between the coded and the display size).
+    pool: Vec<(usize, Vec<Arc<Vec<u8>>>)>,
     scratch: Vec<u8>,
+    /// Worker threads of the RGBA kernel's stripes (created on first use).
+    stripes: Option<soft::StripePool>,
     /// Deinterlaced copies of frames (RGBA path), reused once nothing holds them.
     deinterlaced: Vec<Arc<OwnedFrame>>,
     /// The colour tables of the RGBA path's own conversion, for the parameters they were built for.
@@ -144,7 +148,19 @@ pub(crate) struct SoftSource {
 
 impl Converter {
     pub fn new() -> Self {
-        Self { scaler: None, pool: Vec::new(), scratch: Vec::new(), deinterlaced: Vec::new(), luts: None }
+        Self { scaler: None, pool: Vec::new(), scratch: Vec::new(), stripes: None, deinterlaced: Vec::new(), luts: None }
+    }
+
+    /// The kernel's stripe workers: `soft::max_stripes() - 1` threads with the decode thread's priority (none on a
+    /// machine with too few cores).
+    fn stripe_pool(&mut self) -> Option<&soft::StripePool> {
+        let workers = soft::max_stripes() - 1;
+        if workers == 0 {
+            return None;
+        }
+        let init: Arc<dyn Fn() -> Box<dyn std::any::Any> + Send + Sync> =
+            Arc::new(|| Box::new(super::priority::raise(super::priority::Role::VideoDecode)) as Box<dyn std::any::Any>);
+        Some(self.stripes.get_or_insert_with(|| soft::StripePool::new(workers, init)))
     }
 
     /// Decides how the RGBA path converts `raw` (its download `src` / `downloaded` for hardware frames): plain SDR
@@ -217,7 +233,9 @@ impl Converter {
                 }
                 soft::deinterlace_planes(img, prev, img.shown_field_is_bottom(second_field), &mut planes);
             }
-            if !soft.tone_map && !packed {
+            // The deinterlaced copy holds no alpha plane (only the colour planes are written): alpha formats go through
+            // the kernel, which shows them opaque like the shader.
+            if !soft.tone_map && !packed && !has_alpha(av_format) {
                 // SDR: swscale converts the deinterlaced copy as it converts progressive frames.
                 (*f).colorspace = (*src).colorspace;
                 (*f).color_range = (*src).color_range;
@@ -253,18 +271,28 @@ impl Converter {
             }
             let f = Arc::new(f);
             self.deinterlaced.retain(|f| same(f));
-            if self.deinterlaced.len() < 4 {
+            // One in use at a time (converted before the next field is deinterlaced), one spare.
+            if self.deinterlaced.len() < 2 {
                 self.deinterlaced.push(f.clone());
             }
             Some(f)
         }
     }
 
-    /// [`soft::convert_rgba`] of `img` at `geo` (then rotated), with the colour tables cached per parameters.
+    /// [`soft::convert_rgba`] of `img` at `geo` (then rotated), with the colour tables cached per parameters. Frames
+    /// above [`soft::HALF_SIZE_ABOVE`] are converted at half width and height (the returned size says so; the video's
+    /// size is still `geo`'s).
     fn convert_kernel(&mut self, img: &PlanarImage, geo: Geometry, chroma_fields: bool) -> Option<(u32, u32, Arc<Vec<u8>>)> {
         if img.coded_height != geo.height || geo.width == 0 {
             return None;
         }
+        let half = soft::half_size(geo.width as usize * geo.height as usize);
+        let opts = soft::ConvertOptions { chroma_fields, half };
+        let geo = if half {
+            Geometry { width: (geo.width / 2).max(1), height: soft::output_rows(img, opts) as u32, quarter_turns: geo.quarter_turns }
+        } else {
+            geo
+        };
         let params = ColorParams::for_image(img);
         if self.luts.as_ref().is_none_or(|l| *l.params() != params) {
             // Also when the stream's MaxCLL arrives with a later frame.
@@ -274,15 +302,16 @@ impl Converter {
         let len = dw as usize * dh as usize * 4;
         let rotated = geo.quarter_turns % 4 != 0;
         let mut out = self.buffer(len);
+        self.stripe_pool();
+        let pool = self.stripes.as_ref();
         let luts = self.luts.as_ref()?;
-        let stripes = soft::stripes_for(dw as usize * dh as usize);
         let target: &mut Vec<u8> = if rotated {
             self.scratch.resize(len, 0);
             &mut self.scratch
         } else {
             Arc::get_mut(&mut out).expect("fresh or recycled buffer is unique")
         };
-        if !soft::convert_rgba(img, dw, luts, chroma_fields, target, stripes) {
+        if !soft::convert_rgba(img, dw, luts, opts, target, pool) {
             return None;
         }
         if rotated {
@@ -293,18 +322,36 @@ impl Converter {
         Some((ow, oh, out))
     }
 
+    /// Buffers kept per length: every frame that can be in flight with double-rate fields (the queue of
+    /// `2 × FRAME_QUEUE` items, the frame the UI holds and the one being converted).
+    const POOL_PER_LENGTH: usize = 2 * super::session::FRAME_QUEUE + 2;
+
     fn buffer(&mut self, len: usize) -> Arc<Vec<u8>> {
         // Reuse a buffer nobody else holds any more.
-        if let Some(i) = self.pool.iter().position(|b| Arc::strong_count(b) == 1 && Arc::weak_count(b) == 0 && b.len() == len) {
-            return self.pool.swap_remove(i);
+        if let Some((_, bufs)) = self.pool.iter_mut().find(|(l, _)| *l == len)
+            && let Some(i) = bufs.iter().position(|b| Arc::strong_count(b) == 1 && Arc::weak_count(b) == 0)
+        {
+            return bufs.swap_remove(i);
         }
         Arc::new(vec![0u8; len])
     }
 
     fn recycle(&mut self, buf: &Arc<Vec<u8>>) {
-        self.pool.retain(|b| b.len() == buf.len());
-        if self.pool.len() < 8 {
-            self.pool.push(buf.clone());
+        let len = buf.len();
+        let i = match self.pool.iter().position(|(l, _)| *l == len) {
+            Some(i) => i,
+            None => {
+                self.pool.push((len, Vec::new()));
+                self.pool.len() - 1
+            }
+        };
+        // Most recently used length first; a third length drops the oldest.
+        let entry = self.pool.remove(i);
+        self.pool.insert(0, entry);
+        self.pool.truncate(2);
+        let bufs = &mut self.pool[0].1;
+        if bufs.len() < Self::POOL_PER_LENGTH {
+            bufs.push(buf.clone());
         }
     }
 
@@ -636,6 +683,15 @@ pub(crate) unsafe fn frame_interlace(props: *const ffi::AVFrame) -> Option<Inter
     }
 }
 
+/// Whether pixel format `format` carries an alpha component.
+fn has_alpha(format: c_int) -> bool {
+    if format < 0 {
+        return false;
+    }
+    let desc = unsafe { ffi::av_pix_fmt_desc_get(std::mem::transmute::<c_int, ffi::AVPixelFormat>(format)) };
+    !desc.is_null() && unsafe { (*desc).flags } & ffi::AV_PIX_FMT_FLAG_ALPHA as u64 != 0
+}
+
 /// The planes of `frame` as `format` lays them out (`None`: a plane is missing, or a stride is negative or shorter
 /// than its row).
 unsafe fn frame_planes(frame: *const ffi::AVFrame, format: &PlanarFormat) -> Option<[Option<(*const u8, PlaneInfo)>; 3]> {
@@ -916,6 +972,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An interlaced SDR frame with alpha (transparent here) is deinterlaced and shown opaque, as the shader shows it:
+    /// the deinterlaced copy has no alpha plane for swscale to copy.
+    #[test]
+    fn interlaced_alpha_frames_are_shown_opaque() {
+        use ffmpeg_next::format::Pixel;
+        let _ = ffmpeg_next::init();
+        for fmt in [Pixel::YUVA420P, Pixel::YUVA444P10LE] {
+            let (w, h) = (16u32, 8u32);
+            let mut f = ffmpeg_next::frame::Video::new(fmt, w, h);
+            let wide = fmt == Pixel::YUVA444P10LE;
+            for i in 0..4 {
+                let stride = f.stride(i);
+                let rows = if i == 1 || i == 2 { f.plane_height(i) } else { h } as usize;
+                let value: u16 = match (i, wide) {
+                    (3, _) => 0,
+                    (_, false) => 128,
+                    (_, true) => 512,
+                };
+                let data = f.data_mut(i);
+                for r in 0..rows {
+                    for x in 0..stride / if wide { 2 } else { 1 } {
+                        if wide {
+                            data[r * stride + 2 * x..r * stride + 2 * x + 2].copy_from_slice(&value.to_le_bytes());
+                        } else {
+                            data[r * stride + x] = value as u8;
+                        }
+                    }
+                }
+            }
+            unsafe { (*f.as_mut_ptr()).flags |= ffi::AV_FRAME_FLAG_INTERLACED | ffi::AV_FRAME_FLAG_TOP_FIELD_FIRST };
+            let geo = Geometry { width: w, height: h, quarter_turns: 0 };
+            let mut conv = Converter::new();
+            let soft = unsafe { conv.soft_source(f.as_ptr(), f.as_ptr(), None, geo, &HdrLevels::default()) };
+            assert!(soft.interlaced && !soft.tone_map && soft.image.is_some(), "{fmt:?}");
+            for second in [false, true] {
+                let (ow, oh, rgba) = unsafe { conv.convert_soft(&soft, f.as_ptr(), geo, None, second) }.expect("converted");
+                assert_eq!((ow, oh), (w, h));
+                assert!(rgba.chunks(4).all(|p| p[3] == 255), "{fmt:?}: alpha {:?}", rgba.chunks(4).map(|p| p[3]).collect::<Vec<_>>());
+                // Mid gray.
+                assert!(rgba.chunks(4).all(|p| (120..=136).contains(&p[1])), "{fmt:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn buffers_are_pooled_per_length() {
+        let mut conv = Converter::new();
+        let a = conv.buffer(16);
+        conv.recycle(&a);
+        let b = conv.buffer(32);
+        conv.recycle(&b);
+        drop((a, b));
+        // Both lengths are still pooled after alternating.
+        let a2 = conv.buffer(16);
+        assert_eq!(a2.len(), 16);
+        conv.recycle(&a2);
+        let b2 = conv.buffer(32);
+        conv.recycle(&b2);
+        assert_eq!(conv.pool.len(), 2);
+        assert!(conv.pool.iter().all(|(_, bufs)| bufs.len() == 1), "reused, not reallocated");
+        // A third length drops the least recently used one.
+        let c = conv.buffer(64);
+        conv.recycle(&c);
+        assert_eq!(conv.pool.iter().map(|(l, _)| *l).collect::<Vec<_>>(), [64, 32]);
     }
 
     #[test]
