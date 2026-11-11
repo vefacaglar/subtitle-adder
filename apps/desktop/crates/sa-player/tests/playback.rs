@@ -833,11 +833,54 @@ fn first_frame(p: &mut FfmpegPlayer, path: &std::path::Path) -> sa_player::Video
     frame_where(p, T, |_| true).expect("first frame")
 }
 
-/// BT.601 limited range, as swscale converts SD frames.
-fn bt601(y: u8, u: u8, v: u8) -> [f32; 3] {
-    let y = (y as f32 - 16.0) * 255.0 / 219.0;
-    let (u, v) = ((u as f32 - 128.0) * 255.0 / 224.0, (v as f32 - 128.0) * 255.0 / 224.0);
-    [y + 1.402 * v, y - 0.344136 * u - 0.714136 * v, y + 1.772 * u]
+/// The R'G'B' (0..255) of pixel (`x`, `y`) of the coded picture, converted on the CPU the way the UI's shader does
+/// (nearest chroma sample, the shader's uniforms from `sa_player::color::yuv_uniforms`).
+fn planar_rgb(img: &sa_player::PlanarImage, x: usize, y: usize) -> [f32; 3] {
+    use sa_player::PlaneLayout;
+    let (range, k, scale) = sa_player::color::yuv_uniforms(img);
+    let wide = img.bits > 8;
+    let sb = img.sample_bytes();
+    let sample = |plane: usize, px: usize, py: usize, comp: usize, comps: usize| -> f32 {
+        let (d, info) = img.plane(plane).expect("plane");
+        let o = py * info.stride + (px * comps + comp) * sb;
+        if wide { u16::from_le_bytes([d[o], d[o + 1]]) as f32 * scale } else { d[o] as f32 / 255.0 }
+    };
+    if img.layout == PlaneLayout::Packed {
+        return [0, 1, 2].map(|c| sample(0, x, y, c, 4) * 255.0);
+    }
+    let (sx, sy) = img.chroma_shift;
+    let (cx, cy) = (x >> sx, y >> sy);
+    let luma = sample(0, x, y, 0, 1);
+    let (u, v) = match img.layout {
+        PlaneLayout::SemiPlanar if img.swap_uv => (sample(1, cx, cy, 1, 2), sample(1, cx, cy, 0, 2)),
+        PlaneLayout::SemiPlanar => (sample(1, cx, cy, 0, 2), sample(1, cx, cy, 1, 2)),
+        PlaneLayout::Planar => (sample(1, cx, cy, 0, 1), sample(2, cx, cy, 0, 1)),
+        _ => (range[2], range[2]),
+    };
+    let yv = (luma - range[0]) * range[1];
+    let (u, v) = ((u - range[2]) * range[3], (v - range[2]) * range[3]);
+    [yv + k[0] * v, yv - k[1] * u - k[2] * v, yv + k[3] * u].map(|c| (c * 255.0).clamp(0.0, 255.0))
+}
+
+/// Mean and worst channel difference between `img` converted like the shader and the RGBA path's `reference` frame
+/// (same size, no rotation), over a grid of pixels.
+fn difference_to_rgba(img: &sa_player::PlanarImage, reference: &sa_player::VideoFrame) -> (f32, f32) {
+    let (w, h) = (img.coded_width as usize, img.coded_height as usize);
+    assert_eq!((reference.width as usize, reference.height as usize), (w, h));
+    let (mut sum, mut n, mut worst) = (0f32, 0f32, 0f32);
+    for y in (0..h).step_by(7) {
+        for x in (0..w).step_by(5) {
+            let rgb = planar_rgb(img, x, y);
+            let o = y * reference.stride as usize + x * 4;
+            for k in 0..3 {
+                let d = (rgb[k] - reference.rgba[o + k] as f32).abs();
+                sum += d;
+                n += 1.0;
+                worst = worst.max(d);
+            }
+        }
+    }
+    (sum / n, worst)
 }
 
 /// Planar output hands over the decoder's planes (software: zero-copy; hardware: the one NV12 download); converted
@@ -855,6 +898,7 @@ fn planar_output_hands_over_planes_that_convert_to_the_rgba_picture() {
         assert_eq!((f.width, f.height, f.pts), (320, 240, reference.pts));
         assert_eq!((img.coded_width, img.coded_height, img.bits, img.chroma_shift, img.quarter_turns), (320, 240, 8, (1, 1), 0));
         assert_eq!(img.matrix, sa_player::YuvMatrix::Bt601);
+        assert_eq!((img.transfer, img.primaries, img.interlaced, f.second_field), (sa_player::Transfer::Sdr, sa_player::Primaries::Bt709, false, false));
         let stats = p.stats();
         assert!(stats.planar >= 1);
         if !hardware {
@@ -862,35 +906,157 @@ fn planar_output_hands_over_planes_that_convert_to_the_rgba_picture() {
         } else if stats.hardware > 0 {
             assert_eq!(img.layout, sa_player::PlaneLayout::SemiPlanar, "hardware frames are NV12");
         }
-        let (yp, yi) = img.plane(0).expect("luma");
+        let (_, yi) = img.plane(0).expect("luma");
         assert_eq!((yi.width, yi.rows), (320, 240));
-        let mut worst = 0f32;
-        for y in (0..240).step_by(7) {
-            for x in (0..320).step_by(5) {
-                let luma = yp[y * yi.stride + x];
-                let (cx, cy) = (x / 2, y / 2);
-                let (u, v) = match img.layout {
-                    sa_player::PlaneLayout::SemiPlanar => {
-                        let (c, ci) = img.plane(1).expect("chroma");
-                        (c[cy * ci.stride + cx * 2], c[cy * ci.stride + cx * 2 + 1])
-                    }
-                    sa_player::PlaneLayout::Planar => {
-                        let (u, ui) = img.plane(1).expect("u");
-                        let (v, vi) = img.plane(2).expect("v");
-                        (u[cy * ui.stride + cx], v[cy * vi.stride + cx])
-                    }
-                };
-                let rgb = bt601(luma, u, v);
-                let o = (y * 320 + x) * 4;
-                for k in 0..3 {
-                    worst = worst.max((rgb[k].clamp(0.0, 255.0) - reference.rgba[o + k] as f32).abs());
-                }
-            }
-        }
+        let (_, worst) = difference_to_rgba(&img, &reference);
         // swscale rounds and interpolates chroma differently; a wrong plane or stride is off by far more.
         assert!(worst <= 24.0, "hardware={hardware}: worst channel difference {worst}");
         p.dispose();
     }
+}
+
+/// Every pixel format reaches the GPU path: planar YUV/gray formats as their own planes, everything else as swscale's
+/// RGBA in one packed plane; each converts to the picture the RGBA path shows.
+#[test]
+fn every_pixel_format_is_handed_over_as_planes() {
+    use sa_player::PlaneLayout::{Gray, Packed, Planar, SemiPlanar};
+    let cases = [
+        ("yuv410p", Planar, 8, (2, 2)),
+        ("yuv411p", Planar, 8, (2, 0)),
+        ("yuv440p", Planar, 8, (0, 1)),
+        ("yuvj422p", Planar, 8, (1, 0)),
+        ("yuv420p9le", Planar, 9, (1, 1)),
+        ("yuv422p12le", Planar, 12, (1, 0)),
+        ("yuv444p14le", Planar, 14, (0, 0)),
+        ("yuv444p16le", Planar, 16, (0, 0)),
+        ("yuva420p", Planar, 8, (1, 1)),
+        ("yuva444p10le", Planar, 10, (0, 0)),
+        ("nv12", SemiPlanar, 8, (1, 1)),
+        ("nv21", SemiPlanar, 8, (1, 1)),
+        ("gray", Gray, 8, (0, 0)),
+        ("gray10le", Gray, 10, (0, 0)),
+        ("gray16le", Gray, 16, (0, 0)),
+        ("gbrp", Packed, 8, (0, 0)),
+        ("gbrp10le", Packed, 8, (0, 0)),
+        ("rgb24", Packed, 8, (0, 0)),
+        ("bgra", Packed, 8, (0, 0)),
+        ("pal8", Packed, 8, (0, 0)),
+        ("yuyv422", Packed, 8, (0, 0)),
+        ("yuv420p10be", Packed, 8, (0, 0)),
+        ("rgb48le", Packed, 8, (0, 0)),
+    ];
+    let mut failures = Vec::new();
+    for (fmt, layout, bits, shift) in cases {
+        let Some(path) = common::raw_clip(fmt) else {
+            eprintln!("skipped: no ffmpeg CLI");
+            return;
+        };
+        let reference = first_frame(&mut player(false, false), &path);
+        let mut p = player(true, true);
+        let f = first_frame(&mut p, &path);
+        let Some(img) = f.planar.clone() else {
+            failures.push(format!("{fmt}: no planar frame"));
+            continue;
+        };
+        assert!(f.rgba.is_empty(), "{fmt}");
+        assert_eq!((f.width, f.height), (320, 240), "{fmt}");
+        assert_eq!((img.layout, img.bits, img.chroma_shift), (layout, bits, shift), "{fmt}");
+        assert_eq!(img.swap_uv, fmt == "nv21", "{fmt}");
+        let (mean, worst) = difference_to_rgba(&img, &reference);
+        // Nearest vs. interpolated chroma differs at the pattern's edges (most at 4:1:0); a wrong plane, stride, bit
+        // depth or range is off everywhere.
+        if mean > 6.0 || worst > 140.0 {
+            failures.push(format!("{fmt}: mean difference {mean:.1}, worst {worst:.0}"));
+        }
+        p.dispose();
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Interlaced frames carry their field order and are handed over twice, the second field half a frame later.
+#[test]
+fn interlaced_frames_are_handed_over_field_by_field() {
+    let Some(path) = common::custom_clip(
+        "interlaced-tff.ts",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=50", "-t", "2", "-vf", "tinterlace=interleave_top,fieldorder=tff",
+            "-c:v", "mpeg2video", "-flags", "+ildct+ilme", "-top", "1", "-b:v", "4M", "-f", "mpegts",
+        ],
+    ) else {
+        eprintln!("skipped: no ffmpeg CLI");
+        return;
+    };
+    let rec = Recorder::default();
+    let mut p = player(false, true);
+    rec.attach(&mut p);
+    let g = p.load(Some(MediaSource::File(path)), false);
+    opened(&rec, g);
+    let first = frame_where(&mut p, T, |_| true).expect("first frame");
+    let img = first.planar.clone().expect("planar");
+    assert!(img.interlaced && img.top_field_first);
+    assert!(!first.second_field);
+    assert!(!img.shown_field_is_bottom(false) && img.shown_field_is_bottom(true));
+    p.play();
+    let mut seen = Vec::new();
+    let ok = common::wait_until(T, || {
+        if let Some(f) = p.latest_frame() {
+            seen.push((f.pts, f.second_field));
+        }
+        seen.len() >= 12
+    });
+    assert!(ok, "frames: {seen:?}");
+    let seconds: Vec<_> = seen.iter().filter(|(_, s)| *s).collect();
+    assert!(!seconds.is_empty(), "no second fields: {seen:?}");
+    // 25 frames/s → fields 20 ms apart.
+    for w in seen.windows(2) {
+        let d = w[1].0 - w[0].0;
+        if w[0].1 != w[1].1 && d > 0.0 && d < 0.03 {
+            assert!((d - 0.02).abs() < 0.004, "field spacing {d}: {seen:?}");
+        }
+    }
+    p.dispose();
+
+    // A progressive clip is never split.
+    let path = clip_or_skip!(Clip::SmallH264);
+    let f = first_frame(&mut player(false, true), &path);
+    assert!(!f.planar.expect("planar").interlaced && !f.second_field);
+}
+
+/// HDR10 (PQ, BT.2020, mastering metadata + MaxCLL) and HLG frames carry what the shader needs to tone-map them.
+#[test]
+fn hdr_frames_carry_their_transfer_primaries_and_peak() {
+    let Some(pq) = common::custom_clip(
+        "hdr10-pq.mkv",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=10", "-t", "1", "-c:v", "libx265", "-preset", "ultrafast",
+            "-x265-params",
+            "log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:hdr10=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,1):max-cll=1200,400",
+            "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc",
+        ],
+    ) else {
+        eprintln!("skipped: no ffmpeg CLI");
+        return;
+    };
+    for hardware in [false, true] {
+        let f = first_frame(&mut player(hardware, true), &pq);
+        let img = f.planar.expect("planar");
+        assert_eq!((img.transfer, img.primaries, img.matrix), (sa_player::Transfer::Pq, sa_player::Primaries::Bt2020, sa_player::YuvMatrix::Bt2020), "hardware={hardware}");
+        assert_eq!(img.peak_nits, 1200.0, "hardware={hardware}: MaxCLL wins over the 4000-nit mastering peak");
+    }
+    let Some(hlg) = common::custom_clip(
+        "hlg-hevc.mkv",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=10", "-t", "1", "-c:v", "libx265", "-preset", "ultrafast",
+            "-x265-params", "log-level=error:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
+            "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+        ],
+    ) else {
+        return;
+    };
+    let img = first_frame(&mut player(false, true), &hlg).planar.expect("planar");
+    assert_eq!((img.transfer, img.primaries), (sa_player::Transfer::Hlg, sa_player::Primaries::Bt2020));
+    let params = sa_player::color::ColorParams::for_image(&img);
+    assert_eq!(params.mode, sa_player::color::ColorMode::Hlg);
 }
 
 #[test]
@@ -919,6 +1085,40 @@ fn ten_bit_frames_arrive_as_sixteen_bit_planes() {
         let shift = if img.msb_aligned { 6 } else { 0 };
         let sample = |i: usize| (u16::from_le_bytes([y[i], y[i + 1]]) >> shift) as u32;
         assert!((0..1920).step_by(37).all(|x| (64..=940).contains(&sample(540 * yi.stride + x * 2))), "hardware={hardware}");
+        p.dispose();
+    }
+}
+
+/// AV1: FFmpeg's default decoder (libdav1d) has no hardware config, so hardware decoding goes through the native
+/// `av1` decoder. Where the GPU cannot decode the stream (too small here for some GPUs, or no AV1 decoder) the
+/// software decoder takes over; either way playback runs. `SA_TEST_EXPECT_AV1_HW=1` requires the GPU path.
+#[test]
+fn av1_decodes_on_the_gpu_through_the_native_decoder_or_falls_back_to_software() {
+    let Some(path) = common::custom_clip(
+        "av1-10bit-720p.mkv",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-t", "2", "-c:v", "libsvtav1", "-preset", "12",
+            "-svtav1-params", "log=0", "-g", "30", "-pix_fmt", "yuv420p10le",
+        ],
+    ) else {
+        eprintln!("skipped: no ffmpeg CLI");
+        return;
+    };
+    for hardware in [true, false] {
+        let rec = Recorder::default();
+        let mut p = player(hardware, true);
+        rec.attach(&mut p);
+        let g = p.load(Some(MediaSource::File(path.clone())), true);
+        opened(&rec, g);
+        assert!(rec.wait_for(0, T, is_ended(g)).is_some(), "hardware={hardware}: {:?}", rec.snapshot());
+        let s = p.stats();
+        eprintln!("hardware={hardware}: {s:?}");
+        assert!(s.presented >= 50, "hardware={hardware}: {s:?}");
+        if !hardware {
+            assert_eq!(s.hardware, 0);
+        } else if std::env::var("SA_TEST_EXPECT_AV1_HW").is_ok_and(|v| v == "1") {
+            assert!(s.hardware >= 50, "{s:?}");
+        }
         p.dispose();
     }
 }

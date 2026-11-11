@@ -140,6 +140,33 @@ pub(crate) unsafe fn suitable(codec: *const ffi::AVCodec, par: *const ffi::AVCod
     }
 }
 
+/// The decoder to decode a stream with codec parameters `par` in hardware: the codec's default decoder when it suits
+/// ([`suitable`]), else the first other native decoder of the same codec that does (AV1: the default `libdav1d` has
+/// no hardware config, the native `av1` decoder has one). Wrappers of external libraries and vendor decoders
+/// (`*_cuvid`, `*_qsv`, `*_amf`, ...) are never picked. `None`: decode in software.
+pub(crate) unsafe fn decoder_for(par: *const ffi::AVCodecParameters) -> Option<*const ffi::AVCodec> {
+    if PLATFORM.is_none() || !allowed() || par.is_null() {
+        return None;
+    }
+    unsafe {
+        let id = (*par).codec_id;
+        let default = ffi::avcodec_find_decoder(id);
+        if suitable(default, par) {
+            return Some(default);
+        }
+        let mut opaque: *mut std::ffi::c_void = ptr::null_mut();
+        loop {
+            let c = ffi::av_codec_iterate(&mut opaque);
+            if c.is_null() {
+                return None;
+            }
+            if c != default && (*c).id == id && ffi::av_codec_is_decoder(c) != 0 && (*c).wrapper_name.is_null() && suitable(c, par) {
+                return Some(c);
+            }
+        }
+    }
+}
+
 /// Attaches the device to a decoder context that has not been opened yet. False when there is no device.
 pub(crate) unsafe fn attach(ctx: *mut ffi::AVCodecContext) -> bool {
     let Some(dev) = device() else { return false };

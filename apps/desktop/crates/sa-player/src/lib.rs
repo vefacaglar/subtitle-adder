@@ -16,6 +16,7 @@ use std::io::{Read, Seek};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub mod color;
 pub mod gate;
 pub mod timeline;
 
@@ -30,8 +31,12 @@ pub use timeline::PlaybackTimeline;
 /// RGBA output (the default): `rgba` holds RGBA8, tightly packed (`stride == width * 4`) unless stated, and `planar`
 /// is `None`. Planar output ([`MediaPlayerBackend::set_planar_output`]): `planar` holds the decoder's YUV planes
 /// (zero-copy for software decoding, one copy out of the GPU for hardware decoding) and `rgba` is empty; the UI
-/// uploads the planes as textures and converts them on the GPU ([`PlanarImage`] says how). Frames the planar path
-/// cannot describe (RGB sources, exotic formats) still arrive as RGBA.
+/// uploads the planes as textures and converts them on the GPU ([`PlanarImage`] says how). Pixel formats without a
+/// planar description (RGB, palette, packed YUV, big-endian...) are converted to RGBA by swscale and handed over as a
+/// one-plane [`PlaneLayout::Packed`] image, so the planar path covers every frame.
+///
+/// An interlaced planar frame is handed over twice, once per field (`second_field` false, then true half a frame
+/// later): the UI deinterlaces it by showing the field due at that time ([`PlanarImage::shown_field_is_bottom`]).
 #[derive(Clone)]
 pub struct VideoFrame {
     pub width: u32,
@@ -41,12 +46,14 @@ pub struct VideoFrame {
     pub pts: f64,
     pub rgba: Arc<Vec<u8>>,
     pub planar: Option<Arc<PlanarImage>>,
+    /// The second of the two fields of an interlaced frame (always false for progressive frames).
+    pub second_field: bool,
 }
 
 impl VideoFrame {
     /// An RGBA frame.
     pub fn from_rgba(width: u32, height: u32, stride: u32, pts: f64, rgba: Arc<Vec<u8>>) -> Self {
-        Self { width, height, stride, pts, rgba, planar: None }
+        Self { width, height, stride, pts, rgba, planar: None, second_field: false }
     }
 }
 
@@ -57,6 +64,7 @@ impl std::fmt::Debug for VideoFrame {
             .field("height", &self.height)
             .field("pts", &self.pts)
             .field("planar", &self.planar.as_ref().map(|p| (p.layout, p.bits)))
+            .field("second_field", &self.second_field)
             .finish()
     }
 }
@@ -64,10 +72,53 @@ impl std::fmt::Debug for VideoFrame {
 /// How the planes of a [`PlanarImage`] are laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaneLayout {
-    /// Three planes Y, U, V (`yuv420p`, `yuv422p`, `yuv444p` and their 9–16-bit little-endian variants).
+    /// Three planes Y, U, V (`yuv420p`, `yuv411p`, `yuva444p`, ... at 8–16 bits little-endian; an alpha plane is
+    /// ignored).
     Planar,
-    /// Two planes: Y and interleaved UV (`nv12`, `p010`, `p016`; what hardware decoders produce).
+    /// Two planes: Y and interleaved UV (`nv12`, `p010`, `p016`; what hardware decoders produce), or VU when
+    /// [`PlanarImage::swap_uv`] (`nv21`).
     SemiPlanar,
+    /// One luma plane, no chroma (`gray`, `gray10le`, ...).
+    Gray,
+    /// One plane of packed RGBA8, already R'G'B' (swscale's conversion of every other pixel format); alpha is ignored.
+    Packed,
+}
+
+/// The transfer characteristic of a frame's signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transfer {
+    /// BT.709 / BT.601 / sRGB / unspecified: shown as is.
+    Sdr,
+    /// SMPTE ST 2084 (HDR10).
+    Pq,
+    /// ARIB STD-B67 (hybrid log-gamma).
+    Hlg,
+}
+
+/// The colour primaries of a frame (anything other than these is shown as BT.709).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Primaries {
+    Bt709,
+    Bt2020,
+    /// SMPTE EG 432-1 (P3 with a D65 white point).
+    DisplayP3,
+}
+
+/// Colour description of a [`PlanarImage`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorInfo {
+    pub matrix: YuvMatrix,
+    pub full_range: bool,
+    pub transfer: Transfer,
+    pub primaries: Primaries,
+    /// The content peak HDR is tone-mapped from (nits; see [`color::hdr_peak_nits`]).
+    pub peak_nits: f32,
+}
+
+impl Default for ColorInfo {
+    fn default() -> Self {
+        Self { matrix: YuvMatrix::Bt709, full_range: false, transfer: Transfer::Sdr, primaries: Primaries::Bt709, peak_nits: color::DEFAULT_PEAK_NITS }
+    }
 }
 
 /// The YUV → RGB matrix of a frame.
@@ -99,22 +150,32 @@ pub struct PlaneInfo {
     pub row_bytes: usize,
 }
 
-/// GPU-ready YUV planes of one decoded frame (kept alive by the decoder frame they point into).
+/// GPU-ready planes of one decoded frame (kept alive by the decoder frame they point into).
 pub struct PlanarImage {
     pub layout: PlaneLayout,
     /// Bits per sample (8 = one byte per sample; 9..=16 = two bytes per sample, little-endian).
     pub bits: u8,
     /// Two-byte samples hold the value in their high bits (`p010`), not their low bits (`yuv420p10le`).
     pub msb_aligned: bool,
-    /// Chroma subsampling as log2 (`(1, 1)` = 4:2:0, `(1, 0)` = 4:2:2, `(0, 0)` = 4:4:4).
+    /// Chroma subsampling as log2 (`(1, 1)` = 4:2:0, `(1, 0)` = 4:2:2, `(0, 0)` = 4:4:4, `(2, 0)` = 4:1:1).
     pub chroma_shift: (u8, u8),
+    /// Semi-planar chroma is interleaved V, U (`nv21`).
+    pub swap_uv: bool,
     /// Decoded (luma) size before the sample aspect ratio and rotation.
     pub coded_width: u32,
     pub coded_height: u32,
     pub matrix: YuvMatrix,
     pub full_range: bool,
+    pub transfer: Transfer,
+    pub primaries: Primaries,
+    /// HDR content peak in nits (what PQ is tone-mapped from).
+    pub peak_nits: f32,
     /// Clockwise quarter turns to show the picture upright.
     pub quarter_turns: u8,
+    /// The two fields of the frame were captured at different times (deinterlace when showing it).
+    pub interlaced: bool,
+    /// The top field (even rows, counting from 0) is the earlier one.
+    pub top_field_first: bool,
     planes: [Option<(*const u8, PlaneInfo)>; 3],
     _owner: Box<dyn Send + Sync>,
 }
@@ -131,19 +192,45 @@ pub struct PlanarFormat {
     pub bits: u8,
     pub msb_aligned: bool,
     pub chroma_shift: (u8, u8),
+    pub swap_uv: bool,
+}
+
+impl PlanarFormat {
+    /// Number of planes (3, 2 or 1).
+    pub fn plane_count(&self) -> usize {
+        match self.layout {
+            PlaneLayout::Planar => 3,
+            PlaneLayout::SemiPlanar => 2,
+            PlaneLayout::Gray | PlaneLayout::Packed => 1,
+        }
+    }
+
+    /// Sample components per texel of plane `i` (packed RGBA: 4; interleaved chroma: 2).
+    pub fn components(&self, i: usize) -> usize {
+        match (self.layout, i) {
+            (PlaneLayout::Packed, _) => 4,
+            (PlaneLayout::SemiPlanar, 1) => 2,
+            _ => 1,
+        }
+    }
+}
+
+/// How the fields of an interlaced frame are ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interlace {
+    pub top_field_first: bool,
 }
 
 impl PlanarImage {
     /// # Safety
     /// Every plane pointer must stay valid and unchanged for `(rows - 1) * stride + row_bytes` bytes as long as
     /// `owner` lives.
-    #[allow(clippy::too_many_arguments)]
     pub unsafe fn new(
         format: PlanarFormat,
         coded: (u32, u32),
-        matrix: YuvMatrix,
-        full_range: bool,
+        color: ColorInfo,
         quarter_turns: u8,
+        interlace: Option<Interlace>,
         planes: [Option<(*const u8, PlaneInfo)>; 3],
         owner: Box<dyn Send + Sync>,
     ) -> Self {
@@ -152,18 +239,24 @@ impl PlanarImage {
             bits: format.bits,
             msb_aligned: format.msb_aligned,
             chroma_shift: format.chroma_shift,
+            swap_uv: format.swap_uv,
             coded_width: coded.0,
             coded_height: coded.1,
-            matrix,
-            full_range,
+            matrix: color.matrix,
+            full_range: color.full_range,
+            transfer: color.transfer,
+            primaries: color.primaries,
+            peak_nits: color.peak_nits,
             quarter_turns,
+            interlaced: interlace.is_some(),
+            top_field_first: interlace.is_none_or(|i| i.top_field_first),
             planes,
             _owner: owner,
         }
     }
 
     pub fn format(&self) -> PlanarFormat {
-        PlanarFormat { layout: self.layout, bits: self.bits, msb_aligned: self.msb_aligned, chroma_shift: self.chroma_shift }
+        PlanarFormat { layout: self.layout, bits: self.bits, msb_aligned: self.msb_aligned, chroma_shift: self.chroma_shift, swap_uv: self.swap_uv }
     }
 
     /// Bytes per sample component (1 or 2).
@@ -171,12 +264,15 @@ impl PlanarImage {
         if self.bits > 8 { 2 } else { 1 }
     }
 
-    /// Number of planes (2 or 3).
+    /// Number of planes (3, 2 or 1).
     pub fn plane_count(&self) -> usize {
-        match self.layout {
-            PlaneLayout::Planar => 3,
-            PlaneLayout::SemiPlanar => 2,
-        }
+        self.format().plane_count()
+    }
+
+    /// Which field a deinterlacer shows for the first (`second_field` false) or second hand-over of this frame:
+    /// true = the bottom field (odd rows).
+    pub fn shown_field_is_bottom(&self, second_field: bool) -> bool {
+        self.top_field_first == second_field
     }
 
     /// Plane `i`: its bytes (`(rows - 1) * stride + row_bytes`) and geometry.
