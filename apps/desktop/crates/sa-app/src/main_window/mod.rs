@@ -24,4 +24,4 @@ pub mod translation_picker;
 pub mod transport;
 pub mod video_gl;
 
-pub use controller::{MainWindowController, MainWindowDeps, MainWindowHooks, PreviewMaker};
+pub use controller::{MainWindowController, MainWindowDeps, MainWindowHooks, PreviewMaker, RowSyncCounters};

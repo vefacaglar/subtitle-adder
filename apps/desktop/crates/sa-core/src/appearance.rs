@@ -522,17 +522,16 @@ fn starts_dialogue_turn(sentences: &[Sentence], index: usize) -> bool {
     if index >= sentences.len() {
         return false;
     }
-    let mut speakers: Vec<i64> = sentences.iter().filter_map(|s| s.speaker).collect();
-    speakers.sort_unstable();
-    speakers.dedup();
-    if speakers.len() < 2 {
+    // Cheap checks first (this runs at every active-line change): a line without a speaker never dashes, and a
+    // line continuing the previous known speaker never does either, whatever the speaker count.
+    let Some(sp) = sentences[index].speaker else { return false };
+    let previous = sentences[..index].iter().rev().find_map(|s| s.speaker);
+    if previous == Some(sp) {
         return false;
     }
-    let previous = sentences[..index].iter().rev().find_map(|s| s.speaker);
-    match sentences[index].speaker {
-        Some(sp) => previous != Some(sp),
-        None => false,
-    }
+    // `previous` is another speaker: two distinct ones exist. Otherwise look for any other speaker (stops at the
+    // first one, no allocation).
+    previous.is_some() || sentences.iter().any(|s| s.speaker.is_some_and(|other| other != sp))
 }
 
 /// `DialogueDash.Apply`: `"- " + text` unless it already starts with `"- "` or `"– "`.

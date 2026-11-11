@@ -574,3 +574,79 @@ fn display_mode_falls_back_to_original_without_translations() {
     assert_eq!(vm.display_mode(), SubtitleDisplay::Translation);
     assert_eq!(vm.effective_display_mode(), SubtitleDisplay::Original);
 }
+
+/// `line_rows` (one read for the whole list) gives exactly what the per-line getters give.
+#[test]
+fn line_rows_match_the_per_line_getters() {
+    for mac in [false, true] {
+        let (_l, env) = if mac { mac_env() } else { win_env() };
+        env.settings.set_string(keys::SELECTED_LANGUAGE, "tr");
+        let (vm, _c) = env.vm();
+        transcribed(&env, &vm, "a.mp4", "tr", &["Bir.", "İki.", "Üç.", "Dört."]);
+        vm.translate();
+        let call = env.next(CallKind::Translate);
+        call.translation("en", translated(&[(1, "One."), (2, "Two."), (3, "Three.")]));
+        call.finish();
+        env.eventually("finished", || vm.status() == JobStatus::Finished);
+        let uids: Vec<_> = vm.sentences().iter().map(|x| x.uid).collect();
+        // Line 2: a failed retry marks it for review.
+        vm.set_selected_lines([uids[1]].into_iter().collect(), Some(uids[1]));
+        vm.translate_selected();
+        let call = env.next(CallKind::Translate);
+        let mut flagged = s(2, 1.0, 2.0, "İki.");
+        flagged.needs_review = true;
+        call.translation("en", vec![flagged]);
+        call.finish();
+        env.eventually("finished", || vm.status() == JobStatus::Finished);
+        // Line 1 stale, line 3 has an open draft, line 2 an open translation draft, lines 1 and 4 selected.
+        vm.set_text(uids[0], "Birinci.");
+        vm.begin_translation_editing(uids[1]);
+        vm.set_translation_draft(uids[1], "Second (draft)");
+        vm.begin_editing(uids[2]);
+        vm.set_draft(uids[2], "Üç (taslak)");
+        vm.set_selected_lines([uids[0], uids[3]].into_iter().collect(), Some(uids[3]));
+        let rows = vm.line_rows();
+        let selected = vm.selected_uids();
+        let expected: Vec<_> = vm
+            .sentences()
+            .iter()
+            .map(|x| {
+                let has_tr = vm.translation_for(x.uid).is_some();
+                sa_viewmodels::subtitle::LineRow {
+                    uid: x.uid,
+                    id: x.id,
+                    start: x.start,
+                    end: x.end,
+                    speaker: x.speaker,
+                    text: vm.draft_text(x.uid),
+                    translation: has_tr.then(|| vm.translation_draft_text(x.uid)),
+                    is_stale: has_tr && vm.is_translation_stale(x.uid),
+                    needs_review: vm.needs_review(x.uid),
+                    is_selected: selected.contains(&x.uid),
+                }
+            })
+            .collect();
+        assert_eq!(rows, expected, "mac={mac}");
+        assert!(rows[0].is_stale && rows[1].needs_review && rows[3].translation.is_none(), "mac={mac}: the fixture covers every flag");
+        let reads = vm.read_count();
+        vm.line_rows();
+        assert_eq!(vm.read_count() - reads, 1, "one state read for the whole list");
+        // `overlay_text` (composed in place) equals `OverlayText::compose` over copies of the same state, in every
+        // display mode, with and without dialogue speakers.
+        for speakers in [false, true] {
+            if speakers {
+                for (i, uid) in uids.iter().enumerate() {
+                    vm.set_speaker(*uid, Some((i % 2) as i64));
+                }
+            }
+            for mode in [SubtitleDisplay::Original, SubtitleDisplay::Translation, SubtitleDisplay::Both] {
+                vm.set_display_mode(mode);
+                let display = vm.effective_display_mode();
+                for uid in uids.iter().copied().chain([uuid::Uuid::new_v4()]) {
+                    let expected = sa_core::appearance::OverlayText::compose(&vm.sentences(), &vm.translations(), display, uid);
+                    assert_eq!(vm.overlay_text(uid), expected, "mac={mac} speakers={speakers} mode={mode:?}");
+                }
+            }
+        }
+    }
+}

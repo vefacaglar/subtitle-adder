@@ -277,6 +277,8 @@ pub(crate) struct Inner {
     deferred: RefCell<VecDeque<Deferred>>,
     subs: RefCell<Vec<Subscription>>,
     pub hooks: RefCell<Hooks>,
+    /// Public state reads through `SubtitleViewModel` (diagnostics: complexity guards in the UI tests).
+    reads: Cell<u64>,
 }
 
 impl Inner {
@@ -495,6 +497,7 @@ impl SubtitleViewModel {
             deferred: RefCell::new(VecDeque::new()),
             subs: RefCell::new(Vec::new()),
             hooks: RefCell::new(Hooks::default()),
+            reads: Cell::new(0),
         });
         let key = UiKey::register(&inner);
         inner.key.set(Some(key));
@@ -582,7 +585,15 @@ impl SubtitleViewModel {
     }
 
     fn read<R>(&self, f: impl FnOnce(&State) -> R) -> R {
+        self.inner.reads.set(self.inner.reads.get().wrapping_add(1));
         self.inner.read(|c| f(&c.st))
+    }
+
+    /// How many state reads the public getters have done so far (diagnostics: lets UI tests check that a list
+    /// refresh costs a constant number of reads, not one per line).
+    #[doc(hidden)]
+    pub fn read_count(&self) -> u64 {
+        self.inner.reads.get()
     }
 
     fn set_setting(&self, f: impl FnOnce(&Inner, &mut State, &mut Fx)) {
@@ -803,6 +814,53 @@ impl SubtitleViewModel {
                 Some(x) if s.policy.import_json_review_entries => fg.needs_review(x),
                 Some(x) => fg.translations.get(&x.uid).is_some_and(|e| e.needs_review),
             }
+        })
+    }
+    /// Every line as the list shows it, in order, from one state read: the same values as `draft_text`,
+    /// `translation_draft_text`, `is_translation_stale`, `needs_review` and `selected_uids` per line, in O(n)
+    /// (the per-uid getters each scan the lines, so calling them per row is quadratic).
+    pub fn line_rows(&self) -> Vec<LineRow> {
+        self.read(|s| {
+            let fg = s.fg();
+            let draft = fg.draft.as_ref();
+            let tr_draft = fg.translation_draft.as_ref();
+            fg.sentences
+                .iter()
+                .map(|x| {
+                    let entry = fg.translations.get(&x.uid);
+                    let text = match draft {
+                        Some(d) if d.uid == x.uid => d.text.clone(),
+                        _ => x.text.clone(),
+                    };
+                    let translation = entry.map(|e| match tr_draft {
+                        Some(d) if d.uid == x.uid => d.text.clone(),
+                        _ => e.text.clone(),
+                    });
+                    let needs_review =
+                        if s.policy.import_json_review_entries { fg.needs_review(x) } else { entry.is_some_and(|e| e.needs_review) };
+                    LineRow {
+                        uid: x.uid,
+                        id: x.id,
+                        start: x.start,
+                        end: x.end,
+                        speaker: x.speaker,
+                        text,
+                        translation,
+                        is_stale: entry.is_some_and(|e| e.is_stale(x)),
+                        needs_review,
+                        is_selected: fg.selected_uids.contains(&x.uid),
+                    }
+                })
+                .collect()
+        })
+    }
+    /// The overlay text for `uid` (`OverlayText::compose` over the current lines and translations, in the effective
+    /// display mode) without copying the lines.
+    pub fn overlay_text(&self, uid: Uuid) -> Option<String> {
+        let display = self.effective_display_mode();
+        self.read(|s| {
+            let fg = s.fg();
+            sa_core::appearance::OverlayText::compose(&fg.sentences, &fg.translations, display, uid)
         })
     }
     pub fn translation_language(&self) -> Option<String> {
@@ -1574,6 +1632,23 @@ impl SubtitleViewModel {
         });
         self.inner.subs.borrow_mut().clear();
     }
+}
+
+/// One line of the subtitle list (`SubtitleViewModel::line_rows`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineRow {
+    pub uid: Uuid,
+    pub id: i64,
+    pub start: f64,
+    pub end: f64,
+    pub speaker: Option<i64>,
+    /// The text being edited when this line has the draft, otherwise the line's text.
+    pub text: String,
+    /// The translation (its draft while edited); `None` when the line has no translation entry.
+    pub translation: Option<String>,
+    pub is_stale: bool,
+    pub needs_review: bool,
+    pub is_selected: bool,
 }
 
 /// `SubtitleTime.Short(s)` = `MM:SS.ss` (`65.25` → `01:05.25`), truncating minutes, invariant digits.

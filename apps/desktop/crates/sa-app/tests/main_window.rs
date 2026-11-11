@@ -617,3 +617,155 @@ fn mac_full_screen_hides_the_panel_without_changing_the_setting() {
     assert!(!r.controller.is_full_screen());
     assert_eq!(r.main().get_layout_mode(), 2);
 }
+
+// ------------------------------------------------------------------------------------------------ row sync cost
+
+fn many_lines(r: &Rig, name: &str, n: usize) {
+    let mut body = String::new();
+    for i in 0..n {
+        let (a, b) = (i * 2, i * 2 + 2);
+        body.push_str(&format!("{}\n00:{:02}:{:02},000 --> 00:{:02}:{:02},000\nSatır {i}.\n\n", i + 1, a / 60, a % 60, b / 60, b % 60));
+    }
+    let p = r.env.touch(name, &body);
+    assert!(r.vm.load_subtitle_file(&p));
+    r.pump();
+    assert_eq!(r.rows().len(), n);
+}
+
+#[test]
+fn an_active_line_change_rewrites_only_the_two_rows_whose_mark_flips() {
+    let r = rig(false);
+    many_lines(&r, "long.srt", 40);
+    let uids: Vec<_> = r.vm.sentences().iter().map(|s| s.uid).collect();
+    assert_eq!(r.controller.player().active_id(), Some(uids[0]), "the line at 0 s plays first");
+    assert!(r.rows()[0].is_active);
+    let before = r.controller.row_sync_counters();
+    // Selecting a line seeks the player to its start: the selection rebuilds the rows once, the active-line change
+    // that follows flips two rows and rebuilds nothing.
+    r.main().invoke_row_pressed(5, false, false);
+    r.pump();
+    assert_eq!(r.controller.player().active_id(), Some(uids[5]));
+    let after = r.controller.row_sync_counters();
+    assert_eq!(after.full_syncs - before.full_syncs, 1, "only the selection change rebuilds");
+    assert_eq!(after.active_row_updates - before.active_row_updates, 2, "old and new active rows only");
+    let fast = r.rows();
+    assert!(fast[5].is_active && !fast[0].is_active);
+    assert_eq!(fast.iter().filter(|row| row.is_active).count(), 1);
+    // Identical to what a full rebuild produces.
+    r.controller.refresh_all(false);
+    assert_eq!(r.rows(), fast);
+}
+
+#[test]
+fn rebuilding_the_rows_costs_the_same_view_model_reads_for_any_line_count() {
+    let r = rig(false);
+    many_lines(&r, "short.srt", 5);
+    let start = r.vm.read_count();
+    r.controller.refresh_all(false);
+    let small = r.vm.read_count() - start;
+    many_lines(&r, "long.srt", 300);
+    let start = r.vm.read_count();
+    r.controller.refresh_all(false);
+    let large = r.vm.read_count() - start;
+    assert_eq!(
+        small, large,
+        "view-model reads across the whole of refresh_all (5 lines: {small}, 300 lines: {large}) must not grow with the line count"
+    );
+}
+
+// ------------------------------------------------------------------------------------------------ active-row mark
+
+/// Shift+Right: the player seeks 10 s forward (needs a loaded video).
+const RIGHT: &str = "\u{F703}";
+
+/// Exactly the playing line is marked, and nothing else (no stale mark).
+fn assert_mark(r: &Rig, what: &str) -> Option<uuid::Uuid> {
+    let active = r.controller.player().active_id();
+    let marked: Vec<String> = r.rows().iter().filter(|row| row.is_active).map(|row| row.uid.to_string()).collect();
+    let expected: Vec<String> = active.iter().map(|u| u.to_string()).collect();
+    assert_eq!(marked, expected, "{what}");
+    active
+}
+
+#[test]
+fn the_active_mark_follows_inserts_deletes_undo_and_video_switches() {
+    let r = rig(false);
+    r.open_video("a.mp4");
+    many_lines(&r, "a.srt", 40);
+    r.main().invoke_row_pressed(3, false, false);
+    r.pump();
+    assert_eq!(assert_mark(&r, "selected line plays"), Some(r.vm.sentences()[3].uid));
+    assert!(r.key(RIGHT, true, false));
+    r.pump();
+    assert_eq!(assert_mark(&r, "seeked ahead"), Some(r.vm.sentences()[8].uid));
+    // Delete the selected line (before the playing one).
+    r.main().invoke_row_pressed(3, false, false);
+    assert!(r.key(RIGHT, true, false));
+    r.pump();
+    assert!(assert_mark(&r, "line 3 selected, a later line plays").is_some());
+    assert!(r.main().invoke_list_key("delete".into(), false));
+    r.pump();
+    assert_eq!(r.rows().len(), 39);
+    assert_mark(&r, "after deleting a line before the playing one");
+    assert!(r.key(RIGHT, true, false));
+    r.pump();
+    assert!(assert_mark(&r, "seeked after the delete").is_some());
+    // Insert one (split a line before the playing one).
+    r.main().invoke_row_pressed(1, false, false);
+    r.pump();
+    let start = r.vm.sentences()[1].start;
+    r.vm.split_selected(start + 1.0);
+    r.pump();
+    assert_eq!(r.rows().len(), 40);
+    assert_mark(&r, "after inserting a line before the playing one");
+    assert!(r.key(RIGHT, true, false));
+    r.pump();
+    assert!(assert_mark(&r, "seeked after the insert").is_some());
+    // Undo both, redo one.
+    assert!(r.key("z", false, true));
+    r.pump();
+    assert_mark(&r, "undo the insert");
+    assert!(r.key("z", false, true));
+    r.pump();
+    assert_eq!(r.rows().len(), 40);
+    assert_mark(&r, "undo the delete");
+    assert!(r.key("y", false, true));
+    r.pump();
+    assert_mark(&r, "redo the delete");
+    // A video switch reloads the player (and its lines).
+    r.open_video("b.mp4");
+    assert_mark(&r, "after a video switch");
+    assert!(r.key(RIGHT, true, false));
+    r.pump();
+    assert_mark(&r, "seeked in the second video");
+}
+
+#[test]
+fn the_active_mark_follows_live_partial_snapshots_that_replace_the_rows() {
+    use sa_core::engine_types::Sentence;
+    use sa_enginekit::events::EngineEvent;
+    let r = rig(false);
+    r.open_video("talk.mp4");
+    r.vm.generate();
+    let call = r.env.next(common::CallKind::Transcribe);
+    let lines = |n: usize, word: &str| -> Vec<Sentence> {
+        (0..n).map(|i| Sentence::new(i as i64 + 1, i as f64 * 2.0, i as f64 * 2.0 + 2.0, &format!("{word} {i}."))).collect()
+    };
+    call.send(EngineEvent::Partial { language: "tr".into(), sentences: lines(3, "Bir") });
+    r.env.eventually("first snapshot", || r.rows().len() == 3);
+    assert_eq!(assert_mark(&r, "first snapshot"), Some(r.vm.sentences()[0].uid));
+    // A later snapshot replaces the rows (new text, more lines) while line 0 plays.
+    call.send(EngineEvent::Partial { language: "tr".into(), sentences: lines(6, "İki") });
+    r.env.eventually("second snapshot", || r.rows().len() == 6);
+    assert!(assert_mark(&r, "second snapshot").is_some());
+    assert!(r.key(RIGHT, true, false));
+    r.pump();
+    assert_eq!(assert_mark(&r, "seeked into the snapshot"), Some(r.vm.sentences()[5].uid));
+    // A snapshot that no longer reaches the playing time: no line is marked.
+    call.send(EngineEvent::Partial { language: "tr".into(), sentences: lines(2, "Üç") });
+    r.env.eventually("shorter snapshot", || r.rows().len() == 2);
+    assert_eq!(assert_mark(&r, "shorter snapshot"), None);
+    call.result("tr", "", lines(6, "Son"));
+    r.env.eventually("result", || r.rows().len() == 6 && r.rows()[0].text.starts_with("Son"));
+    assert_eq!(assert_mark(&r, "final result"), Some(r.vm.sentences()[5].uid));
+}

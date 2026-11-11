@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
-use sa_core::appearance::{AppearanceSettings, OverlayBackground, OverlayText, SpeakerPalette, SubtitleDisplay};
+use sa_core::appearance::{AppearanceSettings, OverlayBackground, SpeakerPalette, SubtitleDisplay};
 use sa_core::dispatch::UiDispatcher;
 use sa_core::engine_types::SubtitleFormat;
 use sa_core::models::SubtitleLanguage;
@@ -76,6 +76,15 @@ pub struct MainWindowHooks {
     pub new_window: Option<Rc<dyn Fn()>>,
 }
 
+/// Row-list bookkeeping (diagnostics, see [`MainWindowController::row_sync_counters`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowSyncCounters {
+    /// Full `sync_rows` rebuilds.
+    pub full_syncs: usize,
+    /// Rows rewritten by active-line changes (two per change at most).
+    pub active_row_updates: usize,
+}
+
 #[derive(Default)]
 struct UiState {
     full_screen: bool,
@@ -89,6 +98,9 @@ struct UiState {
     scroll_epoch: i32,
     run_after_picking: bool,
     row_uids: Vec<Uuid>,
+    /// The line the rows currently mark as playing (`is_active`).
+    active_row: Option<Uuid>,
+    row_counters: RowSyncCounters,
     queue_ids: Vec<Uuid>,
     explorer_paths: Vec<PathBuf>,
     explorer_folders: Vec<bool>,
@@ -598,7 +610,7 @@ impl MainWindowController {
     }
 
     fn on_active_changed(&self) {
-        self.sync_rows();
+        self.sync_active_row();
         self.sync_overlay();
         let (playing, active) = {
             let p = self.player.borrow();
@@ -868,49 +880,89 @@ impl MainWindowController {
     fn sync_rows(&self) {
         let Some(w) = self.win() else { return };
         let dark = w.global::<ui::Palette>().get_color_scheme() == slint::language::ColorScheme::Dark;
-        let vm = &self.vm;
-        let sentences = vm.sentences();
-        let translations = vm.translations();
-        let selected = vm.selected_uids();
+        // One state read for every line (per-line getters would scan the lines once per row).
+        let lines = self.vm.line_rows();
         let active = self.player.borrow().active_id();
-        let shows_speakers = sentences.iter().any(|s| s.speaker.is_some());
-        let mut uids = Vec::with_capacity(sentences.len());
-        let rows: Vec<SentenceRowData> = sentences
-            .iter()
-            .map(|sentence| {
-                uids.push(sentence.uid);
-                let tr = translations.get(&sentence.uid);
-                let speaker_text = match (sentence.speaker, self.mac) {
-                    (Some(sp), true) => menus::speaker_title(sp),
-                    (None, true) => sa_core::l("Konuşmacı yok"),
-                    (sp, false) => menus::compact_speaker_title(sp),
-                };
-                let color = sentence.speaker.map(|sp| {
+        let shows_speakers = lines.iter().any(|l| l.speaker.is_some());
+        // Speaker titles repeat; format each once.
+        let mut speaker_titles: std::collections::HashMap<Option<i64>, SharedString> = std::collections::HashMap::new();
+        let mut uids = Vec::with_capacity(lines.len());
+        let rows: Vec<SentenceRowData> = lines
+            .into_iter()
+            .map(|line| {
+                uids.push(line.uid);
+                let speaker_text = speaker_titles
+                    .entry(line.speaker)
+                    .or_insert_with(|| {
+                        s(match (line.speaker, self.mac) {
+                            (Some(sp), true) => menus::speaker_title(sp),
+                            (None, true) => sa_core::l("Konuşmacı yok"),
+                            (sp, false) => menus::compact_speaker_title(sp),
+                        })
+                    })
+                    .clone();
+                let color = line.speaker.map(|sp| {
                     let c = SpeakerPalette::color(sp, dark);
                     slint::Color::from_rgb_u8(c.r, c.g, c.b)
                 });
-                let text = vm.draft_text(sentence.uid);
                 SentenceRowData {
-                    uid: s(sentence.uid.to_string()),
-                    number: s(sentence.id.to_string()),
-                    time_text: s(format!("{} → {}", subtitle_time_short(sentence.start), subtitle_time_short(sentence.end))),
-                    text: s(text.clone()),
-                    has_speaker: sentence.speaker.is_some(),
-                    speaker_text: s(speaker_text),
+                    uid: s(line.uid.to_string()),
+                    number: s(line.id.to_string()),
+                    time_text: s(format!("{} → {}", subtitle_time_short(line.start), subtitle_time_short(line.end))),
+                    accessible_label: s(format!("{}. {}", line.id, line.text)),
+                    text: s(line.text),
+                    has_speaker: line.speaker.is_some(),
+                    speaker_text,
                     speaker_color: color.unwrap_or(slint::Color::from_argb_u8(0, 0, 0, 0)),
-                    has_translation: tr.is_some(),
-                    translation_text: s(if tr.is_some() { vm.translation_draft_text(sentence.uid) } else { String::new() }),
-                    is_stale: tr.is_some() && vm.is_translation_stale(sentence.uid),
-                    needs_review: vm.needs_review(sentence.uid),
-                    is_active: active == Some(sentence.uid),
-                    is_selected: selected.contains(&sentence.uid),
-                    accessible_label: s(format!("{}. {}", sentence.id, text)),
+                    has_translation: line.translation.is_some(),
+                    translation_text: s(line.translation.unwrap_or_default()),
+                    is_stale: line.is_stale,
+                    needs_review: line.needs_review,
+                    is_active: active == Some(line.uid),
+                    is_selected: line.is_selected,
                 }
             })
             .collect();
         sync_keyed(&self.rows, rows, |r| r.uid.clone());
         w.global::<MainBridge>().set_shows_speakers(shows_speakers);
-        self.st.borrow_mut().row_uids = uids;
+        let mut st = self.st.borrow_mut();
+        st.row_uids = uids;
+        st.active_row = active;
+        st.row_counters.full_syncs += 1;
+    }
+
+    /// Only the playing line changed: flips `is_active` on the row that had it and the row that gets it, with no
+    /// rebuild (a full `sync_rows` formats every row, which stalls the UI thread at every line change on long
+    /// subtitles). A row whose key does not match the last full sync is left to the next one.
+    fn sync_active_row(&self) {
+        let active = self.player.borrow().active_id();
+        let targets = {
+            let mut st = self.st.borrow_mut();
+            let previous = std::mem::replace(&mut st.active_row, active);
+            if previous == active {
+                return;
+            }
+            let find = |uid: Option<Uuid>| uid.and_then(|u| st.row_uids.iter().position(|x| *x == u).map(|i| (u, i)));
+            [(find(previous), false), (find(active), true)]
+        };
+        let mut touched = 0;
+        for (target, flag) in targets {
+            let Some((uid, index)) = target else { continue };
+            let Some(mut row) = slint::Model::row_data(&*self.rows, index) else { continue };
+            if row.is_active == flag || row.uid.as_str() != uid.to_string() {
+                continue;
+            }
+            row.is_active = flag;
+            slint::Model::set_row_data(&*self.rows, index, row);
+            touched += 1;
+        }
+        self.st.borrow_mut().row_counters.active_row_updates += touched;
+    }
+
+    /// Diagnostics (tests): how often the line list was rebuilt and how many rows active-line changes rewrote.
+    #[doc(hidden)]
+    pub fn row_sync_counters(&self) -> RowSyncCounters {
+        self.st.borrow().row_counters
     }
 
     fn sync_queue(&self) {
@@ -1134,7 +1186,8 @@ impl MainWindowController {
     fn sync_overlay(&self) {
         let Some(w) = self.win() else { return };
         let active = self.player.borrow().active_id();
-        let text = active.and_then(|uid| OverlayText::compose(&self.vm.sentences(), &self.vm.translations(), self.vm.effective_display_mode(), uid));
+        // Composed inside the view model: no copy of every line per active-line change.
+        let text = active.and_then(|uid| self.vm.overlay_text(uid));
         w.global::<MainBridge>().set_overlay_text(s(text.unwrap_or_default()));
     }
 
