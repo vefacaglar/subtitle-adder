@@ -2107,7 +2107,6 @@ impl MainWindowController {
     }
 
     fn set_full_screen(&self, on: bool) {
-        let tmpdbg0 = Instant::now();
         self.st.borrow_mut().full_screen = on;
         match &self.hooks.set_full_screen {
             Some(h) => h(on),
@@ -2117,11 +2116,9 @@ impl MainWindowController {
                 }
             }
         }
-        let tmpdbg1 = Instant::now();
         self.sync_layout(true);
         self.sync_toolbar();
         self.sync_native_chrome();
-        eprintln!("[player] TMPDBG fullscreen {on}: set {:?} sync {:?}", tmpdbg1 - tmpdbg0, tmpdbg1.elapsed());
     }
 
     fn leave_full_screen_or_theater(&self) {
