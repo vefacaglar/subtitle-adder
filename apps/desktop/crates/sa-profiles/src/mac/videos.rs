@@ -39,6 +39,19 @@ impl MacProfileStore {
     /// Counts a view (`view_count + 1`, last watched now, resume point). A 0 or non-finite position/duration keeps
     /// the stored one; a position past the duration is cut. Written at once with anything pending.
     pub fn try_record_watch(&self, path: &Path, position: f64, duration: f64) -> Result<Option<VideoUserStats>, ProfileError> {
+        self.try_record_watch_in(None, path, position, duration)
+    }
+
+    /// [`Self::try_record_watch`], counted only while the session generation still equals `expected` (checked
+    /// under the state mutex, inside the transaction): a login switch after the caller captured the generation
+    /// records nothing in the new profile.
+    pub fn try_record_watch_in(
+        &self,
+        expected: Option<u64>,
+        path: &Path,
+        position: f64,
+        duration: f64,
+    ) -> Result<Option<VideoUserStats>, ProfileError> {
         if !self.logged_in() {
             return Ok(None);
         }
@@ -47,6 +60,9 @@ impl MacProfileStore {
             true,
             || None,
             |state| {
+                if expected.is_some_and(|g| g != state.session_generation) {
+                    return Ok((None, Effect::NONE));
+                }
                 // Read inside the transaction, after the file lock (Swift `clock()` in the body).
                 let now = self.now();
                 let contents = &mut state.session.as_mut().expect("session checked").contents;
@@ -76,6 +92,19 @@ impl MacProfileStore {
         position: f64,
         duration: f64,
     ) -> Result<Option<VideoUserStats>, ProfileError> {
+        self.try_update_playback_progress_in(None, path, position, duration)
+    }
+
+    /// [`Self::try_update_playback_progress`], applied only while the session generation still equals `expected`
+    /// (checked under the state mutex): a login switch after the caller captured the generation records nothing in
+    /// the new profile.
+    pub fn try_update_playback_progress_in(
+        &self,
+        expected: Option<u64>,
+        path: &Path,
+        position: f64,
+        duration: f64,
+    ) -> Result<Option<VideoUserStats>, ProfileError> {
         if !self.logged_in() {
             return Ok(None);
         }
@@ -83,6 +112,9 @@ impl MacProfileStore {
         self.sync_and_restore();
         let applied = {
             let mut l = self.lock();
+            if expected.is_some_and(|g| g != l.state.session_generation) {
+                return Ok(None);
+            }
             let now = self.now();
             let Some(session) = l.state.session.as_mut() else { return Ok(None) };
             let resolution = session.contents.resolve(&probe, now);
@@ -196,10 +228,23 @@ impl MacProfileStore {
     /// Stores a card picture in the encrypted cache (never the vault, never a record, never `Local`). Ignored when
     /// empty, over 512 KiB, logged out or for a blank path.
     pub fn try_set_thumbnail(&self, path: &Path, bytes: &[u8]) -> Result<bool, ProfileError> {
+        self.try_set_thumbnail_in(None, path, bytes)
+    }
+
+    /// [`Self::try_set_thumbnail`], stored only when the session generation still equals `expected` at the moment
+    /// the profile and key are taken (under the state mutex; the picture then goes to that profile's cache even if
+    /// a switch follows).
+    pub fn try_set_thumbnail_in(&self, expected: Option<u64>, path: &Path, bytes: &[u8]) -> Result<bool, ProfileError> {
         if bytes.is_empty() || bytes.len() > MAX_THUMBNAIL_BYTES {
             return Ok(false);
         }
-        let Some((profile, key)) = self.thumbnail_session() else { return Ok(false) };
+        let session = self.read(|s| {
+            if expected.is_some_and(|g| g != s.session_generation) {
+                return None;
+            }
+            s.session.as_ref().map(|x| (x.thumbnail_profile.clone(), x.vault_key.clone()))
+        });
+        let Some((profile, key)) = session else { return Ok(false) };
         let Some(probe) = self.probe(path, FingerprintMode::Compute) else { return Ok(false) };
         let cache_key = VaultContents::thumbnail_keys_for_probe(&probe).remove(0);
         Ok(self.thumbnails.store(bytes, &profile, &cache_key, &key))

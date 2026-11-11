@@ -232,6 +232,34 @@ fn the_session_generation_changes_with_every_login_and_logout() {
     assert_ne!(store.session_generation(), logged_out);
 }
 
+/// The UI thread reads the generation at every playback report; it must not wait for a worker that holds the state
+/// mutex (a re-read of `profiles.json`, a vault decrypt).
+#[test]
+fn the_session_generation_never_waits_for_the_state_mutex() {
+    let folder = TestFolder::new();
+    let store = folder.make_store();
+    store.register_user("ali", "pw", false).unwrap();
+    let expected = store.inner.lock().state.session_generation;
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|s| {
+        let holder = &store;
+        s.spawn(move || {
+            let _l = holder.inner.lock();
+            held_tx.send(()).unwrap();
+            // Released on request, or after 2 s so a blocking reader fails instead of hanging.
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(2));
+        });
+        held_rx.recv().unwrap();
+        let t = std::time::Instant::now();
+        let generation = store.session_generation();
+        let elapsed = t.elapsed();
+        let _ = release_tx.send(());
+        assert_eq!(generation, expected);
+        assert!(elapsed < std::time::Duration::from_millis(500), "took {elapsed:?} with the mutex held elsewhere");
+    });
+}
+
 #[test]
 fn playback_progress_alone_is_not_an_unsaved_migration() {
     let folder = TestFolder::new();
@@ -285,4 +313,33 @@ fn a_session_end_forgets_the_fingerprinted_paths() {
     store.logout_user().unwrap();
     assert!(folder.cache.is_empty());
     assert!(store.active_vault_key().is_none());
+}
+
+/// A login switch between the capture of the generation (UI thread) and the write (worker) records nothing of the
+/// previous profile in the new one: the `*_in_session` writes compare the generation under the state mutex.
+#[test]
+fn a_user_switch_between_capture_and_write_records_nothing_in_the_new_profile() {
+    let folder = TestFolder::new();
+    let store = folder.make_store();
+    let video = folder.video("a.mp4");
+    std::fs::write(&video, "content a").unwrap();
+    store.register_user("bob", "pw", false).unwrap();
+    store.logout_user().unwrap();
+    store.register_user("alice", "pw", false).unwrap();
+    let alice = store.session_generation();
+    assert!(store.update_playback_progress_in_session(alice, &video, 12.0, 100.0).is_some(), "the current session writes");
+    store.logout_user().unwrap();
+    store.login_user("bob", "pw", false).unwrap();
+    assert_ne!(store.session_generation(), alice);
+    assert!(store.update_playback_progress_in_session(alice, &video, 42.0, 100.0).is_none());
+    assert!(store.record_watch_in_session(alice, &video, 0.0, 0.0).is_none());
+    assert!(!store.set_thumbnail_in_session(alice, &video, &picture()));
+    store.flush_playback_progress();
+    let stats = store.stats(&video, FingerprintMode::Compute);
+    assert!(stats.as_ref().is_none_or(|s| s.view_count == 0 && s.last_position_seconds == 0.0), "nothing of alice in bob's profile: {stats:?}");
+    assert_eq!(store.thumbnail(&video), None);
+    let bob = store.session_generation();
+    assert!(store.record_watch_in_session(bob, &video, 0.0, 0.0).is_some());
+    assert!(store.set_thumbnail_in_session(bob, &video, &picture()));
+    assert_eq!(store.stats(&video, FingerprintMode::Compute).map(|s| s.view_count), Some(1));
 }

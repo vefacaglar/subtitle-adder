@@ -18,6 +18,7 @@
 use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -132,7 +133,10 @@ impl std::ops::DerefMut for Locked<'_> {
 
 impl Drop for Locked<'_> {
     fn drop(&mut self) {
-        let ended = self.initial_had_session && self.guard.state.session_generation != self.initial_generation;
+        let generation = self.guard.state.session_generation;
+        // Published while the mutex is still held, so the copy follows the state in unlock order.
+        self.store.session_generation.store(generation, Ordering::Release);
+        let ended = self.initial_had_session && generation != self.initial_generation;
         // SAFETY: the guard is dropped exactly once, here, and never used afterwards.
         unsafe { ManuallyDrop::drop(&mut self.guard) };
         if ended {
@@ -160,6 +164,9 @@ pub struct MacProfileStore {
     thumbnails: ThumbnailCache,
     fingerprints: Arc<FingerprintCache>,
     inner: Mutex<Inner>,
+    /// `state.session_generation` as of the last [`Locked`] unlock: the UI thread reads it at every playback
+    /// report, and the mutex can be held across a re-read of `profiles.json` and a vault decrypt.
+    session_generation: AtomicU64,
     restore_done: Condvar,
     hub: ChangeHub,
     watcher: Mutex<Option<FolderWatcher>>,
@@ -206,6 +213,7 @@ impl MacProfileStore {
             thumbnails: ThumbnailCache::new(thumbnails_root, extras.thumbnail_limits),
             fingerprints: extras.fingerprints.unwrap_or_else(FingerprintCache::global),
             inner: Mutex::new(Inner { state: ProfileState::default(), restore_in_flight: false, user_logged_out: false }),
+            session_generation: AtomicU64::new(ProfileState::default().session_generation),
             restore_done: Condvar::new(),
             hub: ChangeHub::default(),
             watcher: Mutex::new(None),
@@ -744,8 +752,11 @@ impl ProfileStore for MacProfileStore {
         // True only while a remembered session exists (the UI checkbox reflects it; UNIFIED.md §3.11).
         self.read(|s| s.session.as_ref().is_some_and(|x| x.remembered))
     }
+    /// Lock-free (UI-safe): the value as of the last state unlock; a change still being made under the mutex shows
+    /// up once it is done, so a captured value can be stale when a worker writes. Writes gated on a captured
+    /// generation go through the `*_in_session` methods, which compare it again under the mutex.
     fn session_generation(&self) -> u64 {
-        self.inner.lock().state.session_generation
+        self.session_generation.load(Ordering::Acquire)
     }
     fn start(&self) {
         self.refresh();
@@ -769,6 +780,18 @@ impl ProfileStore for MacProfileStore {
     fn update_playback_progress(&self, path: &Path, position: f64, duration: f64) -> Option<VideoUserStats> {
         let r = self.try_update_playback_progress(path, position, duration);
         self.swallow(r, None)
+    }
+    fn update_playback_progress_in_session(&self, generation: u64, path: &Path, position: f64, duration: f64) -> Option<VideoUserStats> {
+        let r = self.try_update_playback_progress_in(Some(generation), path, position, duration);
+        self.swallow(r, None)
+    }
+    fn record_watch_in_session(&self, generation: u64, path: &Path, position: f64, duration: f64) -> Option<VideoUserStats> {
+        let r = self.try_record_watch_in(Some(generation), path, position, duration);
+        self.swallow(r, None)
+    }
+    fn set_thumbnail_in_session(&self, generation: u64, path: &Path, bytes: &[u8]) -> bool {
+        let r = self.try_set_thumbnail_in(Some(generation), path, bytes);
+        self.swallow(r, false)
     }
     fn flush_playback_progress(&self) -> bool {
         let r = self.try_flush_playback_progress();

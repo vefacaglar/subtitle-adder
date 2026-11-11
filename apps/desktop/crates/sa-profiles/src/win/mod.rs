@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 use std::time::Duration;
 
@@ -353,6 +353,64 @@ impl State {
     }
 }
 
+/// The store state behind its mutex, plus lock-free copies of the two values the UI thread reads while a video
+/// plays (`is_logged_in`, `session_generation`). Workers hold the mutex across disk syncs (file reads with retry
+/// sleeps, JSON parsing) and fingerprinting, so the UI thread must never wait for it; the copies are refreshed by
+/// every [`StateGuard`] before it unlocks, so they always equal the state as of the last unlock.
+struct StateCell {
+    state: Mutex<State>,
+    session_token: AtomicI64,
+    logged_in: AtomicBool,
+}
+
+impl StateCell {
+    fn new(state: State) -> Self {
+        let (token, logged_in) = (state.session_token, state.active_profile.is_some());
+        Self { state: Mutex::new(state), session_token: AtomicI64::new(token), logged_in: AtomicBool::new(logged_in) }
+    }
+
+    fn lock(&self) -> StateGuard<'_> {
+        StateGuard { guard: self.state.lock(), cell: self }
+    }
+
+    /// `session_token` as of the last unlock (never blocks).
+    fn session_token(&self) -> i64 {
+        self.session_token.load(Ordering::Acquire)
+    }
+
+    /// `active_profile.is_some()` as of the last unlock (never blocks).
+    fn logged_in(&self) -> bool {
+        self.logged_in.load(Ordering::Acquire)
+    }
+}
+
+/// The locked state; publishes the lock-free copies on drop, while still holding the mutex.
+struct StateGuard<'a> {
+    guard: parking_lot::MutexGuard<'a, State>,
+    cell: &'a StateCell,
+}
+
+impl std::ops::Deref for StateGuard<'_> {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for StateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.guard
+    }
+}
+
+impl Drop for StateGuard<'_> {
+    fn drop(&mut self) {
+        // Runs before the `guard` field is dropped, so the copies change under the lock, in unlock order.
+        self.cell.session_token.store(self.guard.session_token, Ordering::Release);
+        self.cell.logged_in.store(self.guard.active_profile.is_some(), Ordering::Release);
+    }
+}
+
 type AvailabilityFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// `LocalProfileManager` port.
@@ -364,7 +422,7 @@ pub struct WinProfileStore {
     instance_id: String,
     broker: Arc<dyn ProfileWriteBroker>,
     store: Mutex<Arc<SqliteProfileStore>>,
-    state: Mutex<State>,
+    state: StateCell,
     dirty: AtomicBool,
     changes: Subscribers<ProfileChange>,
     subscription: Mutex<Option<Subscription>>,
@@ -412,7 +470,7 @@ impl WinProfileStore {
             instance_id: sa_core::text::guid_n(),
             broker: broker.clone(),
             store: Mutex::new(store),
-            state: Mutex::new(State { last_synced_generation: -1, ..State::default() }),
+            state: StateCell::new(State { last_synced_generation: -1, ..State::default() }),
             dirty: AtomicBool::new(false),
             changes: Subscribers::new(),
             subscription: Mutex::new(None),
@@ -2561,6 +2619,12 @@ impl WinProfileStore {
     }
 }
 
+/// The session token a `session_generation()` value stands for (`token.max(0) as u64`; the token starts at 0 and
+/// only grows, so the mapping is exact; an out-of-range value matches no session).
+fn token_of(generation: u64) -> i64 {
+    i64::try_from(generation).unwrap_or(-1)
+}
+
 fn parse_ts(text: &str) -> Ticks {
     json::parse_date(text).unwrap_or_else(Ticks::now)
 }
@@ -2574,10 +2638,11 @@ fn sha2_256(data: &[u8]) -> [u8; 32] {
 }
 
 impl ProfileStore for WinProfileStore {
-    /// UI-safe: memory only (no drain, no file read). Logins, logouts and restores elsewhere reach this store
-    /// through its broker subscription, which resyncs at once.
+    /// UI-safe: memory only (no drain, no file read) and lock-free (a worker may hold the state mutex across a disk
+    /// sync). Logins, logouts and restores elsewhere reach this store through its broker subscription, which resyncs
+    /// at once.
     fn is_logged_in(&self) -> bool {
-        self.state.lock().active_profile.is_some()
+        self.state.logged_in()
     }
     /// UI-safe (memory only), registered casing.
     fn current_username(&self) -> Option<String> {
@@ -2606,8 +2671,14 @@ impl ProfileStore for WinProfileStore {
     /// so it must not drain the write queue or reread `profiles.json` there. Every session change in this process
     /// (local calls, broker-driven resyncs) bumps the in-memory token at once; [`WinProfileStore::session_token`]
     /// is the C# `SessionToken` with its drain and resync.
+    ///
+    /// Lock-free: the value as of the last state unlock. The hub reads it on the UI thread at every playback report,
+    /// and a worker may hold the state mutex across a disk sync (or a whole login switch) for tens of milliseconds;
+    /// a change still being made under the lock shows up once it is done. A captured generation can therefore be
+    /// stale by the time a worker writes: writes gated on one go through the `*_in_session` methods, which compare
+    /// it with the token under the lock (`expected_session`), in the same critical section as the write.
     fn session_generation(&self) -> u64 {
-        self.state.lock().session_token.max(0) as u64
+        self.state.session_token().max(0) as u64
     }
     fn start(&self) {
         let was_logged_in = self.state.lock().active_profile.is_some();
@@ -2643,6 +2714,15 @@ impl ProfileStore for WinProfileStore {
     }
     fn update_playback_progress(&self, path: &Path, position: f64, duration: f64) -> Option<VideoUserStats> {
         self.update_playback_progress_with(&path.to_string_lossy(), position, duration, None)
+    }
+    fn update_playback_progress_in_session(&self, generation: u64, path: &Path, position: f64, duration: f64) -> Option<VideoUserStats> {
+        self.update_playback_progress_with(&path.to_string_lossy(), position, duration, Some(token_of(generation)))
+    }
+    fn record_watch_in_session(&self, generation: u64, path: &Path, position: f64, duration: f64) -> Option<VideoUserStats> {
+        self.record_watch_with(&path.to_string_lossy(), position, duration, None, Some(token_of(generation)))
+    }
+    fn set_thumbnail_in_session(&self, generation: u64, path: &Path, bytes: &[u8]) -> bool {
+        self.set_thumbnail_with(&path.to_string_lossy(), bytes, Some(token_of(generation)))
     }
     fn flush_playback_progress(&self) -> bool {
         self.flush_pending_writes(Duration::from_secs(5))
@@ -2738,6 +2818,46 @@ impl Drop for WinProfileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The UI thread reads `is_logged_in` and `session_generation` while a video plays; a worker can hold the state
+    /// mutex across a disk sync, so neither may wait for it, and both must still follow every session change.
+    #[test]
+    fn session_reads_never_wait_for_the_state_mutex() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WinProfileStore::open(dir.path().join("profiles.json"), sa_sync::InProcessBus::with_scope(&sa_core::text::guid_n()));
+        let logged_out = store.session_generation();
+        assert!(!store.is_logged_in());
+        store.register_user("ali", "pw-1234", false).unwrap();
+        assert!(store.is_logged_in());
+        let generation = store.session_generation();
+        assert_ne!(generation, logged_out);
+        assert_eq!(generation, store.session_token().max(0) as u64, "the copy equals the locked value");
+
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|s| {
+            let holder = &store;
+            s.spawn(move || {
+                // Stands in for a worker inside `ensure_synced_if_changed` (file reads, retry sleeps).
+                let _st = holder.state.state.lock();
+                held_tx.send(()).unwrap();
+                // Released on request, or after 2 s so a blocking reader fails instead of hanging.
+                let _ = release_rx.recv_timeout(Duration::from_secs(2));
+            });
+            held_rx.recv().unwrap();
+            let t = std::time::Instant::now();
+            let (logged_in, read) = (store.is_logged_in(), store.session_generation());
+            let elapsed = t.elapsed();
+            let _ = release_tx.send(());
+            assert!(logged_in);
+            assert_eq!(read, generation);
+            assert!(elapsed < Duration::from_millis(500), "took {elapsed:?} with the state mutex held elsewhere");
+        });
+
+        store.logout_user();
+        assert!(!store.is_logged_in());
+        assert_ne!(store.session_generation(), generation);
+    }
 
     #[test]
     fn padding_buckets() {

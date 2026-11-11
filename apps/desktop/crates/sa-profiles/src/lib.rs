@@ -245,6 +245,35 @@ pub trait ProfileStore: Send + Sync {
     fn thumbnail(&self, path: &Path) -> Option<Vec<u8>>;
     fn set_thumbnail(&self, path: &Path, bytes: &[u8]) -> bool;
 
+    // ----- writes gated on a session generation captured earlier
+    //
+    // `session_generation()` is lock-free, so a value captured on the UI thread can be stale by the time a worker
+    // writes (a login switch in between). These variants write only while the session is still `generation`,
+    // compared under the store's own lock in the same critical section as the write, so nothing of one profile
+    // lands in the next. The defaults (test doubles) check, then act; both real stores override them.
+
+    /// [`Self::update_playback_progress`] for session `generation` only.
+    fn update_playback_progress_in_session(&self, generation: u64, path: &Path, position: f64, duration: f64) -> Option<VideoUserStats> {
+        if self.session_generation() != generation {
+            return None;
+        }
+        self.update_playback_progress(path, position, duration)
+    }
+    /// [`Self::record_watch`] for session `generation` only.
+    fn record_watch_in_session(&self, generation: u64, path: &Path, position: f64, duration: f64) -> Option<VideoUserStats> {
+        if self.session_generation() != generation {
+            return None;
+        }
+        self.record_watch(path, position, duration)
+    }
+    /// [`Self::set_thumbnail`] for session `generation` only.
+    fn set_thumbnail_in_session(&self, generation: u64, path: &Path, bytes: &[u8]) -> bool {
+        if self.session_generation() != generation {
+            return false;
+        }
+        self.set_thumbnail(path, bytes)
+    }
+
     // ----- lists
     fn lists(&self) -> Vec<UserVideoList>;
     /// `Ok(None)` = Windows silent duplicate/blank; macOS returns errors.

@@ -557,9 +557,9 @@ impl Inner {
                         return Some(b);
                     }
                     let bytes = generator.generate(&p, &CancellationToken::new())?;
-                    if store.is_logged_in() && store.session_generation() == generation {
-                        let _ = store.set_thumbnail(&p, &bytes);
-                    }
+                    // Compared again under the store's lock: a login switch while the picture was generated stores
+                    // nothing in the new profile.
+                    let _ = store.set_thumbnail_in_session(generation, &p, &bytes);
                     Some(bytes)
                 },
                 move |bytes: Option<Vec<u8>>| {
@@ -621,10 +621,12 @@ impl Inner {
         }
         let store = self.svc.profiles.clone();
         self.lanes.spawn(Lane::Actions, move || {
+            // The generation is compared again under the store's lock, in the same critical section as the write: a
+            // login switch since the UI thread captured it records nothing in the new profile.
             if store.session_generation() != generation {
                 return;
             }
-            let _ = store.update_playback_progress(&video, position, duration);
+            let _ = store.update_playback_progress_in_session(generation, &video, position, duration);
             if flush {
                 let _ = store.flush_playback_progress();
             }
@@ -632,13 +634,14 @@ impl Inner {
         self.st.borrow_mut().last_progress_write = Some(Instant::now());
     }
 
-    fn count_open(self: &Rc<Self>, video: PathBuf) {
+    /// Counts a view for the session `generation` the open was recorded under (compared under the store's lock).
+    fn count_open(self: &Rc<Self>, video: PathBuf, generation: u64) {
         let store = self.svc.profiles.clone();
         let key = self.key();
         self.lanes.run(
             Lane::Actions,
             move || {
-                let _ = store.record_watch(&video, 0.0, 0.0);
+                let _ = store.record_watch_in_session(generation, &video, 0.0, 0.0);
             },
             move |()| {
                 if let Some(inner) = key.get() {
@@ -936,8 +939,9 @@ impl VideoPlatformModel {
                 if let Some(p) = pending {
                     let same = inner.st.borrow().player_video.as_ref().is_some_and(|v| lower_key(v) == lower_key(&p));
                     if same && inner.svc.profiles.is_logged_in() {
-                        inner.st.borrow_mut().recording_generation = Some(inner.svc.profiles.session_generation());
-                        inner.count_open(p);
+                        let generation = inner.svc.profiles.session_generation();
+                        inner.st.borrow_mut().recording_generation = Some(generation);
+                        inner.count_open(p, generation);
                     }
                 }
             },
@@ -1503,7 +1507,7 @@ impl VideoPlatformModel {
             };
             if reopen && let Some(p) = path {
                 self.inner.st.borrow_mut().recording_generation = Some(generation);
-                self.inner.count_open(p.to_path_buf());
+                self.inner.count_open(p.to_path_buf(), generation);
             }
             return;
         }
@@ -1539,7 +1543,7 @@ impl VideoPlatformModel {
             self.inner.schedule_refresh();
             return;
         }
-        self.inner.count_open(p.to_path_buf());
+        self.inner.count_open(p.to_path_buf(), generation);
     }
     /// 5 s cadence, flush on pause/leave/seek; nothing recorded logged out.
     pub fn report_playback(&self, report: PlaybackReport) {

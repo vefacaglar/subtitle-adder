@@ -1657,3 +1657,35 @@ fn logged_out_mutator_rereads_a_header_another_manager_of_this_process_wrote() {
     assert!(quiet.record_watch_with(&video, 3.0, 10.0, None, None).is_none(), "logout always wins in this manager");
     assert!(!quiet.is_logged_in());
 }
+
+// =============================================================================================================
+// Writes gated on a captured session generation (the lock-free `session_generation()` can be stale by the time a
+// worker writes): a login switch between the capture and the write records nothing in the new profile.
+
+#[test]
+fn a_user_switch_between_capture_and_write_records_nothing_in_the_new_profile() {
+    let env = Env::new();
+    let b = bus();
+    let m = mgr(&env.profiles(), &b);
+    let video = env.file("a.mp4", b"video bytes of a");
+    let path = Path::new(&video);
+    m.register_user("bob", "pw-bob-1", false).expect("register bob");
+    m.register_user("alice", "pw-alice-1", false).expect("register alice");
+    // Alice plays; the UI thread captures her generation.
+    let alice = m.session_generation();
+    assert!(m.update_playback_progress_in_session(alice, path, 12.0, 100.0).is_some(), "the current session writes");
+    // Bob logs in before the worker writes.
+    m.login_user("bob", "pw-bob-1", false).expect("switch to bob");
+    assert_ne!(m.session_generation(), alice);
+    assert!(m.update_playback_progress_in_session(alice, path, 42.0, 100.0).is_none());
+    assert!(m.record_watch_in_session(alice, path, 0.0, 0.0).is_none());
+    assert!(!m.set_thumbnail_in_session(alice, path, b"alice's picture"));
+    assert!(m.flush_pending_writes(FLUSH));
+    assert!(m.get_stats(&video).is_none_or(|s| s.view_count == 0 && s.last_position_seconds == 0.0), "nothing of alice in bob's profile");
+    assert!(m.get_thumbnail(&video).is_none());
+    // Bob's own generation still writes.
+    let bob = m.session_generation();
+    assert!(m.record_watch_in_session(bob, path, 0.0, 0.0).is_some());
+    assert!(m.set_thumbnail_in_session(bob, path, b"bob's picture"));
+    assert_eq!(m.get_stats(&video).expect("bob's stats").view_count, 1);
+}
