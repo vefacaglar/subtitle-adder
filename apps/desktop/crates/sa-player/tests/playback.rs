@@ -284,7 +284,9 @@ fn generation(e: &PlayerEvent) -> i32 {
         | PlayerEvent::SizeChanged { generation, .. }
         | PlayerEvent::FrameReady { generation }
         | PlayerEvent::Ended { generation }
-        | PlayerEvent::PlayingChanged { generation, .. } => *generation,
+        | PlayerEvent::PlayingChanged { generation, .. }
+        | PlayerEvent::TracksChanged { generation }
+        | PlayerEvent::AudioTrackFailed { generation, .. } => *generation,
     }
 }
 

@@ -372,6 +372,7 @@ impl AppShell {
             player: self.new_player(),
             source_factory: None,
             preview: self.preview_maker(),
+            subtitle_reader: None,
             hooks,
         };
         let controller = MainWindowController::attach(&window, deps);

@@ -22,14 +22,59 @@ mod hw;
 mod io;
 mod priority;
 mod session;
+pub mod subtitles;
 mod sync;
+mod tracks;
 mod video;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, NativeStackInfo, PlayerEvent, VideoFrame};
+use crate::{FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, NativeStackInfo, PlayerEvent, VideoFrame};
 use session::{Control, PlayerShared};
+
+pub use subtitles::{ExtractError, ExtractedSubtitle, extract_text_subtitles, extract_text_subtitles_with};
+
+/// One block a virtual output device ([`AudioTap`]) played: interleaved samples (volume applied) and the media time
+/// of the first one.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct TapBlock {
+    pub pts: f64,
+    pub samples: Vec<f32>,
+}
+
+/// Tests: a virtual output device in a fixed format that plays in real time and records what it plays
+/// ([`FfmpegPlayer::use_audio_tap`]). The audio clock is master with it exactly as with a real device.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct AudioTap {
+    rate: u32,
+    channels: u16,
+    blocks: Arc<parking_lot::Mutex<Vec<TapBlock>>>,
+}
+
+impl AudioTap {
+    pub fn new(rate: u32, channels: u16) -> Self {
+        Self { rate, channels, blocks: Arc::default() }
+    }
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+    pub fn channels(&self) -> u16 {
+        self.channels
+    }
+    /// Everything played so far.
+    pub fn blocks(&self) -> Vec<TapBlock> {
+        self.blocks.lock().clone()
+    }
+    pub fn clear(&self) {
+        self.blocks.lock().clear();
+    }
+    pub(crate) fn record(&self, pts: f64, samples: &[f32]) {
+        self.blocks.lock().push(TapBlock { pts, samples: samples.to_vec() });
+    }
+}
 
 /// Buffered-stream progress for the Windows buffer bar: `playback_ratio → buffered_ratio`
 /// (`BufferedVideoStream::buffered_ratio`).
@@ -191,6 +236,20 @@ impl FfmpegPlayer {
         self.shared.simulate_hw_failure.store(on, Ordering::Relaxed);
     }
 
+    /// Tests: from the next load on, the decoder of audio stream `stream_index` does not open (`None`: every decoder
+    /// opens), so the fall-back of a failed track switch runs.
+    #[doc(hidden)]
+    pub fn simulate_audio_decoder_failure(&mut self, stream_index: Option<usize>) {
+        *self.shared.simulate_audio_failure.lock() = stream_index;
+    }
+
+    /// Tests: from the next load on, audio plays into `tap` (a virtual device) instead of the default output device,
+    /// whatever `PlayerOptions::audio_output` says. `None` returns to the options.
+    #[doc(hidden)]
+    pub fn use_audio_tap(&mut self, tap: Option<AudioTap>) {
+        *self.shared.audio_tap.lock() = tap;
+    }
+
     fn stop_session(&mut self) {
         if let Some(s) = self.session.take() {
             // The threads exit on their own; the demux thread joins the others and frees FFmpeg state.
@@ -296,6 +355,16 @@ impl MediaPlayerBackend for FfmpegPlayer {
             "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={}",
             s.decoded, s.hardware, s.planar, s.presented, s.dropped_late, s.dropped_decoder
         ))
+    }
+
+    fn tracks(&self) -> MediaTracks {
+        self.session.as_ref().map(|s| s.tracks.lock().clone()).unwrap_or_default()
+    }
+
+    fn select_audio_track(&mut self, stream_index: usize) {
+        if let Some(s) = &self.session {
+            s.request_audio_track(stream_index);
+        }
     }
 
     fn dispose(&mut self) {

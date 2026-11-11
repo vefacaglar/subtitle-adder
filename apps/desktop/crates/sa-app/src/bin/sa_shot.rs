@@ -97,6 +97,18 @@ fn main() {
     };
 
     window.set_size(PhysicalSize::new(pw, ph));
+    // `--click x,y` (logical px): a left click there before the shot, e.g. to open a menu or flyout.
+    if let Some((x, y)) = arg(&args, "--click").and_then(|v| {
+        let (x, y) = v.split_once(',')?;
+        Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
+    }) {
+        render_to(&window, pw, ph, &out);
+        let position = slint::LogicalPosition::new(x, y);
+        let button = slint::platform::PointerEventButton::Left;
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+    }
     render_to(&window, pw, ph, &out);
 
     // `--relang en`: switch the UI language, bump `Loc.revision` like the app does, render again (`<out>-relang.png`).

@@ -7,6 +7,7 @@ pub mod explorer;
 pub mod hub;
 pub mod jobs;
 pub mod lanes;
+pub mod media_tracks;
 pub mod policy;
 pub mod providers_ui;
 pub mod services;

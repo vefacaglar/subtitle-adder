@@ -67,6 +67,10 @@ impl MediaPlayerBackend for NullPlayer {
     }
     fn set_event_sink(&mut self, _sink: Box<dyn Fn(PlayerEvent) + Send + Sync>) {}
     fn dispose(&mut self) {}
+    fn tracks(&self) -> sa_player::MediaTracks {
+        sa_player::MediaTracks::default()
+    }
+    fn select_audio_track(&mut self, _stream_index: usize) {}
 }
 
 #[test]

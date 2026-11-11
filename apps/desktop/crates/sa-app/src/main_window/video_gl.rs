@@ -22,6 +22,11 @@
 //! * `SUBTITLE_ADDER_FRAME_TRACE=<file>` appends one line per render of the window to `<file>`:
 //!   `R <unix time µs> <pts of the video frame on screen, or -> <1 if that frame is new in this render, else 0>
 //!   <player clock (s), or ->`, written by a background thread.
+//!   A `W <unix time µs> window unchanged` line follows a render that converted a new frame while the window's
+//!   pixels stayed the same (`WindowProbe`).
+//! * `SUBTITLE_ADDER_PLAYER_STATS=1` or `SUBTITLE_ADDER_FRAME_TRACE` also turns on `WindowProbe`: after each render
+//!   16 rows of the back buffer are read and hashed; `window_unchanged=` on the `[player-stats]` line counts renders
+//!   with a new frame and an unchanged window (an ancestor that renders the video through a cached layer).
 //! * `SUBTITLE_ADDER_FRAME_DUMP=<dir>` writes the converted picture (the RGBA target, read back after the shader ran)
 //!   as `<dir>/frame-<pid>-<surface>-<n>-<pts>[-field2].png` for the first 3 frames after every load or jump, and
 //!   one frame every 2 s, so the shader's output can be checked without a screen capture. Each dump logs one
@@ -67,6 +72,8 @@ pub struct VideoSurface {
     available: Rc<Cell<bool>>,
     uploads: Rc<Cell<u64>>,
     renders: Rc<Cell<u64>>,
+    /// [`WindowProbe`]: renders that converted a new frame and left the window unchanged (`None`: probe off).
+    unchanged: Option<Rc<Cell<u64>>>,
     redraw: Rc<dyn Fn()>,
     installed: Cell<bool>,
 }
@@ -84,6 +91,7 @@ struct Inner {
     shown: Option<(NonZeroU32, u32, u32)>,
     trace: Option<FrameTrace>,
     dump: Option<FrameDump>,
+    probe: Option<WindowProbe>,
 }
 
 /// `SUBTITLE_ADDER_FRAME_TRACE`: render lines for a writer thread (see the module docs).
@@ -115,11 +123,41 @@ impl FrameTrace {
         Some(Self { lines: tx, clock: None })
     }
 
+    /// `W <unix time µs>`: the render just recorded converted a new frame and the window did not change
+    /// ([`WindowProbe`]).
+    fn record_unchanged(&self) {
+        let us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros());
+        let _ = self.lines.send(format!("W {us} window unchanged\n"));
+    }
+
     fn record(&self, pts: Option<f64>, new: bool) {
         let us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros());
         let pts = pts.map_or_else(|| "-".to_owned(), |p| format!("{p:.6}"));
         let clock = self.clock.as_ref().and_then(|c| c()).map_or_else(|| "-".to_owned(), |c| format!("{c:.6}"));
         let _ = self.lines.send(format!("R {us} {pts} {} {clock}\n", u8::from(new)));
+    }
+}
+
+/// Ground truth for "the frame was converted but the window did not change" (`SUBTITLE_ADDER_PLAYER_STATS=1` or
+/// `SUBTITLE_ADDER_FRAME_TRACE`): after every render a hash of a sparse sample of the window's back buffer; a render
+/// that converted a new video frame and left the hash unchanged is counted (`window_unchanged=` on the stats line, a
+/// `W` line in the frame trace). A cached layer above the video (a rounded clip, an opacity below 1) shows exactly
+/// this: every frame converted, the window showing an old one. Off, and free, without either variable. A video whose
+/// sampled rows do not change between two frames (a still) counts too.
+struct WindowProbe {
+    last: Option<u64>,
+    /// The render in progress converted a new frame.
+    new_frame: bool,
+    unchanged: Rc<Cell<u64>>,
+}
+
+impl WindowProbe {
+    const ROWS: usize = 16;
+
+    fn from_env() -> Option<Self> {
+        let stats = std::env::var_os("SUBTITLE_ADDER_PLAYER_STATS").is_some_and(|v| v == "1");
+        let trace = std::env::var_os("SUBTITLE_ADDER_FRAME_TRACE").is_some_and(|v| !v.is_empty());
+        (stats || trace).then(|| Self { last: None, new_frame: false, unchanged: Rc::new(Cell::new(0)) })
     }
 }
 
@@ -252,6 +290,8 @@ impl VideoSurface {
     /// unavailable.
     pub fn install(window: &slint::Window, host: SurfaceHost) -> Rc<Self> {
         let SurfaceHost { set_image, redraw, after_render } = host;
+        let probe = WindowProbe::from_env();
+        let unchanged = probe.as_ref().map(|p| p.unchanged.clone());
         let surface = Rc::new(Self {
             inner: Rc::new(RefCell::new(Inner {
                 set_image,
@@ -262,10 +302,12 @@ impl VideoSurface {
                 shown: None,
                 trace: FrameTrace::from_env(),
                 dump: FrameDump::from_env(),
+                probe,
             })),
             available: Rc::new(Cell::new(false)),
             uploads: Rc::new(Cell::new(0)),
             renders: Rc::new(Cell::new(0)),
+            unchanged,
             redraw: Rc::from(redraw),
             installed: Cell::new(false),
         });
@@ -312,8 +354,26 @@ impl VideoSurface {
                     if let Some(t) = &s.trace {
                         t.record(s.shown.and(s.current.as_ref()).map(|f| f.pts), new);
                     }
+                    if let Some(p) = &mut s.probe {
+                        p.new_frame = new;
+                    }
                 }
                 slint::RenderingState::AfterRendering => {
+                    {
+                        let st = &mut *s;
+                        if let (Some(p), Some(g)) = (st.probe.as_mut(), st.gl.as_mut()) {
+                            // SAFETY: the renderer's context is current during the notifier.
+                            let hash = unsafe { g.window_hash() };
+                            if p.new_frame && hash.is_some() && hash == p.last {
+                                p.unchanged.set(p.unchanged.get() + 1);
+                                if let Some(t) = &st.trace {
+                                    t.record_unchanged();
+                                }
+                            }
+                            p.last = hash;
+                            p.new_frame = false;
+                        }
+                    }
                     drop(s);
                     if let Some(f) = &after_render {
                         f();
@@ -361,6 +421,12 @@ impl VideoSurface {
     /// Renders of the window so far (diagnostics).
     pub fn renders(&self) -> u64 {
         self.renders.get()
+    }
+
+    /// Renders that converted a new video frame while the window's pixels stayed the same ([`WindowProbe`]); `None`
+    /// while the probe is off.
+    pub fn window_unchanged(&self) -> Option<u64> {
+        self.unchanged.as_ref().map(|c| c.get())
     }
 
     /// The pts of the frame on screen (diagnostics).
@@ -841,6 +907,44 @@ impl Gl {
                 gl.delete_framebuffer(f);
                 gl.delete_texture(t);
             }
+        }
+    }
+
+    /// A hash of [`WindowProbe::ROWS`] rows of the window's back buffer (every 4th pixel), read in the
+    /// `AfterRendering` notifier before the buffer swap: what this render actually put on screen. GL state it touches
+    /// is restored.
+    unsafe fn window_hash(&mut self) -> Option<u64> {
+        unsafe {
+            let gl = &self.gl;
+            let mut viewport = [0; 4];
+            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
+            let (w, h) = (viewport[2].max(0) as usize, viewport[3].max(0) as usize);
+            if w == 0 || h == 0 {
+                return None;
+            }
+            let read_fbo = gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
+            let pack_buffer = gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING);
+            let pack_alignment = gl.get_parameter_i32(glow::PACK_ALIGNMENT);
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
+            let mut row = vec![0u8; w * 4];
+            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+            for i in 0..WindowProbe::ROWS {
+                // Rows spread over the middle 80 % of the window (the title bar and status bar stay out).
+                let y = h / 10 + (h * 8 / 10) * i / WindowProbe::ROWS.max(1);
+                gl.read_pixels(0, y as i32, w as i32, 1, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut row)));
+                for px in row.chunks_exact(16) {
+                    for b in &px[..3] {
+                        hash = (hash ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                }
+            }
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, read_fbo);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, pack_buffer);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, pack_alignment);
+            let _ = gl.get_error();
+            Some(hash)
         }
     }
 

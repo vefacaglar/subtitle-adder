@@ -7,7 +7,7 @@ import { MainBridge, AppBridge } from "../../shared/bridge.slint";
 import { SubtitleOverlay } from "../../shared/overlay_label.slint";
 import { MacTheme } from "../theme.slint";
 import { EngagementBar } from "../hub/engagement_bar.slint";
-import { Sym, Segmented, MenuButton, ToolTip } from "controls.slint";
+import { Sym, Segmented, MenuButton, MacMenu, ToolTip } from "controls.slint";
 
 // AVKit-like scrubber: thin track white 30 %, played white, knob on hover/drag.
 component BarSlider inherits Rectangle {
@@ -86,6 +86,58 @@ component BarButton inherits Rectangle {
     touch := TouchArea { clicked => { root.clicked(); } }
 }
 
+// AVKit's audio & subtitles button (the speech bubble of the inline controls): opens the "tracks" menu (Rust fills
+// it) above the bar, trailing-aligned; a spinner replaces the symbol while an embedded track is read. Zero width when
+// the file has nothing to choose (a popup cannot sit under a conditional).
+component TracksBarButton inherits Rectangle {
+    property <bool> shown: MainBridge.tracks-available;
+    property <length> menu-width: 340px;
+    width: root.shown ? 28px : 0;
+    height: 28px;
+    visible: root.shown;
+    accessible-role: button;
+    accessible-label: Loc.t("Ses ve altyazı parçaları");
+    accessible-action-default => { root.open(); }
+    function open() {
+        MainBridge.menu-requested("tracks");
+        MainBridge.tracks-menu-open(true);
+        menu.show();
+    }
+    if !MainBridge.tracks-busy: Sym {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        name: "captions.bubble";
+        size: 15px;
+        tint: touch.pressed ? #ffffffa0 : white;
+    }
+    if MainBridge.tracks-busy: Spinner {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        indeterminate: true;
+    }
+    touch := TouchArea { clicked => { root.open(); } }
+    ToolTip {
+        text: Loc.t("Ses ve altyazı parçaları");
+        show: touch.has-hover && !menu.is-open;
+        offset-y: -30px;
+    }
+    menu := MacMenu {
+        x: root.width - root.menu-width;
+        y: -self.height - 10px;
+        min-menu-width: root.menu-width;
+        // The space between the window top and the button (minus the gap): longer menus scroll.
+        max-menu-height: root.absolute-position.y - 20px;
+    }
+    property <bool> menu-open: menu.is-open;
+    changed menu-open => {
+        if (!self.menu-open) {
+            MainBridge.tracks-menu-open(false);
+        }
+    }
+}
+
 // Inline control bar (§7.4).
 component ControlBar inherits Rectangle {
     in property <bool> shown;
@@ -154,6 +206,9 @@ component ControlBar inherits Rectangle {
                     }
                 }
             }
+        }
+        TracksBarButton {
+            y: 4px;
         }
         BarButton {
             y: 4px;

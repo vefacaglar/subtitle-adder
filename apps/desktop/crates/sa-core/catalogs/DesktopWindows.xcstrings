@@ -153,6 +153,295 @@
           }
         }
       }
+    },
+    "Ses": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ses"
+          }
+        }
+      }
+    },
+    "Videodaki altyazılar": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtitles from the video"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videodaki altyazılar"
+          }
+        }
+      }
+    },
+    "Ses ve altyazı parçaları": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio and subtitle tracks"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ses ve altyazı parçaları"
+          }
+        }
+      }
+    },
+    "Parça %lld": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Track %lld"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parça %lld"
+          }
+        }
+      }
+    },
+    "mono": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mono"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "mono"
+          }
+        }
+      }
+    },
+    "stereo": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "stereo"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "stereo"
+          }
+        }
+      }
+    },
+    "%lld kanal": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld channels"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld kanal"
+          }
+        }
+      }
+    },
+    "zorunlu": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "forced"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "zorunlu"
+          }
+        }
+      }
+    },
+    "Görüntü tabanlı, desteklenmiyor": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image-based, not supported"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Görüntü tabanlı, desteklenmiyor"
+          }
+        }
+      }
+    },
+    "Okunuyor… %lld%%": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading… %lld%%"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Okunuyor… %%%lld"
+          }
+        }
+      }
+    },
+    "Ses parçası açılamadı: %@": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The audio track could not be played: %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ses parçası açılamadı: %@"
+          }
+        }
+      }
+    },
+    "Videodaki altyazı okunamadı: %@": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The subtitles in the video could not be read: %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videodaki altyazı okunamadı: %@"
+          }
+        }
+      }
+    },
+    "Desteklenmiyor": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not supported"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desteklenmiyor"
+          }
+        }
+      }
+    },
+    "Görüntü tabanlı altyazı parçaları: %lld": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Image-based subtitle tracks: %lld"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Görüntü tabanlı altyazı parçaları: %lld"
+          }
+        }
+      }
+    },
+    "Bu parça metin altyazısı değil": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This track is not a text subtitle track"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu parça metin altyazısı değil"
+          }
+        }
+      }
+    },
+    "Altyazı parçası çok büyük": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The subtitle track is too large"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı parçası çok büyük"
+          }
+        }
+      }
+    },
+    "Videodaki altyazı yüklenmedi: okunurken altyazı değişti. Parçayı yeniden seç.": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The subtitles from the video were not loaded: the subtitles changed while they were read. Choose the track again."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videodaki altyazı yüklenmedi: okunurken altyazı değişti. Parçayı yeniden seç."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

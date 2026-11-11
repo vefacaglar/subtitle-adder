@@ -7,7 +7,9 @@
 //!   the decoder's YUV planes (the UI converts them to RGB on the GPU; [`MediaPlayerBackend::set_planar_output`]) or
 //!   converted to RGBA by swscale, audio resampled by swresample to the output format and played through `cpal`
 //!   (WASAPI / CoreAudio); the audio clock is the master clock (video frames are shown when their pts is due, late
-//!   frames dropped). View models depend on this crate **without** the feature.
+//!   frames dropped). The backend also lists the file's audio and subtitle streams ([`MediaTracks`]), switches the
+//!   audio track while playing or paused, and reads embedded text subtitle tracks
+//!   (`ffmpeg_backend::subtitles::extract_text_subtitles`). View models depend on this crate **without** the feature.
 //!
 //! This replaces both IMFMediaEngine (Windows) and AVPlayer (macOS) with one decoder. Windows feeds the stream through
 //! `sa_media::win::BufferedVideoStream` (custom AVIO context), so the encrypted SSD chunk cache keeps working.
@@ -298,6 +300,113 @@ pub enum MediaSource {
 /// Monotonic load counter value (`PlayerSessionGate::begin_load`).
 pub type LoadGeneration = i32;
 
+/// An audio stream of the loaded source ([`MediaPlayerBackend::tracks`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AudioTrack {
+    /// The container's stream index (what [`MediaPlayerBackend::select_audio_track`] takes).
+    pub stream_index: usize,
+    /// The container's language tag as written (`eng`, `tur`, `en`, ...); `None` when missing or `und`.
+    pub language: Option<String>,
+    pub title: Option<String>,
+    /// FFmpeg's codec name (`aac`, `ac3`, `opus`, ...).
+    pub codec: String,
+    pub channels: u16,
+    /// FFmpeg's description of the channel layout (`stereo`, `5.1(side)`), when the stream has one.
+    pub channel_layout: Option<String>,
+    pub sample_rate: u32,
+    /// The container marks it as the default track.
+    pub default: bool,
+}
+
+/// How a subtitle stream is coded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubtitleKind {
+    /// Text events (subrip, ass/ssa, mov_text, webvtt, text): can be loaded into the subtitle list.
+    Text,
+    /// Pictures (hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle, xsub) and anything else that is not plain text.
+    Image,
+    /// A text codec this FFmpeg build has no decoder for (arib_caption, hdmv_text_subtitle, teletext without
+    /// libzvbi): listed, cannot be read.
+    Unsupported,
+}
+
+/// A subtitle stream of the loaded source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtitleTrack {
+    pub stream_index: usize,
+    pub language: Option<String>,
+    pub title: Option<String>,
+    /// FFmpeg's codec name (`subrip`, `ass`, `mov_text`, `hdmv_pgs_subtitle`, ...).
+    pub codec: String,
+    pub kind: SubtitleKind,
+    pub default: bool,
+    pub forced: bool,
+}
+
+impl SubtitleTrack {
+    pub fn is_text(&self) -> bool {
+        self.kind == SubtitleKind::Text
+    }
+}
+
+/// The audio and subtitle streams of the loaded source and the audio stream being played.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MediaTracks {
+    pub audio: Vec<AudioTrack>,
+    pub subtitles: Vec<SubtitleTrack>,
+    /// Stream index of the audio track being decoded; `None` without audio.
+    pub active_audio: Option<usize>,
+}
+
+impl MediaTracks {
+    pub fn active_audio_track(&self) -> Option<&AudioTrack> {
+        let i = self.active_audio?;
+        self.audio.iter().find(|t| t.stream_index == i)
+    }
+}
+
+/// Why an embedded subtitle track could not be read (`ffmpeg_backend::subtitles::extract_text_subtitles`). Pure, so
+/// the view models can word it without the FFmpeg feature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtractError {
+    Cancelled,
+    /// The stream is no text subtitle track this build can decode.
+    NotText,
+    /// The track holds more events or text than the importer takes ([`ExtractLimits`]).
+    TooLarge,
+    /// The file, the stream or its decoder could not be opened, or reading failed: FFmpeg's (or the OS's) message,
+    /// shown as details like a playback error's; may be empty.
+    Failed(String),
+}
+
+impl std::fmt::Display for ExtractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExtractError::Cancelled => f.write_str("cancelled"),
+            ExtractError::NotText => f.write_str("not a text subtitle track"),
+            ExtractError::TooLarge => f.write_str("subtitle track too large"),
+            ExtractError::Failed(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for ExtractError {}
+
+/// Bounds of one embedded subtitle read: past either, the read stops with [`ExtractError::TooLarge`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtractLimits {
+    pub max_events: usize,
+    /// Sum of the event texts in bytes.
+    pub max_text_bytes: usize,
+}
+
+impl Default for ExtractLimits {
+    /// 100 000 events / 16 MiB of text: far beyond any real film or series episode (a two-hour film has ~2 000).
+    fn default() -> Self {
+        Self { max_events: 100_000, max_text_bytes: 16 << 20 }
+    }
+}
+
 /// Events posted by a backend (gated by generation before they reach the UI).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerEvent {
@@ -312,6 +421,11 @@ pub enum PlayerEvent {
     /// Reports only real changes (alternating). An auto-play load reports `playing: true` right after `Opened`; a
     /// failure or the end reports `playing: false`.
     PlayingChanged { generation: LoadGeneration, playing: bool },
+    /// [`MediaPlayerBackend::tracks`] changed: posted once after `Opened` and after every audio track switch (also
+    /// one that failed, which leaves the previous track active).
+    TracksChanged { generation: LoadGeneration },
+    /// The audio stream asked for could not be played (its decoder did not open); the previous one keeps playing.
+    AudioTrackFailed { generation: LoadGeneration, stream_index: usize, message: String },
 }
 
 /// Why the current load failed (`MediaPlayerBackend::failure_kind`). The macOS player model uses it for its
@@ -358,6 +472,13 @@ pub trait MediaPlayerBackend {
     fn diagnostics(&self) -> Option<String> {
         None
     }
+    /// The audio and subtitle streams of the current source (empty until it opened). No default body on purpose: a
+    /// wrapper backend that forgot to forward it would silently hide the track menu.
+    fn tracks(&self) -> MediaTracks;
+    /// Plays the audio stream `stream_index` from the current position (while playing or paused), keeping the
+    /// position; answered with `TracksChanged` (or `AudioTrackFailed` and `TracksChanged`). Choosing the stream that
+    /// is already active (or asked for last) does nothing. Backends without track selection implement it as a no-op.
+    fn select_audio_track(&mut self, stream_index: usize);
 }
 
 /// What the native stack reports (startup diagnostics and the build proof).

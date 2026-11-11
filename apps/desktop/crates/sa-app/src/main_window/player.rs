@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use sa_core::engine_types::Sentence;
-use sa_player::{FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, PlaybackTimeline, PlayerEvent, VideoFrame};
+use sa_player::{FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, PlaybackTimeline, PlayerEvent, VideoFrame};
 use sa_viewmodels::hub::PlaybackReport;
 use sa_viewmodels::shortcuts::adjusted_volume;
 use uuid::Uuid;
@@ -85,6 +85,10 @@ pub enum PlayerOutput {
     /// macOS: convert `source` with the engine `preview` command and call [`PlayerController::preview_ready`].
     PreparePreview { source: PathBuf, generation: u64 },
     PreparingPreviewChanged(bool),
+    /// The audio / subtitle tracks of the media (or the playing audio track) changed: [`PlayerController::tracks`].
+    TracksChanged,
+    /// The audio track asked for could not be played (the previous one keeps playing); FFmpeg's details.
+    AudioTrackFailed(String),
 }
 
 /// Opens the media for the backend (Windows wraps the file in a `BufferedVideoStream`).
@@ -119,6 +123,7 @@ pub struct PlayerController {
     preview_file: Option<PathBuf>,
     disposed: bool,
     last_progress_position: f64,
+    tracks: MediaTracks,
     outputs: Vec<PlayerOutput>,
 }
 
@@ -156,6 +161,7 @@ impl PlayerController {
             preview_file: None,
             disposed: false,
             last_progress_position: -1.0,
+            tracks: MediaTracks::default(),
             outputs: Vec::new(),
         }
     }
@@ -237,6 +243,30 @@ impl PlayerController {
     pub fn preview_file(&self) -> Option<&Path> {
         self.preview_file.as_deref()
     }
+    /// The audio / subtitle tracks of the current media (empty until it opened).
+    pub fn tracks(&self) -> &MediaTracks {
+        &self.tracks
+    }
+    /// The file the backend plays (the engine preview copy on macOS when one is in use): the file whose stream
+    /// indices [`Self::tracks`] lists.
+    pub fn playing_file(&self) -> Option<&Path> {
+        self.preview_file.as_deref().or(self.current_path.as_deref())
+    }
+    /// Plays audio track `stream_index` from the current position (answered with `TracksChanged`, or
+    /// `AudioTrackFailed`). The backend decides whether the stream is already active: the list here can be behind a
+    /// switch still in flight, so A → B → A in quick succession must reach it.
+    pub fn select_audio_track(&mut self, stream_index: usize) {
+        if self.disposed || !self.has_media {
+            return;
+        }
+        self.backend.select_audio_track(stream_index);
+    }
+    fn set_tracks(&mut self, tracks: MediaTracks) {
+        if tracks != self.tracks {
+            self.tracks = tracks;
+            self.emit(PlayerOutput::TracksChanged);
+        }
+    }
 
     fn now(&self) -> Instant {
         (self.clock)()
@@ -284,6 +314,7 @@ impl PlayerController {
         self.emit(PlayerOutput::Ticked);
         self.video_size = (16.0, 9.0);
         self.emit(PlayerOutput::VideoSizeChanged(16.0, 9.0));
+        self.set_tracks(MediaTracks::default());
         self.update_active();
         let source = path.map(|p| (self.source_factory)(p));
         self.backend.pause();
@@ -294,6 +325,7 @@ impl PlayerController {
 
     fn install_file(&mut self, file: &Path) {
         self.has_media = false;
+        self.set_tracks(MediaTracks::default());
         self.backend_generation = self.backend.load(Some(MediaSource::File(file.to_path_buf())), false);
         self.backend.set_volume(self.volume);
         self.backend.set_muted(self.muted);
@@ -389,6 +421,18 @@ impl PlayerController {
                     self.set_playing_state(false);
                 }
             }
+            PlayerEvent::TracksChanged { generation } => {
+                if generation == self.backend_generation && self.current_path.is_some() {
+                    let tracks = self.backend.tracks();
+                    self.set_tracks(tracks);
+                }
+            }
+            PlayerEvent::AudioTrackFailed { generation, message, .. } => {
+                if generation == self.backend_generation && self.current_path.is_some() {
+                    // An empty message is worded in the UI language by `media_tracks::audio_track_failure`.
+                    self.emit(PlayerOutput::AudioTrackFailed(message.trim().to_owned()));
+                }
+            }
         }
     }
 
@@ -418,6 +462,7 @@ impl PlayerController {
             self.auto_play_when_ready |= self.is_playing;
             self.has_media = false;
             self.backend.load(None, false);
+            self.set_tracks(MediaTracks::default());
             self.load_generation += 1;
             self.preparing_preview = true;
             self.emit(PlayerOutput::PreparingPreviewChanged(true));
@@ -657,6 +702,7 @@ impl PlayerController {
         }
         self.disposed = true;
         self.has_media = false;
+        self.tracks = MediaTracks::default();
         self.backend.pause();
         self.backend.dispose();
         self.is_playing = false;
@@ -686,6 +732,8 @@ mod tests {
         volume: f64,
         muted: bool,
         failure: Option<FailureKind>,
+        tracks: MediaTracks,
+        selected: Vec<usize>,
     }
 
     struct Fake(Rc<RefCell<FakeState>>);
@@ -743,6 +791,12 @@ mod tests {
         fn dispose(&mut self) {}
         fn failure_kind(&self) -> Option<FailureKind> {
             self.0.borrow().failure
+        }
+        fn tracks(&self) -> MediaTracks {
+            self.0.borrow().tracks.clone()
+        }
+        fn select_audio_track(&mut self, stream_index: usize) {
+            self.0.borrow_mut().selected.push(stream_index);
         }
     }
 
@@ -1083,6 +1137,42 @@ mod tests {
         assert_eq!(PlaybackFailure::cause(Some("  ")), PlaybackFailure::Unknown);
         assert_eq!(PlaybackFailure::NotPlayable.message().id(), "playback-failed:not-playable");
         assert_eq!(PlaybackFailure::System("e".into()).message().id(), "playback-failed:system:e");
+    }
+
+    #[test]
+    fn tracks_follow_the_backend_for_the_current_load_and_switches_pass_through() {
+        let mut r = rig(PlayerFlavor::Windows);
+        let two = MediaTracks {
+            audio: vec![
+                sa_player::AudioTrack { stream_index: 1, ..Default::default() },
+                sa_player::AudioTrack { stream_index: 2, ..Default::default() },
+            ],
+            subtitles: vec![],
+            active_audio: Some(1),
+        };
+        r.state.borrow_mut().tracks = two.clone();
+        r.player.select_audio_track(2);
+        assert!(r.state.borrow().selected.is_empty(), "nothing to switch before the media opened");
+        r.player.load(Some(Path::new("C:/v.mkv")), false);
+        r.open(10.0);
+        let g = r.state.borrow().generation;
+        r.player.take_outputs();
+        r.player.handle_event(PlayerEvent::TracksChanged { generation: g - 1 });
+        assert!(r.player.tracks().audio.is_empty(), "a stale load is ignored");
+        r.player.handle_event(PlayerEvent::TracksChanged { generation: g });
+        assert_eq!(r.player.tracks(), &two);
+        assert!(r.player.take_outputs().contains(&PlayerOutput::TracksChanged));
+        // The backend decides what is already active (this list can be behind a switch in flight: A → B → A).
+        r.player.select_audio_track(2);
+        r.player.select_audio_track(1);
+        assert_eq!(r.state.borrow().selected, vec![2, 1]);
+        r.player.handle_event(PlayerEvent::AudioTrackFailed { generation: g, stream_index: 2, message: " no decoder ".into() });
+        assert!(r.player.take_outputs().contains(&PlayerOutput::AudioTrackFailed("no decoder".into())));
+        // A new load clears them at once.
+        r.player.load(Some(Path::new("C:/w.mkv")), false);
+        assert!(r.player.tracks().audio.is_empty());
+        assert!(r.player.take_outputs().contains(&PlayerOutput::TracksChanged));
+        assert_eq!(r.player.playing_file(), Some(Path::new("C:/w.mkv")));
     }
 
     #[test]

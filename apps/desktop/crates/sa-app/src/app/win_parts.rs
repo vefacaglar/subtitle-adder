@@ -282,6 +282,12 @@ impl MediaPlayerBackend for CachedPlayer {
     fn diagnostics(&self) -> Option<String> {
         self.inner.diagnostics()
     }
+    fn tracks(&self) -> sa_player::MediaTracks {
+        self.inner.tracks()
+    }
+    fn select_audio_track(&mut self, stream_index: usize) {
+        self.inner.select_audio_track(stream_index)
+    }
 }
 
 /// `CleanupTempDirectory()` on a worker at startup (win-viewmodels §17).
@@ -392,6 +398,54 @@ mod tests {
                 profiles.logout_user();
             }
         }
+    }
+
+    /// The production player wrapper forwards the track calls (the trait has no default bodies for them, so a
+    /// missing forward does not build; this checks the forwarded calls reach a real session through the cached
+    /// stream).
+    #[test]
+    fn the_cached_player_lists_and_switches_tracks() {
+        use sa_player::ffmpeg_backend::{AudioTap, PlayerOptions};
+        let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        let ff = std::env::var("FFMPEG_DIR").map(|d| Path::new(&d).join("bin").join(exe)).ok().filter(|p| p.is_file());
+        let Some(ff) = ff else {
+            eprintln!("skipped: no ffmpeg CLI (FFMPEG_DIR) to generate the test clip");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("two-tracks.mkv");
+        let status = std::process::Command::new(ff)
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=10"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=44100"])
+            .args(["-t", "3", "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "mpeg4", "-c:a", "pcm_s16le"])
+            .arg(&clip)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let mut inner = FfmpegPlayer::with_options(PlayerOptions { audio_output: false, ..PlayerOptions::default() });
+        inner.use_audio_tap(Some(AudioTap::new(48_000, 2)));
+        let mut player = CachedPlayer { inner, cache: None };
+        let (tx, rx) = std::sync::mpsc::channel::<PlayerEvent>();
+        player.set_event_sink(Box::new(move |e| {
+            let _ = tx.send(e);
+        }));
+        let wait_tracks = |rx: &std::sync::mpsc::Receiver<PlayerEvent>| loop {
+            match rx.recv_timeout(Duration::from_secs(10)).expect("an event") {
+                PlayerEvent::TracksChanged { .. } => break,
+                PlayerEvent::Failed { message, .. } => panic!("{message}"),
+                _ => {}
+            }
+        };
+        player.load(Some(MediaSource::File(clip)), false);
+        wait_tracks(&rx);
+        let tracks = player.tracks();
+        assert_eq!(tracks.audio.iter().map(|a| a.stream_index).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(tracks.active_audio, Some(1));
+        player.select_audio_track(2);
+        wait_tracks(&rx);
+        assert_eq!(player.tracks().active_audio, Some(2));
+        player.dispose();
     }
 
     #[test]

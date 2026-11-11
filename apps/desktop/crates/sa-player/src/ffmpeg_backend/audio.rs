@@ -13,6 +13,7 @@ use cpal::{FromSample, SizedSample};
 use ffmpeg_next::ffi;
 use parking_lot::{Condvar, Mutex};
 
+use super::AudioTap;
 use super::session::Control;
 
 /// Converted audio waiting for the device.
@@ -183,7 +184,11 @@ impl Resampler {
 /// through `ready` before it starts consuming. When the device is lost later (unplugged, default device changed on
 /// WASAPI) the clock falls back to the wall clock, a stream is opened on the current default device (retried every
 /// second while there is none) and audio resumes from the current position.
-pub(crate) fn output_thread(ctl: Arc<Control>, ready: crossbeam_channel::Sender<Result<DeviceFormat, String>>) {
+pub(crate) fn output_thread(ctl: Arc<Control>, ready: crossbeam_channel::Sender<Result<DeviceFormat, String>>, tap: Option<AudioTap>) {
+    if let Some(tap) = tap {
+        virtual_output(ctl, ready, tap);
+        return;
+    }
     let host = cpal::default_host();
     let mut ready = Some(ready);
     let mut last_open: Option<Instant> = None;
@@ -234,6 +239,38 @@ pub(crate) fn output_thread(ctl: Arc<Control>, ready: crossbeam_channel::Sender<
         }
         let _ = stream.pause();
         drop(stream);
+    }
+}
+
+/// How far after a virtual device's callback its first sample is "heard".
+const TAP_LATENCY: Duration = Duration::from_millis(20);
+
+/// Tests: a device in the tap's format that consumes samples in real time while playing (5 ms callbacks) and records
+/// every block it is handed with the media time of its first sample. The clock is anchored exactly as by a cpal
+/// stream.
+fn virtual_output(ctl: Arc<Control>, ready: crossbeam_channel::Sender<Result<DeviceFormat, String>>, tap: AudioTap) {
+    let format = DeviceFormat { rate: tap.rate(), channels: tap.channels().max(1) };
+    ctl.device_format.store(format.pack(), Ordering::Release);
+    let _ = ready.send(Ok(format));
+    let channels = format.channels as usize;
+    let mut last = Instant::now();
+    let mut carry = 0.0f64;
+    let mut buf: Vec<f32> = Vec::new();
+    while !ctl.stopped() {
+        std::thread::sleep(Duration::from_millis(5));
+        let now = Instant::now();
+        let exact = now.duration_since(last).as_secs_f64() * format.rate as f64 + carry;
+        last = now;
+        let frames = exact.floor() as usize;
+        carry = exact - frames as f64;
+        if frames == 0 || !ctl.playing.load(Ordering::Relaxed) {
+            continue;
+        }
+        buf.clear();
+        buf.resize(frames * channels, 0.0);
+        if let Some((pts, written)) = fill(&ctl, &mut buf, channels, now + TAP_LATENCY) {
+            tap.record(pts, &buf[..written * channels]);
+        }
     }
 }
 
@@ -323,10 +360,11 @@ where
         .map_err(|e| e.to_string())
 }
 
-/// The device callback: copies queued samples (volume applied) and anchors the clock.
-pub(crate) fn fill(ctl: &Control, out: &mut [f32], channels: usize, heard_at: Instant) {
+/// The device callback: copies queued samples (volume applied) and anchors the clock. Returns the media time of the
+/// first sample written and the frames written, when anything was.
+pub(crate) fn fill(ctl: &Control, out: &mut [f32], channels: usize, heard_at: Instant) -> Option<(f64, usize)> {
     if ctl.stopped() || !ctl.clock.is_running() || !ctl.clock.is_audio_master() {
-        return;
+        return None;
     }
     let serial = ctl.serial.load(Ordering::Acquire);
     let gain = if ctl.player.muted.load(Ordering::Relaxed) { 0.0 } else { f64::from_bits(ctl.player.volume.load(Ordering::Relaxed)) as f32 };
@@ -396,6 +434,7 @@ pub(crate) fn fill(ctl: &Control, out: &mut [f32], channels: usize, heard_at: In
         ctl.clock.audio_finished();
         ctl.wake.notify();
     }
+    first_pts.map(|p| (p, written))
 }
 
 #[cfg(test)]

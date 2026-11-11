@@ -17,13 +17,15 @@ use ffmpeg_next::frame;
 use ffmpeg_next::{Packet, Rational};
 use parking_lot::{Condvar, Mutex, RwLock};
 
+use super::AudioTap;
 use super::audio::{self, AudioChunk, AudioRing, DeviceFormat, Resampler};
 use super::hw::{self, Download, OwnedFrame};
 use super::io::{self, OpenFailure, OpenedInput};
 use super::priority;
 use super::sync::{Clock, Notify};
+use super::tracks;
 use super::video::{self, Converter, HdrLevels, StreamLayout};
-use crate::{FailureKind, LoadGeneration, MediaSource, PlayerEvent, PlayerEventToken, PlayerSessionGate, SourceId, VideoFrame};
+use crate::{FailureKind, LoadGeneration, MediaSource, MediaTracks, PlayerEvent, PlayerEventToken, PlayerSessionGate, SourceId, VideoFrame};
 
 pub(crate) type Sink = Arc<dyn Fn(PlayerEvent) + Send + Sync>;
 
@@ -40,6 +42,10 @@ pub(crate) struct PlayerShared {
     pub hardware: AtomicBool,
     /// Tests: every hardware decoder fails as on a GPU without support for the codec (`hw` module docs).
     pub simulate_hw_failure: AtomicBool,
+    /// Tests: the decoder of this audio stream does not open (`FfmpegPlayer::simulate_audio_decoder_failure`).
+    pub simulate_audio_failure: Mutex<Option<usize>>,
+    /// Tests: a virtual output device that records what it plays instead of a cpal stream.
+    pub audio_tap: Mutex<Option<AudioTap>>,
 }
 
 impl PlayerShared {
@@ -52,8 +58,19 @@ impl PlayerShared {
             planar: AtomicBool::new(false),
             hardware: AtomicBool::new(hardware),
             simulate_hw_failure: AtomicBool::new(false),
+            simulate_audio_failure: Mutex::new(None),
+            audio_tap: Mutex::new(None),
         }
     }
+}
+
+/// The decoder of an audio track switched to, for the audio decode thread: it takes it at the first packet of
+/// `stream` (keyed on the stream, not on a serial, so a seek racing the switch or a second switch before the first
+/// was taken cannot hand a packet of one stream to the other stream's decoder).
+pub(crate) struct AudioSwap {
+    stream: usize,
+    dec: codec::decoder::Audio,
+    tb: Rational,
 }
 
 /// Playback counters (diagnostics and the dropped-frame measurement).
@@ -93,6 +110,9 @@ const MAX_SEEK_DEFERRAL: Duration = Duration::from_millis(1500);
 
 struct PacketItem {
     serial: u64,
+    /// The stream the packet belongs to (`None` for the end-of-stream marker): the audio thread changes decoders
+    /// exactly at the first packet of a stream it does not decode yet.
+    stream: Option<usize>,
     /// `None` = end of stream.
     packet: Option<Packet>,
 }
@@ -215,6 +235,11 @@ pub(crate) struct Control {
     last_frame_end: Mutex<f64>,
     latest: Mutex<(Option<VideoFrame>, bool)>,
     pub stats: Stats,
+    /// The audio and subtitle streams (set when the source opened) and the audio stream being played.
+    pub tracks: Mutex<MediaTracks>,
+    /// The audio stream the UI asked for last; the demux thread switches to it (`switch_audio`).
+    audio_select: Mutex<Option<usize>>,
+    audio_swap: Mutex<Option<AudioSwap>>,
 }
 
 impl Control {
@@ -255,6 +280,9 @@ impl Control {
             last_frame_end: Mutex::new(0.0),
             latest: Mutex::new((None, false)),
             stats: Stats::default(),
+            tracks: Mutex::new(MediaTracks::default()),
+            audio_select: Mutex::new(None),
+            audio_swap: Mutex::new(None),
         });
         ctl.clock.set_speed(speed);
         ctl.clock.set_playing(playing);
@@ -345,6 +373,13 @@ impl Control {
             let p = self.position();
             self.request_seek(p);
         }
+    }
+
+    /// Asks the demux thread to play audio stream `stream_index` (handled once the source is open; the newest request
+    /// wins).
+    pub fn request_audio_track(&self, stream_index: usize) {
+        *self.audio_select.lock() = Some(stream_index);
+        self.space.notify();
     }
 
     /// Records a seek: everything queued becomes stale, the clock stands at the target until its frame is shown.
@@ -538,7 +573,7 @@ fn open_video_decoder(params: &codec::Parameters, tb: Rational, hardware: bool) 
     Ok((cctx.decoder().video()?, false, false))
 }
 
-fn open_streams(input: &mut OpenedInput, hardware: bool) -> Result<Streams, OpenFailure> {
+fn open_streams(input: &mut OpenedInput, hardware: bool, simulate_audio_failure: Option<usize>) -> Result<Streams, OpenFailure> {
     let ictx = input.input();
     let vbest = ictx.streams().best(ffmpeg_next::media::Type::Video).map(|s| s.index());
     // Skip cover art ("attached pictures"): it is a single still, not a video track.
@@ -579,19 +614,43 @@ fn open_streams(input: &mut OpenedInput, hardware: bool) -> Result<Streams, Open
         let hdr = unsafe { HdrLevels::of_stream(s.as_ptr()) };
         out.video = Some((i, VideoTrack { dec, hw, hw_only, params, tb, layout, frame_dur: fps.clamp(1.0 / 240.0, 1.0), hdr }));
     }
-    if let Some(i) = audio_index {
-        let s = ictx.stream(i).expect("audio stream");
-        let tb = s.time_base();
-        let opened = codec::context::Context::from_parameters(s.parameters()).and_then(|mut c| {
-            unsafe { (*c.as_mut_ptr()).pkt_timebase = tb.into() };
-            c.decoder().audio()
-        });
-        match opened {
-            Ok(dec) => out.audio = Some((i, dec, tb)),
-            Err(e) => eprintln!("[player] audio decoder unavailable: {e}"),
+    // The best audio stream, else the next one whose decoder opens (a track without a decoder does not leave the
+    // video silent when another track can play).
+    let others = ictx.streams().filter(|s| s.parameters().medium() == ffmpeg_next::media::Type::Audio).map(|s| s.index());
+    let candidates: Vec<usize> = audio_index.into_iter().chain(others.filter(|i| Some(*i) != audio_index)).collect();
+    for i in candidates {
+        match open_audio_decoder(ictx, i, simulate_audio_failure) {
+            Ok((dec, tb)) => {
+                out.audio = Some((i, dec, tb));
+                break;
+            }
+            Err(e) => eprintln!("[player] audio decoder of stream {i} unavailable: {e}"),
         }
     }
     Ok(out)
+}
+
+/// Opens the decoder of audio stream `index` (`simulate_failure`: tests, that stream's decoder "does not open").
+fn open_audio_decoder(
+    ictx: &ffmpeg_next::format::context::Input,
+    index: usize,
+    simulate_failure: Option<usize>,
+) -> Result<(codec::decoder::Audio, Rational), String> {
+    let s = ictx.stream(index).ok_or_else(|| ffmpeg_next::Error::StreamNotFound.to_string())?;
+    if s.parameters().medium() != ffmpeg_next::media::Type::Audio {
+        return Err(ffmpeg_next::Error::StreamNotFound.to_string());
+    }
+    if simulate_failure == Some(index) {
+        return Err(ffmpeg_next::Error::DecoderNotFound.to_string());
+    }
+    let tb = s.time_base();
+    codec::context::Context::from_parameters(s.parameters())
+        .and_then(|mut c| {
+            unsafe { (*c.as_mut_ptr()).pkt_timebase = tb.into() };
+            c.decoder().audio()
+        })
+        .map(|dec| (dec, tb))
+        .map_err(|e| e.to_string())
 }
 
 fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
@@ -606,7 +665,8 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
     if ctl.stopped() {
         return;
     }
-    let streams = match open_streams(&mut input, ctl.player.hardware.load(Ordering::Relaxed)) {
+    let simulate_audio_failure = *ctl.player.simulate_audio_failure.lock();
+    let streams = match open_streams(&mut input, ctl.player.hardware.load(Ordering::Relaxed), simulate_audio_failure) {
         Ok(s) => s,
         Err(failure) => {
             fail(&ctl, failure);
@@ -633,11 +693,17 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
     let mut handles: Vec<JoinHandle<()>> = Vec::new();
     let mut device: Option<DeviceFormat> = None;
     let mut audio_decoder = None;
+    {
+        let mut t = tracks::enumerate(input.input());
+        t.active_audio = streams.audio.as_ref().map(|a| a.0);
+        *ctl.tracks.lock() = t;
+    }
+    let tap = ctl.player.audio_tap.lock().clone();
     if let Some((index, dec, tb)) = streams.audio {
-        if audio_output {
+        if audio_output || tap.is_some() {
             let (tx, rx) = crossbeam_channel::bounded(1);
             let c = ctl.clone();
-            match std::thread::Builder::new().name("player-audio-out".into()).spawn(move || audio::output_thread(c, tx)) {
+            match std::thread::Builder::new().name("player-audio-out".into()).spawn(move || audio::output_thread(c, tx, tap)) {
                 Ok(h) => {
                     match rx.recv_timeout(Duration::from_secs(3)) {
                         Ok(Ok(fmt)) => {
@@ -683,9 +749,9 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
             handles.push(h);
         }
     }
-    if let (Some((_, dec, tb)), Some(_)) = (audio_decoder, device) {
+    if let (Some((index, dec, tb)), Some(_)) = (audio_decoder, device) {
         let c = ctl.clone();
-        if let Ok(h) = std::thread::Builder::new().name("player-audio".into()).spawn(move || audio_main(c, dec, tb)) {
+        if let Ok(h) = std::thread::Builder::new().name("player-audio".into()).spawn(move || audio_main(c, index, dec, tb)) {
             handles.push(h);
         }
     }
@@ -701,9 +767,11 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
     if ctl.player.gate.should_accept_media_opened(ctl.token, Some(ctl.source_id), true) {
         ctl.emit(PlayerEvent::Opened { generation: ctl.generation, duration, natural_size: natural });
         ctl.announce_playing();
+        ctl.emit(PlayerEvent::TracksChanged { generation: ctl.generation });
     }
 
-    demux_loop(&ctl, &mut input, video_index, audio_index);
+    let pipeline = audio_index.is_some();
+    demux_loop(&ctl, &mut input, video_index, audio_index, pipeline);
 
     ctl.shutdown();
     for h in handles {
@@ -775,13 +843,58 @@ fn io_error(input: &mut OpenedInput) -> Option<std::ffi::c_int> {
     }
 }
 
-fn demux_loop(ctl: &Control, input: &mut OpenedInput, video: Option<usize>, audio: Option<usize>) {
+/// Switches the audio stream to `want` (`Control::request_audio_track`), on the demux thread (which owns the input).
+///
+/// The new stream's decoder is opened here first: when it does not open, the previous track keeps playing untouched
+/// and `AudioTrackFailed` is posted. Otherwise playback restarts at the current position exactly as after a seek
+/// (`Control::restart_decoding`: new serial, flushed queues, the clock re-anchored at the position and held until the
+/// video frame there is on screen), the demuxer queues the new stream's packets from then on, and the audio thread
+/// takes the new decoder with the first packet of the new stream (each queued packet carries its stream index). The
+/// device keeps its format: the resampler is rebuilt
+/// for the new stream's rate and layout. Paused, the restart re-shows the frame at the position and the new track is
+/// heard on play; after the end, the switch waits for the next seek (play restarts from the beginning anyway).
+/// Without an audio pipeline (no output device) only the active track changes.
+fn switch_audio(ctl: &Control, input: &mut OpenedInput, audio: &mut Option<usize>, pipeline: bool, want: usize) {
+    let (current, known) = {
+        let t = ctl.tracks.lock();
+        (t.active_audio, t.audio.iter().any(|a| a.stream_index == want))
+    };
+    if known && current == Some(want) {
+        return;
+    }
+    let simulate = *ctl.player.simulate_audio_failure.lock();
+    let opened = if known { open_audio_decoder(input.input(), want, simulate) } else { Err(ffmpeg_next::Error::StreamNotFound.to_string()) };
+    match opened {
+        Err(message) => {
+            eprintln!("[player] audio stream {want} cannot be played ({message}); keeping the current track");
+            ctl.emit(PlayerEvent::AudioTrackFailed { generation: ctl.generation, stream_index: want, message });
+        }
+        Ok((dec, tb)) => {
+            ctl.tracks.lock().active_audio = Some(want);
+            if pipeline {
+                // Before any packet of `want` is queued (this thread queues them, below).
+                *ctl.audio_swap.lock() = Some(AudioSwap { stream: want, dec, tb });
+                *audio = Some(want);
+                if !ctl.ended.load(Ordering::Acquire) {
+                    ctl.restart_decoding(ctl.position());
+                }
+            }
+        }
+    }
+    ctl.emit(PlayerEvent::TracksChanged { generation: ctl.generation });
+}
+
+fn demux_loop(ctl: &Control, input: &mut OpenedInput, video: Option<usize>, mut audio: Option<usize>, pipeline: bool) {
     let mut serial = 1u64;
     let mut eof = false;
     let start = ctl.start_time();
     loop {
         if ctl.stopped() {
             return;
+        }
+        let switch = ctl.audio_select.lock().take();
+        if let Some(want) = switch {
+            switch_audio(ctl, input, &mut audio, pipeline, want);
         }
         let req = ctl.seek_req.lock().take();
         if let Some((target, s)) = req {
@@ -812,9 +925,9 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, video: Option<usize>, audi
             Ok(()) => {
                 let idx = packet.stream();
                 if Some(idx) == video {
-                    ctl.vq.push(PacketItem { serial, packet: Some(packet) });
+                    ctl.vq.push(PacketItem { serial, stream: Some(idx), packet: Some(packet) });
                 } else if Some(idx) == audio {
-                    ctl.aq.push(PacketItem { serial, packet: Some(packet) });
+                    ctl.aq.push(PacketItem { serial, stream: Some(idx), packet: Some(packet) });
                 }
             }
             Err(ffmpeg_next::Error::Exit) => return,
@@ -831,8 +944,8 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, video: Option<usize>, audi
                     eprintln!("[player] read error: {e}");
                 }
                 eof = true;
-                ctl.vq.push(PacketItem { serial, packet: None });
-                ctl.aq.push(PacketItem { serial, packet: None });
+                ctl.vq.push(PacketItem { serial, stream: None, packet: None });
+                ctl.aq.push(PacketItem { serial, stream: None, packet: None });
             }
         }
     }
@@ -1308,7 +1421,7 @@ fn check_end(ctl: &Control) {
     ctl.emit(PlayerEvent::Ended { generation: ctl.generation });
 }
 
-fn audio_main(ctl: Arc<Control>, mut dec: codec::decoder::Audio, tb: Rational) {
+fn audio_main(ctl: Arc<Control>, mut stream: usize, mut dec: codec::decoder::Audio, mut tb: Rational) {
     let _priority = priority::raise(priority::Role::AudioDecode);
     let start = ctl.start_time();
     let mut serial = 0u64;
@@ -1326,7 +1439,29 @@ fn audio_main(ctl: Arc<Control>, mut dec: codec::decoder::Audio, tb: Rational) {
         if item.serial != current {
             continue;
         }
+        if let Some(s) = item.stream
+            && s != stream
+        {
+            // An audio track switch: the first packet of the stream switched to. Without its decoder (a later switch
+            // replaced it) the packet cannot be decoded here and is skipped.
+            let swap = {
+                let mut slot = ctl.audio_swap.lock();
+                if slot.as_ref().is_some_and(|w| w.stream == s) { slot.take() } else { None }
+            };
+            let Some(w) = swap else { continue };
+            dec = w.dec;
+            tb = w.tb;
+            stream = s;
+            serial = 0;
+        }
         if item.serial != serial {
+            {
+                // A switch back to the stream this decoder already plays (A → B → A before B was taken).
+                let mut slot = ctl.audio_swap.lock();
+                if slot.as_ref().is_some_and(|w| w.stream == stream) {
+                    slot.take();
+                }
+            }
             dec.flush();
             serial = item.serial;
             target = ctl.seek_target_for(serial);

@@ -4,6 +4,7 @@
 
 use sa_core::engine_types::EngineModel;
 use sa_core::models::{ModelLabel, SubtitleLanguage};
+use sa_viewmodels::media_tracks::{TrackChoice, TrackItem, TrackMenu};
 
 /// One menu row (mirrors `ui::MenuEntry`).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -23,6 +24,8 @@ pub struct Entry {
     pub hint: String,
     pub level: i32,
     pub submenu: bool,
+    /// A section caption (not clickable).
+    pub header: bool,
 }
 
 impl Entry {
@@ -31,6 +34,9 @@ impl Entry {
     }
     pub fn separator() -> Self {
         Self { separator: true, ..Default::default() }
+    }
+    pub fn header(title: impl Into<String>) -> Self {
+        Self { title: title.into(), header: true, ..Default::default() }
     }
     fn radio(mut self, checked: bool) -> Self {
         self.checkable = true;
@@ -85,6 +91,8 @@ pub enum MenuAction {
     ExplorerOpenFolder(usize),
     /// macOS toolbar overflow item (the toolbar's item index).
     Overflow(usize),
+    /// Player track menu: an audio track or an embedded subtitle track.
+    Track(TrackChoice),
 }
 
 impl MenuAction {
@@ -116,6 +124,7 @@ impl MenuAction {
             "ex-reveal" => MenuAction::ExplorerReveal(idx(rest)?),
             "ex-open" => MenuAction::ExplorerOpenFolder(idx(rest)?),
             "ovf" => MenuAction::Overflow(idx(rest)?),
+            "audio" | "subtitle" => MenuAction::Track(TrackChoice::parse(id)?),
             _ => return None,
         })
     }
@@ -269,9 +278,53 @@ pub fn explorer_row_menu(row: usize, is_folder: bool, mac: bool) -> Vec<Entry> {
     ]
 }
 
+/// Player track menu (`sa_viewmodels::media_tracks::TrackMenu`): an `Ses` section with one entry per audio track (the
+/// playing one marked: radio on Windows, check mark on macOS), then, when the file has any, a `Videodaki altyazılar`
+/// section (the embedded track in the list checked; image tracks disabled with their hint).
+pub fn track_menu(menu: &TrackMenu, mac: bool) -> Vec<Entry> {
+    let row = |i: &TrackItem, radio: bool| {
+        let mut e = Entry::item(i.id.clone(), i.label.clone()).enabled(i.enabled);
+        e = if radio && !mac { e.radio(i.active) } else { e.check(i.active) };
+        e.hint = i.hint.clone();
+        e
+    };
+    let mut out = Vec::new();
+    if !menu.audio.is_empty() {
+        out.push(Entry::header(sa_core::l("Ses")));
+        out.extend(menu.audio.iter().map(|i| row(i, true)));
+    }
+    if !menu.subtitles.is_empty() {
+        if !out.is_empty() {
+            out.push(Entry::separator());
+        }
+        out.push(Entry::header(sa_core::l("Videodaki altyazılar")));
+        out.extend(menu.subtitles.iter().map(|i| row(i, false)));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn track_menu_has_an_audio_and_a_subtitle_section() {
+        let item = |id: &str, active: bool, enabled: bool| TrackItem { id: id.into(), label: id.into(), active, enabled, hint: if enabled { String::new() } else { "x".into() } };
+        let menu = TrackMenu { audio: vec![item("audio:1", false, true), item("audio:2", true, true)], subtitles: vec![item("subtitle:3", false, false)] };
+        let win = track_menu(&menu, false);
+        let ids: Vec<&str> = win.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["", "audio:1", "audio:2", "", "", "subtitle:3"]);
+        assert!(win[0].header && !win[0].enabled);
+        assert!(win[2].checked && win[2].radio && !win[1].checked);
+        assert!(win[3].separator && win[4].header);
+        assert!(!win[5].enabled && win[5].hint == "x" && win[5].checkable && !win[5].radio);
+        let mac = track_menu(&menu, true);
+        assert!(mac[2].checked && !mac[2].radio, "macOS marks with a check");
+        let only_audio = track_menu(&TrackMenu { audio: menu.audio.clone(), subtitles: vec![] }, false);
+        assert_eq!(only_audio.len(), 3, "no subtitle section without subtitle tracks");
+        assert_eq!(MenuAction::parse("audio:2"), Some(MenuAction::Track(TrackChoice::Audio(2))));
+        assert_eq!(MenuAction::parse("subtitle:3"), Some(MenuAction::Track(TrackChoice::Subtitle(3))));
+    }
 
     fn model(id: &str, backend: &str, downloaded: bool) -> EngineModel {
         let mut m = EngineModel::new(id, 100, 3, 3, downloaded);

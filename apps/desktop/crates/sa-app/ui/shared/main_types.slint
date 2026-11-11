@@ -23,6 +23,8 @@ export struct MenuEntry {
     // 0 = top level; 1 = item of the submenu opened by the nearest preceding `submenu` entry.
     level: int,
     submenu: bool,
+    // A section caption (not clickable).
+    header: bool,
 }
 
 // A combo/pop-up item whose enabled state is per item (std ComboBox cannot disable items).

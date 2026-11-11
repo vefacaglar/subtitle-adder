@@ -1538,6 +1538,26 @@ impl SubtitleViewModel {
         });
     }
 
+    /// The foreground session's lines, translations and job right now, for an embedded subtitle read that must not
+    /// replace them when they changed while it ran (`media_tracks::SessionMark`).
+    pub fn session_mark(&self) -> crate::media_tracks::SessionMark {
+        use std::hash::{Hash, Hasher};
+        self.read(|s| {
+            let fg = s.fg();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            fg.id.hash(&mut h);
+            fg.video.hash(&mut h);
+            for x in &fg.sentences {
+                (x.uid, x.start.to_bits(), x.end.to_bits(), &x.text, x.speaker).hash(&mut h);
+            }
+            let mut translations: Vec<_> = fg.translations.iter().collect();
+            translations.sort_by_key(|(k, _)| **k);
+            translations.hash(&mut h);
+            fg.loaded_subtitle.hash(&mut h);
+            crate::media_tracks::SessionMark { content: h.finish(), job: fg.job_id, working: fg.is_working() || s.playlist_running }
+        })
+    }
+
     // ----- playlist
 
     pub fn playlist(&self) -> Vec<PlaylistItem> {
@@ -1620,6 +1640,16 @@ impl SubtitleViewModel {
     pub fn refresh_localization(&self) {
         self.inner.catalog.refresh_localization();
         self.inner.edit(|_, _, fx| fx.ch(SubtitleChange::All));
+    }
+
+    /// A scratch file this session wrote (an embedded subtitle track read for import), deleted with the session's
+    /// WAVs and outputs by [`Self::shutdown`].
+    pub fn register_temp_file(&self, path: PathBuf) {
+        self.inner.edit(|_, c, _| {
+            if !c.st.temp_files.contains(&path) {
+                c.st.temp_files.push(path);
+            }
+        });
     }
 
     /// Cancels jobs, deletes the session temp files (Windows) and forgets subscriptions (exit).

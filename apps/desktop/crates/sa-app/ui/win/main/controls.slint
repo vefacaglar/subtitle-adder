@@ -200,10 +200,10 @@ component MenuRow inherits Rectangle {
     in property <bool> hidden;
     callback activated();
     callback submenu-hovered();
-    height: root.hidden ? 0 : root.entry.separator ? 9px : 32px;
+    height: root.hidden ? 0 : root.entry.separator ? 9px : root.entry.header ? 28px : 32px;
     visible: !root.hidden;
     border-radius: Theme.control-radius;
-    background: root.entry.separator || !root.entry.enabled ? transparent : (touch.pressed ? Theme.subtle-pressed : touch.has-hover ? Theme.subtle-hover : transparent);
+    background: root.entry.separator || root.entry.header || !root.entry.enabled ? transparent : (touch.pressed ? Theme.subtle-pressed : touch.has-hover ? Theme.subtle-hover : transparent);
     accessible-role: button;
     accessible-label: root.entry.title;
     accessible-checkable: root.entry.checkable;
@@ -218,7 +218,18 @@ component MenuRow inherits Rectangle {
         background: Theme.divider;
     }
     property <brush> fg: root.entry.enabled ? (root.entry.destructive ? Theme.critical : Theme.text-primary) : Theme.text-disabled;
-    if !root.entry.separator: HorizontalLayout {
+    // Section caption (MenuFlyout has none; styled like a WinUI list group header: caption, semibold, secondary).
+    if root.entry.header: Text {
+        x: 12px;
+        width: parent.width - 24px;
+        text: root.entry.title;
+        font-size: Theme.caption-size;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+        color: Theme.text-secondary;
+    }
+    if !root.entry.separator && !root.entry.header: HorizontalLayout {
         padding-left: 12px;
         padding-right: 12px;
         spacing: 12px;
@@ -265,7 +276,7 @@ component MenuRow inherits Rectangle {
         }
     }
     touch := TouchArea {
-        enabled: root.entry.enabled && !root.entry.separator;
+        enabled: root.entry.enabled && !root.entry.separator && !root.entry.header;
         clicked => {
             if (root.entry.submenu) {
                 root.submenu-hovered();
@@ -284,10 +295,14 @@ component MenuRow inherits Rectangle {
 // MenuFlyout: the entries of `MainBridge.menu-entries` (level 0) and one cascading submenu (level 1).
 export component MenuFlyout inherits PopupWindow {
     in property <length> min-menu-width: 200px;
+    // Taller menus scroll their rows (the player's track menu caps it at the space above its button).
+    in property <length> max-menu-height: 100000px;
+    // The height the menu is drawn at (callers that place it above themselves use it).
+    out property <length> menu-height: frame.height;
     property <[MenuEntry]> entries: MainBridge.menu-entries;
     property <length> sub-y;
 
-    Rectangle {
+    frame := Rectangle {
         background: Theme.flyout-background;
         border-radius: 8px;
         border-width: 1px;
@@ -295,22 +310,29 @@ export component MenuFlyout inherits PopupWindow {
         drop-shadow-blur: 16px;
         drop-shadow-offset-y: 6px;
         drop-shadow-color: #00000040;
-        min-width: root.min-menu-width;
-        VerticalLayout {
-            padding: 4px;
-            spacing: 0;
-            for e[i] in root.entries: MenuRow {
-                entry: e;
-                hidden: e.level != 0;
-                any-indicator: root.has-indicator(root.entries);
-                any-icon: root.has-icon(root.entries);
-                activated => {
-                    MainBridge.menu-activated(e.id);
-                    root.close();
-                }
-                submenu-hovered => {
-                    root.sub-y = self.y;
-                    sub.show();
+        width: max(root.min-menu-width, list.preferred-width);
+        height: min(list.preferred-height, max(root.max-menu-height, 80px));
+        clip: true;
+        flick := Flickable {
+            content-width: self.width;
+            content-height: list.preferred-height;
+            list := VerticalLayout {
+                width: flick.width;
+                padding: 4px;
+                spacing: 0;
+                for e[i] in root.entries: MenuRow {
+                    entry: e;
+                    hidden: e.level != 0;
+                    any-indicator: root.has-indicator(root.entries);
+                    any-icon: root.has-icon(root.entries);
+                    activated => {
+                        MainBridge.menu-activated(e.id);
+                        root.close();
+                    }
+                    submenu-hovered => {
+                        root.sub-y = self.y + flick.content-y;
+                        sub.show();
+                    }
                 }
             }
         }

@@ -33,6 +33,7 @@ fn entry(id: &str, title: impl Into<SharedString>) -> MenuEntry {
         hint: SharedString::new(),
         level: 0,
         submenu: false,
+        header: false,
     }
 }
 

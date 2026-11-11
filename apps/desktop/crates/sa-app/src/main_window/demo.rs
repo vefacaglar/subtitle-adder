@@ -292,6 +292,53 @@ pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
         }
         "platform" => main.set_workspace(Workspace::Platform),
         "picker-local" | "picker-provider" | "picker-empty" => fill_picker(w, scene, mac),
+        "tracks" | "tracks-reading" | "tracks-many" => {
+            // The player's track control and its menu (open it with `sa-shot --click x,y` on the button).
+            use sa_player::{AudioTrack, MediaTracks, SubtitleKind, SubtitleTrack};
+            let a = |i: usize, lang: &str, title: Option<&str>, codec: &str, channels: u16| AudioTrack {
+                stream_index: i,
+                language: Some(lang.into()),
+                title: title.map(Into::into),
+                codec: codec.into(),
+                channels,
+                ..Default::default()
+            };
+            let s = |i: usize, lang: &str, title: Option<&str>, codec: &str, kind: SubtitleKind, forced: bool| SubtitleTrack {
+                stream_index: i,
+                language: Some(lang.into()),
+                title: title.map(Into::into),
+                codec: codec.into(),
+                kind,
+                default: false,
+                forced,
+            };
+            let mut tracks = MediaTracks {
+                audio: vec![a(1, "eng", None, "eac3", 6), a(2, "eng", Some("Commentary"), "aac", 2), a(3, "tur", None, "aac", 2)],
+                subtitles: vec![
+                    s(4, "tur", None, "subrip", SubtitleKind::Text, false),
+                    s(5, "eng", Some("SDH"), "ass", SubtitleKind::Text, false),
+                    s(6, "eng", None, "subrip", SubtitleKind::Text, true),
+                    s(7, "jpn", None, "hdmv_pgs_subtitle", SubtitleKind::Image, false),
+                ],
+                active_audio: Some(1),
+            };
+            if scene == "tracks-many" {
+                // A Blu-ray remux: 30 PGS tracks (one summary row) and 20 more text tracks (the menu scrolls).
+                let langs = ["deu", "fra", "spa", "por", "rus", "jpn", "zho", "ita", "nld", "swe"];
+                for i in 0..30 {
+                    tracks.subtitles.push(s(10 + i, langs[i % langs.len()], None, "hdmv_pgs_subtitle", SubtitleKind::Image, false));
+                }
+                for i in 0..20 {
+                    tracks.subtitles.push(s(40 + i, langs[i % langs.len()], Some("Full"), "subrip", SubtitleKind::Text, false));
+                }
+            }
+            let reading = (scene == "tracks-reading").then_some((5, 0.42));
+            let menu = sa_viewmodels::media_tracks::TrackMenu::build(&tracks, reading, Some(4));
+            let entries: Vec<MenuEntry> = super::menus::track_menu(&menu, mac).into_iter().map(super::controller::menu_entry).collect();
+            main.set_menu_entries(ModelRc::new(VecModel::from(entries)));
+            main.set_tracks_available(true);
+            main.set_tracks_busy(reading.is_some());
+        }
         "menu" => {
             main.set_menu_entries(ModelRc::new(VecModel::from(vec![
                 MenuEntry { id: "a".into(), title: "large-v3 · hazır".into(), checkable: true, checked: true, radio: true, enabled: true, ..Default::default() },

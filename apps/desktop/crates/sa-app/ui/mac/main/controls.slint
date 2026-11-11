@@ -189,10 +189,10 @@ component MenuItemRow inherits Rectangle {
     in property <bool> check-column: true;
     callback activated();
     callback submenu-requested();
-    height: root.hidden ? 0 : root.entry.separator ? 11px : 22px;
+    height: root.hidden ? 0 : root.entry.separator ? 11px : root.entry.header ? 20px : 22px;
     visible: !root.hidden;
     border-radius: 4px;
-    property <bool> hot: touch.has-hover && root.entry.enabled && !root.entry.separator;
+    property <bool> hot: touch.has-hover && root.entry.enabled && !root.entry.separator && !root.entry.header;
     background: root.hot ? MacTheme.control-accent : transparent;
     property <brush> fg: root.hot ? white : !root.entry.enabled ? MacTheme.tertiary-label : root.entry.destructive ? MacTheme.system-red : MacTheme.label;
     accessible-role: button;
@@ -207,7 +207,18 @@ component MenuItemRow inherits Rectangle {
         height: 1px;
         background: MacTheme.separator;
     }
-    if !root.entry.separator: HorizontalLayout {
+    // NSMenu section header (`NSMenuItem.sectionHeader`): small, bold, secondary, aligned with the item titles.
+    if root.entry.header: Text {
+        x: 6px + (root.check-column ? 14px : 0) + 4px;
+        width: parent.width - self.x - 10px;
+        text: root.entry.title;
+        font-size: MacTheme.small-size;
+        font-weight: 700;
+        vertical-alignment: center;
+        overflow: elide;
+        color: MacTheme.secondary-label;
+    }
+    if !root.entry.separator && !root.entry.header: HorizontalLayout {
         padding-left: 6px;
         padding-right: 10px;
         spacing: 4px;
@@ -233,6 +244,13 @@ component MenuItemRow inherits Rectangle {
             horizontal-stretch: 1;
             color: root.fg;
         }
+        // Trailing note in the key-equivalent column (reading progress, why an item is disabled).
+        if root.entry.hint != "": Text {
+            text: root.entry.hint;
+            font-size: MacTheme.small-size;
+            vertical-alignment: center;
+            color: root.hot ? white : MacTheme.tertiary-label;
+        }
         if root.entry.submenu: Sym {
             y: (parent.height - self.height) / 2;
             name: "chevron.right";
@@ -241,7 +259,7 @@ component MenuItemRow inherits Rectangle {
         }
     }
     touch := TouchArea {
-        enabled: root.entry.enabled && !root.entry.separator;
+        enabled: root.entry.enabled && !root.entry.separator && !root.entry.header;
         clicked => {
             if (root.entry.submenu) { root.submenu-requested(); } else { root.activated(); }
         }
@@ -253,10 +271,14 @@ component MenuItemRow inherits Rectangle {
 
 export component MacMenu inherits PopupWindow {
     in property <length> min-menu-width: 180px;
+    // A taller menu scrolls its items, as an NSMenu does at the screen edge (the track menu caps it above its button).
+    in property <length> max-menu-height: 100000px;
     property <[MenuEntry]> entries: MainBridge.menu-entries;
     property <length> sub-y;
     Rectangle {
-        min-width: root.min-menu-width;
+        width: max(root.min-menu-width, list.preferred-width);
+        height: min(list.preferred-height, max(root.max-menu-height, 60px));
+        clip: true;
         background: MacTheme.menu-background;
         border-radius: 6px;
         border-width: 0.5px;
@@ -264,18 +286,23 @@ export component MacMenu inherits PopupWindow {
         drop-shadow-blur: 14px;
         drop-shadow-offset-y: 5px;
         drop-shadow-color: #00000040;
-        VerticalLayout {
-            padding: 5px;
-            for e in root.entries: MenuItemRow {
-                entry: e;
-                hidden: e.level != 0;
-                activated => {
-                    MainBridge.menu-activated(e.id);
-                    root.close();
-                }
-                submenu-requested => {
-                    root.sub-y = self.y;
-                    sub.show();
+        flick := Flickable {
+            content-width: self.width;
+            content-height: list.preferred-height;
+            list := VerticalLayout {
+                width: flick.width;
+                padding: 5px;
+                for e in root.entries: MenuItemRow {
+                    entry: e;
+                    hidden: e.level != 0;
+                    activated => {
+                        MainBridge.menu-activated(e.id);
+                        root.close();
+                    }
+                    submenu-requested => {
+                        root.sub-y = self.y + flick.content-y;
+                        sub.show();
+                    }
                 }
             }
         }

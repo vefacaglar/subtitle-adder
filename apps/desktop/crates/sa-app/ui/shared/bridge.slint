@@ -137,7 +137,7 @@ export global MainBridge {
 
     // ---- menus: Rust fills `menu-entries` on `menu-requested(<menu id>)`, the UI shows them, a click reports the id.
     // Menu ids: "model", "speakers", "bulk-language", "queue-language:<row>", "row:<index>", "speaker:<index>",
-    // "explorer-quick", "explorer-row:<index>", "display", "overflow".
+    // "explorer-quick", "explorer-row:<index>", "display", "overflow", "tracks".
     in property <[MenuEntry]> menu-entries;
     callback menu-requested(string);
     callback menu-activated(string);
@@ -194,6 +194,12 @@ export global MainBridge {
     callback toggle-mute();
     callback volume-scrub(bool /* scrubbing */, float /* ratio */);
     callback volume-wheel(float /* delta */);
+    // Audio / subtitle track control (menu id "tracks"): shown while the file has a choice to make; `tracks-busy`
+    // while an embedded subtitle track is being read. The tree reports its menu opening and closing (the controls stay
+    // visible meanwhile).
+    in property <bool> tracks-available;
+    in property <bool> tracks-busy;
+    callback tracks-menu-open(bool);
 
     // ---- display picker: 0 original, 1 translation, 2 both
     in property <int> display-mode;

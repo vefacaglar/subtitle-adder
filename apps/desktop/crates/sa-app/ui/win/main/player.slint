@@ -4,8 +4,59 @@ import { Loc } from "../../shared/loc.slint";
 import { MainBridge, AppBridge } from "../../shared/bridge.slint";
 import { SubtitleOverlay } from "../../shared/overlay_label.slint";
 import { Theme } from "../theme.slint";
-import { Glyph, ToggleGlyph, ToolTip } from "controls.slint";
+import { Spinner } from "std-widgets.slint";
+import { Glyph, ToggleGlyph, ToolTip, MenuFlyout } from "controls.slint";
 import { EngagementBar } from "../hub/engagement_bar.slint";
+
+// Audio / subtitle track button at the leading edge of the pill's lower row (mirrors the mute button): opens the
+// "tracks" menu (Rust fills it) above the pill; a spinner replaces the glyph while an embedded track is read.
+component TracksButton inherits Rectangle {
+    width: 26px;
+    height: 26px;
+    border-radius: 13px;
+    background: touch.has-hover ? #ffffff24 : #ffffff00;
+    accessible-role: button;
+    accessible-label: Loc.t("Ses ve altyazı parçaları");
+    accessible-action-default => { root.open(); }
+    function open() {
+        MainBridge.menu-requested("tracks");
+        MainBridge.tracks-menu-open(true);
+        flyout.show();
+    }
+    if !MainBridge.tracks-busy: Glyph {
+        glyph: "\u{E7F0}";
+        size: 14px;
+        color: touch.has-hover ? #ffffffff : #ffffffd8;
+    }
+    if MainBridge.tracks-busy: Spinner {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        indeterminate: true;
+    }
+    touch := TouchArea {
+        clicked => { root.open(); }
+    }
+    ToolTip {
+        text: Loc.t("Ses ve altyazı parçaları");
+        show: touch.has-hover && !touch.pressed && !flyout.is-open;
+    }
+    // Above the pill (the pill sits at the bottom of the video).
+    flyout := MenuFlyout {
+        x: 0;
+        y: -self.menu-height - 12px;
+        min-menu-width: 380px;
+        // The space between the window top and the button (minus the gap): longer menus scroll.
+        max-menu-height: root.absolute-position.y - 24px;
+    }
+    property <bool> flyout-open: flyout.is-open;
+    changed flyout-open => {
+        if (!self.flyout-open) {
+            MainBridge.tracks-menu-open(false);
+        }
+    }
+}
 
 // SleekScrubber (§11.1).
 component Scrubber inherits Rectangle {
@@ -141,6 +192,12 @@ component TransportHud inherits Rectangle {
         }
         Rectangle {
             height: 34px;
+            // Audio / subtitle tracks (leading; hidden when the file has nothing to choose).
+            TracksButton {
+                x: 0;
+                y: (parent.height - self.height) / 2;
+                visible: MainBridge.tracks-available;
+            }
             // Play / pause circle 34.
             play := Rectangle {
                 width: 34px;
@@ -336,9 +393,28 @@ component DisplayPicker inherits Rectangle {
     }
 }
 
+// The rounded corners of the player are four masks in the window background drawn over the video, never a rounded
+// clip: femtovg draws a clip with a radius through a cached offscreen layer that is re-rendered only when a property
+// of its subtree changes, and the video texture changes without one, so the window would keep showing an old frame
+// (`video_gl.rs`, `WindowProbe`). Nothing above the video `Image` may have a rounded clip, an opacity below 1 or a
+// cache hint. With Mica the backdrop cannot be matched, so the corners stay square there.
+component CornerMask inherits Path {
+    in property <int> corner; // 0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left
+    viewbox-width: 8;
+    viewbox-height: 8;
+    fill: Theme.window-background;
+    stroke-width: 0;
+    commands: root.corner == 0 ? "M 0 0 L 8 0 A 8 8 0 0 0 0 8 Z"
+        : root.corner == 1 ? "M 0 0 L 8 0 L 8 8 A 8 8 0 0 0 0 0 Z"
+        : root.corner == 2 ? "M 8 0 L 8 8 L 0 8 A 8 8 0 0 0 8 0 Z"
+        : "M 0 0 A 8 8 0 0 0 8 8 L 0 8 Z";
+}
+
 export component PlayerSurface inherits Rectangle {
+    property <length> radius: AppBridge.is-full-screen ? 0 : 8px;
+    property <bool> masks: root.radius > 0 && !AppBridge.mica-backdrop;
     background: black;
-    border-radius: AppBridge.is-full-screen ? 0 : 8px;
+    // A square clip is a scissor rectangle, not a layer.
     clip: true;
 
     surface := TouchArea {
@@ -397,4 +473,9 @@ export component PlayerSurface inherits Rectangle {
             visible: MainBridge.picker-visible;
         }
     }
+
+    if root.masks: CornerMask { x: 0; y: 0; width: root.radius; height: root.radius; corner: 0; }
+    if root.masks: CornerMask { x: parent.width - root.radius; y: 0; width: root.radius; height: root.radius; corner: 1; }
+    if root.masks: CornerMask { x: parent.width - root.radius; y: parent.height - root.radius; width: root.radius; height: root.radius; corner: 2; }
+    if root.masks: CornerMask { x: 0; y: parent.height - root.radius; width: root.radius; height: root.radius; corner: 3; }
 }
