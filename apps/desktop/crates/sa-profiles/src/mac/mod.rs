@@ -869,4 +869,10 @@ impl ProfileStore for MacProfileStore {
         let l = self.lock();
         l.state.session.as_ref().map(|s| (s.username_key.clone(), s.vault_key.clone()))
     }
+    /// The key and the generation from one critical section (published at this unlock, see `Locked`).
+    fn active_vault_key_in_session(&self) -> Option<(u64, String, SecretKey32)> {
+        let l = self.lock();
+        let generation = l.state.session_generation;
+        l.state.session.as_ref().map(|s| (generation, s.username_key.clone(), s.vault_key.clone()))
+    }
 }

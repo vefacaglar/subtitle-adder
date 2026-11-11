@@ -293,6 +293,18 @@ pub trait ProfileStore: Send + Sync {
     fn persist_pending_migrations(&self) -> bool;
     /// Change notifications; other profiles' events are filtered out.
     fn subscribe_changes(&self, handler: Box<dyn Fn(ProfileChange) + Send + Sync>) -> Subscription;
-    /// Windows VideoCache key derivation; macOS ThumbnailCache internal.
+    /// Windows VideoCache key derivation; macOS ThumbnailCache internal. Blocking (takes the store lock): call it when
+    /// a consumer starts, never per read.
     fn active_vault_key(&self) -> Option<(String, SecretKey32)>;
+
+    /// [`Self::active_vault_key`] together with the [`Self::session_generation`] it belongs to, read consistently:
+    /// a long-lived consumer (a playback stream) captures the key once and afterwards only compares the lock-free
+    /// generation, so it never takes the store lock again and still stops the moment the session changes. `None`
+    /// logged out. The default (test doubles) brackets the key read with two generation reads and gives up when they
+    /// differ (generations only grow); both real stores read the key and the generation under one lock.
+    fn active_vault_key_in_session(&self) -> Option<(u64, String, SecretKey32)> {
+        let before = self.session_generation();
+        let (username, key) = self.active_vault_key()?;
+        (self.session_generation() == before).then_some((before, username, key))
+    }
 }

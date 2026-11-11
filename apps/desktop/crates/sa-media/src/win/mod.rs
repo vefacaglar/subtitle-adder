@@ -18,6 +18,6 @@ pub mod stream;
 #[cfg(test)]
 mod tests;
 
-pub use cache::{CacheSession, VaultKeyProvider, VideoCacheStore};
+pub use cache::{CacheSession, SessionGenerationProvider, SessionKeyProvider, VaultKeyProvider, VideoCacheStore};
 pub use index::WinMediaIndex;
 pub use stream::{BufferedVideoStream, ReadSeek, mime_type};

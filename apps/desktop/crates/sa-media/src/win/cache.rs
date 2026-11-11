@@ -38,17 +38,47 @@ use super::paths;
 use crate::text::{eq_ordinal_ignore_case, upper_invariant};
 
 /// Supplies the active profile's vault key (`ProfileStore::active_vault_key`: username as stored and a copy of the
-/// 32-byte key), `None` logged out or while the key is not unlocked in this session.
+/// 32-byte key), `None` logged out or while the key is not unlocked in this session. A store built with
+/// [`VideoCacheStore::new`] calls it for every chunk read and write; the app builds the store with
+/// [`VideoCacheStore::with_session_keys`] instead, which calls its key source only when a stream opens.
 pub type VaultKeyProvider = Arc<dyn Fn() -> Option<(String, SecretKey32)> + Send + Sync>;
+
+/// The active profile's vault key with the session generation it belongs to, read consistently
+/// (`ProfileStore::active_vault_key_in_session`); `None` logged out. May block (the profile store lock).
+pub type SessionKeyProvider = Arc<dyn Fn() -> Option<(u64, String, SecretKey32)> + Send + Sync>;
+
+/// The current session generation (`ProfileStore::session_generation`). Must never block: it runs on every chunk
+/// read of a playback stream (the demux thread).
+pub type SessionGenerationProvider = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// Where a store gets its key from.
+enum KeySource {
+    /// Looked up for every chunk (tests and tools whose provider takes no lock).
+    PerChunk(VaultKeyProvider),
+    /// Captured once per stream with its session generation; per chunk only the lock-free generation is compared.
+    Session { keys: SessionKeyProvider, generation: SessionGenerationProvider },
+}
+
+impl KeySource {
+    /// The current owner, as a full (possibly blocking) lookup: `(generation, username, key)`.
+    fn lookup(&self) -> Option<(Option<u64>, String, SecretKey32)> {
+        match self {
+            KeySource::PerChunk(keys) => keys().map(|(u, k)| (None, u, k)),
+            KeySource::Session { keys, .. } => keys().map(|(g, u, k)| (Some(g), u, k)),
+        }
+    }
+}
 
 const GIB: i64 = 1024 * 1024 * 1024;
 const MAGIC: &[u8; 8] = b"SAVC0003";
 
-/// One cache owner captured when a stream opens: the profile and a copy of its key. Ended (key zeroed) as soon as
-/// that profile is no longer the active, unlocked profile; it never becomes current again.
+/// One cache owner captured when a stream opens: the profile, a copy of its key and (with a session key source) the
+/// session generation it was read under. Ended (key zeroed) as soon as that profile is no longer the active, unlocked
+/// profile; it never becomes current again.
 pub struct CacheSession {
     username: String,
     profile_tag: String,
+    generation: Option<u64>,
     gate: Mutex<SessionKey>,
 }
 
@@ -93,7 +123,7 @@ struct ChunkMaterial {
 /// The encrypted SSD chunk cache.
 pub struct VideoCacheStore {
     cache_dir: PathBuf,
-    keys: VaultKeyProvider,
+    keys: KeySource,
     max_bytes: AtomicI64,
     writes_since_quota_check: AtomicU64,
     quota_lock: Mutex<()>,
@@ -149,7 +179,22 @@ impl VideoCacheStore {
     /// `cache_dir` = `%LOCALAPPDATA%\SubtitleAdder\VideoCache` in production. `max_bytes` overrides the 20 GiB default
     /// when > 0. Purges the legacy layout once, in the background.
     /// A blank `cache_dir` is [`Self::default_directory`] (C# `IsNullOrWhiteSpace(cacheDirectory)`).
+    ///
+    /// `keys` is called for every chunk read and write (and by the session watcher), so it must not block; the app
+    /// uses [`Self::with_session_keys`].
     pub fn new(cache_dir: PathBuf, keys: VaultKeyProvider, max_bytes: Option<i64>) -> Arc<Self> {
+        Self::build(cache_dir, KeySource::PerChunk(keys), max_bytes)
+    }
+
+    /// Like [`Self::new`], for a key source that may block (the profile store lock): `keys` runs only when a stream
+    /// opens (and on the session watcher thread); a chunk read or write compares the lock-free `generation` with the
+    /// one its session was opened under, so the player's demux thread never waits for the profile store, and a
+    /// logout or user switch ends an open stream's session at its next chunk.
+    pub fn with_session_keys(cache_dir: PathBuf, keys: SessionKeyProvider, generation: SessionGenerationProvider, max_bytes: Option<i64>) -> Arc<Self> {
+        Self::build(cache_dir, KeySource::Session { keys, generation }, max_bytes)
+    }
+
+    fn build(cache_dir: PathBuf, keys: KeySource, max_bytes: Option<i64>) -> Arc<Self> {
         let cache_dir = if cache_dir.as_os_str().to_string_lossy().trim().is_empty() {
             Self::default_directory()
         } else {
@@ -230,13 +275,14 @@ impl VideoCacheStore {
     /// Captures the active profile as the owner of a playback stream's cache; `None` when no profile is logged in
     /// (logged-out playback is never cached on disk).
     pub fn try_begin_session(&self) -> Option<Arc<CacheSession>> {
-        let (username, key) = (self.keys)()?;
+        let (generation, username, key) = self.keys.lookup()?;
         if username.trim().is_empty() {
             return None;
         }
         let session = Arc::new(CacheSession {
             username: username.trim().to_owned(),
             profile_tag: keyed_tag(key.expose(), "SubtitleAdder.VideoCache.ProfileDir.v2"),
+            generation,
             gate: Mutex::new(SessionKey { ended: false, key }),
         });
         {
@@ -276,44 +322,74 @@ impl VideoCacheStore {
         }
     }
 
-    fn is_current_locked(&self, session: &CacheSession, state: &SessionKey) -> bool {
-        let Some((username, key)) = (self.keys)() else { return false };
+    /// The lock-free part of a currency check: with a session key source, the generation the session was opened
+    /// under must still be the current one (always true for a per-chunk source).
+    fn generation_current(&self, session: &CacheSession) -> bool {
+        match &self.keys {
+            KeySource::PerChunk(_) => true,
+            KeySource::Session { generation, .. } => session.generation == Some(generation()),
+        }
+    }
+
+    /// The full check against an owner looked up beforehand (never under the gate: the lookup may block).
+    fn matches_owner(&self, session: &CacheSession, state: &SessionKey, owner: Option<&(Option<u64>, String, SecretKey32)>) -> bool {
+        let Some((generation, username, key)) = owner else { return false };
         !state.ended
+            && self.generation_current(session)
+            && (generation.is_none() || *generation == session.generation)
             && eq_ordinal_ignore_case(username.trim(), &session.username)
             && bool::from(key.expose().ct_eq(state.key.expose()))
     }
 
-    /// True while `session`'s profile is still the active, unlocked profile.
+    /// True while `session`'s profile is still the active, unlocked profile (a full lookup; may block on the
+    /// profile store, so not for the read path).
     pub fn is_session_current(&self, session: &CacheSession) -> bool {
+        let owner = self.keys.lookup();
         let state = session.gate.lock();
-        self.is_current_locked(session, &state)
+        self.matches_owner(session, &state, owner.as_ref())
     }
 
     /// Ends every handed-out session whose profile is no longer the active, unlocked one (C# `EndStaleSessions`, run
     /// on every `StateChanged`). The session watcher calls it while sessions are live; the app may call it on a
-    /// profile state change to end them at once.
+    /// profile state change to end them at once. The owner is looked up once, before any session gate is taken, so
+    /// a slow profile store never holds up a stream's chunk read through the gate.
     pub fn end_stale_sessions(&self) {
         let live: Vec<Arc<CacheSession>> = {
             let mut sessions = self.sessions.lock();
             sessions.retain(|w| w.upgrade().is_some_and(|s| !s.is_ended()));
             sessions.iter().filter_map(Weak::upgrade).collect()
         };
+        if live.is_empty() {
+            return;
+        }
+        let owner = self.keys.lookup();
         for session in live {
             let mut state = session.gate.lock();
-            if !self.is_current_locked(&session, &state) {
+            if !self.matches_owner(&session, &state, owner.as_ref()) {
                 CacheSession::end_locked(&mut state);
             }
         }
     }
 
     /// Runs `work` with the session's key under its gate; a stale session is ended. File I/O stays out of `work`.
+    ///
+    /// The per-chunk path: with a session key source it takes no profile store lock at all (only the session's own
+    /// gate and the lock-free generation); a per-chunk source is looked up before the gate is taken.
     fn with_current_session<T>(&self, session: Option<&CacheSession>, work: impl FnOnce(&CacheSession, &[u8; 32]) -> T) -> Option<T> {
         let session = session?;
+        let owner = match &self.keys {
+            KeySource::PerChunk(_) => Some(self.keys.lookup()),
+            KeySource::Session { .. } => None,
+        };
         let mut state = session.gate.lock();
         if state.ended {
             return None;
         }
-        if !self.is_current_locked(session, &state) {
+        let current = match &owner {
+            Some(owner) => self.matches_owner(session, &state, owner.as_ref()),
+            None => self.generation_current(session),
+        };
+        if !current {
             CacheSession::end_locked(&mut state);
             return None;
         }

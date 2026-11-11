@@ -75,9 +75,7 @@ impl WinParts {
         let providers = WinProviderManager::open(data_dir, Some(bus));
         // The encrypted per-profile chunk cache; logged out nothing is cached (no vault key, rule 6).
         let cache = {
-            let keys_profiles = profiles.clone();
-            let keys: sa_media::win::VaultKeyProvider = Arc::new(move || keys_profiles.active_vault_key());
-            let store = VideoCacheStore::new(data_dir.join("VideoCache"), keys, None);
+            let store = video_cache_store(data_dir.join("VideoCache"), &profiles);
             let gb = settings.get_int(keys::VIDEO_CACHE_MAX_SIZE_GB).unwrap_or(defaults::VIDEO_CACHE_MAX_SIZE_GB).clamp(1, 500);
             if gb != store.max_cache_size_gb() {
                 store.set_max_cache_size_gb(gb);
@@ -138,6 +136,20 @@ impl WinParts {
         self.json_settings.flush();
         self.json_settings.dispose();
     }
+}
+
+/// The encrypted chunk cache over the profile store. The vault key is read (under the profile store lock) only when
+/// a playback stream opens, together with its session generation; every chunk read and write of the stream then
+/// compares the store's lock-free generation, so the demux thread never waits for a profile save and a logout or user
+/// switch ends the stream's cache session (its key copy zeroized) at the next chunk.
+fn video_cache_store(dir: PathBuf, profiles: &Arc<WinProfileStore>) -> Arc<VideoCacheStore> {
+    let (key_profiles, generation_profiles) = (profiles.clone(), profiles.clone());
+    VideoCacheStore::with_session_keys(
+        dir,
+        Arc::new(move || key_profiles.active_vault_key_in_session()),
+        Arc::new(move || generation_profiles.session_generation()),
+        None,
+    )
 }
 
 /// Saved-provider tests with the C# messages: `WinProviderManager::test_draft` (raises `IsTesting`), the message shown
@@ -324,6 +336,62 @@ pub fn cleanup_temp_directory(dir: &Path, another_instance: bool, broker_active:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The app's wiring of the chunk cache over the real profile store: an open stream yields the profile's cached
+    /// plaintext only while the session it opened under lasts; a logout or a switch stops it at the next chunk.
+    #[test]
+    fn the_video_cache_follows_the_profile_session_of_an_open_stream() {
+        struct Unreadable(u64, u64);
+        impl std::io::Read for Unreadable {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("source unavailable"))
+            }
+        }
+        impl std::io::Seek for Unreadable {
+            fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.1 = match pos {
+                    std::io::SeekFrom::Start(p) => p,
+                    std::io::SeekFrom::End(d) => (self.0 as i64 + d) as u64,
+                    std::io::SeekFrom::Current(d) => (self.1 as i64 + d) as u64,
+                };
+                Ok(self.1)
+            }
+        }
+        const CHUNK: i32 = 64 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let profiles = WinProfileStore::open(dir.path().join("profiles.json"), sa_sync::InProcessBus::with_scope(&sa_core::text::guid_n()));
+        let cache = video_cache_store(dir.path().join("VideoCache"), &profiles);
+        let raw: Vec<u8> = (0..3 * CHUNK as usize).map(|i| (i * 31 % 251) as u8).collect();
+        let path = dir.path().join("film.mp4").to_string_lossy().into_owned();
+        let open = |source: Box<dyn sa_media::win::ReadSeek>| {
+            BufferedVideoStream::from_stream(source, false, CHUNK, 2, 0, Some(cache.clone()), None, Some(path.clone())).unwrap()
+        };
+        let cache_only = || open(Box::new(Unreadable(raw.len() as u64, 0)));
+        let c = CHUNK as usize;
+
+        for change in ["logout", "switch"] {
+            profiles.register_user(&format!("ali-{change}"), "pw-1234", false).unwrap();
+            // First playback fills the profile's cache from the source.
+            let mut buf = vec![0u8; raw.len()];
+            std::io::Read::read_exact(&mut open(Box::new(std::io::Cursor::new(raw.clone()))), &mut buf).unwrap();
+            assert_eq!(buf, raw);
+
+            let mut stream = cache_only();
+            let mut first = vec![0u8; c];
+            std::io::Read::read_exact(&mut stream, &mut first).unwrap();
+            assert_eq!(first, raw[..c]);
+            match change {
+                "logout" => profiles.logout_user(),
+                _ => profiles.register_user(&format!("veli-{change}"), "pw-5678", false).unwrap(),
+            }
+            let mut next = vec![0u8; c];
+            assert!(std::io::Read::read(&mut stream, &mut next).is_err(), "{change}: no cached plaintext of the previous session");
+            assert_eq!(stream.encrypted_cache_read_count(), 1);
+            if change == "switch" {
+                profiles.logout_user();
+            }
+        }
+    }
 
     #[test]
     fn cleanup_keeps_broker_files_while_a_broker_runs_and_recent_files_of_other_instances() {

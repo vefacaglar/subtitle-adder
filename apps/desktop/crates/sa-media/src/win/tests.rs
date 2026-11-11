@@ -764,6 +764,154 @@ fn a_paused_streams_session_ends_soon_after_logout_without_a_read() {
     assert!(bob.is_ended(), "a profile switch ends the previous session");
 }
 
+/// A profile store as the app wires it ([`VideoCacheStore::with_session_keys`]): the key comes with a generation
+/// that every login / logout bumps, and `active` stands for the profile store lock (the key lookup takes it, the
+/// generation read does not).
+#[derive(Default)]
+struct SessionProfiles {
+    active: Mutex<Option<(String, [u8; 32])>>,
+    generation: std::sync::atomic::AtomicU64,
+}
+
+impl SessionProfiles {
+    fn login(&self, user: &str, seed: u8) {
+        let mut active = self.active.lock();
+        *active = Some((user.into(), std::array::from_fn(|i| seed.wrapping_add(i as u8))));
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    fn logout(&self) {
+        let mut active = self.active.lock();
+        *active = None;
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    fn store(self: &Arc<Self>, dir: PathBuf) -> Arc<VideoCacheStore> {
+        let (keys, generation) = (self.clone(), self.clone());
+        let store = VideoCacheStore::with_session_keys(
+            dir,
+            Arc::new(move || {
+                let active = keys.active.lock();
+                let g = keys.generation.load(std::sync::atomic::Ordering::Acquire);
+                active.as_ref().map(|(u, k)| (g, u.clone(), SecretKey32::new(*k)))
+            }),
+            Arc::new(move || generation.generation.load(std::sync::atomic::Ordering::Acquire)),
+            Some(1 << 30),
+        );
+        store.purge_legacy_layout();
+        store
+    }
+}
+
+/// A source whose reads fail (seeks work): whatever a stream over it yields came from the SSD cache.
+struct UnreadableSource {
+    len: u64,
+    pos: u64,
+}
+
+impl std::io::Read for UnreadableSource {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("source unavailable"))
+    }
+}
+
+impl std::io::Seek for UnreadableSource {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.pos = match pos {
+            std::io::SeekFrom::Start(p) => p,
+            std::io::SeekFrom::End(d) => (self.len as i64 + d) as u64,
+            std::io::SeekFrom::Current(d) => (self.pos as i64 + d) as u64,
+        };
+        Ok(self.pos)
+    }
+}
+
+fn cache_only_stream(len: usize, store: &Arc<VideoCacheStore>, path: &str) -> BufferedVideoStream {
+    let source = UnreadableSource { len: len as u64, pos: 0 };
+    BufferedVideoStream::from_stream(Box::new(source), false, CHUNK, 2, 0, Some(store.clone()), None, Some(path.to_owned())).unwrap()
+}
+
+/// The demux thread reads through the stream while the UI thread saves a profile: with a session key source no
+/// chunk read or write takes the profile store lock (the key was captured when the stream opened), and the session
+/// watcher waiting for that lock holds no session gate a read needs.
+#[test]
+fn session_keyed_reads_proceed_while_the_profile_store_lock_is_held() {
+    let fx = CacheFixture::new();
+    let (path, raw) = fx.video("lock_free.mp4", 4 * CHUNK as usize, 41, 3);
+    let profiles = Arc::new(SessionProfiles::default());
+    profiles.login("alice", 7);
+    let store = profiles.store(fx.cache_dir());
+    play_through(&raw, &store, &path);
+    assert_eq!(fx.vcache_files().len(), 4);
+
+    let mut stream = cache_only_stream(raw.len(), &store, &path);
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|s| {
+        let holder = &profiles;
+        s.spawn(move || {
+            // A slow profile save on another thread.
+            let _lock = holder.active.lock();
+            held_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(3));
+        });
+        held_rx.recv().unwrap();
+        // Long enough for the session watcher to block on the held lock.
+        std::thread::sleep(VideoCacheStore::SESSION_WATCH_INTERVAL * 2);
+        let t = std::time::Instant::now();
+        let mut buf = vec![0u8; raw.len()];
+        let read = std::io::Read::read_exact(&mut stream, &mut buf);
+        let elapsed = t.elapsed();
+        let _ = release_tx.send(());
+        read.unwrap();
+        assert_eq!(buf, raw);
+        assert!(elapsed < std::time::Duration::from_millis(1000), "reads waited for the profile store lock: {elapsed:?}");
+    });
+    assert_eq!(stream.encrypted_cache_read_count(), 4, "every chunk came from the encrypted cache");
+    assert_eq!(stream.underlying_read_count(), 0);
+}
+
+/// After a logout or a user switch an open stream's cache session ends at its next chunk (key copy zeroed): it
+/// yields no more plaintext from the previous user's cache, and a later login never revives it.
+#[test]
+fn session_keyed_stream_stops_yielding_cached_plaintext_after_logout_or_switch() {
+    let fx = CacheFixture::new();
+    let (path, raw) = fx.video("privacy.mp4", 4 * CHUNK as usize, 59, 11);
+    let profiles = Arc::new(SessionProfiles::default());
+    profiles.login("alice", 9);
+    let store = profiles.store(fx.cache_dir());
+    play_through(&raw, &store, &path);
+    let c = CHUNK as usize;
+
+    for switch in [false, true] {
+        let mut stream = cache_only_stream(raw.len(), &store, &path);
+        let mut first = vec![0u8; c];
+        std::io::Read::read_exact(&mut stream, &mut first).unwrap();
+        assert_eq!(first, raw[..c], "alice's cached chunk while alice is logged in");
+        if switch {
+            profiles.login("bob", 2);
+        } else {
+            profiles.logout();
+        }
+        // No `end_stale_sessions` call and no watcher tick needed: the read itself checks the generation.
+        let mut next = vec![0u8; c];
+        assert!(std::io::Read::read(&mut stream, &mut next).is_err(), "no plaintext after the session changed (switch: {switch})");
+        assert_eq!(stream.encrypted_cache_read_count(), 1);
+        // Back to alice with the same key: the old stream's session stays ended.
+        profiles.login("alice", 9);
+        assert!(std::io::Read::read(&mut stream, &mut next).is_err(), "an ended session never becomes current again");
+        assert_eq!(stream.encrypted_cache_read_count(), 1);
+    }
+
+    // The session object itself: ended by the first stale chunk access, key copy dropped.
+    let session = store.try_begin_session().unwrap();
+    let id = VideoCacheStore::compute_video_identity(Some(&path), raw.len() as i64, CHUNK);
+    assert!(store.try_read_chunk_for(Some(&session), &id, CHUNK, 0, CHUNK).is_some());
+    profiles.logout();
+    assert!(store.try_read_chunk_for(Some(&session), &id, CHUNK, 0, CHUNK).is_none());
+    assert!(session.is_ended());
+    assert!(!store.try_write_chunk_for(Some(&session), &id, CHUNK, 0, &raw[..c]));
+    assert!(!store.is_session_current(&session));
+}
+
 #[test]
 fn a_session_is_bound_to_the_user_and_the_key() {
     let fx = CacheFixture::new();

@@ -2807,6 +2807,17 @@ impl ProfileStore for WinProfileStore {
     fn active_vault_key(&self) -> Option<(String, SecretKey32)> {
         self.try_get_active_profile_vault_key()
     }
+    /// The key and the session token from one critical section (the token is published at this unlock, so it is
+    /// exactly what `session_generation()` reports until the next session change).
+    fn active_vault_key_in_session(&self) -> Option<(u64, String, SecretKey32)> {
+        self.drain();
+        let mut st = self.state.lock();
+        self.ensure_synced_if_changed(&mut st);
+        let name = st.active_profile.clone()?;
+        let e = st.profiles.get(&name)?;
+        let key = st.session_keys.get(&e.username)?.clone();
+        Some((st.session_token.max(0) as u64, e.username.clone(), key))
+    }
 }
 
 impl Drop for WinProfileStore {
@@ -2857,6 +2868,37 @@ mod tests {
         store.logout_user();
         assert!(!store.is_logged_in());
         assert_ne!(store.session_generation(), generation);
+    }
+
+    /// A playback stream captures the key with its generation once and then only compares the lock-free generation:
+    /// the pair must match `session_generation()` exactly, and every logout / switch must change it.
+    #[test]
+    fn vault_key_in_session_pairs_the_key_with_the_lock_free_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = WinProfileStore::open(dir.path().join("profiles.json"), sa_sync::InProcessBus::with_scope(&sa_core::text::guid_n()));
+        assert!(store.active_vault_key_in_session().is_none(), "logged out: no key");
+        store.register_user("ali", "pw-1234", false).unwrap();
+        let (generation, user, key) = store.active_vault_key_in_session().expect("logged in");
+        assert_eq!(user, "ali");
+        assert_eq!(generation, store.session_generation());
+        let (_, plain) = store.active_vault_key().unwrap();
+        assert_eq!(key.expose(), plain.expose(), "the same key as active_vault_key");
+        // Reading the key is no session change.
+        assert_eq!(store.session_generation(), generation);
+
+        store.logout_user();
+        assert!(store.active_vault_key_in_session().is_none());
+        assert_ne!(store.session_generation(), generation, "a stream opened under ali sees the logout lock-free");
+
+        store.register_user("veli", "pw-5678", false).unwrap();
+        let (veli, user, _) = store.active_vault_key_in_session().unwrap();
+        assert_eq!(user, "veli");
+        assert_ne!(veli, generation);
+        store.login_user("ali", "pw-1234", false).unwrap();
+        let (again, _, again_key) = store.active_vault_key_in_session().unwrap();
+        assert!(again != generation && again != veli, "a new login is a new session, also for the same user");
+        assert_eq!(again_key.expose(), key.expose());
+        assert_eq!(again, store.session_generation());
     }
 
     #[test]

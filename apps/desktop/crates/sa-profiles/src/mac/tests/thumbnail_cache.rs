@@ -232,6 +232,24 @@ fn the_session_generation_changes_with_every_login_and_logout() {
     assert_ne!(store.session_generation(), logged_out);
 }
 
+/// The key and the generation it belongs to come from one critical section (same contract as on Windows).
+#[test]
+fn the_vault_key_in_session_carries_the_published_generation() {
+    let folder = TestFolder::new();
+    let store = folder.make_store();
+    assert!(store.active_vault_key_in_session().is_none());
+    store.register_user("ali", "pw", false).unwrap();
+    let (generation, _, key) = store.active_vault_key_in_session().expect("logged in");
+    assert_eq!(generation, store.session_generation());
+    assert_eq!(key.expose(), store.active_vault_key().unwrap().1.expose());
+    store.logout_user().unwrap();
+    assert!(store.active_vault_key_in_session().is_none());
+    assert_ne!(store.session_generation(), generation);
+    store.login_user("ali", "pw", false).unwrap();
+    let (again, _, _) = store.active_vault_key_in_session().unwrap();
+    assert!(again != generation && again == store.session_generation());
+}
+
 /// The UI thread reads the generation at every playback report; it must not wait for a worker that holds the state
 /// mutex (a re-read of `profiles.json`, a vault decrypt).
 #[test]
