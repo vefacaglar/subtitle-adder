@@ -284,10 +284,11 @@ struct WindowDump {
 }
 
 /// `SUBTITLE_ADDER_WINDOW_DUMP`'s value as (the folder to create, the file name prefix): a value ending in a path
-/// separator, or naming an existing folder, is a folder (`<folder>/window`); otherwise a prefix in its parent folder.
+/// separator of the platform (`/`, and `\` on Windows only: elsewhere it is a file name character), or naming an
+/// existing folder, is a folder (`<folder>/window`); otherwise a prefix in its parent folder.
 fn window_dump_prefix(value: &str) -> (Option<std::path::PathBuf>, String) {
     let path = std::path::Path::new(value);
-    if value.ends_with(['/', '\\']) || path.is_dir() {
+    if value.chars().next_back().is_some_and(std::path::is_separator) || path.is_dir() {
         let dir = path.to_path_buf();
         return (Some(dir.clone()), dir.join("window").to_string_lossy().into_owned());
     }
@@ -1591,12 +1592,20 @@ mod tests {
         let root = std::env::temp_dir().join(format!("sa-window-dump-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         // Ending in a separator: a folder, created, files named `window-...` in it.
-        for sep in ['/', '\\'] {
+        for sep in ['/', '\\'].into_iter().filter(|&c| std::path::is_separator(c)) {
             let value = format!("{}{sep}", root.join("new").display());
             let (dir, prefix) = super::window_dump_prefix(&value);
             assert_eq!(dir.as_deref().map(|d| d.components().collect::<PathBuf>()), Some(root.join("new")));
             assert_eq!(PathBuf::from(&prefix).file_name().and_then(|n| n.to_str()), Some("window"));
             assert_eq!(PathBuf::from(&prefix).parent().map(|p| p.components().collect::<PathBuf>()), Some(root.join("new")));
+        }
+        // A backslash is a separator on Windows only; elsewhere it ends a file name prefix.
+        #[cfg(not(windows))]
+        {
+            let value = format!("{}\\", root.join("prefix").display());
+            let (dir, prefix) = super::window_dump_prefix(&value);
+            assert_eq!(dir, Some(root.clone()));
+            assert_eq!(prefix, value);
         }
         // An existing folder without the separator: the same.
         std::fs::create_dir_all(root.join("there")).unwrap();
