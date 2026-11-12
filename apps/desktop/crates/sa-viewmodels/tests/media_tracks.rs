@@ -390,10 +390,7 @@ fn embedded_lines_grow_snapshot_by_snapshot_without_ever_being_dirty_or_saved() 
     assert_eq!(vm.status(), sa_viewmodels::types::JobStatus::Finished);
     // The automatic write (what auto-save runs) refuses them; written once the user changed them.
     vm.save_automatically();
-    for _ in 0..20 {
-        env.pump();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
+    assert_eq!(renders_up_to_a_marker(&env, &vm), 1, "the automatic write rendered nothing: only the marker");
     assert!(!video.with_extension("srt").exists(), "the automatic write refuses lines read from the video");
     // Nothing is written next to the video, by any automatic path, up to and including the exit.
     vm.open_video(Some(env.touch("films/other.mkv", "not really a video")));
@@ -537,11 +534,8 @@ fn the_automatic_write_skips_unedited_embedded_lines_and_writes_them_once_edited
     let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(2), true) else { panic!("applied") };
     let srt = video.with_extension("srt");
     vm.save_automatically();
-    for _ in 0..20 {
-        env.pump();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    assert!(!srt.exists(), "refused while the lines are the track's");
+    assert_eq!(renders_up_to_a_marker(&env, &vm), 1, "refused while the lines are the track's: only the marker rendered");
+    assert!(!srt.exists());
     let uid = vm.sentences()[0].uid;
     vm.select_row(uid);
     vm.set_text(uid, "Benim");
@@ -637,18 +631,18 @@ fn while_a_read_fills_the_list_translating_saving_and_exporting_wait() {
     vm.translate_selected();
     vm.save_subtitle_next_to_video();
     vm.export_to(video.with_extension("vtt"));
-    for _ in 0..20 {
-        env.pump();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    assert!(env.engine.calls_of(common::CallKind::Translate).is_empty());
-    let mut names: Vec<String> = std::fs::read_dir(video.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    names.sort();
-    assert_eq!(names, vec!["film.mkv"]);
     // The read ends: all of it again.
     vm.set_embedded_read(&video, None);
     assert!(vm.can_translate() && vm.can_save_subtitle() && vm.can_export());
     assert!(!vm.status_text().contains("Okunuyor"));
+    // Nothing of the above reached the engine: the first render is the marker, the first translation this one.
+    assert_eq!(renders_up_to_a_marker(&env, &vm), 1);
+    vm.translate();
+    let _call = env.next(common::CallKind::Translate);
+    assert_eq!(env.engine.calls_of(common::CallKind::Translate).len(), 1);
+    let mut names: Vec<String> = std::fs::read_dir(video.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert_eq!(names, vec!["film.mkv"]);
 }
 
 /// M2: an early-stopped read the user edited (a split, a delete) gets only the rest of the track added after the
@@ -727,10 +721,7 @@ fn on_windows_a_subtitle_that_appeared_replaces_unedited_embedded_lines_when_the
     env.pump();
     env.touch("m4b/film.srt", "1\n00:00:00,500 --> 00:00:01,250\nYandaki\n");
     vm.open_video(Some(edited));
-    for _ in 0..20 {
-        env.pump();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
+    env.eventually("the sidecar lookup", || !vm.sidecar_lookup_pending());
     assert_eq!(vm.sentences().len(), 3);
     assert_eq!(vm.sentences()[0].text, "Benim");
 }
@@ -761,4 +752,239 @@ fn a_typed_draft_makes_embedded_lines_the_users_and_off_commits_it() {
     vm.set_draft(other, "Satır 1");
     let s = vm.sentences();
     assert_eq!(s[1].text, "Satır 1");
+}
+
+/// Renders the foreground once (as the macOS export panel does) and waits for it: the engine's render count then. A
+/// refused write never asks for a render, so a count of 1 means only this one ran (renders start in order).
+fn renders_up_to_a_marker(env: &Env, vm: &sa_viewmodels::SubtitleViewModel) -> usize {
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let d = done.clone();
+    vm.render_export(Box::new(move |_| d.set(true)));
+    env.eventually("the marker render", || done.get());
+    env.engine.renders.lock().len()
+}
+
+fn start_two_video_run(env: &Env, dir: &str) -> (sa_viewmodels::SubtitleViewModel, std::rc::Rc<sa_core::models::ModelCatalog>, std::path::PathBuf, std::path::PathBuf) {
+    env.settings.set_string(sa_core::settings::keys::TRANSLATION_TARGET, "tr");
+    let (vm, catalog) = env.vm();
+    let a = env.touch(&format!("{dir}/a.mp4"), "v");
+    let b = env.touch(&format!("{dir}/b.mp4"), "v");
+    vm.add_playlist_videos_with_language(vec![a.clone(), b.clone()], "en");
+    vm.start_playlist();
+    (vm, catalog, a, b)
+}
+
+/// L1/L8: the stage-3 backstop. Lines that are a video's track nobody changed, turning up in a batch item between
+/// its transcription and its translation (no flow of the app puts them there; the hook does), are not translated or
+/// written, and the row fails, freeing the session.
+#[test]
+fn stage_three_refuses_unchanged_track_lines_and_fails_the_row() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let (vm, _catalog, a, b) = start_two_video_run(&env, "backstop");
+    let t1 = env.next(common::CallKind::Transcribe);
+    t1.result("en", "", vec![common::s(1, 0.0, 1.0, "one")]);
+    let tr1 = env.next(common::CallKind::Translate);
+    let t2 = env.next(common::CallKind::Transcribe);
+    t2.result("en", "", vec![common::s(1, 0.0, 1.0, "two")]);
+    // Video b waits for a's translation (one at a time) before its own.
+    env.eventually("b waits", || vm.playlist()[1].status_text().contains("Çeviri hazırlanıyor"));
+    vm.put_track_lines_for_tests(&b, 3, lines(2));
+    tr1.translation("tr", vec![common::s(1, 0.0, 1.0, "bir")]);
+    tr1.finish();
+    env.eventually("b failed", || vm.playlist()[1].state == sa_viewmodels::types::PlaylistItemState::Failed);
+    assert_eq!(vm.playlist()[1].status_text(), "Videodan okunan altyazı değiştirilmeden yazılmaz.");
+    env.eventually("the run ended", || !vm.is_playlist_running());
+    assert_eq!(env.engine.calls_of(common::CallKind::Translate).len(), 1, "the track's lines were not translated");
+    assert!(a.with_extension("srt").exists() && !b.with_extension("srt").exists());
+    // The session is the user's again: its video can be generated.
+    vm.open_video(Some(b));
+    env.pump();
+    assert!(vm.can_generate());
+}
+
+/// L1/L8: a video added to the list mid-run whose track was read before it was added: transcribed, not translated
+/// from the track.
+#[test]
+fn a_video_added_mid_run_with_its_track_in_the_list_is_transcribed() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    env.settings.set_string(sa_core::settings::keys::TRANSLATION_TARGET, "tr");
+    let (vm, _catalog) = env.vm();
+    let a = env.touch("midrun/a.mp4", "v");
+    vm.add_playlist_videos_with_language(vec![a.clone()], "en");
+    vm.start_playlist();
+    let t1 = env.next(common::CallKind::Transcribe);
+    // While a is transcribed, the user opens c and its track loads; then c joins the list.
+    let c = env.touch("midrun/c.mkv", "v");
+    vm.open_video(Some(c.clone()));
+    env.eventually("the sidecar lookup", || !vm.sidecar_lookup_pending());
+    assert_eq!(vm.embedded_auto_choice(&c), AutoChoice::Allowed, "a run of other videos does not stop the choice");
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&c, 3, vm.session_mark(), lines(3), true) else { panic!("applied") };
+    vm.add_playlist_videos_with_language(vec![c.clone()], "en");
+    t1.result("en", "", vec![common::s(1, 0.0, 1.0, "one")]);
+    let tr1 = env.next(common::CallKind::Translate);
+    let t2 = env.next(common::CallKind::Transcribe);
+    assert_eq!(t2.record.video.as_deref(), Some(c.as_path()), "c is transcribed");
+    t2.result("en", "", vec![common::s(1, 0.0, 1.0, "speech")]);
+    tr1.translation("tr", vec![common::s(1, 0.0, 1.0, "bir")]);
+    tr1.finish();
+    let tr2 = env.next(common::CallKind::Translate);
+    let texts: Vec<String> = tr2.record.sentences.iter().map(|l| l.text.clone()).collect();
+    assert_eq!(texts, vec!["speech"], "the transcript is translated, not the track");
+    tr2.translation("tr", vec![common::s(1, 0.0, 1.0, "konuşma")]);
+    tr2.finish();
+    env.eventually("completed", || playlist_states(&vm) == vec![sa_viewmodels::types::PlaylistItemState::Completed; 2]);
+}
+
+/// L1/L8: a track chosen by hand for a queued video after the run started (its complete lines replace the empty
+/// list) is dropped when the run gets to it.
+#[test]
+fn a_track_chosen_by_hand_for_a_queued_video_is_dropped_when_the_run_gets_to_it() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let (vm, _catalog, _a, b) = start_two_video_run(&env, "byhand");
+    let t1 = env.next(common::CallKind::Transcribe);
+    vm.open_video(Some(b.clone()));
+    env.eventually("the sidecar lookup", || !vm.sidecar_lookup_pending());
+    assert_eq!(vm.embedded_auto_choice(&b), AutoChoice::Refused, "queued: nothing chosen for the user");
+    assert_eq!(vm.apply_embedded_snapshot(&b, 3, vm.session_mark(), lines(2), false), SnapshotOutcome::Superseded, "no progressive read");
+    vm.request_embedded_lines(&b, 3, lines(3));
+    assert_eq!(vm.sentences().len(), 3, "the user's choice loads it");
+    t1.result("en", "", vec![common::s(1, 0.0, 1.0, "one")]);
+    let tr1 = env.next(common::CallKind::Translate);
+    let t2 = env.next(common::CallKind::Transcribe);
+    assert_eq!(t2.record.video.as_deref(), Some(b.as_path()));
+    t2.result("en", "", vec![common::s(1, 0.0, 1.0, "speech")]);
+    tr1.translation("tr", vec![common::s(1, 0.0, 1.0, "bir")]);
+    tr1.finish();
+    let tr2 = env.next(common::CallKind::Translate);
+    assert_eq!(tr2.record.sentences.iter().map(|l| l.text.clone()).collect::<Vec<_>>(), vec!["speech"]);
+    tr2.translation("tr", vec![common::s(1, 0.0, 1.0, "konuşma")]);
+    tr2.finish();
+    env.eventually("completed", || playlist_states(&vm) == vec![sa_viewmodels::types::PlaylistItemState::Completed; 2]);
+}
+
+/// L2: a batch run of other videos leaves the foreground's read alone: its snapshots still go in and the session
+/// mark does not move.
+#[test]
+fn a_batch_run_of_other_videos_leaves_the_foregrounds_read_alone() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    env.settings.set_string(sa_core::settings::keys::TRANSLATION_TARGET, "tr");
+    let (vm, _catalog, video) = opened(&env, "l2/film.mkv");
+    let SnapshotOutcome::Applied(mark) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(2), false) else { panic!("applied") };
+    vm.set_embedded_read(&video, Some(0.2));
+    let other = env.touch("l2/other.mp4", "v");
+    vm.add_playlist_videos_with_language(vec![other.clone()], "en");
+    vm.start_playlist();
+    let _t = env.next(common::CallKind::Transcribe);
+    assert!(vm.is_playlist_running());
+    assert_eq!(vm.session_mark(), mark, "the run is not this session's business");
+    assert!(!vm.embedded_video_in_batch(&video));
+    assert!(vm.embedded_video_in_batch(&other));
+    assert_eq!(vm.embedded_read_progress(), Some(0.2));
+    assert!(matches!(vm.apply_embedded_snapshot(&video, 3, mark, lines(4), false), SnapshotOutcome::Applied(_)));
+    assert_eq!(vm.sentences().len(), 4);
+}
+
+/// L3: once the user changes the lines a read is filling, they are theirs: saving works at once, while the read
+/// is still running.
+#[test]
+fn edited_lines_can_be_saved_while_the_read_is_still_running() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let (vm, _catalog, video) = opened(&env, "l3/film.mkv");
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(2), false) else { panic!("applied") };
+    vm.set_embedded_read(&video, Some(0.3));
+    assert!(!vm.can_save_subtitle());
+    // Typing alone lifts the wait (Ctrl+S commits it and saves).
+    let uid = vm.sentences()[0].uid;
+    vm.select_row(uid);
+    vm.begin_editing(uid);
+    vm.set_draft(uid, "Benim");
+    assert!(vm.can_save_subtitle() && vm.can_export() && vm.can_translate());
+    assert!(!vm.status_text().contains("Okunuyor"), "{}", vm.status_text());
+    vm.save_subtitle_next_to_video();
+    let srt = video.with_extension("srt");
+    env.eventually("saved", || srt.exists());
+    assert_eq!(env.engine.renders.lock().last().map(|(l, _)| l[0].text.clone()).as_deref(), Some("Benim"));
+}
+
+/// L4: a batch run reaching a video whose track lines hold a typed draft commits it (the typing is the user's) and
+/// then treats the lines as the user's; an automatic write never goes by a draft alone.
+#[test]
+fn a_batch_run_commits_a_draft_typed_into_the_track_lines() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    env.settings.set_string(sa_core::settings::keys::TRANSLATION_TARGET, "tr");
+    let (vm, _catalog, video) = opened(&env, "l4/film.mkv");
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), lines(2), true) else { panic!("applied") };
+    let uid = vm.sentences()[0].uid;
+    vm.select_row(uid);
+    vm.begin_editing(uid);
+    vm.set_draft(uid, "Yazdığım");
+    // A draft alone does not make the track's own lines writable.
+    vm.save_automatically();
+    assert_eq!(renders_up_to_a_marker(&env, &vm), 1);
+    vm.add_playlist_videos_with_language(vec![video.clone()], "en");
+    vm.start_playlist();
+    let tr = env.next(common::CallKind::Translate);
+    let texts: Vec<String> = tr.record.sentences.iter().map(|l| l.text.clone()).collect();
+    assert_eq!(texts, vec!["Yazdığım", "Satır 1"], "the committed draft is part of the user's lines");
+    assert!(env.engine.calls_of(common::CallKind::Transcribe).is_empty());
+    assert_eq!(vm.sentences()[0].text, "Yazdığım");
+    tr.translation("tr", tr.record.sentences.iter().map(|x| common::s(x.id, x.start, x.end, &format!("T:{}", x.text))).collect());
+    tr.finish();
+    env.eventually("completed", || playlist_states(&vm) == vec![sa_viewmodels::types::PlaylistItemState::Completed]);
+}
+
+/// L5/L6: the rest of a track goes in by start time among the user's lines (a line they moved late stays theirs,
+/// in time order), undo brings back the stopped state so the rest can be added again, and an emptied list gets the
+/// whole track.
+#[test]
+fn the_rest_of_a_track_merges_by_time_and_its_undo_can_be_redone() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::Tr);
+    let env = Env::win();
+    let (vm, _catalog, video) = opened(&env, "l5/film.mkv");
+    // Lines 0..9 start at 0, 2, 4, …; the stopped read had 0..3.
+    let all = lines(10);
+    let SnapshotOutcome::Applied(_) = vm.apply_embedded_snapshot(&video, 3, vm.session_mark(), all[..4].to_vec(), false) else { panic!("applied") };
+    // The user moves the last line read (6.0) to 11.0–12.0, past where the read stopped.
+    let moved = vm.sentences()[3].uid;
+    vm.select_row(moved);
+    vm.set_edge_to_now(sa_viewmodels::types::TimingEdge::End, 12.0);
+    vm.set_edge_to_now(sa_viewmodels::types::TimingEdge::Start, 11.0);
+    env.pump();
+    assert_eq!(vm.sentences()[3].start, 11.0);
+    assert!(vm.embedded_resumes(3));
+    assert_eq!(vm.append_embedded_rest(&video, 3, all.clone()), Some(6));
+    let texts: Vec<String> = vm.sentences().into_iter().map(|l| l.text).collect();
+    assert_eq!(texts, vec!["Satır 0", "Satır 1", "Satır 2", "Satır 4", "Satır 5", "Satır 3", "Satır 6", "Satır 7", "Satır 8", "Satır 9"]);
+    let starts: Vec<f64> = vm.sentences().into_iter().map(|l| l.start).collect();
+    assert!(starts.windows(2).all(|w| w[0] <= w[1]), "in time order: {starts:?}");
+    assert_eq!(vm.sentences().into_iter().map(|l| l.id).collect::<Vec<_>>(), (1..=10).collect::<Vec<i64>>());
+    // Undo restores the stopped state: the rest can be added again.
+    vm.undo();
+    assert_eq!(vm.sentences().len(), 4);
+    assert!(vm.embedded_resumes(3), "stopped early again");
+    assert!(!vm.embedded_lines().unwrap().complete);
+    vm.redo();
+    assert_eq!(vm.sentences().len(), 10);
+    assert!(vm.embedded_lines().unwrap().complete);
+    vm.undo();
+    vm.select_row(vm.sentences()[0].uid);
+    vm.set_text(vm.sentences()[0].uid, "Değişti");
+    assert_eq!(vm.append_embedded_rest(&video, 3, all.clone()), Some(6), "added again after an undo and another edit");
+    // Every line deleted: the whole track.
+    vm.undo();
+    vm.undo();
+    for l in vm.sentences() {
+        vm.select_row(l.uid);
+        vm.delete_selected();
+    }
+    assert!(vm.sentences().is_empty());
+    assert!(vm.embedded_resumes(3));
+    assert_eq!(vm.append_embedded_rest(&video, 3, all), Some(10));
+    assert_eq!(vm.sentences().len(), 10);
 }

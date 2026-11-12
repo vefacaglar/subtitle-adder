@@ -244,7 +244,7 @@ impl State {
         translations.hash(&mut h);
         fg.loaded_subtitle.hash(&mut h);
         fg.embedded.hash(&mut h);
-        crate::media_tracks::SessionMark { content: h.finish(), job: fg.job_id, working: fg.is_working() || self.playlist_running }
+        crate::media_tracks::SessionMark { content: h.finish(), job: fg.job_id, working: fg.is_working() || embedded::in_batch(self, fg) }
     }
 }
 

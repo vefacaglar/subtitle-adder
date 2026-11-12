@@ -162,6 +162,9 @@ struct UiState {
     /// The video just opened, until it is decided whether one of its embedded tracks is loaded for the user
     /// (`consider_auto_track`).
     auto_choice: Option<PathBuf>,
+    /// A read of this video's track failed: its lines (kept, with a notice) are not read on by
+    /// `continue_unfinished_track`, which would fail the same way.
+    no_resume: Option<(PathBuf, usize)>,
 }
 
 pub struct MainWindowController {
@@ -542,7 +545,7 @@ impl MainWindowController {
                     self.drain_player();
                 }
             }
-            SubtitleChange::Drafts => {}
+            SubtitleChange::Drafts => self.continue_unfinished_track(),
             SubtitleChange::Status | SubtitleChange::Notice => {
                 self.drop_read_overtaken_by_a_job();
                 // The sidecar lookup ended (it reports a status change): a track may be chosen now.
@@ -594,6 +597,7 @@ impl MainWindowController {
         {
             let mut st = self.st.borrow_mut();
             st.track_notice = None;
+            st.no_resume = None;
             // Decided once its tracks are known (`consider_auto_track`).
             st.auto_choice = video.clone();
             if st.tracks_menu_open {
@@ -1389,7 +1393,11 @@ impl MainWindowController {
             }
             TrackChoice::Subtitle(stream) => {
                 // The user chose: nothing is chosen for them any more, and "Off" no longer holds for the video.
-                self.st.borrow_mut().auto_choice = None;
+                {
+                    let mut st = self.st.borrow_mut();
+                    st.auto_choice = None;
+                    st.no_resume = None;
+                }
                 // Text being typed is the user's: committed before the choice is weighed (it may make the lines theirs).
                 self.vm.finish_editing();
                 self.vm.embedded_track_chosen();
@@ -1460,14 +1468,15 @@ impl MainWindowController {
         }
     }
 
-    /// A job (generating subtitles replaces the track's lines) or a batch run started on the session a progressive
-    /// read is filling: the read stops silently (it is not "the subtitles changed": the user did nothing to its lines).
-    /// A batch run also stops a read of the user's lines (it may not replace a video's lines in the run).
+    /// A job (generating subtitles replaces the track's lines) started on the session a progressive read is
+    /// filling, or the video became part of a batch run: the read stops silently (it is not "the subtitles changed":
+    /// the user did nothing to its lines). A batch run also stops a read of the user's lines of a video in the run (it
+    /// may not replace a batch item's lines), and leaves reads of every other video alone.
     fn drop_read_overtaken_by_a_job(&self) {
         let Some(read) = self.reads.try_borrow().ok().and_then(|r| r.active()) else { return };
         let now = self.vm.session_mark();
         let job_changed = now.job != read.mark.job || now.working != read.mark.working;
-        if !(read.mode.progressive && job_changed) && !self.vm.is_playlist_running() {
+        if !(read.mode.progressive && job_changed) && !self.vm.embedded_video_in_batch(&read.video) {
             return;
         }
         let Ok(mut reads) = self.reads.try_borrow_mut() else { return };
@@ -1475,6 +1484,23 @@ impl MainWindowController {
         drop(reads);
         self.read_stopped_early(&read);
         self.sync_tracks();
+    }
+
+    /// The list is a track that stopped early and that nobody changed (a typed draft stopped the read and was then
+    /// cancelled, or an undo took the edit back): reading goes on, so the list never stays half a track that looks
+    /// like all of it. Not after a failure of that read (`UiState::no_resume`).
+    fn continue_unfinished_track(&self) {
+        if self.disposed.get() || self.reads.try_borrow().map_or(true, |r| r.is_reading()) {
+            return;
+        }
+        let (Some(e), Some(video)) = (self.vm.embedded_lines(), self.vm.video()) else { return };
+        if !e.pristine || e.complete || !self.vm.embedded_reads_progressively() {
+            return;
+        }
+        if self.st.borrow().no_resume.as_ref().is_some_and(|(v, s)| *v == video && *s == e.stream) {
+            return;
+        }
+        self.read_embedded_subtitle(e.stream, ReadMode { automatic: false, progressive: true, resume: false });
     }
 
     /// Reads embedded text track `stream` on a worker thread (its own demuxer: playback is not touched). While the
@@ -1588,6 +1614,14 @@ impl MainWindowController {
         self.sync_tracks();
         // Cancelled or replaced meanwhile (another track, another video, an edit of the lines coming in): dropped.
         let Some(read) = current else { return };
+        if result.is_err() {
+            self.st.borrow_mut().no_resume = Some((read.video.clone(), read.stream));
+        }
+        if result.is_err() && !read.applied {
+            // Nothing of this read reached the list: what is left there of an earlier track that stopped early (this
+            // one replaced it) goes too, rather than staying as if it were the whole track.
+            self.vm.drop_unfinished_embedded(&read.video);
+        }
         match result {
             // Part of it is in the list: a track chosen for the user goes again (they did not ask for it, and half a
             // track is no use to them); one the user chose stays, and they are told it is only part.

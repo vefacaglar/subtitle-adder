@@ -1417,8 +1417,15 @@ fn closing_while_a_track_is_read_writes_nothing(mac: bool) {
     assert!(!r.vm.has_unsaved_edits(), "no unsaved-changes question on close");
     assert!(r.vm.pending_open().is_none());
     assert_eq!(r.vm.embedded_read_progress(), None);
+    // Nothing asked the engine for a render (every write renders first): the marker is the first.
+    let done = Rc::new(Cell::new(false));
+    let d = done.clone();
+    r.vm.render_export(Box::new(move |_| d.set(true)));
+    r.env.eventually("the marker render", || done.get());
+    assert_eq!(r.env.engine.renders.lock().len(), 1);
     r.vm.shutdown();
     settle(&r);
+    assert_eq!(r.env.engine.renders.lock().len(), 1, "nothing rendered on the way out either");
     assert_eq!(r.folder_of(&video), vec!["film.mkv"]);
 }
 
@@ -1546,4 +1553,87 @@ fn choosing_the_track_again_after_an_edit_stopped_its_read_adds_the_rest() {
     r.pump();
     let texts: Vec<String> = r.vm.sentences().into_iter().map(|l| l.text).collect();
     assert_eq!(texts, vec!["Bir", "Benim"]);
+}
+
+/// L2: a batch run of other videos leaves the read of the video on screen alone.
+#[test]
+fn a_batch_run_of_other_videos_does_not_stop_the_read_of_the_video_on_screen() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    r.env.settings.set_string(sa_core::settings::keys::TRANSLATION_TARGET, "tr");
+    r.open_with_tracks("l2/film.mkv", film_tracks());
+    r.env.eventually("reading", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir")]))).unwrap();
+    r.env.eventually("the first snapshot", || r.rows().len() == 1);
+    let other = r.env.touch("l2/other.mp4", "v");
+    r.vm.add_playlist_videos_with_language(vec![other], "en");
+    r.vm.start_playlist();
+    let _call = r.env.next(common::CallKind::Transcribe);
+    r.pump();
+    assert!(r.main().get_tracks_busy(), "still reading");
+    assert_eq!(cancels(&script), 0);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("the second snapshot", || r.rows().len() == 2);
+    script.steps.send(Step::Finish(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki"), (4.0, 5.0, "Üç")]))).unwrap();
+    r.env.eventually("complete", || r.rows().len() == 3 && !r.main().get_tracks_busy());
+    assert!(r.vm.embedded_lines().is_some_and(|e| e.pristine && e.complete));
+}
+
+/// L7b: another track chosen while one is read, failing before its first lines: the first one's half goes too (it
+/// is not left looking like the whole track), and the failure is reported.
+#[test]
+fn a_track_that_fails_before_its_first_lines_takes_the_half_read_one_with_it() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    r.open_with_tracks("l7/film.mkv", film_tracks());
+    r.env.eventually("reading", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("the first snapshot", || r.rows().len() == 2);
+    r.main().invoke_menu_activated("subtitle:3".into());
+    r.env.eventually("the other track is read", || script.asked.lock().len() == 2);
+    r.env.eventually("the first read saw the cancel", || cancels(&script) == 1);
+    assert_eq!(script.progressive.lock().clone(), vec![true, true]);
+    script.steps.send(Step::Fail(sa_player::ffmpeg_backend::ExtractError::Failed("Bozuk paket".into()))).unwrap();
+    r.env.eventually("the read ended", || {
+        r.pump();
+        !r.main().get_tracks_busy()
+    });
+    assert!(r.vm.sentences().is_empty(), "no half track left behind");
+    assert!(r.vm.embedded_lines().is_none());
+    assert!(r.main().get_error_open());
+    assert_eq!(r.main().get_error_text(), "Videodaki altyazı okunamadı: Bozuk paket");
+    settle(&r);
+    assert_eq!(script.asked.lock().len(), 2, "nothing is read again by itself");
+}
+
+/// L7b: typing stops a read (the snapshot finds the user's work), and when the typing is taken back the lines are
+/// the track's again: the read goes on to the end.
+#[test]
+fn a_read_stopped_by_typing_goes_on_when_the_typing_is_taken_back() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    r.open_with_tracks("l7b/film.mkv", film_tracks());
+    r.env.eventually("reading", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("the first snapshot", || r.rows().len() == 2);
+    let first = r.rows()[0].uid.clone();
+    let uid = r.vm.sentences()[0].uid;
+    r.vm.select_row(uid);
+    r.vm.begin_editing(uid);
+    r.vm.set_draft(uid, "Yazıyorum");
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki"), (4.0, 5.0, "Üç")]))).unwrap();
+    r.env.eventually("the read stopped", || cancels(&script) == 1);
+    r.pump();
+    assert_eq!(r.vm.sentences().len(), 2);
+    // The typing is taken back (the editor's text is the line's again, as Esc leaves it).
+    r.vm.set_draft(uid, "Bir");
+    r.env.eventually("read on", || script.asked.lock().len() == 2);
+    assert_eq!(script.progressive.lock().clone(), vec![true, true]);
+    script.steps.send(Step::Snapshot(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki"), (4.0, 5.0, "Üç")]))).unwrap();
+    r.env.eventually("the rest comes in", || r.rows().len() == 3);
+    assert_eq!(r.rows()[0].uid, first, "the lines read before keep their rows");
+    script.steps.send(Step::Finish(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki"), (4.0, 5.0, "Üç"), (6.0, 7.0, "Dört")]))).unwrap();
+    r.env.eventually("complete", || r.rows().len() == 4 && !r.main().get_tracks_busy());
+    assert!(r.vm.embedded_lines().is_some_and(|e| e.pristine && e.complete));
+    assert!(!r.vm.has_unsaved_edits());
 }

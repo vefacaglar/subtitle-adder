@@ -60,19 +60,11 @@ pub struct EmbeddedLines {
     pub pristine: bool,
     /// The read ran to the end (false while snapshots are still coming in, or when it stopped early).
     pub complete: bool,
-    /// Where the lines read so far end: the start (ms) of the last line of the last snapshot that went in, and how
-    /// many of that snapshot's lines start there. Choosing the track again after an early stop adds the lines past
-    /// this point ([`resume_after`]).
-    pub cutoff_ms: i64,
-    pub at_cutoff: u32,
 }
 
 impl EmbeddedLines {
-    /// Lines of `stream` as `lines` (sorted by start, as a read lists them) left them.
-    pub fn read(stream: usize, lines: &[Sentence], complete: bool) -> Self {
-        let cutoff_ms = lines.last().map_or(i64::MIN, |l| ms_key(l.start));
-        let at_cutoff = lines.iter().rev().take_while(|l| ms_key(l.start) == cutoff_ms).count() as u32;
-        Self { stream, pristine: true, complete, cutoff_ms, at_cutoff }
+    pub fn read(stream: usize, complete: bool) -> Self {
+        Self { stream, pristine: true, complete }
     }
 }
 
@@ -80,23 +72,86 @@ fn ms_key(t: f64) -> i64 {
     (t * 1000.0).round_ties_even() as i64
 }
 
-/// The lines of a complete read (`all`, sorted by start) past the point an earlier read stopped at (`e`): every line
-/// starting later than its last line, and those starting at the same time beyond the ones it had.
-pub fn resume_after(e: &EmbeddedLines, all: Vec<Sentence>) -> Vec<Sentence> {
-    let mut skip_equal = e.at_cutoff as usize;
-    all.into_iter()
-        .filter(|l| {
-            let at = ms_key(l.start);
-            if at < e.cutoff_ms {
-                false
-            } else if at == e.cutoff_ms && skip_equal > 0 {
-                skip_equal -= 1;
-                false
-            } else {
-                true
+/// A line of a read as the track delivered it: start (ms) and text (the end of the last lines is provisional).
+fn line_key(l: &Sentence) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (ms_key(l.start), &l.text).hash(&mut h);
+    h.finish()
+}
+
+/// What a read had delivered when its last snapshot went in ([`Session::embedded_delivered`]): every line (counted by
+/// start and text, so lines FFmpeg delivered late and that sort earlier count too), and the lines at its last start
+/// with the end they were given (an open end there is only a guess until the next line is known).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Delivered {
+    keys: HashMap<u64, u32>,
+    tail: Vec<(u64, i64)>,
+}
+
+impl Delivered {
+    pub fn of(lines: &[Sentence]) -> Self {
+        let mut keys: HashMap<u64, u32> = HashMap::new();
+        for l in lines {
+            *keys.entry(line_key(l)).or_default() += 1;
+        }
+        let last = lines.iter().map(|l| ms_key(l.start)).max();
+        let tail = lines.iter().filter(|l| Some(ms_key(l.start)) == last).map(|l| (line_key(l), ms_key(l.end))).collect();
+        Self { keys, tail }
+    }
+}
+
+/// The rest of a track: the lines of its complete read (`all`) that the stopped read had not delivered, and, for
+/// the lines at that read's last start, the end the complete read gives them (`(key, provisional end ms, end)`).
+pub struct TrackRest {
+    pub lines: Vec<Sentence>,
+    ends: Vec<(u64, i64, f64)>,
+}
+
+impl TrackRest {
+    pub fn of(delivered: &Delivered, all: Vec<Sentence>) -> Self {
+        let mut have = delivered.keys.clone();
+        let mut ends = Vec::new();
+        let mut lines = Vec::new();
+        for l in all {
+            let key = line_key(&l);
+            match have.get_mut(&key) {
+                Some(n) if *n > 0 => {
+                    *n -= 1;
+                    if let Some((_, old)) = delivered.tail.iter().find(|(k, _)| *k == key) {
+                        ends.push((key, *old, l.end));
+                    }
+                }
+                _ => lines.push(l),
             }
-        })
-        .collect()
+        }
+        Self { lines, ends }
+    }
+
+    /// Gives the user's lines that are still the read's last lines, with the end it guessed, the track's real end.
+    pub fn fix_ends(&self, user: &mut [Sentence]) {
+        for l in user.iter_mut() {
+            let key = line_key(l);
+            if let Some((_, _, end)) = self.ends.iter().find(|(k, old, _)| *k == key && *old == ms_key(l.end)) {
+                l.end = *end;
+            }
+        }
+    }
+}
+
+/// The user's lines with the rest of the track merged in by start time: each list keeps its own order, a rest line
+/// goes after the user's lines that start no later than it.
+pub fn merge_by_start(user: Vec<Sentence>, rest: Vec<Sentence>) -> Vec<Sentence> {
+    let mut out = Vec::with_capacity(user.len() + rest.len());
+    let mut rest = rest.into_iter().peekable();
+    for l in user {
+        while let Some(r) = rest.next_if(|r| r.start < l.start) {
+            out.push(r);
+        }
+        out.push(l);
+    }
+    out.extend(rest);
+    out
 }
 
 /// One video's state.
@@ -133,6 +188,8 @@ pub struct Session {
     pub ctx: JobContext,
     /// The lines are an embedded track of the video.
     pub embedded: Option<EmbeddedLines>,
+    /// What the read behind [`Self::embedded`] had delivered (the rest of an early-stopped read starts after it).
+    pub embedded_delivered: Option<std::sync::Arc<Delivered>>,
     /// Sidecar subtitle lookups in flight for this session (an embedded track is not chosen for the user meanwhile).
     pub sidecar_lookups: u32,
 }
@@ -169,6 +226,7 @@ impl Session {
             asyncs: AsyncState { run_id: Uuid::new_v4(), ..AsyncState::default() },
             ctx: JobContext::default(),
             embedded: None,
+            embedded_delivered: None,
             sidecar_lookups: 0,
         }
     }
@@ -298,8 +356,9 @@ impl Session {
         self.embedded_unchanged() && !self.has_typed_draft()
     }
 
-    /// [`Self::embedded_pristine`] without the drafts: nothing was committed, translated or saved.
-    fn embedded_unchanged(&self) -> bool {
+    /// [`Self::embedded_pristine`] without the drafts: nothing was committed, translated or saved. Automatic writes
+    /// and batch runs go by this: a draft being typed does not make the track's own lines worth writing.
+    pub fn embedded_unchanged(&self) -> bool {
         self.embedded.is_some_and(|e| e.pristine) && !self.has_unsaved_edits && self.translations.is_empty() && self.saved_subtitle_name.is_none()
     }
 
@@ -311,9 +370,10 @@ impl Session {
     }
 
     /// Whether an automatic write (auto-save, a batch run's stage 3) may put these lines on disk: never lines read
-    /// from the video that nobody changed. Every automatic write path asks this.
+    /// from the video that nobody changed, whatever is being typed into one of them. Every automatic write path asks
+    /// this.
     pub fn may_write_automatically(&self) -> bool {
-        !self.embedded_pristine()
+        !self.embedded_unchanged()
     }
 
     /// Makes embedded lines the user's for good once anything changed them (an edit, a translation, a save); also
@@ -519,19 +579,22 @@ impl Session {
         self.loaded_subtitle = None;
         self.saved_by_run = false;
         self.embedded = None;
+        self.embedded_delivered = None;
     }
 
     /// Loads an imported subtitle file into this session.
     pub fn load(&mut self, subtitle: PathBuf, lines: Vec<Sentence>) {
         self.replace_lines(Some(subtitle), lines);
         self.embedded = None;
+        self.embedded_delivered = None;
     }
 
     /// Loads lines read from embedded track `stream` of the video (no file behind them; not dirty).
     pub fn load_embedded(&mut self, stream: usize, lines: Vec<Sentence>, complete: bool) {
-        let embedded = EmbeddedLines::read(stream, &lines, complete);
+        let delivered = std::sync::Arc::new(Delivered::of(&lines));
         self.replace_lines(None, lines);
-        self.embedded = Some(embedded);
+        self.embedded = Some(EmbeddedLines::read(stream, complete));
+        self.embedded_delivered = Some(delivered);
     }
 
     /// Removes lines that are an embedded track nobody changed (a batch run, "Off", an abandoned read): the session
@@ -543,6 +606,7 @@ impl Session {
         self.draft = None;
         self.translation_draft = None;
         self.embedded = None;
+        self.embedded_delivered = None;
         self.set_status(JobStatus::Idle);
     }
 
@@ -776,15 +840,31 @@ mod merge_tests {
     }
 
     #[test]
-    fn the_rest_of_a_track_starts_after_the_lines_read_so_far_counting_equal_starts() {
-        let read = [line(0.0, 1.0, "a"), line(2.0, 3.0, "b"), line(2.0, 3.5, "c")];
-        let e = EmbeddedLines::read(3, &read, false);
-        assert_eq!((e.cutoff_ms, e.at_cutoff), (2000, 2));
-        let all = vec![line(0.0, 1.0, "a"), line(2.0, 3.0, "b"), line(2.0, 3.5, "c"), line(2.0, 4.0, "d"), line(5.0, 6.0, "e")];
-        let rest: Vec<String> = resume_after(&e, all).into_iter().map(|l| l.text).collect();
-        assert_eq!(rest, vec!["d", "e"]);
-        let none = EmbeddedLines::read(3, &[], false);
-        assert_eq!(resume_after(&none, vec![line(0.0, 1.0, "a")]).len(), 1, "nothing read: all of it");
+    fn the_rest_of_a_track_is_what_the_stopped_read_had_not_delivered() {
+        // The stopped read had a, b, c (c at its last start, with a guessed end) but not d, which FFmpeg delivered
+        // late although it starts before c.
+        let read = [line(0.0, 1.0, "a"), line(2.0, 3.0, "b"), line(4.0, 7.0, "c")];
+        let delivered = Delivered::of(&read);
+        let all = vec![line(0.0, 1.0, "a"), line(1.0, 1.5, "d"), line(2.0, 3.0, "b"), line(4.0, 5.0, "c"), line(4.0, 4.5, "e"), line(6.0, 7.0, "f")];
+        let rest = TrackRest::of(&delivered, all);
+        let texts: Vec<&str> = rest.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, vec!["d", "e", "f"]);
+        // c's guessed end gets the real one; a line the user re-timed keeps theirs.
+        let mut user = vec![line(0.0, 1.2, "a"), line(4.0, 7.0, "c")];
+        rest.fix_ends(&mut user);
+        assert_eq!((user[0].end, user[1].end), (1.2, 5.0));
+        let merged: Vec<String> = merge_by_start(user, rest.lines).into_iter().map(|l| l.text).collect();
+        assert_eq!(merged, vec!["a", "d", "c", "e", "f"]);
+        assert_eq!(TrackRest::of(&Delivered::default(), vec![line(0.0, 1.0, "a")]).lines.len(), 1, "nothing read: all of it");
+    }
+
+    #[test]
+    fn merging_by_start_keeps_each_lists_order() {
+        // The user moved "x" late; the rest goes in around it by start, the user's order stays.
+        let user = vec![line(0.0, 1.0, "a"), line(9.0, 10.0, "x"), line(2.0, 3.0, "b")];
+        let rest = vec![line(5.0, 6.0, "r1"), line(11.0, 12.0, "r2")];
+        let merged: Vec<String> = merge_by_start(user, rest).into_iter().map(|l| l.text).collect();
+        assert_eq!(merged, vec!["a", "r1", "x", "b", "r2"]);
     }
 
     #[test]

@@ -88,8 +88,9 @@ pub fn has_choices(tracks: &MediaTracks) -> bool {
 impl TrackMenu {
     /// `reading`: the embedded track being read and its progress (0…1); `loaded`: the embedded track whose lines the
     /// list holds now, `loaded_pristine`: those lines are still exactly the track's. A file with a text track gets an
-    /// "Off" entry first: checked while nothing from the video is in the list, enabled then (it keeps a track from
-    /// being chosen for the user) and while the loaded lines are unedited (it clears them).
+    /// "Off" entry first: checked while no embedded track is in the list (an imported or generated subtitle
+    /// included: the video's own tracks are off then), enabled then (it keeps a track from being chosen for the
+    /// user) and while the loaded lines are unedited (it clears them).
     pub fn build(tracks: &MediaTracks, reading: Option<(usize, f64)>, loaded: Option<usize>, loaded_pristine: bool) -> Self {
         let audio = tracks
             .audio

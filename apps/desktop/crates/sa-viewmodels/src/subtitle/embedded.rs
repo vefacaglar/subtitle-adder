@@ -16,7 +16,7 @@ use sa_core::k;
 use sa_enginekit::editing::SentenceListExt;
 
 use super::editing::replace_sentences;
-use super::session::{EmbeddedLines, Session, SessionId, merge_sentences_preserving_uid, resume_after};
+use super::session::{Delivered, EmbeddedLines, Session, SessionId, TrackRest, merge_by_start, merge_sentences_preserving_uid};
 use super::{Core, Fx, Inner, PendingOpen, State, SubtitleViewModel};
 use crate::media_tracks::{AutoChoice, SessionMark, SnapshotOutcome};
 use crate::types::{JobStatus, PlaylistItemState, SubtitleChange};
@@ -25,7 +25,13 @@ use crate::types::{JobStatus, PlaylistItemState, SubtitleChange};
 /// and nothing runs on it: a read may fill it as it goes.
 fn takes_snapshots(st: &State, s: &Session) -> bool {
     let empty = s.sentences.is_empty() && !s.has_translations() && !s.has_unsaved_edits;
-    (empty || s.embedded_pristine()) && s.job.is_none() && !s.is_working() && s.batch_item_id.is_none() && !st.playlist_running
+    (empty || s.embedded_pristine()) && s.job.is_none() && !s.is_working() && !in_batch(st, s)
+}
+
+/// `s` is a batch item now, or its video waits in the batch list of a run in progress. Only such a video's track
+/// reads and choices give way to the run: the user may watch (and read the track of) another one meanwhile.
+pub(crate) fn in_batch(st: &State, s: &Session) -> bool {
+    s.batch_item_id.is_some() || (st.playlist_running && s.video.as_deref().is_some_and(|v| queued_in_playlist(st, v)))
 }
 
 fn same_video(st: &State, s: &Session, video: &Path) -> bool {
@@ -41,10 +47,14 @@ fn queued_in_playlist(st: &State, video: &Path) -> bool {
 }
 
 impl State {
-    /// The progress of the progressive read filling the foreground's list, when one runs.
+    /// The progress of the progressive read filling the foreground's list, while the list is still nothing but what
+    /// it delivered (empty, or the track's lines nobody changed): then translating, saving and exporting wait for
+    /// the rest. Once the user changed the lines they are theirs, and can be saved at once.
     pub(crate) fn embedded_read_of_fg(&self) -> Option<f64> {
         let (video, fraction) = self.embedded_read.as_ref()?;
-        same_video(self, self.fg(), video).then_some(*fraction)
+        let fg = self.fg();
+        let filling = (fg.sentences.is_empty() && fg.embedded.is_none() && !fg.has_unsaved_edits) || fg.embedded_pristine();
+        (filling && same_video(self, fg, video)).then_some(*fraction)
     }
 }
 
@@ -58,10 +68,11 @@ impl Inner {
             && s.embedded.is_some_and(|e| e.stream == stream && !e.complete);
         if continuing {
             let s = c.st.session_mut(sid).expect("session");
-            let embedded = EmbeddedLines::read(stream, &lines, complete);
+            let delivered = std::sync::Arc::new(Delivered::of(&lines));
             let merged = merge_sentences_preserving_uid(&s.sentences, lines);
             s.set_sentences(merged);
-            s.embedded = Some(embedded);
+            s.embedded = Some(EmbeddedLines::read(stream, complete));
+            s.embedded_delivered = Some(delivered);
             if c.st.is_foreground(sid) {
                 // The status summary counts the lines.
                 fx.all(&[SubtitleChange::Sentences, SubtitleChange::Selection, SubtitleChange::Status]);
@@ -104,11 +115,18 @@ impl Inner {
 
     /// A batch run is about to process `video`: embedded lines nobody changed are no lines at all to it (it
     /// transcribes the video), so they go, and the read filling them stops (`media_tracks`: the controller sees
-    /// the run start and drops its read silently).
+    /// the run start and drops its read silently). Text being typed into the foreground's lines is committed first:
+    /// it is the user's work, and then the lines are theirs (the run translates them as it would any edited lines).
+    /// Without that the run would go by lines whose fate an open editor still decides: drop them and lose the
+    /// typing, or keep them and write the track's own text when the typing is cancelled.
     pub(crate) fn drop_embedded_for_batch(&self, c: &mut Core, fx: &mut Fx, video: &Path) {
-        let sid = if same_video(&c.st, c.st.fg(), video) { Some(c.st.foreground) } else { c.st.existing_session(video) };
+        let foreground = same_video(&c.st, c.st.fg(), video);
+        let sid = if foreground { Some(c.st.foreground) } else { c.st.existing_session(video) };
         let Some(sid) = sid else { return };
-        if c.st.session(sid).is_some_and(|s| s.embedded_pristine() && !s.is_working() && s.job.is_none()) {
+        if foreground && c.st.fg().embedded.is_some() {
+            self.finish_editing(c, fx);
+        }
+        if c.st.session(sid).is_some_and(|s| s.embedded.is_some() && s.embedded_unchanged() && !s.is_working() && s.job.is_none()) {
             self.clear_embedded(c, fx, sid);
         }
         if c.st.embedded_read.as_ref().is_some_and(|(v, _)| c.st.key(v) == c.st.key(video)) {
@@ -128,9 +146,10 @@ impl SubtitleViewModel {
     }
 
     /// Whether an embedded track of `video` (the foreground's, just opened) may be chosen for the user: only into
-    /// an empty, idle session with no subtitle file loaded or being looked for next to the video, and no job, batch
-    /// run (or the video waiting in the batch list), open confirmation or "Off" chosen for it in this run of the app
-    /// (the rule late reads follow: never behind the user's back).
+    /// an empty, idle session with no subtitle file loaded or being looked for next to the video, and no job, the
+    /// video not a batch item nor waiting in the batch list, no open confirmation and no "Off" chosen for it in this
+    /// run of the app (the rule late reads follow: never behind the user's back). A batch run of other videos does
+    /// not stop it.
     pub fn embedded_auto_choice(&self, video: &Path) -> AutoChoice {
         self.read(|st| {
             let s = st.fg();
@@ -144,7 +163,6 @@ impl SubtitleViewModel {
                 && s.job.is_none()
                 && !s.is_working()
                 && s.batch_item_id.is_none()
-                && !st.playlist_running
                 && !queued_in_playlist(st, video)
                 && !st.embedded_off.contains(&st.key(video))
                 && st.pending_open.is_none();
@@ -169,7 +187,7 @@ impl SubtitleViewModel {
         let video = video.to_path_buf();
         self.inner.edit(move |_, c, fx| {
             let next = progress.map(|f| (video.clone(), f.clamp(0.0, 1.0)));
-            let same_video = c.st.embedded_read.as_ref().is_some_and(|(v, _)| *v == video);
+            let same_video = c.st.embedded_read.as_ref().is_some_and(|(v, _)| c.st.key(v) == c.st.key(&video));
             if progress.is_none() && !same_video {
                 return;
             }
@@ -197,7 +215,7 @@ impl SubtitleViewModel {
                     && fg.embedded.is_some_and(|e| e.stream == stream)
                     && fg.job.is_none()
                     && !fg.is_working()
-                    && !c.st.playlist_running;
+                    && !in_batch(&c.st, fg);
                 return Err(if edited { SnapshotOutcome::Edited } else { SnapshotOutcome::Superseded });
             }
             if !lines.is_empty() {
@@ -248,9 +266,12 @@ impl SubtitleViewModel {
     }
 
     /// The complete track `stream` of `video`, read again after an earlier read of it stopped early (the user
-    /// changed its lines): the lines past the point that read reached are added after the user's, which stay as
-    /// they are. One undo step (`Kalan Satırları Ekle`) removes exactly the added lines; the lines are numbered again
-    /// as every edit numbers them. Returns how many were added (`None`: the lines are not that read's any more).
+    /// changed its lines): the lines that read had not delivered go in among the user's by start time (theirs stay
+    /// as they are, in their order; the last lines it had get the end the track gives them, unless the user re-timed
+    /// them), or the whole track when the user deleted every line. The lines are numbered again as every edit numbers
+    /// them. One undo step (`Kalan Satırları Ekle`) takes exactly that back, the track's "stopped early" state
+    /// included, so the rest can be added again. Returns how many were added (`None`: the lines are not that read's
+    /// any more).
     pub fn append_embedded_rest(&self, video: &Path, stream: usize, all: Vec<Sentence>) -> Option<usize> {
         self.inner.edit(|i, c, fx| {
             let s = c.st.fg();
@@ -259,19 +280,23 @@ impl SubtitleViewModel {
                 return None;
             }
             i.finish_editing(c, fx);
-            let rest = resume_after(&e, all);
-            let sid = c.st.foreground;
+            let s = c.st.fg();
+            let mut lines = s.sentences.clone();
+            let rest = if lines.is_empty() {
+                all
+            } else {
+                let rest = TrackRest::of(s.embedded_delivered.as_deref().unwrap_or(&Delivered::default()), all);
+                rest.fix_ends(&mut lines);
+                rest.lines
+            };
             let added = rest.len();
-            if added > 0 {
-                let mut lines = c.st.fg().sentences.clone();
-                lines.extend(rest);
-                lines.renumber();
-                replace_sentences(&mut c.st, &mut c.undo, sid, lines, k("Kalan Satırları Ekle"), None, None);
-                fx.all(&[SubtitleChange::Sentences, SubtitleChange::Translations, SubtitleChange::Selection, SubtitleChange::Undo, SubtitleChange::Status]);
-            }
-            if let Some(e) = c.st.fg_mut().embedded.as_mut() {
-                e.complete = true;
-            }
+            let mut lines = merge_by_start(lines, rest);
+            lines.renumber();
+            let sid = c.st.foreground;
+            let delivered = std::sync::Arc::new(Delivered::of(&lines));
+            let track = (Some(EmbeddedLines { complete: true, ..e }), Some(delivered));
+            replace_with_track_state(&mut c.st, &mut c.undo, sid, lines, track, k("Kalan Satırları Ekle").to_owned());
+            fx.all(&[SubtitleChange::Sentences, SubtitleChange::Translations, SubtitleChange::Selection, SubtitleChange::Undo, SubtitleChange::Status]);
             Some(added)
         })
     }
@@ -321,14 +346,80 @@ impl SubtitleViewModel {
         });
     }
 
-    /// "Off" holds for the foreground video (chosen in this run of the app, or nothing from the video is loaded).
-    pub fn embedded_off(&self) -> bool {
-        self.read(|st| st.fg().embedded.is_none())
+    /// Whether `video` is a batch item or waits in the list of the batch run in progress: a read of its track
+    /// gives way to the run (`media_tracks`).
+    pub fn embedded_video_in_batch(&self, video: &Path) -> bool {
+        self.read(|st| {
+            let s = if same_video(st, st.fg(), video) { Some(st.fg()) } else { st.existing_session(video).and_then(|sid| st.session(sid)) };
+            s.is_some_and(|s| in_batch(st, s)) || (st.playlist_running && queued_in_playlist(st, video))
+        })
     }
 
+    /// No read runs for `video` and none will continue the track its list holds: lines of a track that stopped
+    /// early and that nobody touched go (another track was chosen and failed before its first lines), so the list
+    /// never shows half a track as if it were all of it.
+    pub fn drop_unfinished_embedded(&self, video: &Path) {
+        self.inner.edit(|i, c, fx| {
+            let s = c.st.fg();
+            if same_video(&c.st, s, video) && s.embedded_pristine() && s.embedded.is_some_and(|e| !e.complete) && !s.is_working() && s.job.is_none() {
+                let sid = c.st.foreground;
+                i.clear_embedded(c, fx, sid);
+            }
+        });
+    }
+
+    /// Puts `lines` into `video`'s session as an embedded track nobody changed, past every guard (tests: the
+    /// automatic-write backstops must refuse such lines wherever they turn up).
+    #[doc(hidden)]
+    pub fn put_track_lines_for_tests(&self, video: &Path, stream: usize, lines: Vec<Sentence>) {
+        self.inner.edit(|_, c, fx| {
+            let sid = if same_video(&c.st, c.st.fg(), video) { Some(c.st.foreground) } else { c.st.existing_session(video) };
+            let Some(s) = sid.and_then(|sid| c.st.session_mut(sid)) else { return };
+            s.set_sentences(lines);
+            s.has_unsaved_edits = false;
+            s.set_translations(Default::default());
+            s.saved_subtitle_name = None;
+            s.embedded = Some(EmbeddedLines::read(stream, true));
+            fx.all(&[SubtitleChange::Sentences, SubtitleChange::Translations]);
+        });
+    }
+
+    /// The foreground's sidecar lookup still runs (tests wait for it instead of sleeping).
+    #[doc(hidden)]
+    pub fn sidecar_lookup_pending(&self) -> bool {
+        self.read(|st| st.fg().sidecar_lookups > 0)
+    }
 }
 
-/// Lines may be added to `s` now: idle, no batch run.
+/// Replaces `sid`'s lines (as [`replace_sentences`] does) together with the state of the track behind them, as one
+/// undo step that restores both.
+fn replace_with_track_state(
+    st: &mut State,
+    undo: &mut sa_core::undo::UndoStack<State>,
+    sid: SessionId,
+    lines: Vec<Sentence>,
+    track: (Option<EmbeddedLines>, Option<std::sync::Arc<Delivered>>),
+    key: String,
+) {
+    let Some(s) = st.session(sid) else { return };
+    let previous = (s.sentences.clone(), (s.embedded, s.embedded_delivered.clone()));
+    // The lines go through the one mutation primitive (drafts, translations, selection); its own undo entry is
+    // replaced by the one below.
+    let mut scratch = sa_core::undo::UndoStack::new();
+    replace_sentences(st, &mut scratch, sid, lines, &key, None, None);
+    if let Some(s) = st.session_mut(sid) {
+        (s.embedded, s.embedded_delivered) = track;
+    }
+    let undo_key = key.clone();
+    undo.register(
+        &undo_key,
+        Box::new(move |st: &mut State, undo: &mut sa_core::undo::UndoStack<State>| {
+            replace_with_track_state(st, undo, sid, previous.0, previous.1, key);
+        }),
+    );
+}
+
+/// Lines may be added to `s` now: idle, not in a batch run.
 fn takes_rest(st: &State, s: &Session) -> bool {
-    s.job.is_none() && !s.is_working() && s.batch_item_id.is_none() && !st.playlist_running
+    s.job.is_none() && !s.is_working() && !in_batch(st, s)
 }

@@ -494,7 +494,8 @@ impl Inner {
             };
             let sid = i.session_for(&mut c.st, fx, &it.video_path);
             i.dequeue(c, fx, sid);
-            // Also when the video's track was read after the run started (it is not chosen meanwhile, but chosen by hand).
+            // Also when the video's track was read after the run started (added to the list mid-run, or chosen by
+            // hand before it was dequeued): the track's own lines are no lines to the run, so it transcribes.
             i.drop_embedded_for_batch(c, fx, &it.video_path);
             let mut item_settings = settings.clone();
             item_settings.language = it.source_language.clone();
@@ -561,8 +562,12 @@ impl Inner {
         self.edit(|i, c, fx| {
             let it = c.st.playlist.iter().find(|p| p.id == item).cloned()?;
             let s = c.st.session(sid)?;
-            // Stage 3 writes next to the video: never lines read from it that nobody changed.
+            // Stage 3 writes next to the video: never lines read from it that nobody changed. `stage2_begin` drops
+            // such lines, so this is the backstop; the row ends as failed (which frees the session for the user)
+            // instead of staying "Working" with nothing behind it.
             if !s.may_write_automatically() {
+                let message = LocalizedMessage::key("Videodan okunan altyazı değiştirilmeden yazılmaz.");
+                i.update_playlist_item(&mut c.st, fx, item, PlaylistItemState::Failed, message, None);
                 return None;
             }
             let lines = s.sentences.clone();
@@ -697,7 +702,7 @@ impl Orchestrator {
         let needs = !self.token.is_cancelled() && subtitle_import::find_sidecar_subtitle(video).is_none() && {
             let v = video.to_path_buf();
             self.invoke(move |i| {
-                i.read(|c| c.st.existing_session(&v).and_then(|s| c.st.session(s)).is_none_or(|s| s.sentences.is_empty() || s.embedded_pristine()))
+                i.read(|c| c.st.existing_session(&v).and_then(|s| c.st.session(s)).is_none_or(|s| s.sentences.is_empty() || (s.embedded.is_some() && s.embedded_unchanged())))
             })
                 .unwrap_or(false)
         };

@@ -527,6 +527,23 @@
           }
         }
       }
+    },
+    "Videodan okunan altyazı değiştirilmeden yazılmaz.": {
+      "comment": "Batch row: the video's list held subtitles read from it that nobody changed, so the run did not write them.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subtitles read from the video are not written unchanged."
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Videodan okunan altyazı değiştirilmeden yazılmaz."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
