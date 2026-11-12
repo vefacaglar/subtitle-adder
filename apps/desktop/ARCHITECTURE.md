@@ -68,6 +68,12 @@ and deinterlacing on the CPU in `sa_player::soft`).
   (`WGL_NV_DX_interop2`, planes copied on the GPU) was not built: what it could still save is below the ~0.2 core that
   would justify its risk. `[player-stats]` (`SUBTITLE_ADDER_PLAYER_STATS=1`) carries the attribution (`perf.rs`).
 - `SUBTITLE_ADDER_FRAME_DUMP=<dir>` dumps the GPU path's converted pictures and, as `...-cpu.png`, the RGBA path's.
+- `SUBTITLE_ADDER_WINDOW_DUMP=<path prefix>` dumps the whole window as it is about to be presented (the back buffer,
+  read with `glReadPixels` after Slint rendered: video, subtitle pictures, text overlay, controls) as PNG files
+  `<prefix>-<pid>-<n>-<moments>-<position>.png`, at the first render with a bitmap subtitle picture on screen, the
+  first with overlay text, the first after 5 s of playback and the first at or after each position (s) in
+  `SUBTITLE_ADDER_WINDOW_DUMP_AT` (comma separated); 8 files at most, GPU renderer only, free when unset. Screen
+  capture of the GL window returns white, so this is how the real window is checked (`video_gl.rs` module docs).
 - `SUBTITLE_ADDER_FULL_SCREEN=1` makes the main window enter full screen once, when the first video frame arrives
   (as the `F` key would), so full screen can be measured without input. `SUBTITLE_ADDER_PLAYER_STATS=1` ends the
   `[player-stats]` line with the window state: `full_screen=` (the controller's), `cursor_hidden=` (the pointer
@@ -121,12 +127,23 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   queues ahead of the decoders hold seconds of video and audio, so a decode never starves them), turns every
   `SUBTITLE_BITMAP` rectangle (PAL8 + a palette of native-endian `0xAARRGGBB` words with straight alpha, FFmpeg's
   `RGBA()` macro in every bitmap decoder) into straight-alpha RGBA8, and queues the event on the `PictureTimeline`
-  with the seek serial it was demuxed for. A rejected packet is skipped and counted (`picture_failures=`), never
-  retried or waited on; playback is not touched. Times: packet pts (else dts) on the player clock plus
-  `start_display_time`; the end is `end_display_time` when the decoder gives one, else the packet duration (not for
-  PGS: its events end with the next display set), else none. The canvas is the decoder's `width` × `height` (PGS from
-  the composition segment, VobSub from its idx `size:`, DVB from its display definition), else the video's coded size,
-  grown to cover its rectangles.
+  with the seek serial it was demuxed for. Every packet of the stream reaches the decoder, also one without a
+  timestamp (a VobSub subpicture spread over PES packets, of which only the first has a PTS: dvdsubdec reassembles
+  it; FFmpeg's MPEG-PS demuxer already does so with its dvdsub parser, a demuxer without one would not). A rejected
+  packet is skipped and counted (`picture_failures=`), never retried or waited on; playback is not touched. A track
+  whose decoder rejected 4 packets without producing a single event is given up: turned off as if "Off" were chosen,
+  with `SubtitleTrackFailed` (the app reports it; the menu no longer marks it). Times: `AVSubtitle.pts` (FFmpeg fills
+  it in `AV_TIME_BASE` from the packet with `pkt_timebase`; pgssubdec sets it to the presentation composition's time,
+  so a display set is shown from its PCS, not from the END segment that completed it), else the newest packet
+  timestamp, on the player clock plus `start_display_time`. XSUB is timed by the `[HH:MM:SS.mmm-HH:MM:SS.mmm]` time
+  codes in each packet alone: AVI numbers subtitle chunks 0, 1, 2 (no time), and xsubdec reads the packet pts as if
+  it were in `AV_TIME_BASE`. The end is `end_display_time` when the decoder gives one, else the packet duration (not
+  for PGS: its events end with the next display set), else none. The canvas is the decoder's `width` × `height` (PGS
+  from the composition segment, VobSub from its idx `size:`, DVB from its display definition) exactly as given, also
+  when a damaged rectangle lies outside it (growing it would rescale every rectangle of the event; the UI brings such
+  a rectangle on screen). Only when the decoder names none is one made up: 720 × 576 for DVB (the display a stream
+  without a display definition segment means), else the video's coded size, grown to hold the rectangles. Every
+  picture carries the video's coded size for the UI's canvas rule.
   - Timing rule (`PictureTimeline::active_at`): every bitmap format describes the whole screen per event, so the
     picture on screen at `t` is the newest event that started at or before `t`, while `t` is before its end: its own
     end (at most 300 s after its start), the next event's start, and at most 30 s after its start for an event
@@ -145,25 +162,43 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
     frame of the new position on nothing of the old position shows (until that frame arrives the old frame and its
     picture stay together, as a paused seek always showed the old frame); the decoder is flushed when the demuxer
     seeks. Limitation, as in most players: a seek lands on the keyframe before the target, so an event that started
-    before that keyframe and lasts past the target is not shown (the next event is). Switching off drops the decoder
-    and the pictures; another load drops everything with the session. At the end of the file the last event keeps its
-    end rule.
-  - Memory bounds: at most 64 queued events and 64 MiB of RGBA (the oldest go first, counted as overflow); an event
-    above 3840 × 2160 pixels in total, or a rectangle or canvas side above 8192, is dropped as damaged. In practice
-    the queue holds the few events of the demuxer's read-ahead (a PGS caption is ~1500 × 150 px, 0.9 MB).
+    before that keyframe and lasts past the target is not shown (the next event is). The same holds for PGS sets
+    that build on an earlier one of their epoch (a palette-only update, a normal set reusing objects): after a seek
+    past their objects they show nothing until the next acquisition point or epoch start, which resend everything.
+    Restarts that keep the position (another speed, another audio track, a replaced video decoder:
+    `restart_decoding` without a deferred seek) are not seeks for the picture: the one on screen carries over to the
+    new serial with its own start and end (`PictureTimeline::carry_over`), so it neither blinks off nor outlives its
+    end, and the re-read stream decodes it again (a new id, the same start). A seek, a track switch or "Off" still
+    takes it off. Switching off drops the decoder and the pictures; another load drops everything with the session.
+    When playback reaches the end the picture goes (the clock stops there, so an event without an end would
+    otherwise stay on the end screen).
+  - Memory bounds: at most 64 queued events and 64 MiB of RGBA. Past either, events already replaced go first, then
+    the one farthest ahead (a new event that does not fit is refused); the event `active_at` would pick (the one on
+    screen, or the next one due) is never dropped, so a full-frame sign or a fade of large objects cannot take the
+    caption on screen with it (`picture_overflow=` counts the drops). An event above 3840 × 2160 pixels in total, or
+    a rectangle or canvas side above 8192, is dropped as damaged. In practice the queue holds the few events of the
+    demuxer's read-ahead (a PGS caption is ~1500 × 150 px, 0.9 MB).
   - The UI (`sa-app/src/main_window/pictures.rs`, `PictureSubtitleOverlay` in `ui/shared/overlay_label.slint`, used by
     both trees): on `PictureChanged` the controller copies each rectangle once into a Slint image (`from_rgba8`:
-    straight alpha) with its place as fractions of the canvas (`MainBridge.picture-subtitles`), only when another
-    event is shown (by `SubtitlePicture::id`). The overlay maps the fractions onto the same aspect-fit video rectangle
-    as the text overlay (the canvas covers the whole picture, so anamorphic video needs nothing more), so the picture
-    scales with the video in a window and in full screen and looks the same on the GPU path, the RGBA path and the
-    software renderer: Slint draws it over whatever shows the video. It sits over the video and under the text
+    straight alpha) with its place on the canvas, the canvas and its fit (`MainBridge.picture-subtitles`), only when
+    another event is shown (by `SubtitlePicture::id`). Where a rectangle goes on the player surface is Rust's rule
+    (`pictures::place`), which the overlay asks for its own size through the pure callback `MainBridge.place-picture`
+    (re-evaluated on every resize, no frame of lag): an anamorphic canvas (under 1280 wide: DVD 720 × 480 / 576, DVB
+    720 × 576; or the video's coded size) stretches with the aspect-fit video rectangle, like the picture; a
+    square-pixel HD canvas (PGS 1920 × 1080 / 1280 × 720) keeps its shape, scaled uniformly to cover the video
+    rectangle and centred on it, as VLC and mpv do. So the captions of a cropped encode (1920 × 800 video,
+    1920 × 1080 canvas) sit unsquashed in the letterbox below the picture, where the disc put them, instead of 26 %
+    flatter inside it; with equal aspects both rules agree. A rectangle that would fall outside the surface (the
+    canvas reaches past a window as wide as the video, a damaged stream) is moved inside it, and shrunk to fit if
+    larger. The picture scales with the video in a window and in full screen and looks the same on the GPU path, the
+    RGBA path and the software renderer: Slint draws it over whatever shows the video. It sits over the video and
+    under the text
     overlay of the user's lines, the HUD and the controls, is not styled by the text-overlay settings, and uses plain
     `Image` items (no opacity, clip or radius, any of which would draw the player through a cached layer, the
     slideshow bug of 2026-11-11).
   - Diagnostics on `[player-stats]`: `image_subtitle=` (the stream shown, `-` none), `picture_events=` (events
-    decoded, clearing ones included), `pictures_shown=`, `picture_failures=`, `picture_size=WxH` (bounding box of the
-    picture on screen, `0x0` none) and `picture_canvas=`; the controller adds `subtitle_active=<stream>:image|text`
+    decoded, clearing ones included), `pictures_shown=`, `picture_failures=`, `picture_overflow=`, `picture_size=WxH`
+    (bounding box of the picture on screen, `0x0` none) and `picture_canvas=`; the controller adds `subtitle_active=<stream>:image|text`
     and what the overlay holds (`overlay_picture_rects=`, `overlay_picture_pixels=`).
 - Reading an embedded text subtitle track (`stream_text_subtitles`; `extract_text_subtitles` without snapshots)
   uses its own demuxer, with every other stream set to `AVDISCARD_ALL`, so it never touches the playing session. It
@@ -254,8 +289,11 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   priority (`auto_track`); only when that rule finds none, the same rule over the image tracks (`auto_image_track`:
   the UI language's, non-forced first, else the default one) shows one, under exactly the conditions that allow the
   automatic text load (an empty, idle session, no subtitle file next to the video, no job or batch, "Off" not chosen
-  for the video in this run). A failure (`SubtitleTrackFailed`) is reported like an audio track failure:
-  `Altyazı parçası gösterilemedi: …`.
+  for the video in this run). An image track shown that way, not picked by the user, goes again as soon as the
+  session gets lines of its own (a transcription's first live lines or its result, an imported or sidecar subtitle
+  file), so two captions never overlap unasked; one the user picked from the menu stays. A failure
+  (`SubtitleTrackFailed`: the decoder did not open, or the player gave the track up) is reported like an audio track
+  failure: `Altyazı parçası gösterilemedi: …`.
 - The read opens the file directly (`MediaSource::File`), not through the Windows `BufferedVideoStream`: it bypasses
   the encrypted SSD chunk cache and reads Matroska through to the end, at background I/O priority so playback keeps
   its share of a slow drive.
@@ -263,10 +301,17 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   `(pts, samples)` blocks, and `simulate_audio_decoder_failure` makes opening a given audio stream fail.
 - Test media for bitmap subtitles: FFmpeg has no PGS encoder, so `sa-player/tests/common/sup.rs` writes PGS display
   sets (PCS / WDS / PDS / ODS with PGS run-length coding / END; a set without objects clears) with known pixels,
-  palette and times; the FFmpeg CLI muxes that `.sup` into Matroska and transcodes it to VobSub and DVB
-  (`-fix_sub_duration`, bitmap to bitmap). `sa-player/tests/pictures.rs` checks exact pixels (straight alpha, RGBA
-  order), positions, canvases and times for PGS, VobSub (4-bit alpha and the DVD palette: within a tolerance) and DVB
-  (placed by canvas fractions), the clearing events, seeks, switches, off and a text stream refused.
+  palette and times, including objects over 64 KB split over several ODS segments, several windows, palette-only
+  updates, normal sets reusing objects, acquisition points and a PCS timed apart from its other segments (a length
+  that does not fit its field panics); the FFmpeg CLI muxes that `.sup` into Matroska and transcodes it to VobSub,
+  DVB and XSUB (in AVI) and VobSub in MPEG-PS (`-fix_sub_duration`, bitmap to bitmap). A DVB track without a display
+  definition is made by turning the encoder's DDS segments into stuffing segments of the same length, and a corrupt
+  one with the `noise` bitstream filter. `sa-player/tests/pictures.rs` checks exact pixels (straight alpha, RGBA
+  order), positions, canvases and times for every format (VobSub: 4-bit alpha and the DVD palette within a
+  tolerance), the clearing events, seeks, switches, off, a text stream refused, a speed change that keeps the
+  picture, the end of playback, a hopeless track and a VobSub subpicture fed in pieces without timestamps
+  (`ffmpeg_backend::decode_picture_stream`, a test hook). Every clip is cached under a name hashed from its recipe
+  and written atomically.
 
 Dependencies of `sa-player` (feature `ffmpeg`):
 
