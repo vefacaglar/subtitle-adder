@@ -101,8 +101,9 @@ them does not build.
 - The app side (`sa_viewmodels::media_tracks`, `subtitle/embedded.rs`, `controller.rs`): when a video opens and the
   session is empty and idle, with no subtitle file next to it loaded or still being looked for (the sidecar lookup
   counts itself on the session, through a guard that also counts down if its thread dies, and reports its end as a
-  status change; the controller asks again then and from its 100 ms timer), no job, no batch run, the video not
-  waiting in the batch list and "Off" not chosen for it in this run of the app (`State::embedded_off`),
+  status change; the controller asks again then and from its 100 ms timer), no job, the video not a batch item nor
+  waiting in the batch list (a run of other videos does not matter) and "Off" not chosen for it in this run of the
+  app (`State::embedded_off`),
   `auto_track` picks the UI language's text track (non-forced first), else the default one. A read into an empty
   list or over an unedited embedded track is progressive: each snapshot goes in through `apply_embedded_snapshot`,
   merged by `merge_sentences_preserving_uid` like the engine's `partial` snapshots (rows keep their keys,
@@ -113,33 +114,48 @@ them does not build.
   costs O(n) per snapshot instead of a scan of the list per new line (50 000 lines in 60 snapshots stay linear,
   `session.rs` `merge_tests`).
 - While a progressive read fills the foreground's list, the view model knows it (`set_embedded_read`; the
-  controller reports the start, every 2 % of progress and every end): translating (all, missing or selected),
-  saving and exporting are unavailable and refuse, and the status shows `Okunuyor… %N` after the summary.
-  Generating stays available; a job or a batch run starting is seen by the controller as a change of the session
-  mark's job or working state, and it cancels the read silently (never "the subtitles changed"), dropping lines
-  nobody touched. A read over the user's lines applies the complete track at the end through the open-subtitle rules
-  (`request_embedded_lines`: macOS asks when edits would be lost or a job stopped) unless the lines changed
-  meanwhile.
-- Embedded lines carry `Session::embedded` (`EmbeddedLines { stream, pristine, complete, cutoff_ms, at_cutoff }`).
-  `embedded_pristine` (no committed edit, translation, save, and no typed draft that differs from its line) is what
-  "nobody changed them" means everywhere: loading them leaves the session clean, macOS evicts such a session like a
-  rebuildable one, the Windows reopen of a video looks for a sidecar again and a subtitle file found then replaces
-  them, and a batch run treats them as no lines (`start_playlist` and `stage2_begin` drop them, and the read filling
-  them, before the video is processed, so it is transcribed). Automatic writes go through
-  `Session::may_write_automatically`: auto-save's `save_subtitle(automatic: true)` and the run's stage 3 `hand_off`
-  refuse such lines (`save_automatically`, a hidden test hook, drives the guard). The first committed edit,
-  translation, save or export makes them the user's for good (`settle_embedded` after every view-model edit; a draft
-  alone does not, since it may be cancelled).
+  controller reports the start, every 2 % of progress and every end, cancel or detach). As long as the list is
+  still only what the read delivered (empty, or the track's lines nobody changed), translating (all, missing or
+  selected), saving and exporting are unavailable and refuse, and the status shows `Okunuyor… %N` after the
+  summary; once the user changes the lines (a typed draft is enough) they are theirs and can be saved at once.
+  Generating stays available. The session mark's working part is the session's job or its being in a batch run
+  (`embedded::in_batch`: a batch item, or queued in the list of a run in progress), so a job starting on this
+  video, or this video's turn in a run, cancels its read silently (never "the subtitles changed"), dropping lines
+  nobody touched; a run of other videos leaves it alone. A read over the user's lines applies the complete track at
+  the end through the open-subtitle rules (`request_embedded_lines`: macOS asks when edits would be lost or a job
+  stopped) unless the lines changed meanwhile.
+- Embedded lines carry `Session::embedded` (`EmbeddedLines { stream, pristine, complete }`) and what the read had
+  delivered (`Session::embedded_delivered`: every line by start and text, and the lines at its last start with the
+  end they were given). `embedded_pristine` (no committed edit, translation or save, and no typed draft that
+  differs from its line) decides the interactive rules: loading leaves the session clean, macOS evicts such a
+  session like a rebuildable one, the Windows reopen of a video looks for a sidecar again and a subtitle file found
+  then replaces them. Automatic writes and batch runs go by `embedded_unchanged` (the same without drafts), so a
+  draft never makes the track's own text writable: `Session::may_write_automatically` guards auto-save's
+  `save_subtitle(automatic: true)` and stage 3 (`hand_off`, which fails the row with `Videodan okunan altyazı
+  değiştirilmeden yazılmaz.` instead of leaving it working; `save_automatically` and `put_track_lines_for_tests`
+  are hidden test hooks for these backstops). Before a batch run processes a video (`start_playlist`,
+  `stage2_begin`, also for a video added mid-run or whose track was chosen by hand after the run started), a draft
+  typed into its foreground lines is committed (the typing is the user's work; the lines are then theirs and are
+  translated like any edited lines) and unchanged track lines are dropped, so the video is transcribed. The first
+  committed edit, translation, save or export makes them the user's for good (`settle_embedded` after every
+  view-model edit). With auto-save on, translating the video's own track writes the translation next to the video:
+  the user asked for that translation, so it is their work like any other.
 - A track chosen again after its read stopped early (an edit) adds only its rest: the read runs whole, without
-  snapshots (`ReadMode::resume`), and `append_embedded_rest` appends the lines starting after the last line of the
-  last snapshot that went in (lines at that same start beyond the ones it had count as new), renumbers (ids stay
-  unique) and records it as one undo step (`Kalan Satırları Ekle`) that removes exactly those lines. The user's lines,
-  split, merged or deleted, are untouched. Choosing a track commits a draft first; "Off" commits it too, then clears
-  only unedited lines, and is remembered per video for the run (it is checked while nothing from the video is in the
-  list). A read that fails part-way drops a track chosen for the user (quietly) and keeps one the user chose
-  (`Videodaki altyazının yalnızca bir kısmı yüklendi: …`). A half-read track is removed when another video opens
-  (`abandon_embedded_read`), so it is read again next time. Image tracks (PGS, VobSub, DVB) are listed but disabled;
-  more than three collapse into one summary row.
+  snapshots (`ReadMode::resume`); `append_embedded_rest` takes the lines the stopped read had not delivered
+  (`TrackRest`: by start and text, so lines FFmpeg delivered late and that sort earlier are not lost), gives the
+  lines still at that read's last start the end the track gives them (unless the user re-timed them), merges the
+  rest in by start time while the user's lines keep their order (`merge_by_start`), renumbers and records it as one
+  undo step (`Kalan Satırları Ekle`) that also restores the "stopped early" state, so the rest can be added again
+  after an undo. With every line deleted, the whole track goes in. Choosing a track commits a draft first; "Off"
+  commits it too, then clears only unedited lines, and is remembered per video for the run. It is checked whenever
+  no embedded track is in the list (an imported or generated subtitle included: the video's own tracks are off
+  then, and choosing it keeps one from being chosen for the user). A read that fails part-way drops a track chosen
+  for the user (quietly) and keeps one the user chose (`Videodaki altyazının yalnızca bir kısmı yüklendi: …`); a
+  read that fails before its first lines also drops what an earlier, replaced read left half done. When a typed
+  draft stopped a read and is then taken back (or an undo leaves the track's lines as read), the read goes on
+  (`continue_unfinished_track`), except after a failure of that read. A half-read track is removed when another
+  video opens (`abandon_embedded_read`), so it is read again next time. Image tracks (PGS, VobSub, DVB) are listed
+  but disabled; more than three collapse into one summary row.
 - The read opens the file directly (`MediaSource::File`), not through the Windows `BufferedVideoStream`: it bypasses
   the encrypted SSD chunk cache and reads Matroska through to the end, at background I/O priority so playback keeps
   its share of a slow drive.
