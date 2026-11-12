@@ -3,8 +3,8 @@
 // state into `in` properties (diffed, on the UI thread) and handles the callbacks. UI agents extend these globals
 // (one global per area) and document every addition in API.md.
 
-import { MenuEntry, PickerItem, PickerModelRow, SentenceRowData, QueueRowData, ExplorerRowData } from "main_types.slint";
-export { MenuEntry, PickerItem, PickerModelRow, SentenceRowData, QueueRowData, ExplorerRowData }
+import { MenuEntry, PickerItem, PickerModelRow, SentenceRowData, QueueRowData, ExplorerRowData, PictureSubtitleRect } from "main_types.slint";
+export { MenuEntry, PickerItem, PickerModelRow, SentenceRowData, QueueRowData, ExplorerRowData, PictureSubtitleRect }
 import { HubCardData, HubListData } from "hub_types.slint";
 export { HubCardData, HubListData }
 import { SettingsModelRow, SettingsProviderRow, SettingsChoice } from "settings_types.slint";
@@ -56,6 +56,8 @@ export global MainBridge {
     // The current video frame (RGBA buffer from sa-player, set on the UI thread).
     in property <image> video-frame;
     in property <string> overlay-text;
+    // The bitmap subtitle picture of the image track shown (empty: none); changes only when an event starts or ends.
+    in property <[PictureSubtitleRect]> picture-subtitles;
 
     in property <string> status-text;
     // -1 = indeterminate / none.

@@ -290,23 +290,6 @@
         }
       }
     },
-    "Görüntü tabanlı, desteklenmiyor": {
-      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Image-based, not supported"
-          }
-        },
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Görüntü tabanlı, desteklenmiyor"
-          }
-        }
-      }
-    },
     "Okunuyor… %lld%%": {
       "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
       "localizations": {
@@ -371,23 +354,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Desteklenmiyor"
-          }
-        }
-      }
-    },
-    "Görüntü tabanlı altyazı parçaları: %lld": {
-      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Image-based subtitle tracks: %lld"
-          }
-        },
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Görüntü tabanlı altyazı parçaları: %lld"
           }
         }
       }
@@ -541,6 +507,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Videodan okunan altyazı değiştirilmeden yazılmaz."
+          }
+        }
+      }
+    },
+    "Altyazı parçası gösterilemedi: %@": {
+      "comment": "Added by the Rust desktop app (player audio / subtitle track menu, PARITY.md; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The subtitle track could not be shown: %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı parçası gösterilemedi: %@"
           }
         }
       }

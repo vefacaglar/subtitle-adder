@@ -2,7 +2,7 @@
 // QuickTime-style transport pill, the display picker pill and the engagement bar slot. Always dark.
 import { Loc } from "../../shared/loc.slint";
 import { MainBridge, AppBridge } from "../../shared/bridge.slint";
-import { SubtitleOverlay } from "../../shared/overlay_label.slint";
+import { SubtitleOverlay, PictureSubtitleOverlay } from "../../shared/overlay_label.slint";
 import { Theme } from "../theme.slint";
 import { Spinner } from "std-widgets.slint";
 import { Glyph, ToggleGlyph, ToolTip, MenuFlyout } from "controls.slint";
@@ -435,6 +435,14 @@ export component PlayerSurface inherits Rectangle {
             image-fit: contain;
             accessible-role: image;
             accessible-label: Loc.t("Video");
+        }
+
+        // Bitmap subtitle pictures: over the video, under the text overlay and the controls.
+        PictureSubtitleOverlay {
+            width: parent.width;
+            height: parent.height;
+            aspect: MainBridge.video-aspect;
+            rects: MainBridge.picture-subtitles;
         }
 
         SubtitleOverlay {

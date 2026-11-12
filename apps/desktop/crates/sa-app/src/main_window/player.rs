@@ -7,10 +7,11 @@
 //! with [`PlayerController::take_outputs`]. The clock is injected so tests drive time explicitly.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use sa_core::engine_types::Sentence;
-use sa_player::{FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, PlaybackTimeline, PlayerEvent, VideoFrame};
+use sa_player::{FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, PlaybackTimeline, PlayerEvent, SubtitlePicture, VideoFrame};
 use sa_viewmodels::hub::PlaybackReport;
 use sa_viewmodels::shortcuts::adjusted_volume;
 use uuid::Uuid;
@@ -89,6 +90,10 @@ pub enum PlayerOutput {
     TracksChanged,
     /// The audio track asked for could not be played (the previous one keeps playing); FFmpeg's details.
     AudioTrackFailed(String),
+    /// The image subtitle track asked for cannot be shown (the previous choice stays); FFmpeg's details.
+    SubtitleTrackFailed(String),
+    /// The bitmap subtitle picture to draw over the video changed: [`PlayerController::subtitle_picture`].
+    PictureChanged,
 }
 
 /// Opens the media for the backend (Windows wraps the file in a `BufferedVideoStream`).
@@ -261,6 +266,18 @@ impl PlayerController {
         }
         self.backend.select_audio_track(stream_index);
     }
+    /// Shows image subtitle track `stream_index` over the video (`None`: none); answered with `TracksChanged`, or
+    /// `SubtitleTrackFailed`. As for audio, the backend decides what is already active.
+    pub fn select_image_subtitle_track(&mut self, stream_index: Option<usize>) {
+        if self.disposed || !self.has_media {
+            return;
+        }
+        self.backend.select_image_subtitle_track(stream_index);
+    }
+    /// The bitmap subtitle picture to draw over the video now (none without media).
+    pub fn subtitle_picture(&self) -> Option<Arc<SubtitlePicture>> {
+        if self.disposed || self.current_path.is_none() { None } else { self.backend.subtitle_picture() }
+    }
     fn set_tracks(&mut self, tracks: MediaTracks) {
         if tracks != self.tracks {
             self.tracks = tracks;
@@ -315,6 +332,7 @@ impl PlayerController {
         self.video_size = (16.0, 9.0);
         self.emit(PlayerOutput::VideoSizeChanged(16.0, 9.0));
         self.set_tracks(MediaTracks::default());
+        self.emit(PlayerOutput::PictureChanged);
         self.update_active();
         let source = path.map(|p| (self.source_factory)(p));
         self.backend.pause();
@@ -431,6 +449,16 @@ impl PlayerController {
                 if generation == self.backend_generation && self.current_path.is_some() {
                     // An empty message is worded in the UI language by `media_tracks::audio_track_failure`.
                     self.emit(PlayerOutput::AudioTrackFailed(message.trim().to_owned()));
+                }
+            }
+            PlayerEvent::SubtitleTrackFailed { generation, message, .. } => {
+                if generation == self.backend_generation && self.current_path.is_some() {
+                    self.emit(PlayerOutput::SubtitleTrackFailed(message.trim().to_owned()));
+                }
+            }
+            PlayerEvent::SubtitlePictureChanged { generation } => {
+                if generation == self.backend_generation && self.current_path.is_some() {
+                    self.emit(PlayerOutput::PictureChanged);
                 }
             }
         }
@@ -734,6 +762,8 @@ mod tests {
         failure: Option<FailureKind>,
         tracks: MediaTracks,
         selected: Vec<usize>,
+        images: Vec<Option<usize>>,
+        picture: Option<Arc<SubtitlePicture>>,
     }
 
     struct Fake(Rc<RefCell<FakeState>>);
@@ -797,6 +827,12 @@ mod tests {
         }
         fn select_audio_track(&mut self, stream_index: usize) {
             self.0.borrow_mut().selected.push(stream_index);
+        }
+        fn select_image_subtitle_track(&mut self, stream_index: Option<usize>) {
+            self.0.borrow_mut().images.push(stream_index);
+        }
+        fn subtitle_picture(&self) -> Option<Arc<SubtitlePicture>> {
+            self.0.borrow().picture.clone()
         }
     }
 
@@ -1149,6 +1185,7 @@ mod tests {
             ],
             subtitles: vec![],
             active_audio: Some(1),
+            active_image_subtitle: None,
         };
         r.state.borrow_mut().tracks = two.clone();
         r.player.select_audio_track(2);
@@ -1173,6 +1210,32 @@ mod tests {
         assert!(r.player.tracks().audio.is_empty());
         assert!(r.player.take_outputs().contains(&PlayerOutput::TracksChanged));
         assert_eq!(r.player.playing_file(), Some(Path::new("C:/w.mkv")));
+    }
+
+    #[test]
+    fn image_subtitle_choices_pass_through_and_picture_changes_of_the_current_load_are_reported() {
+        let mut r = rig(PlayerFlavor::Windows);
+        r.player.select_image_subtitle_track(Some(4));
+        assert!(r.state.borrow().images.is_empty(), "nothing to show before the media opened");
+        r.player.load(Some(Path::new("C:/v.mkv")), false);
+        assert!(r.player.take_outputs().contains(&PlayerOutput::PictureChanged), "a new video clears the picture");
+        r.open(10.0);
+        r.player.select_image_subtitle_track(Some(4));
+        r.player.select_image_subtitle_track(None);
+        assert_eq!(r.state.borrow().images, vec![Some(4), None]);
+        let g = r.state.borrow().generation;
+        r.player.take_outputs();
+        r.player.handle_event(PlayerEvent::SubtitlePictureChanged { generation: g - 1 });
+        assert!(r.player.take_outputs().is_empty(), "a stale load is ignored");
+        r.player.handle_event(PlayerEvent::SubtitlePictureChanged { generation: g });
+        assert_eq!(r.player.take_outputs(), vec![PlayerOutput::PictureChanged]);
+        let picture = Arc::new(SubtitlePicture { id: 7, stream_index: 4, canvas: (720, 480), start: 1.0, end: None, rects: vec![] });
+        r.state.borrow_mut().picture = Some(picture.clone());
+        assert_eq!(r.player.subtitle_picture(), Some(picture));
+        r.player.handle_event(PlayerEvent::SubtitleTrackFailed { generation: g, stream_index: 3, message: " not a picture track ".into() });
+        assert_eq!(r.player.take_outputs(), vec![PlayerOutput::SubtitleTrackFailed("not a picture track".into())]);
+        r.player.dispose();
+        assert!(r.player.subtitle_picture().is_none());
     }
 
     #[test]

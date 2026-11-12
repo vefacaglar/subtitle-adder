@@ -320,9 +320,21 @@ impl SubtitleViewModel {
     /// changed. A draft being typed is committed first (then the lines are the user's and stay). True when lines
     /// were cleared.
     pub fn clear_embedded_lines(&self) -> bool {
+        self.clear_track_lines(true)
+    }
+
+    /// A bitmap (picture) subtitle track of the foreground video was chosen to be shown over the video: like
+    /// choosing another text track, lines that are an embedded text track nobody changed go (they are not the user's
+    /// work), after a draft being typed is committed; anything the user made stays exactly as it is. Unlike "Off" it
+    /// is not remembered for the video. True when lines were cleared.
+    pub fn clear_embedded_lines_for_picture_track(&self) -> bool {
+        self.clear_track_lines(false)
+    }
+
+    fn clear_track_lines(&self, remember_off: bool) -> bool {
         self.inner.edit(|i, c, fx| {
             i.finish_editing(c, fx);
-            if let Some(v) = c.st.fg().video.clone() {
+            if remember_off && let Some(v) = c.st.fg().video.clone() {
                 let key = c.st.key(&v);
                 c.st.embedded_off.insert(key);
             }

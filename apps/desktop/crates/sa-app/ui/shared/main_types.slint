@@ -82,6 +82,16 @@ export struct QueueRowData {
     accessible-label: string,
 }
 
+// One rectangle of the bitmap subtitle picture shown over the video (PGS, VobSub, DVB): its straight-alpha image and
+// where it goes, as fractions of the video picture (the subtitle canvas maps onto the letterboxed video rectangle).
+export struct PictureSubtitleRect {
+    image: image,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+}
+
 // A row of the file explorer sidebar.
 export struct ExplorerRowData {
     path: string,

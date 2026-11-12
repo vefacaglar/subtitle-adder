@@ -4,7 +4,7 @@
 import { Spinner } from "std-widgets.slint";
 import { Loc } from "../../shared/loc.slint";
 import { MainBridge, AppBridge } from "../../shared/bridge.slint";
-import { SubtitleOverlay } from "../../shared/overlay_label.slint";
+import { SubtitleOverlay, PictureSubtitleOverlay } from "../../shared/overlay_label.slint";
 import { MacTheme } from "../theme.slint";
 import { EngagementBar } from "../hub/engagement_bar.slint";
 import { Sym, Segmented, MenuButton, MacMenu, ToolTip } from "controls.slint";
@@ -392,6 +392,14 @@ export component PlayerView inherits Rectangle {
                 MainBridge.video-wheel(e.delta-y / 1px, true);
                 accept
             }
+        }
+
+        // Bitmap subtitle pictures: over the video, under the text overlay and the controls.
+        PictureSubtitleOverlay {
+            width: parent.width;
+            height: parent.height;
+            aspect: MainBridge.video-aspect;
+            rects: MainBridge.picture-subtitles;
         }
 
         SubtitleOverlay {

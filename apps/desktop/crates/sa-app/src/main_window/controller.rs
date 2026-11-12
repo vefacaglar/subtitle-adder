@@ -25,7 +25,7 @@ use sa_enginekit::editing::SentenceListExt;
 use sa_player::ffmpeg_backend::{ExtractError, ExtractedSubtitle};
 use sa_player::{MediaPlayerBackend, VideoFrame};
 use sa_viewmodels::explorer::{ExplorerChange, FileExplorerModel};
-use sa_viewmodels::media_tracks::{self, AutoChoice, EmbeddedSubtitleReads, FinishedRead, ReadMode, SnapshotOutcome, TrackChoice, TrackMenu};
+use sa_viewmodels::media_tracks::{self, AutoChoice, AutoTrack, EmbeddedSubtitleReads, FinishedRead, ReadMode, SnapshotOutcome, TrackChoice, TrackMenu};
 use sa_viewmodels::hub::{HubChange, VideoPlatformModel};
 use sa_viewmodels::shortcuts::{self, PlayerShortcut, ShortcutFocus, ShortcutTarget, WindowsKeyAction};
 use sa_viewmodels::subtitle::subtitle_time_short;
@@ -43,7 +43,10 @@ use super::rows::{fill_if_changed, sync_keyed};
 use super::status::{ErrorBar, bridge_fraction, mac_playback_notice, status_kind_index};
 use super::transport::{TransportInput, scrub_target, synchronize, windows_wheel_volume};
 use super::video_gl::VideoSurface;
-use crate::ui::{self, AppBridge, ExplorerBridge, ExplorerRowData, MainBridge, MainWindow, MenuBridge, MenuEntry, PickerItem, QueueRowData, SentenceRowData};
+use crate::ui::{
+    self, AppBridge, ExplorerBridge, ExplorerRowData, MainBridge, MainWindow, MenuBridge, MenuEntry, PickerItem, PictureSubtitleRect, QueueRowData,
+    SentenceRowData,
+};
 
 /// Converts the engine `preview` command into a playable copy (macOS fallback; runs on a worker thread).
 pub type PreviewMaker = Arc<dyn Fn(&Path) -> Result<PathBuf, String> + Send + Sync>;
@@ -170,6 +173,8 @@ struct UiState {
     /// A read of this video's track failed: its lines (kept, with a notice) are not read on by
     /// `continue_unfinished_track`, which would fail the same way.
     no_resume: Option<(PathBuf, usize)>,
+    /// The id of the bitmap subtitle picture `picture-subtitles` shows (`SubtitlePicture::id`).
+    picture_shown: Option<u64>,
 }
 
 pub struct MainWindowController {
@@ -200,6 +205,8 @@ pub struct MainWindowController {
     language_items: Rc<VecModel<PickerItem>>,
     target_items: Rc<VecModel<PickerItem>>,
     menu_entries: Rc<VecModel<MenuEntry>>,
+    /// The rectangles of the bitmap subtitle picture over the video (`MainBridge.picture-subtitles`).
+    picture_rects: Rc<VecModel<PictureSubtitleRect>>,
     timer: slint::Timer,
     /// `SUBTITLE_ADDER_PLAYER_STATS=1`: player counters on stderr once a second (diagnostics).
     stats: Option<StatsLog>,
@@ -351,6 +358,7 @@ impl MainWindowController {
             language_items: Rc::new(VecModel::default()),
             target_items: Rc::new(VecModel::default()),
             menu_entries: Rc::new(VecModel::default()),
+            picture_rects: Rc::new(VecModel::default()),
             timer: slint::Timer::default(),
             stats: StatsLog::from_env(),
             key: Cell::new(None),
@@ -387,6 +395,7 @@ impl MainWindowController {
         main.set_language_items(ModelRc::from(self.language_items.clone()));
         main.set_target_items(ModelRc::from(self.target_items.clone()));
         main.set_menu_entries(ModelRc::from(self.menu_entries.clone()));
+        main.set_picture_subtitles(ModelRc::from(self.picture_rects.clone()));
         w.global::<ExplorerBridge>().set_rows(ModelRc::from(self.explorer_rows.clone()));
     }
 
@@ -482,9 +491,21 @@ impl MainWindowController {
                     );
                     let reading = self.reads.borrow().reading().map_or_else(|| "-".to_owned(), |(s, f)| format!("{s}@{:.0}%", f * 100.0));
                     let overlay = self.win().map_or(0, |w| w.global::<MainBridge>().get_overlay_text().chars().count());
+                    // The subtitle track on the video: the image track shown, else the text track in the list.
+                    let subtitle = match (t.active_image_subtitle, self.vm.embedded_lines()) {
+                        (Some(i), _) => format!("{i}:image"),
+                        (None, Some(e)) => format!("{}:text", e.stream),
+                        (None, None) => "-".to_owned(),
+                    };
+                    // What the overlay draws of the picture: its rectangles and their pixels.
+                    use slint::Model as _;
+                    let (rects, pixels) = (0..self.picture_rects.row_count()).filter_map(|i| self.picture_rects.row_data(i)).fold((0, 0u64), |(n, px), r| {
+                        let s = r.image.size();
+                        (n + 1, px + u64::from(s.width) * u64::from(s.height))
+                    });
                     let tracks = format!(
-                        "audio_tracks={} subtitle_tracks={} active_audio={active} playing={} pos={:.2} lines={} embedded={embedded} \
-                         reading={reading} overlay_chars={overlay}",
+                        "audio_tracks={} subtitle_tracks={} active_audio={active} subtitle_active={subtitle} playing={} pos={:.2} lines={} \
+                         embedded={embedded} reading={reading} overlay_chars={overlay} overlay_picture_rects={rects} overlay_picture_pixels={pixels}",
                         t.audio.len(),
                         t.subtitles.len(),
                         p.is_playing(),
@@ -632,6 +653,7 @@ impl MainWindowController {
         if let Some(w) = self.win() {
             w.global::<MainBridge>().set_video_frame(slint::Image::default());
         }
+        self.sync_picture();
         if let Some(ex) = &self.explorer {
             ex.sync_to_video(video.as_deref());
         }
@@ -695,6 +717,8 @@ impl MainWindowController {
                     self.consider_auto_track();
                 }
                 PlayerOutput::AudioTrackFailed(details) => self.show_track_failure(media_tracks::audio_track_failure(&details)),
+                PlayerOutput::SubtitleTrackFailed(details) => self.show_track_failure(media_tracks::subtitle_track_failure(&details)),
+                PlayerOutput::PictureChanged => self.sync_picture(),
             }
         }
         if ticked {
@@ -1358,6 +1382,17 @@ impl MainWindowController {
         w.global::<MainBridge>().set_overlay_text(s(text.unwrap_or_default()));
     }
 
+    /// The bitmap subtitle picture over the video: rebuilt only when the player shows another event (or none).
+    fn sync_picture(&self) {
+        let picture = self.player.borrow().subtitle_picture();
+        let id = picture.as_ref().map(|p| p.id);
+        if std::mem::replace(&mut self.st.borrow_mut().picture_shown, id) == id {
+            return;
+        }
+        let rows = picture.map(|p| super::pictures::overlay_rects(&p)).unwrap_or_default();
+        self.picture_rects.set_vec(rows);
+    }
+
     /// The track control (shown while the file has a choice; busy while a track is read) and, while it is open, its
     /// menu (it follows switches, failures and the read's progress).
     fn sync_tracks(&self) {
@@ -1398,6 +1433,9 @@ impl MainWindowController {
                 self.player.borrow_mut().select_audio_track(stream);
                 self.drain_player();
             }
+            TrackChoice::Subtitle(stream) if self.player.borrow().tracks().subtitles.iter().any(|t| t.stream_index == stream && t.is_image()) => {
+                self.choose_image_track(stream);
+            }
             TrackChoice::Subtitle(stream) => {
                 // The user chose: nothing is chosen for them any more, and "Off" no longer holds for the video.
                 {
@@ -1405,6 +1443,8 @@ impl MainWindowController {
                     st.auto_choice = None;
                     st.no_resume = None;
                 }
+                // A text track replaces the image track on the video (one subtitle track at a time).
+                self.hide_image_track();
                 // Text being typed is the user's: committed before the choice is weighed (it may make the lines theirs).
                 self.vm.finish_editing();
                 self.vm.embedded_track_chosen();
@@ -1424,6 +1464,7 @@ impl MainWindowController {
             }
             TrackChoice::SubtitleOff => {
                 self.st.borrow_mut().auto_choice = None;
+                self.hide_image_track();
                 let cancelled = self.reads.borrow_mut().cancel();
                 if let Some(read) = cancelled {
                     self.vm.set_embedded_read(&read.video, None);
@@ -1432,6 +1473,38 @@ impl MainWindowController {
                 self.vm.clear_embedded_lines();
                 self.sync_tracks();
             }
+        }
+    }
+
+    /// The user chose image track `stream`: the player shows its pictures over the video (answered with
+    /// `TracksChanged`, which marks it in the menu). Like choosing another text track, a read in flight stops and
+    /// lines that are an embedded text track nobody changed go (a typed draft is committed first and then stays);
+    /// a list that holds the user's own work is left exactly as it is, and nothing is written anywhere.
+    fn choose_image_track(&self, stream: usize) {
+        {
+            let mut st = self.st.borrow_mut();
+            st.auto_choice = None;
+            st.no_resume = None;
+        }
+        self.vm.finish_editing();
+        self.vm.embedded_track_chosen();
+        let cancelled = self.reads.borrow_mut().cancel();
+        if let Some(read) = cancelled {
+            self.read_stopped_early(&read);
+        }
+        self.vm.clear_embedded_lines_for_picture_track();
+        self.player.borrow_mut().select_image_subtitle_track(Some(stream));
+        self.drain_player();
+        self.sync_tracks();
+    }
+
+    /// Takes the image track off the video (a text track or "Off" was chosen). Asked whenever the file has an image
+    /// track, not only while one is reported shown: a choice still in flight is undone too (the player ignores a
+    /// request for what is already the case).
+    fn hide_image_track(&self) {
+        if self.player.borrow().tracks().subtitles.iter().any(|t| t.is_image()) {
+            self.player.borrow_mut().select_image_subtitle_track(None);
+            self.drain_player();
         }
     }
 
@@ -1446,13 +1519,13 @@ impl MainWindowController {
             self.st.borrow_mut().auto_choice = None;
             return;
         }
-        let stream = {
+        let track = {
             let p = self.player.borrow();
             // Not opened yet (or no subtitle track at all, then it stays undecided until the next video: harmless).
             if p.tracks().subtitles.is_empty() {
                 return;
             }
-            media_tracks::auto_track(p.tracks(), sa_core::l10n::LanguageState::shared().language().code())
+            media_tracks::auto_choice(p.tracks(), sa_core::l10n::LanguageState::shared().language().code())
         };
         let choice = self.vm.embedded_auto_choice(&video);
         if choice == AutoChoice::Wait {
@@ -1460,8 +1533,14 @@ impl MainWindowController {
         }
         // Decided before the read starts (its start notifies the view model's listeners, which may ask again).
         self.st.borrow_mut().auto_choice = None;
-        if let (AutoChoice::Allowed, Some(stream)) = (choice, stream) {
-            self.read_embedded_subtitle(stream, ReadMode::AUTOMATIC);
+        match (choice, track) {
+            (AutoChoice::Allowed, Some(AutoTrack::Text(stream))) => self.read_embedded_subtitle(stream, ReadMode::AUTOMATIC),
+            // No text track to choose: an image track by the same rule is shown (the list stays empty).
+            (AutoChoice::Allowed, Some(AutoTrack::Image(stream))) => {
+                self.player.borrow_mut().select_image_subtitle_track(Some(stream));
+                self.drain_player();
+            }
+            _ => {}
         }
     }
 

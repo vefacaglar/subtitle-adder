@@ -21,6 +21,7 @@ mod audio;
 mod hw;
 mod io;
 pub mod perf;
+mod pictures;
 mod priority;
 mod session;
 #[cfg(windows)]
@@ -123,6 +124,12 @@ pub struct PlaybackStats {
     pub soft_deinterlaced: u64,
     /// RGBA second fields dropped as late before their conversion (fields, not frames: not in [`Self::dropped`]).
     pub dropped_fields: u64,
+    /// Bitmap subtitle events decoded (clearing events included) on the shown track(s).
+    pub picture_events: u64,
+    /// Bitmap subtitle pictures put on screen.
+    pub pictures_shown: u64,
+    /// Bitmap subtitle packets the decoder rejected, or events dropped as too large, on the current track.
+    pub picture_failures: u64,
 }
 
 impl PlaybackStats {
@@ -239,6 +246,9 @@ impl FfmpegPlayer {
             soft_tonemapped: s.stats.soft_tonemapped.load(Ordering::Relaxed),
             soft_deinterlaced: s.stats.soft_deinterlaced.load(Ordering::Relaxed),
             dropped_fields: s.stats.dropped_fields.load(Ordering::Relaxed),
+            picture_events: s.stats.picture_events.load(Ordering::Relaxed),
+            pictures_shown: s.stats.pictures_shown.load(Ordering::Relaxed),
+            picture_failures: s.stats.picture_failures.load(Ordering::Relaxed),
         }
     }
 
@@ -365,9 +375,31 @@ impl MediaPlayerBackend for FfmpegPlayer {
     fn diagnostics(&self) -> Option<String> {
         self.session.as_ref()?;
         let s = self.stats();
+        // The bitmap subtitle track shown (`-` none), its events decoded, pictures shown, failures, and the size of
+        // the picture on screen now (bounding box on its canvas; 0x0 when none) with the canvas.
+        let image = self.tracks().active_image_subtitle.map_or_else(|| "-".to_owned(), |i| i.to_string());
+        let (size, canvas) = self
+            .subtitle_picture()
+            .map(|p| {
+                let (_, _, w, h) = p.bounds();
+                (format!("{w}x{h}"), format!("{}x{}", p.canvas.0, p.canvas.1))
+            })
+            .unwrap_or_else(|| ("0x0".to_owned(), "-".to_owned()));
         Some(format!(
-            "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={} dropped_fields={} soft_tonemapped={} soft_deinterlaced={}",
-            s.decoded, s.hardware, s.planar, s.presented, s.dropped_late, s.dropped_decoder, s.dropped_fields, s.soft_tonemapped, s.soft_deinterlaced
+            "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={} dropped_fields={} soft_tonemapped={} soft_deinterlaced={} \
+             image_subtitle={image} picture_events={} pictures_shown={} picture_failures={} picture_size={size} picture_canvas={canvas}",
+            s.decoded,
+            s.hardware,
+            s.planar,
+            s.presented,
+            s.dropped_late,
+            s.dropped_decoder,
+            s.dropped_fields,
+            s.soft_tonemapped,
+            s.soft_deinterlaced,
+            s.picture_events,
+            s.pictures_shown,
+            s.picture_failures
         ))
     }
 
@@ -379,6 +411,16 @@ impl MediaPlayerBackend for FfmpegPlayer {
         if let Some(s) = &self.session {
             s.request_audio_track(stream_index);
         }
+    }
+
+    fn select_image_subtitle_track(&mut self, stream_index: Option<usize>) {
+        if let Some(s) = &self.session {
+            s.request_image_subtitle(stream_index);
+        }
+    }
+
+    fn subtitle_picture(&self) -> Option<Arc<crate::SubtitlePicture>> {
+        self.session.as_ref().and_then(|s| s.pictures.lock().shown.clone())
     }
 
     fn dispose(&mut self) {

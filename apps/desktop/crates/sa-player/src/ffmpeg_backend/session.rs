@@ -22,10 +22,12 @@ use super::audio::{self, AudioChunk, AudioRing, DeviceFormat, Resampler};
 use super::hw::{self, Download, Downloaded, OwnedFrame};
 use super::io::{self, OpenFailure, OpenedInput};
 use super::perf;
+use super::pictures::PictureTrack;
 use super::priority;
 use super::sync::{Clock, Notify};
 use super::tracks;
 use super::video::{self, Converter, HdrLevels, StreamLayout};
+use crate::picture::{PictureTimeline, SubtitlePicture};
 use crate::{FailureKind, LoadGeneration, MediaSource, MediaTracks, PlayerEvent, PlayerEventToken, PlayerSessionGate, SourceId, VideoFrame};
 
 pub(crate) type Sink = Arc<dyn Fn(PlayerEvent) + Send + Sync>;
@@ -90,6 +92,18 @@ pub(crate) struct Stats {
     pub soft_deinterlaced: AtomicU64,
     /// RGBA second fields dropped as late before their conversion.
     pub dropped_fields: AtomicU64,
+    /// Bitmap subtitle events decoded (clearing events included) / pictures put on screen / packets the subtitle
+    /// decoder rejected or events dropped as too large.
+    pub picture_events: AtomicU64,
+    pub pictures_shown: AtomicU64,
+    pub picture_failures: AtomicU64,
+}
+
+/// The bitmap subtitle events queued for the presenter and the picture on screen.
+#[derive(Default)]
+pub(crate) struct Pictures {
+    pub timeline: PictureTimeline,
+    pub shown: Option<Arc<SubtitlePicture>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -246,6 +260,11 @@ pub(crate) struct Control {
     /// The audio stream the UI asked for last; the demux thread switches to it (`switch_audio`).
     audio_select: Mutex<Option<usize>>,
     audio_swap: Mutex<Option<AudioSwap>>,
+    /// The bitmap subtitle stream the UI asked for last (`Some(None)`: none); the demux thread switches to it.
+    picture_select: Mutex<Option<Option<usize>>>,
+    /// A bitmap subtitle track is shown: the presenter checks which picture is due (one atomic load otherwise).
+    pictures_on: AtomicBool,
+    pub pictures: Mutex<Pictures>,
 }
 
 impl Control {
@@ -289,6 +308,9 @@ impl Control {
             tracks: Mutex::new(MediaTracks::default()),
             audio_select: Mutex::new(None),
             audio_swap: Mutex::new(None),
+            picture_select: Mutex::new(None),
+            pictures_on: AtomicBool::new(false),
+            pictures: Mutex::new(Pictures::default()),
         });
         ctl.clock.set_speed(speed);
         ctl.clock.set_playing(playing);
@@ -386,6 +408,49 @@ impl Control {
     pub fn request_audio_track(&self, stream_index: usize) {
         *self.audio_select.lock() = Some(stream_index);
         self.space.notify();
+    }
+
+    /// Asks the demux thread to show bitmap subtitle stream `stream_index` (`None`: none); the newest request wins.
+    pub fn request_image_subtitle(&self, stream_index: Option<usize>) {
+        *self.picture_select.lock() = Some(stream_index);
+        self.space.notify();
+    }
+
+    /// The picture due at `t` (a frame's pts, or the clock while no frame is coming) on screen, announced when it
+    /// changed. A lock and a look at the front of a short queue, and only while a bitmap track is shown.
+    fn update_picture(&self, t: f64) {
+        if !self.pictures_on.load(Ordering::Acquire) {
+            return;
+        }
+        let serial = self.serial.load(Ordering::Acquire);
+        let changed = {
+            let mut p = self.pictures.lock();
+            let now = p.timeline.active_at(serial, t);
+            if now.as_ref().map(|n| n.id) == p.shown.as_ref().map(|n| n.id) {
+                false
+            } else {
+                if now.is_some() {
+                    self.stats.pictures_shown.fetch_add(1, Ordering::Relaxed);
+                }
+                p.shown = now;
+                true
+            }
+        };
+        if changed {
+            self.emit(PlayerEvent::SubtitlePictureChanged { generation: self.generation });
+        }
+    }
+
+    /// Drops every queued picture and takes the shown one off the screen (track switched or turned off).
+    fn clear_pictures(&self) {
+        let removed = {
+            let mut p = self.pictures.lock();
+            p.timeline.clear();
+            p.shown.take().is_some()
+        };
+        if removed {
+            self.emit(PlayerEvent::SubtitlePictureChanged { generation: self.generation });
+        }
     }
 
     /// Records a seek: everything queued becomes stale, the clock stands at the target until its frame is shown.
@@ -749,6 +814,7 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
         ctl.clock.release();
     }
     let video_index = streams.video.as_ref().map(|v| v.0);
+    let video_coded = streams.video.as_ref().map(|(_, v)| (v.dec.width(), v.dec.height()));
     if let Some((_, track)) = streams.video {
         let c = ctl.clone();
         if let Ok(h) = std::thread::Builder::new().name("player-video".into()).spawn(move || video_main(c, track)) {
@@ -777,7 +843,7 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
     }
 
     let pipeline = audio_index.is_some();
-    demux_loop(&ctl, &mut input, video_index, audio_index, pipeline);
+    demux_loop(&ctl, &mut input, Routes { video: video_index, video_size: video_coded, audio: audio_index, pipeline });
 
     ctl.shutdown();
     for h in handles {
@@ -890,10 +956,60 @@ fn switch_audio(ctl: &Control, input: &mut OpenedInput, audio: &mut Option<usize
     ctl.emit(PlayerEvent::TracksChanged { generation: ctl.generation });
 }
 
-fn demux_loop(ctl: &Control, input: &mut OpenedInput, video: Option<usize>, mut audio: Option<usize>, pipeline: bool) {
+/// Shows bitmap subtitle stream `want` (`Control::request_image_subtitle`; `None`: none), on the demux thread.
+///
+/// Its decoder opens first: a stream that is no picture track this build decodes, or whose decoder does not open,
+/// posts `SubtitleTrackFailed` and leaves the current choice alone. Otherwise the queued pictures of the previous
+/// track go (and the shown one comes off the screen), and playback restarts at the current position exactly as for an
+/// audio switch (`Control::restart_decoding`), so the new track's events from the keyframe before the position on
+/// are demuxed and its picture due now is shown (the demuxer reads seconds ahead: without the restart the new
+/// track's first seconds would be missing). After the end the switch waits for the next seek. Turning the track off
+/// just drops the decoder and the pictures.
+fn switch_pictures(ctl: &Control, input: &mut OpenedInput, current: &mut Option<PictureTrack>, video_size: Option<(u32, u32)>, want: Option<usize>) {
+    if current.as_ref().map(|p| p.stream) == want {
+        return;
+    }
+    match want {
+        None => {
+            *current = None;
+            ctl.pictures_on.store(false, Ordering::Release);
+            ctl.tracks.lock().active_image_subtitle = None;
+            ctl.clear_pictures();
+        }
+        Some(stream) => match PictureTrack::open(input.input(), stream, video_size) {
+            Err(message) => {
+                eprintln!("[player] subtitle stream {stream} cannot be shown ({message})");
+                ctl.emit(PlayerEvent::SubtitleTrackFailed { generation: ctl.generation, stream_index: stream, message });
+            }
+            Ok(track) => {
+                *current = Some(track);
+                ctl.tracks.lock().active_image_subtitle = Some(stream);
+                ctl.clear_pictures();
+                ctl.pictures_on.store(true, Ordering::Release);
+                if !ctl.ended.load(Ordering::Acquire) {
+                    ctl.restart_decoding(ctl.position());
+                }
+            }
+        },
+    }
+    ctl.emit(PlayerEvent::TracksChanged { generation: ctl.generation });
+}
+
+/// Where the demux loop sends packets.
+struct Routes {
+    video: Option<usize>,
+    /// The video's coded size: the canvas of a bitmap subtitle track that names none.
+    video_size: Option<(u32, u32)>,
+    audio: Option<usize>,
+    pipeline: bool,
+}
+
+fn demux_loop(ctl: &Control, input: &mut OpenedInput, routes: Routes) {
+    let Routes { video, video_size, mut audio, pipeline } = routes;
     let mut serial = 1u64;
     let mut eof = false;
     let start = ctl.start_time();
+    let mut pictures: Option<PictureTrack> = None;
     loop {
         if ctl.stopped() {
             return;
@@ -901,6 +1017,10 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, video: Option<usize>, mut 
         let switch = ctl.audio_select.lock().take();
         if let Some(want) = switch {
             switch_audio(ctl, input, &mut audio, pipeline, want);
+        }
+        let switch = ctl.picture_select.lock().take();
+        if let Some(want) = switch {
+            switch_pictures(ctl, input, &mut pictures, video_size, want);
         }
         let req = ctl.seek_req.lock().take();
         if let Some((target, s)) = req {
@@ -913,6 +1033,9 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, video: Option<usize>, mut 
             eof = false;
             ctl.vq.flush();
             ctl.aq.flush();
+            if let Some(p) = pictures.as_mut() {
+                p.flush();
+            }
         }
         if eof {
             ctl.space.wait(Duration::from_millis(20));
@@ -934,6 +1057,16 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, video: Option<usize>, mut 
                     ctl.vq.push(PacketItem { serial, stream: Some(idx), packet: Some(packet) });
                 } else if Some(idx) == audio {
                     ctl.aq.push(PacketItem { serial, stream: Some(idx), packet: Some(packet) });
+                } else if let Some(p) = pictures.as_mut().filter(|p| p.stream == idx) {
+                    // Decoded here, ahead of the clock (subtitle packets are small and rare); the presenter shows
+                    // each when it is due.
+                    let event = p.decode(&packet, start);
+                    ctl.stats.picture_failures.store(p.failed + p.oversized, Ordering::Relaxed);
+                    if let Some(e) = event {
+                        ctl.stats.picture_events.fetch_add(1, Ordering::Relaxed);
+                        ctl.pictures.lock().timeline.push(serial, e.start, e.end, e.picture.map(Arc::new));
+                        ctl.wake.notify();
+                    }
                 }
             }
             Err(ffmpeg_next::Error::Exit) => return,
@@ -1416,6 +1549,7 @@ fn present_main(ctl: Arc<Control>) {
                     ctl.frames.space.notify_all();
                     drop(q);
                     if ctl.serial.load(Ordering::Acquire) == serial && ctl.force_show.swap(false, Ordering::AcqRel) {
+                        ctl.update_picture(f.pts);
                         ctl.publish(f);
                         ctl.clock.release();
                         ctl.run_deferred_seek();
@@ -1441,6 +1575,8 @@ fn present_main(ctl: Arc<Control>) {
             None => {
                 drop(q);
                 check_end(&ctl);
+                // No frame coming (audio only, after the last frame, a stalled decoder): the clock decides.
+                ctl.update_picture(ctl.clock.now());
                 ctl.wake.wait(Duration::from_millis(10));
             }
             Some(FrameItem::Eof { .. }) => {
@@ -1451,6 +1587,8 @@ fn present_main(ctl: Arc<Control>) {
             Some(FrameItem::Frame(f)) => {
                 if !ctl.clock.is_running() {
                     drop(q);
+                    // Paused: a picture decoded after the frame on screen (just after a seek) still shows.
+                    ctl.update_picture(ctl.clock.now());
                     ctl.wake.wait(Duration::from_millis(10));
                     continue;
                 }
@@ -1476,6 +1614,7 @@ fn present_main(ctl: Arc<Control>) {
                 if next_due {
                     ctl.stats.dropped_late.fetch_add(1, Ordering::Relaxed);
                 } else if ctl.serial.load(Ordering::Acquire) == serial {
+                    ctl.update_picture(f.pts);
                     ctl.publish(f);
                 }
             }

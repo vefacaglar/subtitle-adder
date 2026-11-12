@@ -8,8 +8,8 @@
 //! made is in it, otherwise at the end through the same confirmation and replacement rules as a subtitle file the
 //! user picked; either way not when the session changed while the read ran ([`SessionMark`]). Lines read from the
 //! video are not the user's work until they change them: no unsaved-changes prompt, no automatic save
-//! (`crate::subtitle::SubtitleViewModel::embedded_lines`). Image-based tracks are listed but disabled until bitmap
-//! subtitles are supported (more than [`MAX_LISTED_IMAGE_TRACKS`] as one summary row).
+//! (`crate::subtitle::SubtitleViewModel::embedded_lines`). Choosing an image-based entry (PGS, VobSub, DVB, XSUB) has
+//! the player draw that track's pictures over the video: display only, nothing reaches the list or any file.
 
 use std::path::{Path, PathBuf};
 
@@ -24,17 +24,12 @@ pub struct TrackItem {
     /// `audio:<stream>` / `subtitle:<stream>` ([`TrackChoice::parse`]).
     pub id: String,
     pub label: String,
-    /// The audio track playing / the embedded track whose lines are in the list.
+    /// The audio track playing / the embedded text track whose lines are in the list / the image track shown.
     pub active: bool,
     pub enabled: bool,
     /// Short trailing note (reading progress, why an entry is disabled); empty for none.
     pub hint: String,
 }
-
-/// More image-based subtitle tracks than this are shown as one summary row ([`IMAGE_SUMMARY_ID`]).
-pub const MAX_LISTED_IMAGE_TRACKS: usize = 3;
-/// The id of that summary row (disabled; no [`TrackChoice`]).
-pub const IMAGE_SUMMARY_ID: &str = "subtitle-images";
 
 /// The two sections of the menu.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -47,9 +42,10 @@ pub struct TrackMenu {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackChoice {
     Audio(usize),
+    /// A text track (read into the list) or an image track (shown over the video): the stream's kind decides.
     Subtitle(usize),
-    /// No embedded track for this video: clears lines that are an unedited embedded track, and none is chosen for
-    /// the user when the video opens again in this run of the app.
+    /// No embedded track for this video: hides an image track, clears lines that are an unedited embedded track,
+    /// and none is chosen for the user when the video opens again in this run of the app.
     SubtitleOff,
 }
 
@@ -87,10 +83,13 @@ pub fn has_choices(tracks: &MediaTracks) -> bool {
 
 impl TrackMenu {
     /// `reading`: the embedded track being read and its progress (0…1); `loaded`: the embedded track whose lines the
-    /// list holds now, `loaded_pristine`: those lines are still exactly the track's. A file with a text track gets an
-    /// "Off" entry first: checked while no embedded track is in the list (an imported or generated subtitle
+    /// list holds now, `loaded_pristine`: those lines are still exactly the track's. The image track the player shows
+    /// is `tracks.active_image_subtitle`. The subtitle entries are one radio group: "Off", the text tracks and the
+    /// image tracks (every one selectable, however many: the menu scrolls), the shown image track marked rather than
+    /// a text track whose lines are in the list. A file with a text or image track gets the "Off" entry first:
+    /// checked while no image track is shown and no embedded track is in the list (an imported or generated subtitle
     /// included: the video's own tracks are off then), enabled then (it keeps a track from being chosen for the
-    /// user) and while the loaded lines are unedited (it clears them).
+    /// user), while an image track is shown (it hides it) and while the loaded lines are unedited (it clears them).
     pub fn build(tracks: &MediaTracks, reading: Option<(usize, f64)>, loaded: Option<usize>, loaded_pristine: bool) -> Self {
         let audio = tracks
             .audio
@@ -104,49 +103,35 @@ impl TrackMenu {
                 hint: String::new(),
             })
             .collect();
-        let images = tracks.subtitles.iter().filter(|t| t.kind == SubtitleKind::Image).count();
-        let collapse_images = images > MAX_LISTED_IMAGE_TRACKS;
+        let shown_image = tracks.active_image_subtitle.filter(|i| tracks.subtitles.iter().any(|t| t.stream_index == *i && t.is_image()));
         let mut subtitles: Vec<TrackItem> = tracks
             .subtitles
             .iter()
             .enumerate()
-            .filter(|(_, t)| !(collapse_images && t.kind == SubtitleKind::Image))
             .map(|(n, t)| {
                 let read = reading.filter(|(s, _)| *s == t.stream_index);
                 let (enabled, hint) = match (t.kind, read) {
-                    (SubtitleKind::Image, _) => (false, sa_core::l("Görüntü tabanlı, desteklenmiyor")),
+                    (SubtitleKind::Image, _) => (true, String::new()),
                     (SubtitleKind::Unsupported, _) => (false, sa_core::l("Desteklenmiyor")),
                     (SubtitleKind::Text, Some((_, f))) => (false, sa_core::l!("Okunuyor… %lld%%", (f.clamp(0.0, 1.0) * 100.0).floor() as i64)),
                     (SubtitleKind::Text, None) => (true, String::new()),
                 };
-                TrackItem {
-                    id: TrackChoice::Subtitle(t.stream_index).id(),
-                    label: subtitle_label(t, n + 1),
-                    active: loaded == Some(t.stream_index),
-                    enabled,
-                    hint,
-                }
+                let active = match t.kind {
+                    SubtitleKind::Image => shown_image == Some(t.stream_index),
+                    _ => shown_image.is_none() && loaded == Some(t.stream_index),
+                };
+                TrackItem { id: TrackChoice::Subtitle(t.stream_index).id(), label: subtitle_label(t, n + 1), active, enabled, hint }
             })
             .collect();
-        if tracks.subtitles.iter().any(SubtitleTrack::is_text) {
+        if tracks.subtitles.iter().any(|t| t.is_text() || t.is_image()) {
             let off = TrackItem {
                 id: SUBTITLE_OFF_ID.to_owned(),
                 label: sa_core::l("Kapalı"),
-                active: loaded.is_none() && reading.is_none(),
-                enabled: loaded.is_none() || loaded_pristine,
+                active: shown_image.is_none() && loaded.is_none() && reading.is_none(),
+                enabled: shown_image.is_some() || loaded.is_none() || loaded_pristine,
                 hint: String::new(),
             };
             subtitles.insert(0, off);
-        }
-        if collapse_images {
-            // A Blu-ray remux carries dozens of PGS tracks: one disabled row says how many instead.
-            subtitles.push(TrackItem {
-                id: IMAGE_SUMMARY_ID.to_owned(),
-                label: sa_core::l!("Görüntü tabanlı altyazı parçaları: %lld", images as i64),
-                active: false,
-                enabled: false,
-                hint: sa_core::l("Desteklenmiyor"),
-            });
         }
         Self { audio, subtitles }
     }
@@ -224,15 +209,40 @@ pub fn language_name(tag: &str) -> Option<String> {
 
 /// The embedded track loaded for the user when a video opens with no lines (VLC-like): the first text track in
 /// `ui_language` (`tr` / `en`, the UI's), a non-forced one before a forced one; otherwise the first text track with
-/// the default disposition; otherwise none. Image-based and unsupported tracks are never chosen.
+/// the default disposition; otherwise none. Image-based and unsupported tracks are never read ([`auto_choice`] shows
+/// an image track when there is no text track to choose).
 pub fn auto_track(tracks: &MediaTracks, ui_language: &str) -> Option<usize> {
-    let text = || tracks.subtitles.iter().filter(|t| t.kind == SubtitleKind::Text);
+    pick(tracks, ui_language, SubtitleKind::Text)
+}
+
+/// [`auto_track`]'s rule over the image-based tracks: the first one in `ui_language` (non-forced first), else the
+/// first default one.
+pub fn auto_image_track(tracks: &MediaTracks, ui_language: &str) -> Option<usize> {
+    pick(tracks, ui_language, SubtitleKind::Image)
+}
+
+fn pick(tracks: &MediaTracks, ui_language: &str, kind: SubtitleKind) -> Option<usize> {
+    let of_kind = || tracks.subtitles.iter().filter(move |t| t.kind == kind);
     let in_language = |t: &&SubtitleTrack| t.language.as_deref().and_then(language_code) == Some(ui_language);
-    text()
+    of_kind()
         .filter(in_language)
         .min_by_key(|t| t.forced)
-        .or_else(|| text().find(|t| t.default))
+        .or_else(|| of_kind().find(|t| t.default))
         .map(|t| t.stream_index)
+}
+
+/// What is chosen for the user when a video opens with no lines ([`auto_track`] / [`auto_image_track`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoTrack {
+    /// Read this text track into the list.
+    Text(usize),
+    /// Show this image track over the video.
+    Image(usize),
+}
+
+/// Text tracks first ([`auto_track`]); only when that rule finds none, the same rule over the image tracks.
+pub fn auto_choice(tracks: &MediaTracks, ui_language: &str) -> Option<AutoTrack> {
+    auto_track(tracks, ui_language).map(AutoTrack::Text).or_else(|| auto_image_track(tracks, ui_language).map(AutoTrack::Image))
 }
 
 /// The usual name of a codec (`AAC`, `E-AC-3`, `SRT`, `PGS`); other FFmpeg names in capitals.
@@ -284,6 +294,14 @@ pub fn channels_text(channels: u16) -> String {
 fn details_text(details: &str) -> String {
     let d = details.trim();
     if d.is_empty() { sa_core::l("Bilinmeyen hata") } else { d.to_owned() }
+}
+
+/// `Altyazı parçası gösterilemedi: %@` (the player could not show the image track; the previous choice stays).
+pub fn subtitle_track_failure(details: &str) -> LocalizedMessage {
+    let d = details.to_owned();
+    LocalizedMessage::new(format!("subtitle-track-failed:{details}"), move || {
+        sa_core::l!("Altyazı parçası gösterilemedi: %@", details_text(&d).as_str())
+    })
 }
 
 /// `Ses parçası açılamadı: %@` (the player kept the previous audio track).

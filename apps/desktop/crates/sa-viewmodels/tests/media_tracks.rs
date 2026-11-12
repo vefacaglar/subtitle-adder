@@ -1,5 +1,5 @@
-//! The player's track menu model (`sa_viewmodels::media_tracks`): labels, the active marks, disabled image-based
-//! entries, when the control shows at all, and the embedded-subtitle read bookkeeping.
+//! The player's track menu model (`sa_viewmodels::media_tracks`): labels, the active marks, selectable image-based
+//! entries, when the control shows at all, the automatic choice, and the embedded-subtitle read bookkeeping.
 
 mod common;
 
@@ -9,9 +9,9 @@ use sa_core::l10n::{CatalogChain, UiLanguage};
 use sa_core::settings::SettingsStore;
 use sa_player::{AudioTrack, ExtractError, MediaTracks, SubtitleKind, SubtitleTrack};
 use sa_viewmodels::media_tracks::{
-    AutoChoice, EmbeddedSubtitleReads, IMAGE_SUMMARY_ID, MAX_LISTED_IMAGE_TRACKS, ReadMode, SUBTITLE_OFF_ID, SessionMark, SnapshotOutcome,
-    TrackChoice, TrackMenu, audio_label, audio_track_failure, auto_track, channels_text, codec_title, embedded_read_empty, embedded_read_failure,
-    embedded_read_outdated, embedded_read_partial, has_choices, language_code, language_name,
+    AutoChoice, AutoTrack, EmbeddedSubtitleReads, ReadMode, SUBTITLE_OFF_ID, SessionMark, SnapshotOutcome, TrackChoice, TrackMenu, audio_label,
+    audio_track_failure, auto_choice, auto_image_track, auto_track, channels_text, codec_title, embedded_read_empty, embedded_read_failure,
+    embedded_read_outdated, embedded_read_partial, has_choices, language_code, language_name, subtitle_track_failure,
 };
 
 use common::{Env, LanguageScope};
@@ -42,6 +42,7 @@ fn sample() -> MediaTracks {
             sub(6, Some("jpn"), None, "hdmv_pgs_subtitle", SubtitleKind::Image, false),
         ],
         active_audio: Some(2),
+        active_image_subtitle: None,
     }
 }
 
@@ -88,7 +89,7 @@ fn language_tags_codecs_and_channel_counts() {
 }
 
 #[test]
-fn the_playing_track_and_the_loaded_subtitle_are_marked_and_image_tracks_are_disabled() {
+fn the_playing_track_and_the_loaded_subtitle_are_marked_and_image_tracks_can_be_chosen() {
     let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::En);
     let menu = TrackMenu::build(&sample(), None, Some(5), false);
     let active: Vec<bool> = menu.audio.iter().map(|i| i.active).collect();
@@ -97,8 +98,7 @@ fn the_playing_track_and_the_loaded_subtitle_are_marked_and_image_tracks_are_dis
     // "Off" first, not checked: a track's lines are in the list.
     assert_eq!(menu.subtitles.iter().map(|i| i.active).collect::<Vec<_>>(), vec![false, false, true, false]);
     let image = &menu.subtitles[3];
-    assert!(!image.enabled);
-    assert_eq!(image.hint, "Image-based, not supported");
+    assert!(image.enabled && image.hint.is_empty() && !image.active);
     assert!(menu.subtitles[1].enabled && menu.subtitles[2].enabled);
     // The ids parse back to what they stand for.
     assert_eq!(TrackChoice::parse(&menu.audio[0].id), Some(TrackChoice::Audio(1)));
@@ -123,11 +123,11 @@ fn a_track_being_read_shows_its_progress_and_cannot_be_chosen_again() {
 fn the_control_shows_only_when_there_is_something_to_choose() {
     let none = MediaTracks::default();
     assert!(!has_choices(&none));
-    let one_audio = MediaTracks { audio: vec![audio(1, None, None, "aac", 2)], subtitles: vec![], active_audio: Some(1) };
+    let one_audio = MediaTracks { audio: vec![audio(1, None, None, "aac", 2)], active_audio: Some(1), ..MediaTracks::default() };
     assert!(!has_choices(&one_audio), "one audio track and no subtitles: nothing to choose");
     let one_audio_one_sub = MediaTracks { subtitles: vec![sub(2, None, None, "hdmv_pgs_subtitle", SubtitleKind::Image, false)], ..one_audio.clone() };
-    assert!(has_choices(&one_audio_one_sub), "an image track is listed (disabled) too");
-    let two_audio = MediaTracks { audio: vec![audio(1, None, None, "aac", 2), audio(2, None, None, "aac", 2)], subtitles: vec![], active_audio: Some(1) };
+    assert!(has_choices(&one_audio_one_sub), "an image track is a choice too");
+    let two_audio = MediaTracks { audio: vec![audio(1, None, None, "aac", 2), audio(2, None, None, "aac", 2)], active_audio: Some(1), ..MediaTracks::default() };
     assert!(has_choices(&two_audio));
     assert!(TrackMenu::build(&two_audio, None, None, false).subtitles.is_empty());
 }
@@ -172,7 +172,7 @@ fn one_read_at_a_time_and_a_cancelled_or_replaced_read_is_dropped() {
 }
 
 #[test]
-fn many_image_tracks_collapse_into_one_disabled_row_and_unsupported_text_tracks_are_disabled() {
+fn every_image_track_is_its_own_choice_however_many_and_unsupported_tracks_are_disabled() {
     let lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::En);
     let mut tracks = sample();
     tracks.subtitles.push(sub(7, Some("ara"), None, "arib_caption", SubtitleKind::Unsupported, false));
@@ -180,26 +180,48 @@ fn many_image_tracks_collapse_into_one_disabled_row_and_unsupported_text_tracks_
     let unsupported = menu.subtitles.last().unwrap();
     assert!(!unsupported.enabled);
     assert_eq!(unsupported.hint, "Not supported");
-    // Up to MAX_LISTED_IMAGE_TRACKS image tracks are listed one by one.
-    for i in 0..MAX_LISTED_IMAGE_TRACKS - 1 {
-        tracks.subtitles.push(sub(10 + i, Some("deu"), None, "hdmv_pgs_subtitle", SubtitleKind::Image, false));
-    }
-    assert_eq!(TrackMenu::build(&tracks, None, None, false).subtitles.len(), 5 + MAX_LISTED_IMAGE_TRACKS - 1);
-    // A Blu-ray remux: 30 PGS tracks become one row; the text tracks stay.
+    // A Blu-ray remux: 30 PGS tracks, each a row of its own (the menu scrolls), one of them shown.
     for i in 0..30 {
-        tracks.subtitles.push(sub(20 + i, Some("fra"), None, "hdmv_pgs_subtitle", SubtitleKind::Image, false));
+        tracks.subtitles.push(sub(20 + i, Some(["fra", "deu", "spa"][i % 3]), None, "hdmv_pgs_subtitle", SubtitleKind::Image, i == 0));
     }
-    let images = tracks.subtitles.iter().filter(|t| t.kind == SubtitleKind::Image).count();
-    let menu = TrackMenu::build(&tracks, None, None, false);
-    assert_eq!(menu.subtitles.len(), 5, "{:?}", menu.subtitles);
-    let summary = menu.subtitles.last().unwrap();
-    assert_eq!((summary.id.as_str(), summary.enabled, summary.active), (IMAGE_SUMMARY_ID, false, false));
-    assert_eq!(summary.label, format!("Image-based subtitle tracks: {images}"));
-    assert_eq!(summary.hint, "Not supported");
-    assert_eq!(TrackChoice::parse(&summary.id), None);
+    tracks.active_image_subtitle = Some(25);
+    let menu = TrackMenu::build(&tracks, None, Some(4), true);
+    assert_eq!(menu.subtitles.len(), 1 + 4 + 30, "Off, the four tracks of before and every PGS track");
+    let pgs: Vec<_> = menu.subtitles.iter().filter(|i| i.label.contains("PGS")).collect();
+    assert_eq!(pgs.len(), 31);
+    assert!(pgs.iter().all(|i| i.enabled && i.hint.is_empty()));
+    assert_eq!(pgs.iter().filter(|i| i.active).map(|i| i.id.as_str()).collect::<Vec<_>>(), vec!["subtitle:25"]);
+    assert_eq!(menu.subtitles.iter().find(|i| i.id == "subtitle:20").unwrap().label, "French (PGS, forced)");
+    assert_eq!(TrackChoice::parse("subtitle:25"), Some(TrackChoice::Subtitle(25)));
+    // One radio group: the image track shown is the one marked, not the text track whose lines are in the list.
+    assert_eq!(menu.subtitles.iter().filter(|i| i.active).count(), 1);
+    assert!(!menu.subtitles[1].active);
     lang.set(UiLanguage::Tr);
     let menu = TrackMenu::build(&tracks, None, None, false);
-    assert_eq!(menu.subtitles.last().unwrap().label, format!("Görüntü tabanlı altyazı parçaları: {images}"));
+    assert_eq!(menu.subtitles.iter().find(|i| i.id == "subtitle:21").unwrap().label, "Almanca (PGS)");
+}
+
+#[test]
+fn an_image_track_shown_takes_the_mark_from_off_and_off_can_hide_it() {
+    let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::En);
+    let mut tracks = sample();
+    tracks.active_image_subtitle = Some(6);
+    // Nothing in the list: the image track is checked, "Off" is not but can be chosen (it hides the picture).
+    let menu = TrackMenu::build(&tracks, None, None, false);
+    assert_eq!(menu.subtitles.iter().map(|i| (i.id.as_str(), i.active)).collect::<Vec<_>>(), vec![
+        (SUBTITLE_OFF_ID, false),
+        ("subtitle:4", false),
+        ("subtitle:5", false),
+        ("subtitle:6", true)
+    ]);
+    assert!(menu.subtitles[0].enabled);
+    // Edited lines of a text track in the list: "Off" still hides the picture (it never clears the user's lines).
+    let menu = TrackMenu::build(&tracks, None, Some(4), false);
+    assert!(menu.subtitles[0].enabled && !menu.subtitles[0].active && menu.subtitles[3].active && !menu.subtitles[1].active);
+    // A stream the player reports that is no image track of the list is not marked.
+    tracks.active_image_subtitle = Some(4);
+    let menu = TrackMenu::build(&tracks, None, None, false);
+    assert!(menu.subtitles[0].active && menu.subtitles[1..].iter().all(|i| !i.active));
 }
 
 #[test]
@@ -207,6 +229,9 @@ fn failures_are_worded_in_the_ui_language() {
     let lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::En);
     assert_eq!(audio_track_failure("Decoder not found").text(), "The audio track could not be played: Decoder not found");
     assert_eq!(audio_track_failure("  ").text(), "The audio track could not be played: Unknown error");
+    assert_eq!(subtitle_track_failure("Decoder not found").text(), "The subtitle track could not be shown: Decoder not found");
+    assert_eq!(subtitle_track_failure("").text(), "The subtitle track could not be shown: Unknown error");
+    let shown = subtitle_track_failure("x");
     assert!(embedded_read_failure(&ExtractError::Cancelled).is_none());
     let text = |e: ExtractError| embedded_read_failure(&e).unwrap().text();
     assert_eq!(text(ExtractError::NotText), "The subtitles in the video could not be read: This track is not a text subtitle track");
@@ -216,6 +241,7 @@ fn failures_are_worded_in_the_ui_language() {
     lang.set(UiLanguage::Tr);
     assert_eq!(message.text(), "Videodaki altyazı okunamadı: Bu parça metin altyazısı değil", "re-worded on a language switch");
     assert_eq!(audio_track_failure("").text(), "Ses parçası açılamadı: Bilinmeyen hata");
+    assert_eq!(shown.text(), "Altyazı parçası gösterilemedi: x");
     assert!(embedded_read_outdated().text().starts_with("Videodaki altyazı yüklenmedi"));
     assert_eq!(embedded_read_empty().text(), "Videodaki altyazı okunamadı: Parçada satır yok");
     assert!(embedded_read_partial().text().starts_with("Videodaki altyazının yalnızca bir kısmı yüklendi"));
@@ -255,7 +281,7 @@ fn text_sub(stream: usize, language: Option<&str>, default: bool, forced: bool) 
 }
 
 fn subs(subtitles: Vec<SubtitleTrack>) -> MediaTracks {
-    MediaTracks { audio: vec![audio(1, Some("eng"), None, "aac", 6)], subtitles, active_audio: Some(1) }
+    MediaTracks { audio: vec![audio(1, Some("eng"), None, "aac", 6)], subtitles, active_audio: Some(1), active_image_subtitle: None }
 }
 
 #[test]
@@ -292,6 +318,29 @@ fn the_track_chosen_on_open_is_the_ui_languages_then_the_default_one() {
 }
 
 #[test]
+fn without_a_text_track_to_choose_the_same_rule_picks_an_image_track() {
+    let pgs = |stream, language, default, forced| SubtitleTrack { default, ..sub(stream, language, None, "hdmv_pgs_subtitle", SubtitleKind::Image, forced) };
+    // Text first, whenever the text rule finds one, even with an image track in the UI language.
+    let mixed = subs(vec![pgs(2, Some("tur"), false, false), text_sub(3, Some("eng"), true, false)]);
+    assert_eq!(auto_choice(&mixed, "tr"), Some(AutoTrack::Text(3)));
+    // A Blu-ray remux (PGS only): the UI language's, non-forced first; else the default one; else none.
+    let disc = subs(vec![pgs(2, Some("eng"), false, false), pgs(3, Some("tur"), false, true), pgs(4, Some("tur"), false, false), pgs(5, Some("fre"), true, false)]);
+    assert_eq!(auto_image_track(&disc, "tr"), Some(4));
+    assert_eq!(auto_choice(&disc, "tr"), Some(AutoTrack::Image(4)));
+    assert_eq!(auto_choice(&disc, "en"), Some(AutoTrack::Image(2)));
+    assert_eq!(auto_choice(&subs(vec![pgs(2, Some("tur"), false, true)]), "tr"), Some(AutoTrack::Image(2)), "a forced one when it is all there is");
+    let other = subs(vec![pgs(2, Some("eng"), false, false), pgs(5, Some("fre"), true, false)]);
+    assert_eq!(auto_choice(&other, "tr"), Some(AutoTrack::Image(5)));
+    assert_eq!(auto_choice(&subs(vec![pgs(2, Some("eng"), false, false)]), "tr"), None);
+    // A text track that the text rule does not pick (another language, not the default) does not stop the image rule.
+    let foreign_text = subs(vec![text_sub(2, Some("eng"), false, false), pgs(3, Some("tur"), false, false)]);
+    assert_eq!(auto_choice(&foreign_text, "tr"), Some(AutoTrack::Image(3)));
+    // Unsupported tracks never.
+    let teletext = subs(vec![SubtitleTrack { default: true, ..sub(2, Some("tur"), None, "dvb_teletext", SubtitleKind::Unsupported, false) }]);
+    assert_eq!(auto_choice(&teletext, "tr"), None);
+}
+
+#[test]
 fn off_comes_first_checked_while_nothing_is_loaded_and_enabled_while_it_can_clear() {
     let _lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::En);
     // Nothing from the video in the list: "Off" is what holds (and choosing it keeps a track from being chosen).
@@ -309,10 +358,14 @@ fn off_comes_first_checked_while_nothing_is_loaded_and_enabled_while_it_can_clea
     // Edited lines: "Off" cannot clear them.
     let edited = TrackMenu::build(&sample(), None, Some(4), false);
     assert!(!edited.subtitles[0].enabled && !edited.subtitles[0].active);
-    // No text track at all: no "Off".
+    // Only image tracks: "Off" is there too (the image tracks are choices now).
     let mut images = sample();
     images.subtitles.retain(|t| t.kind == SubtitleKind::Image);
-    assert!(TrackMenu::build(&images, None, None, false).subtitles.iter().all(|i| i.id != SUBTITLE_OFF_ID));
+    assert_eq!(TrackMenu::build(&images, None, None, false).subtitles[0].id, SUBTITLE_OFF_ID);
+    // Only unsupported tracks: nothing to turn off.
+    let mut unsupported = sample();
+    unsupported.subtitles = vec![sub(9, None, None, "arib_caption", SubtitleKind::Unsupported, false)];
+    assert!(TrackMenu::build(&unsupported, None, None, false).subtitles.iter().all(|i| i.id != SUBTITLE_OFF_ID));
 }
 
 fn lines(n: usize) -> Vec<sa_core::engine_types::Sentence> {

@@ -71,6 +71,10 @@ impl MediaPlayerBackend for NullPlayer {
         sa_player::MediaTracks::default()
     }
     fn select_audio_track(&mut self, _stream_index: usize) {}
+    fn select_image_subtitle_track(&mut self, _stream_index: Option<usize>) {}
+    fn subtitle_picture(&self) -> Option<std::sync::Arc<sa_player::SubtitlePicture>> {
+        None
+    }
 }
 
 #[test]

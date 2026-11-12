@@ -8,9 +8,10 @@
 //!   converted to RGBA (swscale; HDR tone mapping and deinterlacing on the CPU in [`soft`]), audio resampled by
 //!   swresample to the output format and played through `cpal` (WASAPI / CoreAudio); the audio clock is the master
 //!   clock (video frames are shown when their pts is due, late frames dropped). The backend also lists the file's
-//!   audio and subtitle streams ([`MediaTracks`]), switches the audio track while playing or paused, and reads embedded
-//!   text subtitle tracks (`ffmpeg_backend::subtitles::extract_text_subtitles`). View models depend on this crate
-//!   **without** the feature.
+//!   audio and subtitle streams ([`MediaTracks`]), switches the audio track while playing or paused, decodes the
+//!   selected bitmap subtitle track (PGS, VobSub, DVB, XSUB) in step with playback into pictures shown over the video
+//!   ([`picture`], [`MediaPlayerBackend::subtitle_picture`]), and reads embedded text subtitle tracks
+//!   (`ffmpeg_backend::subtitles::extract_text_subtitles`). View models depend on this crate **without** the feature.
 //!
 //! This replaces both IMFMediaEngine (Windows) and AVPlayer (macOS) with one decoder. Windows feeds the stream through
 //! `sa_media::win::BufferedVideoStream` (custom AVIO context), so the encrypted SSD chunk cache keeps working.
@@ -21,6 +22,7 @@ use std::sync::Arc;
 
 pub mod color;
 pub mod gate;
+pub mod picture;
 pub mod soft;
 pub mod timeline;
 
@@ -28,6 +30,7 @@ pub mod timeline;
 pub mod ffmpeg_backend;
 
 pub use gate::{PlayerEventToken, PlayerSessionGate, SourceId};
+pub use picture::{SubtitleBitmap, SubtitlePicture};
 pub use timeline::PlaybackTimeline;
 
 /// A decoded video frame. `width` × `height` is the size as shown (sample aspect ratio and rotation applied), or half
@@ -346,10 +349,11 @@ pub struct AudioTrack {
 pub enum SubtitleKind {
     /// Text events (subrip, ass/ssa, mov_text, webvtt, text): can be loaded into the subtitle list.
     Text,
-    /// Pictures (hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle, xsub) and anything else that is not plain text.
+    /// Pictures (hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle, xsub) this build has a decoder for: shown over the
+    /// video while selected ([`MediaPlayerBackend::select_image_subtitle_track`]), never loaded into the list.
     Image,
-    /// A text codec this FFmpeg build has no decoder for (arib_caption, hdmv_text_subtitle, teletext without
-    /// libzvbi): listed, cannot be read.
+    /// A codec this FFmpeg build has no decoder for (arib_caption, hdmv_text_subtitle, teletext without libzvbi, a
+    /// picture codec without its decoder), or neither text nor pictures: listed, cannot be read or shown.
     Unsupported,
 }
 
@@ -370,6 +374,10 @@ impl SubtitleTrack {
     pub fn is_text(&self) -> bool {
         self.kind == SubtitleKind::Text
     }
+
+    pub fn is_image(&self) -> bool {
+        self.kind == SubtitleKind::Image
+    }
 }
 
 /// The audio and subtitle streams of the loaded source and the audio stream being played.
@@ -379,6 +387,8 @@ pub struct MediaTracks {
     pub subtitles: Vec<SubtitleTrack>,
     /// Stream index of the audio track being decoded; `None` without audio.
     pub active_audio: Option<usize>,
+    /// Stream index of the bitmap subtitle track shown over the video; `None` when none is.
+    pub active_image_subtitle: Option<usize>,
 }
 
 impl MediaTracks {
@@ -444,11 +454,17 @@ pub enum PlayerEvent {
     /// Reports only real changes (alternating). An auto-play load reports `playing: true` right after `Opened`; a
     /// failure or the end reports `playing: false`.
     PlayingChanged { generation: LoadGeneration, playing: bool },
-    /// [`MediaPlayerBackend::tracks`] changed: posted once after `Opened` and after every audio track switch (also
-    /// one that failed, which leaves the previous track active).
+    /// [`MediaPlayerBackend::tracks`] changed: posted once after `Opened` and after every audio or bitmap subtitle
+    /// track switch (also one that failed, which leaves the previous track active).
     TracksChanged { generation: LoadGeneration },
     /// The audio stream asked for could not be played (its decoder did not open); the previous one keeps playing.
     AudioTrackFailed { generation: LoadGeneration, stream_index: usize, message: String },
+    /// The bitmap subtitle stream asked for cannot be shown (not a picture track, or its decoder did not open); the
+    /// previous choice stays.
+    SubtitleTrackFailed { generation: LoadGeneration, stream_index: usize, message: String },
+    /// The picture on screen changed ([`MediaPlayerBackend::subtitle_picture`]): a bitmap subtitle event started or
+    /// ended, a seek or a track switch removed it. Posted only on a change.
+    SubtitlePictureChanged { generation: LoadGeneration },
 }
 
 /// Why the current load failed (`MediaPlayerBackend::failure_kind`). The macOS player model uses it for its
@@ -502,6 +518,14 @@ pub trait MediaPlayerBackend {
     /// position; answered with `TracksChanged` (or `AudioTrackFailed` and `TracksChanged`). Choosing the stream that
     /// is already active (or asked for last) does nothing. Backends without track selection implement it as a no-op.
     fn select_audio_track(&mut self, stream_index: usize);
+    /// Shows bitmap subtitle stream `stream_index` ([`SubtitleKind::Image`]) over the video from the current
+    /// position (`None`: none); answered with `TracksChanged` (or `SubtitleTrackFailed` and `TracksChanged`).
+    /// Display only: nothing is read into the subtitle list or written anywhere. Choosing the active stream does
+    /// nothing. No default body (a wrapper that forgot to forward it would silently show nothing).
+    fn select_image_subtitle_track(&mut self, stream_index: Option<usize>);
+    /// The bitmap subtitle picture to draw over the video now (`None`: nothing); changes are announced by
+    /// `SubtitlePictureChanged`. No default body, as above.
+    fn subtitle_picture(&self) -> Option<Arc<SubtitlePicture>>;
 }
 
 /// What the native stack reports (startup diagnostics and the build proof).

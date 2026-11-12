@@ -30,6 +30,41 @@ fn demo_frame(w: u32, h: u32) -> Image {
     Image::from_rgba8(buf)
 }
 
+/// A PGS-like picture: a line of white "glyphs" with a black outline at the bottom and a yellow half-transparent sign
+/// at the top of a 1920 × 1080 canvas (straight alpha, as the player hands pictures over).
+fn demo_picture() -> sa_player::SubtitlePicture {
+    let glyphs = |w: u32, h: u32, fill: [u8; 4]| {
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                // Blocks 18 px wide with 8 px gaps and a word gap every five blocks; a 3 px outline around each.
+                let cell = x % 130;
+                let in_word = cell < 120 && (cell % 24) < 18;
+                let edge = y < 3 || y >= h - 3 || (cell % 24) < 3 || (cell % 24) >= 15;
+                let px = if !in_word {
+                    [0, 0, 0, 0]
+                } else if edge {
+                    [0, 0, 0, 255]
+                } else {
+                    fill
+                };
+                let i = ((y * w + x) * 4) as usize;
+                rgba[i..i + 4].copy_from_slice(&px);
+            }
+        }
+        std::sync::Arc::new(rgba)
+    };
+    let rect = |x, y, w, h, fill| sa_player::SubtitleBitmap { x, y, width: w, height: h, rgba: glyphs(w, h, fill) };
+    sa_player::SubtitlePicture {
+        id: 1,
+        stream_index: 7,
+        canvas: (1920, 1080),
+        start: 7.0,
+        end: None,
+        rects: vec![rect(570, 930, 780, 64, [255, 255, 255, 255]), rect(830, 90, 260, 44, [255, 220, 0, 200])],
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn row(n: i32, t: &str, text: &str, speaker: Option<i32>, tr: Option<&str>, active: bool, selected: bool, mac: bool) -> SentenceRowData {
     let speaker_text = match speaker {
@@ -103,7 +138,7 @@ fn fill_picker(w: &MainWindow, scene: &str, mac: bool) {
 
 /// Fills the window for `scene`: `empty`, `editor`, `editor-side`, `editor-player`, `subtitles-only`, `working`,
 /// `error`, `playlist`, `playlist-empty`, `platform`, `full-screen`, `theater`, `picker-local`, `picker-provider`,
-/// `picker-empty`.
+/// `picker-empty`, `picture-subtitles` (a bitmap subtitle picture over the video), `picture-subtitles-full`.
 pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
     let app = w.global::<AppBridge>();
     let main = w.global::<MainBridge>();
@@ -239,6 +274,16 @@ pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
         "theater" => {
             app.set_is_theater_mode(true);
         }
+        "picture-subtitles" | "picture-subtitles-full" => {
+            // A bitmap subtitle track shown over the video (PGS-like: two pictures on a 1920 × 1080 canvas).
+            if scene == "picture-subtitles-full" {
+                app.set_is_full_screen(true);
+                main.set_layout_mode(0);
+            }
+            main.set_overlay_text("".into());
+            let rows = super::pictures::overlay_rects(&demo_picture());
+            main.set_picture_subtitles(ModelRc::new(VecModel::from(rows)));
+        }
         "working" => {
             main.set_is_working(true);
             main.set_can_cancel(true);
@@ -321,9 +366,12 @@ pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
                     s(7, "jpn", None, "hdmv_pgs_subtitle", SubtitleKind::Image, false),
                 ],
                 active_audio: Some(1),
+                active_image_subtitle: None,
             };
             if scene == "tracks-many" {
-                // A Blu-ray remux: 30 PGS tracks (one summary row) and 20 more text tracks (the menu scrolls).
+                // A Blu-ray remux: 30 PGS tracks (each selectable, one of them shown) and 20 more text tracks (the
+                // menu scrolls).
+                tracks.active_image_subtitle = Some(12);
                 let langs = ["deu", "fra", "spa", "por", "rus", "jpn", "zho", "ita", "nld", "swe"];
                 for i in 0..30 {
                     tracks.subtitles.push(s(10 + i, langs[i % langs.len()], None, "hdmv_pgs_subtitle", SubtitleKind::Image, false));

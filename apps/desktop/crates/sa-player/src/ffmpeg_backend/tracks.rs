@@ -62,8 +62,9 @@ pub(crate) fn codec_name(id: ffi::AVCodecID) -> String {
 }
 
 /// Text when the codec descriptor says the stream carries text events and not pictures (subrip, ass, ssa, mov_text,
-/// webvtt, text, ...) and this build has a decoder for it; a text codec without one is [`SubtitleKind::Unsupported`];
-/// everything else (PGS, VobSub, DVB, XSUB, unknown codecs) is an image track for now.
+/// webvtt, text, ...), an image track when it carries pictures and not text (PGS, VobSub, DVB, XSUB), either only
+/// when this build has a decoder for it; everything else (a codec without a decoder, teletext, which is both, unknown
+/// codecs) is [`SubtitleKind::Unsupported`].
 pub(crate) fn subtitle_kind(id: ffi::AVCodecID) -> SubtitleKind {
     let props = unsafe {
         let d = ffi::avcodec_descriptor_get(id);
@@ -71,10 +72,10 @@ pub(crate) fn subtitle_kind(id: ffi::AVCodecID) -> SubtitleKind {
     };
     let text = props & ffi::AV_CODEC_PROP_TEXT_SUB as i32 != 0;
     let bitmap = props & ffi::AV_CODEC_PROP_BITMAP_SUB as i32 != 0;
-    match (text && !bitmap, has_decoder(id)) {
-        (true, true) => SubtitleKind::Text,
-        (true, false) => SubtitleKind::Unsupported,
-        (false, _) => SubtitleKind::Image,
+    match (text, bitmap, has_decoder(id)) {
+        (true, false, true) => SubtitleKind::Text,
+        (false, true, true) => SubtitleKind::Image,
+        _ => SubtitleKind::Unsupported,
     }
 }
 
@@ -87,11 +88,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn text_codecs_need_a_decoder() {
+    fn text_and_picture_codecs_need_a_decoder() {
         let _ = ffmpeg_next::init();
         assert_eq!(subtitle_kind(ffi::AVCodecID::AV_CODEC_ID_SUBRIP), SubtitleKind::Text);
         assert_eq!(subtitle_kind(ffi::AVCodecID::AV_CODEC_ID_WEBVTT), SubtitleKind::Text);
         assert_eq!(subtitle_kind(ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE), SubtitleKind::Image);
+        assert_eq!(subtitle_kind(ffi::AVCodecID::AV_CODEC_ID_DVD_SUBTITLE), SubtitleKind::Image);
+        assert_eq!(subtitle_kind(ffi::AVCodecID::AV_CODEC_ID_DVB_SUBTITLE), SubtitleKind::Image);
+        assert_eq!(subtitle_kind(ffi::AVCodecID::AV_CODEC_ID_XSUB), SubtitleKind::Image);
+        // Teletext is both text and pictures: not offered either way.
+        assert_eq!(subtitle_kind(ffi::AVCodecID::AV_CODEC_ID_DVB_TELETEXT), SubtitleKind::Unsupported);
         // FFmpeg has no decoder for HDMV text subtitles (Blu-ray TextST) at all.
         assert_eq!(subtitle_kind(ffi::AVCodecID::AV_CODEC_ID_HDMV_TEXT_SUBTITLE), SubtitleKind::Unsupported);
     }

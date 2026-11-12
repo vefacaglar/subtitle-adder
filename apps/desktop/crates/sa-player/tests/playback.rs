@@ -286,7 +286,9 @@ fn generation(e: &PlayerEvent) -> i32 {
         | PlayerEvent::Ended { generation }
         | PlayerEvent::PlayingChanged { generation, .. }
         | PlayerEvent::TracksChanged { generation }
-        | PlayerEvent::AudioTrackFailed { generation, .. } => *generation,
+        | PlayerEvent::AudioTrackFailed { generation, .. }
+        | PlayerEvent::SubtitleTrackFailed { generation, .. }
+        | PlayerEvent::SubtitlePictureChanged { generation } => *generation,
     }
 }
 

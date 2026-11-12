@@ -288,6 +288,12 @@ impl MediaPlayerBackend for CachedPlayer {
     fn select_audio_track(&mut self, stream_index: usize) {
         self.inner.select_audio_track(stream_index)
     }
+    fn select_image_subtitle_track(&mut self, stream_index: Option<usize>) {
+        self.inner.select_image_subtitle_track(stream_index)
+    }
+    fn subtitle_picture(&self) -> Option<Arc<sa_player::SubtitlePicture>> {
+        self.inner.subtitle_picture()
+    }
 }
 
 /// `CleanupTempDirectory()` on a worker at startup (win-viewmodels §17).
@@ -451,6 +457,74 @@ mod tests {
         player.select_audio_track(2);
         wait_tracks(&rx);
         assert_eq!(player.tracks().active_audio, Some(2));
+        player.dispose();
+    }
+
+    /// One PGS display set (a 4 × 2 white object at (10, 20) on a 160 × 120 canvas, from 0.5 s) and an empty one that
+    /// clears it at 2 s, as `sa-player/tests/common/sup.rs` writes them.
+    const PGS: [u8; 173] = [
+        0x50, 0x47, 0x00, 0x00, 0xaf, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x16, 0x00, 0x13, 0x00, 0xa0, 0x00, 0x78, 0x10, 0x00, 0x00, 0x80, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x14, 0x50, 0x47, 0x00, 0x00, 0xaf, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00,
+        0x0a, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x14, 0x00, 0x04, 0x00, 0x02, 0x50, 0x47, 0x00, 0x00, 0xaf, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x14,
+        0x00, 0x07, 0x00, 0x00, 0x01, 0xeb, 0x80, 0x80, 0xff, 0x50, 0x47, 0x00, 0x00, 0xaf, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x15, 0x00, 0x15,
+        0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x0e, 0x00, 0x04, 0x00, 0x02, 0x00, 0x84, 0x01, 0x00, 0x00, 0x00, 0x84, 0x01, 0x00, 0x00, 0x50,
+        0x47, 0x00, 0x00, 0xaf, 0xc8, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x50, 0x47, 0x00, 0x02, 0xbf, 0x20, 0x00, 0x00, 0x00, 0x00,
+        0x16, 0x00, 0x0b, 0x00, 0xa0, 0x00, 0x78, 0x10, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x50, 0x47, 0x00, 0x02, 0xbf, 0x20, 0x00, 0x00,
+        0x00, 0x00, 0x17, 0x00, 0x01, 0x00, 0x50, 0x47, 0x00, 0x02, 0xbf, 0x20, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
+    ];
+
+    /// The wrapper also forwards the bitmap subtitle calls: a PGS track chosen through it is shown, and turned off.
+    #[test]
+    fn the_cached_player_shows_and_hides_a_bitmap_subtitle_track() {
+        let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        let ff = std::env::var("FFMPEG_DIR").map(|d| Path::new(&d).join("bin").join(exe)).ok().filter(|p| p.is_file());
+        let Some(ff) = ff else {
+            eprintln!("skipped: no ffmpeg CLI (FFMPEG_DIR) to generate the test clip");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let sup = dir.path().join("track.sup");
+        std::fs::write(&sup, PGS).unwrap();
+        let clip = dir.path().join("pgs.mkv");
+        let status = std::process::Command::new(ff)
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=10", "-i"])
+            .arg(&sup)
+            .args(["-t", "3", "-map", "0:v", "-map", "1:s", "-c:v", "mpeg4", "-c:s", "copy"])
+            .arg(&clip)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let inner = FfmpegPlayer::with_options(sa_player::ffmpeg_backend::PlayerOptions { audio_output: false, ..Default::default() });
+        let mut player = CachedPlayer { inner, cache: None };
+        let (tx, rx) = std::sync::mpsc::channel::<PlayerEvent>();
+        player.set_event_sink(Box::new(move |e| {
+            let _ = tx.send(e);
+        }));
+        let wait_tracks = |rx: &std::sync::mpsc::Receiver<PlayerEvent>| loop {
+            match rx.recv_timeout(Duration::from_secs(10)).expect("an event") {
+                PlayerEvent::TracksChanged { .. } => break,
+                PlayerEvent::Failed { message, .. } | PlayerEvent::SubtitleTrackFailed { message, .. } => panic!("{message}"),
+                _ => {}
+            }
+        };
+        player.load(Some(MediaSource::File(clip)), false);
+        wait_tracks(&rx);
+        assert_eq!(player.tracks().subtitles.iter().map(|s| (s.stream_index, s.kind)).collect::<Vec<_>>(), vec![(1, sa_player::SubtitleKind::Image)]);
+        player.select_image_subtitle_track(Some(1));
+        wait_tracks(&rx);
+        assert_eq!(player.tracks().active_image_subtitle, Some(1));
+        player.seek(1.0);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while player.subtitle_picture().is_none() && std::time::Instant::now() < deadline {
+            let _ = player.latest_frame();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let picture = player.subtitle_picture().expect("the picture through the wrapper");
+        assert_eq!((picture.canvas, picture.rects.len(), picture.rects[0].width, picture.rects[0].height), ((160, 120), 1, 4, 2));
+        player.select_image_subtitle_track(None);
+        wait_tracks(&rx);
+        assert!(player.subtitle_picture().is_none() && player.tracks().active_image_subtitle.is_none());
         player.dispose();
     }
 

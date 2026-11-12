@@ -23,7 +23,10 @@ use sa_core::engine_types::Sentence;
 use sa_core::l10n::{CatalogChain, UiLanguage};
 use sa_core::models::ModelCatalog;
 use sa_core::settings::SettingsStore;
-use sa_player::{AudioTrack, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, PlayerEvent, SubtitleKind, SubtitleTrack, VideoFrame};
+use sa_player::{
+    AudioTrack, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, PlayerEvent, SubtitleBitmap, SubtitleKind, SubtitlePicture, SubtitleTrack,
+    VideoFrame,
+};
 use sa_viewmodels::SubtitleViewModel;
 use sa_viewmodels::types::Workspace;
 
@@ -58,6 +61,9 @@ struct BackendState {
     playing: bool,
     tracks: MediaTracks,
     selected: Vec<usize>,
+    /// Every `select_image_subtitle_track` call.
+    images: Vec<Option<usize>>,
+    picture: Option<Arc<SubtitlePicture>>,
     position: f64,
 }
 
@@ -67,6 +73,8 @@ impl MediaPlayerBackend for FakeBackend {
     fn load(&mut self, source: Option<MediaSource>, _auto_play: bool) -> LoadGeneration {
         let mut s = self.0.lock();
         s.generation += 1;
+        // A new load shows no picture (as the real player).
+        s.picture = None;
         s.loads.push(source.map(|m| match m {
             MediaSource::File(p) => p,
             MediaSource::Reader { path, .. } => path,
@@ -111,6 +119,24 @@ impl MediaPlayerBackend for FakeBackend {
     }
     fn select_audio_track(&mut self, stream_index: usize) {
         self.0.lock().selected.push(stream_index);
+    }
+    /// Shows an image track as the real player does: the active stream changes (a picture track only) and
+    /// `TracksChanged` answers.
+    fn select_image_subtitle_track(&mut self, stream_index: Option<usize>) {
+        let (sink, generation) = {
+            let mut s = self.0.lock();
+            s.images.push(stream_index);
+            if stream_index.is_none_or(|i| s.tracks.subtitles.iter().any(|t| t.stream_index == i && t.is_image())) {
+                s.tracks.active_image_subtitle = stream_index;
+            }
+            (s.sink.clone(), s.generation)
+        };
+        if let Some(sink) = sink {
+            sink(PlayerEvent::TracksChanged { generation });
+        }
+    }
+    fn subtitle_picture(&self) -> Option<Arc<SubtitlePicture>> {
+        self.0.lock().picture.clone()
     }
 }
 
@@ -807,10 +833,13 @@ fn sample_tracks() -> MediaTracks {
         default: false,
         forced: false,
     };
+    // The PGS track is Japanese: nothing in the UI language, so it is not shown for the user either.
+    let pgs = SubtitleTrack { language: Some("jpn".into()), ..sub(4, "hdmv_pgs_subtitle", SubtitleKind::Image) };
     MediaTracks {
         audio: vec![audio(1, "eng", None, 2), audio(2, "tur", Some("Yorum"), 1)],
-        subtitles: vec![sub(3, "subrip", SubtitleKind::Text), sub(4, "hdmv_pgs_subtitle", SubtitleKind::Image)],
+        subtitles: vec![sub(3, "subrip", SubtitleKind::Text), pgs],
         active_audio: Some(1),
+        active_image_subtitle: None,
     }
 }
 
@@ -956,12 +985,12 @@ fn the_track_menu_lists_both_sections_and_switches_the_audio_track() {
     r.main().invoke_menu_requested("tracks".into());
     let menu = r.menu();
     let titles: Vec<String> = menu.iter().map(|e| e.title.to_string()).collect();
-    assert_eq!(titles, vec!["Ses", "İngilizce (AAC, stereo)", "Türkçe — Yorum (AAC, mono)", "", "Videodaki altyazılar", "Kapalı", "İngilizce (SRT)", "Türkçe (PGS)"]);
+    assert_eq!(titles, vec!["Ses", "İngilizce (AAC, stereo)", "Türkçe — Yorum (AAC, mono)", "", "Videodaki altyazılar", "Kapalı", "İngilizce (SRT)", "Japonca (PGS)"]);
     assert!(menu[0].header && menu[4].header && menu[3].separator);
     assert!(menu[1].checked && menu[1].radio && !menu[2].checked);
     assert!(menu[5].checked, "\"Off\" holds while nothing from the video is loaded");
-    assert!(menu[6].enabled && !menu[7].enabled);
-    assert_eq!(menu[7].hint, "Görüntü tabanlı, desteklenmiyor");
+    assert!(menu[6].enabled && menu[7].enabled, "the PGS track can be chosen");
+    assert!(menu[7].hint.is_empty() && !menu[7].checked);
     r.main().invoke_menu_activated("audio:2".into());
     r.pump();
     assert_eq!(r.backend.lock().selected, vec![2]);
@@ -983,7 +1012,7 @@ fn the_track_menu_lists_both_sections_and_switches_the_audio_track() {
     assert!(r.main().get_error_open());
     assert_eq!(r.main().get_error_text(), "Ses parçası açılamadı: Decoder not found");
     // Another video without a choice hides the control.
-    r.open_with_tracks("plain.mp4", MediaTracks { audio: vec![sample_tracks().audio[0].clone()], subtitles: vec![], active_audio: Some(1) });
+    r.open_with_tracks("plain.mp4", MediaTracks { audio: vec![sample_tracks().audio[0].clone()], active_audio: Some(1), ..MediaTracks::default() });
     assert!(!r.main().get_tracks_available());
 }
 
@@ -996,9 +1025,11 @@ fn choosing_an_embedded_text_track_loads_it_without_a_file_and_marks_it_in_the_m
     r.main().invoke_menu_activated("subtitle:4".into());
     r.pump();
     assert!(asked.lock().is_empty(), "image tracks are not read");
+    assert_eq!(r.backend.lock().images, vec![Some(4)], "the player shows it");
     r.main().invoke_menu_activated("subtitle:3".into());
     r.env.eventually("the track's lines", || r.vm.sentences().len() == 1);
     assert_eq!(asked.lock().clone(), vec![(video.clone(), 3)]);
+    assert_eq!(r.backend.lock().images, vec![Some(4), None], "a text track takes the image track off the video");
     let line = &r.vm.sentences()[0];
     assert_eq!((line.start, line.end, line.text.as_str()), (1.0, 2.5, "Gömülü parça 3"));
     assert_eq!(r.vm.video(), Some(video.clone()), "the video stays open");
@@ -1024,6 +1055,136 @@ fn choosing_an_embedded_text_track_loads_it_without_a_file_and_marks_it_in_the_m
     assert!(!r.main().get_tracks_busy());
     assert_eq!(r.vm.sentences()[0].text, "Düzeltildi");
     assert!(r.vm.pending_open().is_none());
+    assert_eq!(r.folder_of(&video), vec!["film.mkv"]);
+}
+
+fn pgs_picture(id: u64) -> Arc<SubtitlePicture> {
+    let rect = |x, y, w: u32, h: u32| SubtitleBitmap { x, y, width: w, height: h, rgba: Arc::new(vec![255; (w * h * 4) as usize]) };
+    Arc::new(SubtitlePicture { id, stream_index: 4, canvas: (1920, 1080), start: 1.0, end: None, rects: vec![rect(480, 900, 960, 108), rect(0, 0, 192, 54)] })
+}
+
+impl Rig {
+    fn picture_rects(&self) -> Vec<ui::PictureSubtitleRect> {
+        let m = self.main().get_picture_subtitles();
+        (0..m.row_count()).filter_map(|i| m.row_data(i)).collect()
+    }
+    /// The player reports `picture` on screen (`None`: none).
+    fn show_picture(&self, picture: Option<Arc<SubtitlePicture>>) {
+        let (sink, generation) = {
+            let mut s = self.backend.lock();
+            s.picture = picture;
+            (s.sink.clone().unwrap(), s.generation)
+        };
+        sink(PlayerEvent::SubtitlePictureChanged { generation });
+        self.pump();
+    }
+}
+
+#[test]
+fn an_image_track_is_drawn_over_the_video_from_the_players_pictures_and_cleared() {
+    let r = rig(false);
+    r.open_with_tracks("film.mkv", manual_tracks());
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    assert_eq!(r.backend.lock().images, vec![Some(4)]);
+    r.main().invoke_menu_requested("tracks".into());
+    let menu = r.menu();
+    assert!(menu.iter().find(|e| e.id == "subtitle:4").unwrap().checked, "the image track shown is checked");
+    assert!(!menu.iter().find(|e| e.id == "subtitle:off").unwrap().checked);
+    assert!(r.picture_rects().is_empty());
+    r.show_picture(Some(pgs_picture(1)));
+    let rects = r.picture_rects();
+    assert_eq!(rects.len(), 2);
+    assert_eq!((rects[0].x, rects[0].y, rects[0].width, rects[0].height), (0.25, 900.0 / 1080.0, 0.5, 0.1));
+    assert_eq!((rects[0].image.size().width, rects[0].image.size().height), (960, 108));
+    assert_eq!((rects[1].x, rects[1].y, rects[1].width), (0.0, 0.0, 0.1));
+    // The text overlay style is the user's text lines'; pictures are not styled, and the line overlay stays as is.
+    assert_eq!(r.main().get_overlay_text(), "");
+    // Off hides it (the player is told; its next picture event empties the overlay).
+    r.main().invoke_menu_activated("subtitle:off".into());
+    r.pump();
+    assert_eq!(r.backend.lock().images, vec![Some(4), None]);
+    r.main().invoke_menu_requested("tracks".into());
+    assert!(r.menu().iter().find(|e| e.id == "subtitle:off").unwrap().checked);
+    // A stale load's picture event is ignored; another video clears what is shown.
+    r.open_with_tracks("other.mkv", manual_tracks());
+    assert!(r.picture_rects().is_empty());
+    assert!(r.vm.sentences().is_empty() && r.vm.video().is_some());
+}
+
+#[test]
+fn the_picture_overlay_follows_the_players_events() {
+    let r = rig(false);
+    r.open_with_tracks("film.mkv", manual_tracks());
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    r.show_picture(Some(pgs_picture(1)));
+    assert_eq!(r.picture_rects().len(), 2);
+    r.show_picture(Some(pgs_picture(2)));
+    assert_eq!(r.picture_rects().len(), 2);
+    r.show_picture(None);
+    assert!(r.picture_rects().is_empty(), "a clearing event empties the overlay");
+    // A failure to show a track is reported in the error bar.
+    let (sink, generation) = {
+        let s = r.backend.lock();
+        (s.sink.clone().unwrap(), s.generation)
+    };
+    sink(PlayerEvent::SubtitleTrackFailed { generation, stream_index: 4, message: "Decoder not found".into() });
+    r.pump();
+    assert!(r.main().get_error_open());
+    assert_eq!(r.main().get_error_text(), "Altyazı parçası gösterilemedi: Decoder not found");
+}
+
+#[test]
+fn choosing_an_image_track_never_touches_the_users_lines_or_the_disk_and_drops_unedited_track_lines() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    // The user's own lines (from a subtitle file they opened) and an image track: the lines stay exactly as they are.
+    let video = r.open_with_tracks("own/film.mkv", manual_tracks());
+    r.load_three_lines();
+    r.vm.set_text(r.vm.sentences()[0].uid, "Benim düzeltmem");
+    let before: Vec<(f64, f64, String)> = r.vm.sentences().iter().map(|s| (s.start, s.end, s.text.clone())).collect();
+    let folder = r.folder_of(&video);
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    assert_eq!(r.backend.lock().images, vec![Some(4)]);
+    let after: Vec<(f64, f64, String)> = r.vm.sentences().iter().map(|s| (s.start, s.end, s.text.clone())).collect();
+    assert_eq!(after, before, "the user's lines are left exactly as they were");
+    assert!(r.vm.has_unsaved_edits(), "and still the user's unsaved work");
+    assert_eq!(r.folder_of(&video), folder, "nothing was written next to the video");
+    assert!(script.asked.lock().is_empty(), "nothing was read");
+    // A text track the video brought, unedited (it was loaded for the user): choosing the image track drops it like
+    // choosing another track does, and writes nothing.
+    r.backend.lock().images.clear();
+    let video = r.open_with_tracks("auto/film.mkv", film_tracks());
+    r.env.eventually("the Turkish track is read", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Finish(track(&[(0.5, 1.5, "Bir"), (2.0, 3.0, "İki")]))).unwrap();
+    r.env.eventually("loaded", || r.vm.sentences().len() == 2);
+    r.pump();
+    assert!(r.vm.embedded_lines().is_some_and(|e| e.pristine));
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    assert_eq!(r.backend.lock().images, vec![Some(4)]);
+    assert!(r.vm.sentences().is_empty() && r.vm.embedded_lines().is_none(), "the track's own lines went");
+    assert!(!r.vm.has_unsaved_edits());
+    assert_eq!(r.folder_of(&video), vec!["film.mkv"]);
+    r.main().invoke_menu_requested("tracks".into());
+    let menu = r.menu();
+    assert!(menu.iter().find(|e| e.id == "subtitle:4").unwrap().checked);
+    assert!(menu.iter().filter(|e| e.id.starts_with("subtitle:") && e.id != "subtitle:4").all(|e| !e.checked));
+    // Choosing the text track again reads it and takes the image track off the video.
+    r.main().invoke_menu_activated("subtitle:5".into());
+    r.env.eventually("read again", || script.asked.lock().len() == 2);
+    assert_eq!(r.backend.lock().images, vec![Some(4), None]);
+    // Edited track lines are the user's: an image track leaves them as they are.
+    script.steps.send(Step::Finish(track(&[(0.5, 1.5, "Bir")]))).unwrap();
+    r.env.eventually("loaded again", || r.vm.sentences().len() == 1);
+    r.pump();
+    r.vm.set_text(r.vm.sentences()[0].uid, "Düzeltildi");
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    assert_eq!(r.vm.sentences().len(), 1);
+    assert_eq!(r.vm.sentences()[0].text, "Düzeltildi");
     assert_eq!(r.folder_of(&video), vec!["film.mkv"]);
 }
 
@@ -1263,7 +1424,7 @@ fn an_english_ui_gets_the_english_track_and_off_clears_it() {
 }
 
 #[test]
-fn nothing_is_chosen_over_lines_a_sidecar_or_a_job_and_never_an_image_track() {
+fn nothing_is_chosen_over_lines_a_sidecar_or_a_job_and_an_image_track_only_without_a_text_one() {
     let script = scripted_reader();
     let r = rig_with(false, Some(script.reader.clone()));
     // A subtitle next to the video.
@@ -1299,12 +1460,16 @@ fn nothing_is_chosen_over_lines_a_sidecar_or_a_job_and_never_an_image_track() {
     r.pump();
     assert!(script.asked.lock().is_empty(), "the job is not disturbed");
     r.vm.cancel();
-    // Only image-based tracks in the UI language.
+    assert!(r.backend.lock().images.is_empty(), "no image track is shown over lines, a sidecar or a job either");
+    // Only image-based tracks in the UI language: one is shown, never read.
     let mut images = sample_tracks();
     images.subtitles.retain(|t| t.kind == SubtitleKind::Image);
+    images.subtitles[0].language = Some("tur".into());
     r.open_with_tracks("images/film.mkv", images);
     r.pump();
     assert!(script.asked.lock().is_empty(), "image tracks are never read");
+    assert_eq!(r.backend.lock().images, vec![Some(4)], "the UI language's image track is shown");
+    assert!(r.vm.sentences().is_empty());
 }
 
 #[test]

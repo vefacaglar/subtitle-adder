@@ -7,6 +7,7 @@
 //!   models, selection), [`menus`] (menu builders), [`status`] (error bar, playback notice), [`input`] (keys, drops).
 //! * [`chrome`] — native window chrome (Windows caption/Snap/size persistence, macOS unified title bar attributes).
 //! * [`translation_picker`] — the toolbar translation-model flyout (Windows) / popover (macOS).
+//! * [`pictures`] — bitmap subtitle pictures (PGS, VobSub, DVB) as the overlay over the video draws them.
 //! * [`video_gl`] — the GPU video path (YUV planes → RGB in a shader, shown as a borrowed OpenGL texture).
 //! * [`demo`] fills the bridges with representative content for `sa-shot` look checks.
 
@@ -17,6 +18,7 @@ pub mod hud;
 pub mod input;
 pub mod layout;
 pub mod menus;
+pub mod pictures;
 pub mod player;
 pub mod rows;
 pub mod status;
