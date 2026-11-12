@@ -492,6 +492,7 @@ impl MainWindowController {
                         self.vm.sentences().len()
                     );
                     let unchanged = self.video.window_unchanged().map(|n| format!(" window_unchanged={n}")).unwrap_or_default();
+                    let unchanged = format!("{unchanged} stale_texture={}", self.video.stale_textures());
                     let up = stats.started.elapsed().as_secs_f64();
                     let geometry = self.geometry_fields();
                     // CPU attribution (`perf`: this is the UI thread, which `cpu_ui` measures).

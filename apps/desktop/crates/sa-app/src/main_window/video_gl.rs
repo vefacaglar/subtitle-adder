@@ -27,6 +27,10 @@
 //! * `SUBTITLE_ADDER_PLAYER_STATS=1` or `SUBTITLE_ADDER_FRAME_TRACE` also turns on `WindowProbe`: after each render
 //!   16 rows of the back buffer are read and hashed; `window_unchanged=` on the `[player-stats]` line counts renders
 //!   with a new frame and an unchanged window (an ancestor that renders the video through a cached layer).
+//!   A run of 120 such renders is logged once (`[video] window unchanged for ...`: the texture `shown`, whether
+//!   `video-frame` holds it, the viewport). `stale_texture=` counts renders that found `MainBridge.video-frame`
+//!   not holding the texture the surface converts into (it is handed over again: a lost hand-over cannot freeze the
+//!   picture).
 //! * `SUBTITLE_ADDER_FRAME_DUMP=<dir>` writes the converted picture (the RGBA target, read back after the shader ran)
 //!   as `<dir>/frame-<pid>-<surface>-<n>-<pts>[-field2].png` for the first 3 frames after every load or jump, and
 //!   one frame every 2 s, so the shader's output can be checked without a screen capture. Each dump logs one
@@ -65,6 +69,8 @@ use crate::ui::{MainBridge, MainWindow};
 pub struct SurfaceHost {
     /// Shows `image` as the video frame (`MainBridge.video-frame`).
     pub set_image: Box<dyn Fn(slint::Image)>,
+    /// What `MainBridge.video-frame` holds now (`None`: the window is gone).
+    pub shown_image: Box<dyn Fn() -> Option<slint::Image>>,
     /// Renders the window once, soon ([`request_winit_redraw`]).
     pub redraw: Box<dyn Fn()>,
     /// Called after every render of the window (measurements).
@@ -79,12 +85,18 @@ pub struct VideoSurface {
     renders: Rc<Cell<u64>>,
     /// [`WindowProbe`]: renders that converted a new frame and left the window unchanged (`None`: probe off).
     unchanged: Option<Rc<Cell<u64>>>,
+    /// Renders that found `video-frame` not holding the texture this surface converts into (handed over again).
+    stale: Rc<Cell<u64>>,
     redraw: Rc<dyn Fn()>,
     installed: Cell<bool>,
 }
 
 struct Inner {
     set_image: Box<dyn Fn(slint::Image)>,
+    shown_image: Box<dyn Fn() -> Option<slint::Image>>,
+    /// The image last handed to `video-frame` for `shown`.
+    handed: Option<slint::Image>,
+    stale: Rc<Cell<u64>>,
     /// The newest frame not uploaded yet.
     pending: Option<VideoFrame>,
     /// The frame on screen (uploaded again after the GL context was re-created).
@@ -154,15 +166,19 @@ struct WindowProbe {
     /// The render in progress converted a new frame.
     new_frame: bool,
     unchanged: Rc<Cell<u64>>,
+    /// New frames in a row that left the window unchanged.
+    run: u32,
 }
 
 impl WindowProbe {
     const ROWS: usize = 16;
+    /// A run this long is logged once (about 2 s at 60 fps).
+    const REPORT_RUN: u32 = 120;
 
     fn from_env() -> Option<Self> {
         let stats = std::env::var_os("SUBTITLE_ADDER_PLAYER_STATS").is_some_and(|v| v == "1");
         let trace = std::env::var_os("SUBTITLE_ADDER_FRAME_TRACE").is_some_and(|v| !v.is_empty());
-        (stats || trace).then(|| Self { last: None, new_frame: false, unchanged: Rc::new(Cell::new(0)) })
+        (stats || trace).then(|| Self { last: None, new_frame: false, unchanged: Rc::new(Cell::new(0)), run: 0 })
     }
 }
 
@@ -272,6 +288,7 @@ impl VideoSurface {
     /// The surface of a main window (installed before the window is shown).
     pub fn for_main_window(window: &MainWindow) -> Rc<Self> {
         let image_target = window.as_weak();
+        let shown_target = window.as_weak();
         let redraw_target = window.as_weak();
         Self::install(
             window.window(),
@@ -281,6 +298,7 @@ impl VideoSurface {
                         w.global::<MainBridge>().set_video_frame(image);
                     }
                 }),
+                shown_image: Box::new(move || shown_target.upgrade().map(|w| w.global::<MainBridge>().get_video_frame())),
                 redraw: Box::new(move || {
                     if let Some(w) = redraw_target.upgrade() {
                         request_winit_redraw(w.window());
@@ -294,12 +312,16 @@ impl VideoSurface {
     /// Installs the rendering notifier on `window` (before it is shown). Without GPU rendering the surface stays
     /// unavailable.
     pub fn install(window: &slint::Window, host: SurfaceHost) -> Rc<Self> {
-        let SurfaceHost { set_image, redraw, after_render } = host;
+        let SurfaceHost { set_image, shown_image, redraw, after_render } = host;
         let probe = WindowProbe::from_env();
+        let stale = Rc::new(Cell::new(0));
         let unchanged = probe.as_ref().map(|p| p.unchanged.clone());
         let surface = Rc::new(Self {
             inner: Rc::new(RefCell::new(Inner {
                 set_image,
+                shown_image,
+                handed: None,
+                stale: stale.clone(),
                 pending: None,
                 current: None,
                 gl: None,
@@ -313,6 +335,7 @@ impl VideoSurface {
             uploads: Rc::new(Cell::new(0)),
             renders: Rc::new(Cell::new(0)),
             unchanged,
+            stale,
             redraw: Rc::from(redraw),
             installed: Cell::new(false),
         });
@@ -371,9 +394,25 @@ impl VideoSurface {
                             let hash = unsafe { g.window_hash() };
                             if p.new_frame && hash.is_some() && hash == p.last {
                                 p.unchanged.set(p.unchanged.get() + 1);
+                                p.run += 1;
                                 if let Some(t) = &st.trace {
                                     t.record_unchanged();
                                 }
+                                if p.run == WindowProbe::REPORT_RUN {
+                                    // Once per stretch: what the surface believes it shows, for the next sighting.
+                                    let bridge = (st.shown_image)();
+                                    let holds = st.handed.is_some() && bridge == st.handed;
+                                    let mut viewport = [0; 4];
+                                    unsafe { g.gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport) };
+                                    eprintln!(
+                                        "[video] window unchanged for {} new frames: shown={:?} video-frame holds it={holds} bridge size={:?} viewport={viewport:?}",
+                                        p.run,
+                                        st.shown,
+                                        bridge.map(|b| b.size())
+                                    );
+                                }
+                            } else if p.new_frame {
+                                p.run = 0;
                             }
                             p.last = hash;
                             p.new_frame = false;
@@ -432,6 +471,12 @@ impl VideoSurface {
     /// while the probe is off.
     pub fn window_unchanged(&self) -> Option<u64> {
         self.unchanged.as_ref().map(|c| c.get())
+    }
+
+    /// Renders that found `video-frame` not holding the GPU texture the surface converts into, and handed it over
+    /// again (diagnostics; the self-check in `Inner::render`).
+    pub fn stale_textures(&self) -> u64 {
+        self.stale.get()
     }
 
     /// The pts of the frame on screen (diagnostics).
@@ -533,11 +578,23 @@ impl Inner {
         let result = unsafe { gl.draw(&img, frame.pts, frame.second_field, w, h, dump) };
         match result {
             Ok((texture, pixels)) => {
-                if self.shown != Some((texture, w, h)) {
+                let same = self.shown == Some((texture, w, h));
+                // Self-check: whenever `shown` says so, `video-frame` must hold the texture converted into. Anything that
+                // replaced it without `clear` would leave the window showing an old picture while every frame is
+                // converted: it is handed over again and counted (`stale_texture=` on the stats line).
+                let lost = same && self.handed.as_ref().is_some_and(|img| (self.shown_image)().is_some_and(|now| now != *img));
+                if lost {
+                    self.stale.set(self.stale.get() + 1);
+                    if self.stale.get() == 1 {
+                        eprintln!("[video] video-frame did not hold the GPU texture; handed over again (stale_texture)");
+                    }
+                }
+                if !same || lost {
                     self.shown = Some((texture, w, h));
                     // SAFETY: the texture lives until the next size change or teardown; the bridge is updated before
                     // either deletes it (deletion is deferred by one frame).
                     let image = unsafe { slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(texture, [w, h].into()).build() };
+                    self.handed = Some(image.clone());
                     // Setting the property also schedules a render, in case this one already read the old image.
                     (self.set_image)(image);
                 }
