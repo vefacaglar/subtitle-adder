@@ -105,8 +105,11 @@ component ColorWell inherits Rectangle {
         property <float> hue: root.value.to-hsv().hue;
         property <float> sat: root.value.to-hsv().saturation;
         property <float> val: root.value.to-hsv().value;
+        // The popup has the panel's width and the surface fills it (Slint sizes a popup from its own constraints,
+        // not from a child's explicit width).
+        min-width: 240px;
+        max-width: 240px;
         Rectangle {
-            width: 240px;
             background: MacTheme.menu-background;
             border-radius: 10px;
             border-width: 1phx;

@@ -91,9 +91,11 @@ export component TranslationModelPopover inherits PopupWindow {
         }
     }
 
+    // `.padding(12).frame(width: 340)`. The popup has the width and the surface fills it: Slint sizes a popup from
+    // its own constraints, not from a child's explicit width (a wider child would be centred on the popup's origin).
+    min-width: 340px;
+    max-width: 340px;
     PopoverSurface {
-        // `.padding(12).frame(width: 340)`.
-        width: 340px;
         VerticalLayout {
             padding: 12px;
             spacing: 10px;

@@ -60,6 +60,10 @@ export component TranslationModelFlyout inherits PopupWindow {
     property <int> search-reset: MainBridge.picker-search-reset;
     changed search-reset => { search.text = ""; }
 
+    // The popup has the flyout's width and the surface fills it (as `MenuFlyout`): Slint sizes a popup from its own
+    // constraints, not from a child's explicit width, and keeps that rectangle inside the window.
+    min-width: 340px + 32px;
+    max-width: 340px + 32px;
     // FlyoutPresenter: AcrylicInAppFill fallback, OverlayCornerRadius 8, padding 16,15,16,17, shadow.
     Rectangle {
         background: Theme.flyout-background;
@@ -69,7 +73,6 @@ export component TranslationModelFlyout inherits PopupWindow {
         drop-shadow-blur: 16px;
         drop-shadow-offset-y: 6px;
         drop-shadow-color: #00000040;
-        width: 340px + 32px;
         keys := FocusScope {
             // Esc light-dismisses the flyout like WinUI (the opener reports every close, see `flyout-open`).
             capture-key-pressed(event) => {
@@ -223,10 +226,9 @@ export component TranslationModelButton inherits Rectangle {
         }
     }
     // BottomEdgeAlignedLeft; a flyout that would leave the window is shifted left to fit (WinUI constrains popups
-    // to the window's bounds).
-    property <length> flyout-width: 340px + 32px;
+    // to the window's bounds; Slint does the same for a popup of the flyout's size).
     flyout := TranslationModelFlyout {
-        x: min(0px, MainBridge.window-width - root.flyout-width - root.absolute-position.x);
+        x: 0;
         y: root.height + 4px;
     }
     // C# `TranslationModelFlyout_Closed` → `TranslationPicker.Close()` for every way the flyout goes: light dismiss

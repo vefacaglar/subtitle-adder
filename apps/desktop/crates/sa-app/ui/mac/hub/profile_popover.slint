@@ -96,9 +96,11 @@ export component ProfilePopover inherits PopupWindow {
     close-policy: close-on-click-outside;
     property <int> close-epoch: HubBridge.popover-close-epoch;
     changed close-epoch => { root.close(); }
+    // `.padding(16).frame(width: 300)`: 300 pt including the padding. The popup has the width and the surface fills
+    // it: Slint sizes a popup from its own constraints, not from a child's explicit width.
+    min-width: 300px;
+    max-width: 300px;
     PopoverSurface {
-        // `.padding(16).frame(width: 300)`: 300 pt including the padding.
-        width: 300px;
         // One layout child gives the surface its height (a conditional alone would not).
         VerticalLayout {
         if !HubBridge.is-logged-in: VerticalLayout {
