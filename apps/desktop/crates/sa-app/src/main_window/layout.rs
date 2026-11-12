@@ -195,9 +195,11 @@ pub fn windows_initial_size(stored: Option<(i64, i64)>, scale: f64, work_area: (
     (w.min(work_area.0), h.min(work_area.1))
 }
 
-/// win-ui-main §4.3: the size is stored only from the normal (restored) state.
-pub fn windows_should_store_size(maximized: bool, minimized: bool, full_screen: bool) -> bool {
-    !(maximized || minimized || full_screen)
+/// win-ui-main §4.3: the size is stored from the normal (restored) state. Closed in full screen, the size the window
+/// had before full screen is stored when it was restored then (`maximized_before`; the C# app stored nothing in full
+/// screen). `sa_platform::win::chrome::WindowChrome::restored_size` implements this rule.
+pub fn windows_should_store_size(maximized: bool, minimized: bool, full_screen: bool, maximized_before: bool) -> bool {
+    if full_screen { !maximized_before } else { !(maximized || minimized) }
 }
 
 #[cfg(test)]
@@ -280,8 +282,12 @@ mod tests {
         assert_eq!(windows_initial_size(Some((0, 900)), 1.5, (4000.0, 4000.0)), (1860.0, 1260.0));
         assert_eq!(windows_initial_size(Some((500, 400)), 1.0, (4000.0, 4000.0)), (760.0, 580.0));
         assert_eq!(windows_initial_size(Some((3000, 2000)), 1.0, (1920.0, 1040.0)), (1920.0, 1040.0));
-        assert!(windows_should_store_size(false, false, false));
-        assert!(!windows_should_store_size(true, false, false));
-        assert!(!windows_should_store_size(false, false, true));
+        assert!(windows_should_store_size(false, false, false, false));
+        assert!(!windows_should_store_size(true, false, false, false));
+        assert!(!windows_should_store_size(false, true, false, false));
+        // Full screen: the size from before it, unless the window was maximized then.
+        assert!(windows_should_store_size(false, false, true, false));
+        assert!(windows_should_store_size(true, false, true, false));
+        assert!(!windows_should_store_size(true, false, true, true));
     }
 }
