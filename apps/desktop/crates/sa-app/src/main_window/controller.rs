@@ -175,6 +175,9 @@ struct UiState {
     no_resume: Option<(PathBuf, usize)>,
     /// The id of the bitmap subtitle picture `picture-subtitles` shows (`SubtitlePicture::id`).
     picture_shown: Option<u64>,
+    /// The image track shown was chosen for the user (`consider_auto_track`), not by them: it goes as soon as the
+    /// session has lines of its own, so two captions never overlap without the user having asked for it.
+    auto_image_track: bool,
 }
 
 pub struct MainWindowController {
@@ -557,6 +560,7 @@ impl MainWindowController {
                 self.sync_layout(false);
                 // The track menu marks the embedded track in the list (and offers "Off" while it is unedited).
                 self.sync_tracks();
+                self.drop_auto_image_track_for_own_lines();
             }
             SubtitleChange::Translations => {
                 self.sync_rows();
@@ -630,6 +634,7 @@ impl MainWindowController {
             st.no_resume = None;
             // Decided once its tracks are known (`consider_auto_track`).
             st.auto_choice = video.clone();
+            st.auto_image_track = false;
             if st.tracks_menu_open {
                 st.tracks_menu_open = false;
                 let interacting = st.seek_scrubbing || st.volume_scrubbing;
@@ -1486,6 +1491,7 @@ impl MainWindowController {
             let mut st = self.st.borrow_mut();
             st.auto_choice = None;
             st.no_resume = None;
+            st.auto_image_track = false;
         }
         self.vm.finish_editing();
         self.vm.embedded_track_chosen();
@@ -1503,6 +1509,7 @@ impl MainWindowController {
     /// track, not only while one is reported shown: a choice still in flight is undone too (the player ignores a
     /// request for what is already the case).
     fn hide_image_track(&self) {
+        self.st.borrow_mut().auto_image_track = false;
         if self.player.borrow().tracks().subtitles.iter().any(|t| t.is_image()) {
             self.player.borrow_mut().select_image_subtitle_track(None);
             self.drain_player();
@@ -1538,10 +1545,21 @@ impl MainWindowController {
             (AutoChoice::Allowed, Some(AutoTrack::Text(stream))) => self.read_embedded_subtitle(stream, ReadMode::AUTOMATIC),
             // No text track to choose: an image track by the same rule is shown (the list stays empty).
             (AutoChoice::Allowed, Some(AutoTrack::Image(stream))) => {
+                self.st.borrow_mut().auto_image_track = true;
                 self.player.borrow_mut().select_image_subtitle_track(Some(stream));
                 self.drain_player();
             }
             _ => {}
+        }
+    }
+
+    /// The session got lines of its own (a transcription's partial or final lines, an imported or sidecar file, a
+    /// line the user typed) while an image track chosen for the user is shown: it goes, as if "Off" were chosen. A
+    /// track the user picked from the menu stays.
+    fn drop_auto_image_track_for_own_lines(&self) {
+        if self.st.borrow().auto_image_track && !self.vm.sentences().is_empty() {
+            self.hide_image_track();
+            self.sync_tracks();
         }
     }
 

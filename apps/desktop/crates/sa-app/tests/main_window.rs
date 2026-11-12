@@ -1199,6 +1199,56 @@ fn choosing_an_image_track_never_touches_the_users_lines_or_the_disk_and_drops_u
     assert_eq!(r.folder_of(&video), vec!["film.mkv"]);
 }
 
+/// Only image tracks, the UI language's shown for the user: the session's own lines take its place.
+fn open_images_only(r: &Rig, name: &str) {
+    let mut images = sample_tracks();
+    images.subtitles.retain(|t| t.kind == SubtitleKind::Image);
+    images.subtitles[0].language = Some("tur".into());
+    r.open_with_tracks(name, images);
+    r.pump();
+    assert_eq!(r.backend.lock().images, vec![Some(4)], "shown for the user");
+}
+
+#[test]
+fn an_image_track_chosen_for_the_user_goes_when_the_session_gets_lines_of_its_own() {
+    use sa_core::engine_types::Sentence;
+    use sa_enginekit::events::EngineEvent;
+    // An imported subtitle file.
+    let r = rig(false);
+    open_images_only(&r, "a/film.mkv");
+    r.load_three_lines();
+    assert_eq!(r.backend.lock().images, vec![Some(4), None], "turned off, not overlapping the imported lines");
+    r.main().invoke_menu_requested("tracks".into());
+    assert!(r.menu().iter().filter(|e| e.id.starts_with("subtitle:")).all(|e| !e.checked || e.id == "subtitle:off"));
+    // A transcription's first live lines.
+    r.backend.lock().images.clear();
+    open_images_only(&r, "b/film.mkv");
+    r.vm.generate();
+    let call = r.env.next(common::CallKind::Transcribe);
+    assert_eq!(r.backend.lock().images, vec![Some(4)], "a job without lines yet changes nothing");
+    call.send(EngineEvent::Partial { language: "tr".into(), sentences: vec![Sentence::new(1, 0.0, 2.0, "Bir.")] });
+    r.env.eventually("the first partial", || {
+        r.pump();
+        r.rows().len() == 1
+    });
+    assert_eq!(r.backend.lock().images, vec![Some(4), None]);
+    r.vm.cancel();
+}
+
+#[test]
+fn an_image_track_the_user_chose_stays_when_lines_come() {
+    let r = rig(false);
+    open_images_only(&r, "film.mkv");
+    // Chosen from the menu (again): it is the user's choice now.
+    r.main().invoke_menu_requested("tracks".into());
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    assert_eq!(r.backend.lock().images, vec![Some(4), Some(4)]);
+    r.load_three_lines();
+    assert_eq!(r.backend.lock().images, vec![Some(4), Some(4)], "both shown, as the user asked");
+    assert_eq!(r.vm.sentences().len(), 3);
+}
+
 /// M1: a read that ends after the user edited, or after a job started, does not replace the lines silently.
 #[test]
 fn a_read_that_ends_after_the_session_changed_is_not_imported_silently() {
