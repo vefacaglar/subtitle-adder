@@ -1185,20 +1185,11 @@ impl Gl {
             if w == 0 || h == 0 {
                 return None;
             }
-            // An error left by the render itself is not this read's.
-            while gl.get_error() != glow::NO_ERROR {}
-            let read_fbo = gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
-            let pack_buffer = gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING);
-            let pack_alignment = gl.get_parameter_i32(glow::PACK_ALIGNMENT);
-            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
+            let pack = PackState::begin(gl);
             let mut buf = vec![0u8; w * h * 4];
             gl.read_pixels(0, 0, w as i32, h as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut buf)));
-            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, read_fbo);
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, pack_buffer);
-            gl.pixel_store_i32(glow::PACK_ALIGNMENT, pack_alignment);
             let failed = gl.get_error() != glow::NO_ERROR;
+            pack.end(gl);
             if failed {
                 return None;
             }
@@ -1227,12 +1218,7 @@ impl Gl {
             if w == 0 || h == 0 {
                 return None;
             }
-            let read_fbo = gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
-            let pack_buffer = gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING);
-            let pack_alignment = gl.get_parameter_i32(glow::PACK_ALIGNMENT);
-            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
-            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
+            let pack = PackState::begin(gl);
             let mut row = vec![0u8; w * 4];
             let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
             for i in 0..WindowProbe::ROWS {
@@ -1245,10 +1231,8 @@ impl Gl {
                     }
                 }
             }
-            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, read_fbo);
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, pack_buffer);
-            gl.pixel_store_i32(glow::PACK_ALIGNMENT, pack_alignment);
             let _ = gl.get_error();
+            pack.end(gl);
             Some(hash)
         }
     }
@@ -1517,6 +1501,64 @@ impl Gl {
             };
             self.uploaded = Some(img.clone());
             Ok((target.tex.0, pixels))
+        }
+    }
+}
+
+/// Drains GL errors left by earlier calls (not a read's own); bounded, so a lost context that keeps reporting one
+/// cannot hang the render thread.
+unsafe fn drain_gl_errors(gl: &glow::Context) {
+    for _ in 0..32 {
+        if unsafe { gl.get_error() } == glow::NO_ERROR {
+            break;
+        }
+    }
+}
+
+/// The pack state a back-buffer read sets (default framebuffer, no pack buffer, tightly packed rows from the
+/// first pixel) and the values it restores afterwards.
+struct PackState {
+    read_fbo: Option<glow::Framebuffer>,
+    buffer: Option<glow::Buffer>,
+    alignment: i32,
+    row_length: i32,
+    skip_rows: i32,
+    skip_pixels: i32,
+}
+
+impl PackState {
+    unsafe fn begin(gl: &glow::Context) -> Self {
+        unsafe {
+            drain_gl_errors(gl);
+            let s = Self {
+                read_fbo: gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING),
+                buffer: gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING),
+                alignment: gl.get_parameter_i32(glow::PACK_ALIGNMENT),
+                row_length: gl.get_parameter_i32(glow::PACK_ROW_LENGTH),
+                skip_rows: gl.get_parameter_i32(glow::PACK_SKIP_ROWS),
+                skip_pixels: gl.get_parameter_i32(glow::PACK_SKIP_PIXELS),
+            };
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
+            gl.pixel_store_i32(glow::PACK_ROW_LENGTH, 0);
+            gl.pixel_store_i32(glow::PACK_SKIP_ROWS, 0);
+            gl.pixel_store_i32(glow::PACK_SKIP_PIXELS, 0);
+            // A context without the row-length parameters (OpenGL ES 2) rejects them: not the read's failure.
+            drain_gl_errors(gl);
+            s
+        }
+    }
+
+    unsafe fn end(self, gl: &glow::Context) {
+        unsafe {
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, self.read_fbo);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, self.buffer);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, self.alignment);
+            gl.pixel_store_i32(glow::PACK_ROW_LENGTH, self.row_length);
+            gl.pixel_store_i32(glow::PACK_SKIP_ROWS, self.skip_rows);
+            gl.pixel_store_i32(glow::PACK_SKIP_PIXELS, self.skip_pixels);
+            drain_gl_errors(gl);
         }
     }
 }
