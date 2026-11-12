@@ -253,6 +253,16 @@ impl FfmpegPlayer {
         }
     }
 
+    /// Tests (debug builds only): `hook` is told of every bitmap subtitle picture update the presenter asks for, as
+    /// `(serial the time was read under, current serial)` (`None`: no hook).
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn set_picture_ask_hook(&self, hook: Option<Box<dyn Fn(u64, u64) + Send + Sync>>) {
+        if let Some(s) = &self.session {
+            *s.picture_ask_hook.lock() = hook;
+        }
+    }
+
     /// Counters of the current source.
     pub fn stats(&self) -> PlaybackStats {
         let Some(s) = &self.session else { return PlaybackStats::default() };
@@ -410,7 +420,7 @@ impl MediaPlayerBackend for FfmpegPlayer {
             .unwrap_or_else(|| ("0x0".to_owned(), "-".to_owned()));
         Some(format!(
             "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={} dropped_fields={} soft_tonemapped={} soft_deinterlaced={} \
-             image_subtitle={image} picture_events={} pictures_shown={} picture_failures={} picture_overflow={} picture_store_overflow={} picture_size={size} picture_canvas={canvas}",
+             image_subtitle={image} picture_events={} pictures_shown={} picture_failures={} picture_overflow={} picture_store_overflow={} pictures_carried={} picture_size={size} picture_canvas={canvas}",
             s.decoded,
             s.hardware,
             s.planar,
@@ -424,7 +434,8 @@ impl MediaPlayerBackend for FfmpegPlayer {
             s.pictures_shown,
             s.picture_failures,
             s.picture_overflow,
-            s.picture_store_overflow
+            s.picture_store_overflow,
+            s.pictures_carried
         ))
     }
 

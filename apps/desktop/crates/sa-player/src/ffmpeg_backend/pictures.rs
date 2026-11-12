@@ -94,6 +94,14 @@ struct Stored {
     fed: u64,
 }
 
+/// Who handed a packet to the store: the playing demuxer or the scan of the whole stream. Each reads the stream in
+/// order, so the fragments without a timestamp that follow a packet belong to the packet the same reader gave last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source {
+    Demuxer = 0,
+    Scan = 1,
+}
+
 /// The encoded packets of a stream that decodes packet by packet, in start order, from both the playing demuxer and
 /// a scan of the whole stream (`session::scan_pictures`): nothing is lost to a seek or to the timeline's RGBA bound,
 /// because a packet is decoded only when it comes within [`STORE_LOOKAHEAD`] of the position, and again after a seek.
@@ -103,17 +111,18 @@ struct PacketStore {
     bytes: usize,
     /// The first entry not decoded yet for the current serial (an entry inserted before it moves it back).
     next: usize,
-    /// The entry the VobSub fragments without a timestamp that follow belong to, and whether it is a copy of one
-    /// already stored (its fragments are then skipped).
-    building: Option<(usize, bool)>,
+    /// Per [`Source`]: the entry the VobSub fragments without a timestamp that follow belong to, and whether that
+    /// reader's packet was a copy of one already stored (its fragments are then skipped).
+    building: [Option<(usize, bool)>; 2],
     overflowed: u64,
 }
 
 impl PacketStore {
-    /// Adds a packet that starts at `start` (`None`: a fragment of the subpicture before it).
-    fn add(&mut self, start: Option<f64>, data: &[u8], pts: Option<i64>, dts: Option<i64>, duration: i64) {
+    /// Adds a packet from `source` that starts at `start` (`None`: a fragment of that reader's subpicture before it).
+    fn add(&mut self, source: Source, start: Option<f64>, data: &[u8], pts: Option<i64>, dts: Option<i64>, duration: i64) {
+        let slot = source as usize;
         let Some(start) = start.filter(|s| s.is_finite()) else {
-            if let Some((i, false)) = self.building
+            if let Some((i, false)) = self.building[slot]
                 && self.bytes + data.len() <= MAX_STORED_BYTES
             {
                 self.entries[i].data.extend_from_slice(data);
@@ -122,14 +131,14 @@ impl PacketStore {
             return;
         };
         let at = self.entries.partition_point(|e| e.start < start);
-        // The same packet again (the demuxer after a seek, or the scan): a copy, or the first fragment of one.
+        // The same packet again (the demuxer after a seek, or the other reader): a copy, or the first fragment of one.
         if let Some(i) = (at..self.entries.len()).take_while(|&i| self.entries[i].start == start).find(|&i| self.entries[i].data.starts_with(data)) {
-            self.building = Some((i, true));
+            self.building[slot] = Some((i, true));
             return;
         }
         if self.bytes + data.len() > MAX_STORED_BYTES {
             self.overflowed += 1;
-            self.building = None;
+            self.building[slot] = None;
             return;
         }
         let at = self.entries.partition_point(|e| e.start <= start);
@@ -138,14 +147,20 @@ impl PacketStore {
         if at < self.next {
             self.next = at;
         }
-        self.building = Some((at, false));
+        // The other reader's entry moved one place on when it lies at or after the insertion.
+        for b in self.building.iter_mut().flatten() {
+            if b.0 >= at {
+                b.0 += 1;
+            }
+        }
+        self.building[slot] = Some((at, false));
     }
 
     /// A seek to `target`: decoding starts again at the event on screen there (every event replaces the screen, so
     /// the newest one started by `target` is all that can be due).
     fn rewind(&mut self, target: f64) {
         self.next = self.entries.partition_point(|e| e.start <= target).saturating_sub(1);
-        self.building = None;
+        self.building = [None; 2];
     }
 }
 
@@ -183,6 +198,15 @@ pub(crate) struct PictureTrack {
     pub last_error: Option<PictureTrackFailure>,
     /// XSUB / VobSub: the stream's packets, decoded near the position ([`PacketStore`]).
     store: Option<PacketStore>,
+    /// Per [`Source`]: packets turned away when stored (an XSUB packet without its time code). They never count
+    /// towards giving up while anything else is stored: the scan reads the whole film at once, far from the
+    /// position, so a few damaged chunks anywhere would otherwise turn the track off at selection.
+    store_rejected: [u64; 2],
+    /// Not stored formats (PGS, DVB): the newest packet timestamp handed to the decoder, and after a restart that
+    /// keeps the decoder, the timestamp up to which the re-read packets are not fed to it again (it already applied
+    /// them, and later sets of the read-ahead too: decoded again against that newer state they would differ).
+    fed_until: Option<i64>,
+    skip_until: Option<i64>,
 }
 
 impl PictureTrack {
@@ -226,6 +250,9 @@ impl PictureTrack {
             failed_lately: 0,
             last_error: None,
             store: stores_packets(format).then(PacketStore::default),
+            store_rejected: [0; 2],
+            fed_until: None,
+            skip_until: None,
         })
     }
 
@@ -235,23 +262,32 @@ impl PictureTrack {
         self.store.is_some()
     }
 
-    /// Keeps a packet of a storing stream (from the playing demuxer or the scan). An XSUB packet without its time
-    /// code counts as rejected.
-    pub fn take(&mut self, data: &[u8], pts: Option<i64>, dts: Option<i64>, duration: i64, start_time: f64) {
+    /// Keeps a packet of a storing stream from `source`. An XSUB packet without its time code is turned away and
+    /// counted (`failed`, and per source for [`Self::store_hopeless`]), never towards [`Self::hopeless`].
+    pub fn take(&mut self, source: Source, data: &[u8], pts: Option<i64>, dts: Option<i64>, duration: i64, start_time: f64) {
         let tb = f64::from(self.tb);
         let start = match self.format {
             Format::Xsub => match xsub_times(data) {
                 Some((from, _)) => Some(from - start_time),
                 None => {
-                    self.reject(PictureTrackFailure::NoTimeCode);
+                    self.failed += 1;
+                    self.store_rejected[source as usize] += 1;
+                    self.last_error = Some(PictureTrackFailure::NoTimeCode);
                     return;
                 }
             },
             _ => pts.map(|t| t as f64 * tb - start_time),
         };
         if let Some(store) = self.store.as_mut() {
-            store.add(start, data, pts, dts, duration);
+            store.add(source, start, data, pts, dts, duration);
         }
+    }
+
+    /// A storing stream with nothing stored although at least [`GIVE_UP_AFTER`] of its packets were turned away (by
+    /// one reader: each reads every packet once), once the whole stream was read (`read_all`: the scan ended, or the
+    /// demuxer reached the end without one): it can show nothing at all.
+    pub fn store_hopeless(&self, read_all: bool) -> bool {
+        read_all && self.store.as_ref().is_some_and(|s| s.entries.is_empty()) && self.store_rejected.iter().max().is_some_and(|&n| n >= GIVE_UP_AFTER)
     }
 
     /// A seek to `target` of a storing stream: what is due there is decoded again.
@@ -261,7 +297,8 @@ impl PictureTrack {
         }
     }
 
-    /// Decodes the stored packets that start up to `at + STORE_LOOKAHEAD` and were not decoded for `serial` yet.
+    /// Decodes the stored packets that start up to `at + STORE_LOOKAHEAD` and were not decoded for `serial` yet
+    /// (`at`: the position of the seek being executed, not of one still deferred).
     /// Nothing replaced by `at` is decoded (only the event on screen there): a track chosen, or packets stored,
     /// after a seek far into the file start at the position, not at the store's beginning.
     pub fn feed(&mut self, serial: u64, at: f64, start_time: f64) -> Vec<DecodedEvent> {
@@ -301,17 +338,24 @@ impl PictureTrack {
 
     /// A restart that keeps the position (another speed or audio track, a new video decoder): the decoder keeps what
     /// it built (a PGS epoch's objects and palette, which the re-read stream may not send again before the sets that
-    /// use them); only the give-up count starts again. The packets read again from the keyframe decode to the
-    /// events already queued, which the timeline ignores.
+    /// use them); only the give-up count starts again. PGS / DVB packets read again from the keyframe up to the newest
+    /// one already decoded are not fed again: the decoder applied them, and the read-ahead's later sets too (an
+    /// object redefined, a palette changed), so a set decoded again would come out against that newer state; the
+    /// events they gave are queued. Stored formats decode packet by packet and are fed again from the store.
     pub fn restart(&mut self) {
         self.decoded_lately = 0;
         self.failed_lately = 0;
+        if self.store.is_none() {
+            self.skip_until = self.fed_until;
+        }
     }
 
     /// A seek: the decoder forgets the display set it was building, and the give-up count starts again.
     pub fn flush(&mut self) {
         self.dec.flush();
         self.last_ts = None;
+        self.fed_until = None;
+        self.skip_until = None;
         self.self_contained = self.format != Format::Pgs;
         self.epoch_known = self.format != Format::Pgs;
         self.decoded_lately = 0;
@@ -337,6 +381,19 @@ impl PictureTrack {
     /// Decodes one packet of the stream. `None`: no complete event yet (a PGS segment before its END, a VobSub
     /// fragment), a damaged packet (skipped), or an event too large to keep.
     pub fn decode(&mut self, packet: &Packet, start_time: f64) -> Option<DecodedEvent> {
+        if self.store.is_none() {
+            let ts = packet.pts().or(packet.dts());
+            if let Some(limit) = self.skip_until {
+                // Re-read after a restart in place: already applied (a packet without a timestamp continues one).
+                if ts.is_none_or(|t| t <= limit) {
+                    return None;
+                }
+                self.skip_until = None;
+            }
+            if let Some(t) = ts {
+                self.fed_until = Some(self.fed_until.map_or(t, |f| f.max(t)));
+            }
+        }
         if let Some(ts) = packet.pts().or(packet.dts()) {
             self.last_ts = Some((ts, packet.duration()));
         }
@@ -691,6 +748,61 @@ mod tests {
         assert_eq!(xsub_times(b"[00:01:02.500-01:00:00.001"), None);
         assert_eq!(xsub_times(b"(00:01:02.500-01:00:00.001]"), None);
         assert_eq!(xsub_times(b"[00:01:0x.500-01:00:00.001]"), None);
+    }
+
+    fn starts(s: &PacketStore) -> Vec<(f64, Vec<u8>)> {
+        s.entries.iter().map(|e| (e.start, e.data.clone())).collect()
+    }
+
+    #[test]
+    fn the_packet_store_keeps_one_copy_per_packet_whoever_delivers_it() {
+        use Source::{Demuxer, Scan};
+        let mut s = PacketStore::default();
+        // The demuxer's subpicture at 1.0 in two pieces, the scan's copy of it in between: one entry, whole.
+        s.add(Demuxer, Some(1.0), b"A1", Some(1), None, 0);
+        s.add(Scan, Some(1.0), b"A1", Some(1), None, 0);
+        s.add(Demuxer, None, b"A2", None, None, 0);
+        s.add(Scan, None, b"A2", None, None, 0);
+        assert_eq!(starts(&s), vec![(1.0, b"A1A2".to_vec())], "the scan's copy and its fragment skipped");
+        // A whole copy later (a seek re-reads it): still one.
+        s.add(Demuxer, Some(1.0), b"A1A2", Some(1), None, 0);
+        assert_eq!(s.entries.len(), 1);
+        // The scan's new packet does not take the demuxer's next fragment: each reader continues its own.
+        s.add(Demuxer, Some(3.0), b"C1", Some(3), None, 0);
+        s.add(Scan, Some(2.0), b"B1", Some(2), None, 0);
+        s.add(Demuxer, None, b"C2", None, None, 0);
+        s.add(Scan, None, b"B2", None, None, 0);
+        assert_eq!(starts(&s), vec![(1.0, b"A1A2".to_vec()), (2.0, b"B1B2".to_vec()), (3.0, b"C1C2".to_vec())]);
+        assert_eq!(s.bytes, 12);
+        // A different packet at the same start is kept too (after the one stored first).
+        s.add(Scan, Some(2.0), b"X", Some(2), None, 0);
+        assert_eq!(s.entries[2].data, b"X");
+    }
+
+    #[test]
+    fn the_packet_store_moves_its_reading_point_for_late_packets_and_seeks_and_stays_bounded() {
+        use Source::{Demuxer, Scan};
+        let mut s = PacketStore::default();
+        for (t, d) in [(1.0, b"a"), (2.0, b"b"), (3.0, b"c")] {
+            s.add(Demuxer, Some(t), d, None, None, 0);
+        }
+        s.next = 3;
+        // A packet that sorts before what was decoded already: decoding goes back to it.
+        s.add(Scan, Some(1.5), b"x", None, None, 0);
+        assert_eq!(s.next, 1);
+        // A seek: from the event on screen at the target (the newest one started by it).
+        s.rewind(2.5);
+        assert_eq!(s.next, 2, "the event from 2.0 is the one on screen at 2.5");
+        s.rewind(0.5);
+        assert_eq!(s.next, 0);
+        s.rewind(10.0);
+        assert_eq!(s.next, 3);
+        // Past the byte bound a packet is turned away and counted; its fragments are not attached anywhere.
+        s.bytes = MAX_STORED_BYTES;
+        s.add(Demuxer, Some(4.0), b"full", None, None, 0);
+        s.add(Demuxer, None, b"more", None, None, 0);
+        assert_eq!((s.entries.len(), s.overflowed), (4, 1));
+        assert_eq!(s.entries[3].data, b"c");
     }
 
     /// One PGS segment of a .sup file at `pts` (s).
