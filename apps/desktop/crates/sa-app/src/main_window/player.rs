@@ -93,10 +93,10 @@ pub enum PlayerOutput {
     TracksChanged,
     /// The audio track asked for could not be played (the previous one keeps playing); FFmpeg's details.
     AudioTrackFailed(String),
-    /// The image subtitle track cannot be shown: one asked for that the player refused (the previous choice stays),
+    /// Image subtitle track `.0` cannot be shown: one asked for that the player refused (the previous choice stays),
     /// or the one shown, given up after its decoder rejected packet after packet (it is off now; `TracksChanged`
     /// follows).
-    SubtitleTrackFailed(PictureTrackFailure),
+    SubtitleTrackFailed(usize, PictureTrackFailure),
     /// The bitmap subtitle picture to draw over the video changed: [`PlayerController::subtitle_picture`].
     PictureChanged,
 }
@@ -456,9 +456,9 @@ impl PlayerController {
                     self.emit(PlayerOutput::AudioTrackFailed(message.trim().to_owned()));
                 }
             }
-            PlayerEvent::SubtitleTrackFailed { generation, reason, .. } => {
+            PlayerEvent::SubtitleTrackFailed { generation, stream_index, reason } => {
                 if generation == self.backend_generation && self.current_path.is_some() {
-                    self.emit(PlayerOutput::SubtitleTrackFailed(reason));
+                    self.emit(PlayerOutput::SubtitleTrackFailed(stream_index, reason));
                 }
             }
             PlayerEvent::SubtitlePictureChanged { generation } => {
@@ -1239,7 +1239,7 @@ mod tests {
         assert_eq!(r.player.subtitle_picture(), Some(picture));
         let reason = PictureTrackFailure::Ffmpeg("not a picture track".into());
         r.player.handle_event(PlayerEvent::SubtitleTrackFailed { generation: g, stream_index: 3, reason: reason.clone() });
-        assert_eq!(r.player.take_outputs(), vec![PlayerOutput::SubtitleTrackFailed(reason)]);
+        assert_eq!(r.player.take_outputs(), vec![PlayerOutput::SubtitleTrackFailed(3, reason)]);
         r.player.dispose();
         assert!(r.player.subtitle_picture().is_none());
     }

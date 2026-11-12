@@ -175,9 +175,24 @@ struct UiState {
     no_resume: Option<(PathBuf, usize)>,
     /// The id of the bitmap subtitle picture `picture-subtitles` shows (`SubtitlePicture::id`).
     picture_shown: Option<u64>,
-    /// The image track shown was chosen for the user (`consider_auto_track`), not by them: it goes as soon as the
-    /// session has lines of its own, so two captions never overlap without the user having asked for it.
-    auto_image_track: bool,
+    /// Who chose which image track ([`ImageChoice`]).
+    image_choice: ImageChoice,
+}
+
+/// Who chose which image track, per stream, changed only on the player's word: a request the player has not
+/// answered yet, a late failure of a track nobody wants any more, or a refused pick never changes whose track is
+/// on screen.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ImageChoice {
+    /// The stream chosen for the user (`consider_auto_track`), asked for or shown: it goes silently when it cannot
+    /// be shown, and as soon as the session has lines of its own, so two captions never overlap without the user
+    /// having asked for it.
+    auto: Option<usize>,
+    /// The stream the user picked that the player has not confirmed yet (`TracksChanged` with it active): unedited
+    /// track lines it replaces stay until then (a refused pick leaves them), and its failure is reported.
+    asked: Option<usize>,
+    /// The stream the user picked that the player shows: its failure (given up) is reported.
+    shown: Option<usize>,
 }
 
 pub struct MainWindowController {
@@ -643,7 +658,7 @@ impl MainWindowController {
             st.no_resume = None;
             // Decided once its tracks are known (`consider_auto_track`).
             st.auto_choice = video.clone();
-            st.auto_image_track = false;
+            st.image_choice = ImageChoice::default();
             if st.tracks_menu_open {
                 st.tracks_menu_open = false;
                 let interacting = st.seek_scrubbing || st.volume_scrubbing;
@@ -728,11 +743,12 @@ impl MainWindowController {
                     }
                 }
                 PlayerOutput::TracksChanged => {
+                    self.image_tracks_changed();
                     self.sync_tracks();
                     self.consider_auto_track();
                 }
                 PlayerOutput::AudioTrackFailed(details) => self.show_track_failure(media_tracks::audio_track_failure(&details)),
-                PlayerOutput::SubtitleTrackFailed(reason) => self.image_track_failed(&reason),
+                PlayerOutput::SubtitleTrackFailed(stream, reason) => self.image_track_failed(stream, &reason),
                 PlayerOutput::PictureChanged => self.sync_picture(),
             }
         }
@@ -1492,33 +1508,62 @@ impl MainWindowController {
     }
 
     /// The user chose image track `stream`: the player shows its pictures over the video (answered with
-    /// `TracksChanged`, which marks it in the menu). Like choosing another text track, a read in flight stops and
-    /// lines that are an embedded text track nobody changed go (a typed draft is committed first and then stays);
-    /// a list that holds the user's own work is left exactly as it is, and nothing is written anywhere.
+    /// `TracksChanged`, which marks it in the menu). Once the player confirms it ([`Self::image_track_confirmed`]),
+    /// like choosing another text track, a read in flight stops and lines that are an embedded text track nobody
+    /// changed go; a typed draft is committed now and then stays. A list that holds the user's own work is left
+    /// exactly as it is, and nothing is written anywhere. Without media (playback failed) nothing is asked and
+    /// nothing changes.
     fn choose_image_track(&self, stream: usize) {
+        if !self.player.borrow().has_media() {
+            eprintln!("[ui] image track {stream} chosen without playable media: nothing changes");
+            self.sync_tracks();
+            return;
+        }
         {
             let mut st = self.st.borrow_mut();
             st.auto_choice = None;
             st.no_resume = None;
-            st.auto_image_track = false;
+            st.image_choice.asked = Some(stream);
         }
         self.vm.finish_editing();
         self.vm.embedded_track_chosen();
+        // Already shown (the one chosen for the user, picked from the menu): the player has nothing to answer.
+        let already = self.player.borrow().tracks().active_image_subtitle == Some(stream);
+        self.player.borrow_mut().select_image_subtitle_track(Some(stream));
+        if already {
+            self.image_track_confirmed(stream);
+        }
+        self.drain_player();
+        self.sync_tracks();
+    }
+
+    /// `TracksChanged`: the image track the user asked for is on.
+    fn image_tracks_changed(&self) {
+        let active = self.player.borrow().tracks().active_image_subtitle;
+        let asked = self.st.borrow().image_choice.asked;
+        if let Some(stream) = asked
+            && active == Some(stream)
+        {
+            self.image_track_confirmed(stream);
+        }
+    }
+
+    /// The player shows the image track the user picked: it is theirs now (it stays when lines come), and what it
+    /// replaces goes: a read in flight, and lines that are an embedded text track nobody changed.
+    fn image_track_confirmed(&self, stream: usize) {
+        self.st.borrow_mut().image_choice = ImageChoice { auto: None, asked: None, shown: Some(stream) };
         let cancelled = self.reads.borrow_mut().cancel();
         if let Some(read) = cancelled {
             self.read_stopped_early(&read);
         }
         self.vm.clear_embedded_lines_for_picture_track();
-        self.player.borrow_mut().select_image_subtitle_track(Some(stream));
-        self.drain_player();
-        self.sync_tracks();
     }
 
     /// Takes the image track off the video (a text track or "Off" was chosen). Asked whenever the file has an image
     /// track, not only while one is reported shown: a choice still in flight is undone too (the player ignores a
     /// request for what is already the case).
     fn hide_image_track(&self) {
-        self.st.borrow_mut().auto_image_track = false;
+        self.st.borrow_mut().image_choice = ImageChoice::default();
         if self.player.borrow().tracks().subtitles.iter().any(|t| t.is_image()) {
             self.player.borrow_mut().select_image_subtitle_track(None);
             self.drain_player();
@@ -1554,7 +1599,7 @@ impl MainWindowController {
             (AutoChoice::Allowed, Some(AutoTrack::Text(stream))) => self.read_embedded_subtitle(stream, ReadMode::AUTOMATIC),
             // No text track to choose: an image track by the same rule is shown (the list stays empty).
             (AutoChoice::Allowed, Some(AutoTrack::Image(stream))) => {
-                self.st.borrow_mut().auto_image_track = true;
+                self.st.borrow_mut().image_choice.auto = Some(stream);
                 self.player.borrow_mut().select_image_subtitle_track(Some(stream));
                 self.drain_player();
             }
@@ -1564,9 +1609,11 @@ impl MainWindowController {
 
     /// The session got lines of its own (a transcription's partial or final lines, an imported or sidecar file, a
     /// line the user typed) while an image track chosen for the user is shown: it goes, as if "Off" were chosen. A
-    /// track the user picked from the menu stays.
+    /// track the user picked from the menu stays; while the user's pick is still in flight it decides (it replaces
+    /// the automatic one, or, refused, `image_track_failed` asks here again).
     fn drop_auto_image_track_for_own_lines(&self) {
-        if self.st.borrow().auto_image_track && !self.vm.sentences().is_empty() {
+        let choice = self.st.borrow().image_choice;
+        if choice.auto.is_some() && choice.asked.is_none() && !self.vm.sentences().is_empty() {
             self.hide_image_track();
             self.sync_tracks();
         }
@@ -1782,16 +1829,32 @@ impl MainWindowController {
 
     /// A failure of the track menu: the error bar on Windows (like a playback or save error); on macOS a
     /// dismissable notice in the status bar like a playback failure (the session's status and summary stay).
-    /// The player could not show an image track, or gave up the one shown. A track chosen for the user
-    /// (`consider_auto_track`) goes silently: nobody asked for it, so a notice would only puzzle. The user's own
-    /// choice is reported.
-    fn image_track_failed(&self, reason: &sa_player::PictureTrackFailure) {
-        let auto = std::mem::take(&mut self.st.borrow_mut().auto_image_track);
-        if auto {
-            eprintln!("[ui] the image track chosen automatically cannot be shown ({reason:?}); turned off without a notice");
-            return;
+    /// The player could not show image track `stream`, or gave it up. The user's pick (asked for or shown) is
+    /// reported; whatever was shown before a refused pick stays, and stays whoever chose it. A track chosen for the
+    /// user (`consider_auto_track`) goes silently: nobody asked for it, so a notice would only puzzle. A track nobody
+    /// wants any more (the user moved on before the player answered) is ignored.
+    fn image_track_failed(&self, stream: usize, reason: &sa_player::PictureTrackFailure) {
+        {
+            let mut st = self.st.borrow_mut();
+            let c = &mut st.image_choice;
+            let users = c.asked == Some(stream) || c.shown == Some(stream);
+            let auto = c.auto == Some(stream);
+            for slot in [&mut c.asked, &mut c.shown, &mut c.auto] {
+                if *slot == Some(stream) {
+                    *slot = None;
+                }
+            }
+            if !users {
+                eprintln!(
+                    "[ui] image track {stream} cannot be shown ({reason:?}); {}",
+                    if auto { "chosen automatically, turned off without a notice" } else { "no longer asked for, ignored" }
+                );
+                return;
+            }
         }
         self.show_track_failure(media_tracks::subtitle_track_failure(reason));
+        // A refused pick leaves the automatic track on: lines that came meanwhile still take its place.
+        self.drop_auto_image_track_for_own_lines();
     }
 
     fn show_track_failure(&self, message: sa_core::l10n::LocalizedMessage) {
