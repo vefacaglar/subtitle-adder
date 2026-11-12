@@ -1148,6 +1148,9 @@ impl Gl {
                 self.uploaded_pts = Some(pts);
             }
             let timer = if upload { perf::Timer::start() } else { None };
+            // Frames read in place from a staging mapping: the upload's speed feeds the ring's guard.
+            let staged = (upload && img.is_staged()).then(Instant::now);
+            let mut uploaded_bytes = 0usize;
             // Forgotten until the upload succeeded (a failure leaves the planes undefined).
             self.uploaded = None;
             let set = self.cur;
@@ -1174,6 +1177,7 @@ impl Gl {
                     self.gl.bind_texture(glow::TEXTURE_2D, self.planes[set][i].as_ref().map(|p| p.tex));
                     continue;
                 }
+                uploaded_bytes += info.rows as usize * info.row_bytes;
                 let data: &[u8] = if info.stride % bytes == 0 {
                     self.gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, (info.stride / bytes) as i32);
                     data
@@ -1209,6 +1213,9 @@ impl Gl {
             }
             if let Some(t) = timer {
                 t.finish(&perf::UPLOAD, self.since_start < perf::EARLY_FRAMES);
+            }
+            if let Some(t) = staged {
+                sa_player::ffmpeg_backend::report_staged_upload(t.elapsed(), uploaded_bytes);
             }
             if upload {
                 self.since_start = self.since_start.saturating_add(1);

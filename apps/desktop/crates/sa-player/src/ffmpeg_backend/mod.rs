@@ -389,6 +389,15 @@ impl MediaPlayerBackend for FfmpegPlayer {
     }
 }
 
+/// The UI uploaded the planes of a frame read in place from a staging texture ([`crate::PlanarImage::is_staged`]):
+/// `bytes` in `wall`. Feeds the staging ring's read-speed guard (`staging.rs`); nothing on other platforms.
+pub fn report_staged_upload(wall: std::time::Duration, bytes: usize) {
+    #[cfg(windows)]
+    staging::report_upload(wall.as_nanos() as u64, bytes as u64);
+    #[cfg(not(windows))]
+    let _ = (wall, bytes);
+}
+
 /// Initializes FFmpeg and queries the audio host (proves the native stack links and runs).
 pub fn probe() -> NativeStackInfo {
     use cpal::traits::{DeviceTrait, HostTrait};

@@ -142,12 +142,16 @@ impl Timer {
 }
 
 /// The CPU time a video decode thread used since its last report; call on that thread.
-#[derive(Default)]
 pub(crate) struct ThreadMeter {
     last: Option<u64>,
 }
 
 impl ThreadMeter {
+    /// Takes the calling thread's baseline (at thread start, so the work before its first frame counts too).
+    pub fn start() -> Self {
+        Self { last: if enabled() { thread_cpu_ns() } else { None } }
+    }
+
     pub fn report(&mut self) {
         if !enabled() {
             return;
@@ -157,6 +161,13 @@ impl ThreadMeter {
             DECODE_CPU_NS.fetch_add(now.saturating_sub(last), Ordering::Relaxed);
         }
         self.last = Some(now);
+    }
+}
+
+impl Drop for ThreadMeter {
+    /// The thread ends (dropped on the thread that started it): its last stretch counts too.
+    fn drop(&mut self) {
+        self.report();
     }
 }
 

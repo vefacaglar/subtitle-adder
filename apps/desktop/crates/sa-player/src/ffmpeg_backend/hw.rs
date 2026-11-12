@@ -283,6 +283,18 @@ impl Downloaded {
     pub fn frame(&self) -> *mut ffi::AVFrame {
         self.frame.0
     }
+
+    /// The planes are a staging texture's mapping (not a copy).
+    pub fn is_mapped(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self._lease.is_some()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
 }
 
 /// Downloads GPU frames: on Windows into the mapped staging ring when it is on and has a free slot, otherwise into

@@ -973,7 +973,7 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
         fields: FieldPacer::default(),
         soft_prev: None,
         since_start: 0,
-        meter: perf::ThreadMeter::default(),
+        meter: perf::ThreadMeter::start(),
     };
     let start = ctl.start_time();
     let mut serial = 0u64;
@@ -1293,7 +1293,9 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
             // Any other pixel format: swscale's RGBA at the coded size, scaled and rotated on the GPU.
             unsafe { out.conv.convert_packed(src) }.and_then(|(w, h, rgba)| unsafe { video::packed_image(rgba, (w, h), raw, geo, &out.hdr) })
         };
-        if let Some(img) = img {
+        if let Some(mut img) = img {
+            // The UI times its upload of these for the staging ring's read-speed guard.
+            img.staged = downloaded.as_ref().is_some_and(|d| d.is_mapped());
             let (w, h) = geo.display_size();
             ctl.stats.planar.fetch_add(1, Ordering::Relaxed);
             out.soft_prev = None;

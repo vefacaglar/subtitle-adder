@@ -193,6 +193,8 @@ pub struct PlanarImage {
     /// The top field (even rows, counting from 0) is the earlier one.
     pub top_field_first: bool,
     planes: [Option<(*const u8, PlaneInfo)>; 3],
+    /// The planes are a mapped D3D11 staging texture (Windows hardware decoding; [`PlanarImage::is_staged`]).
+    pub(crate) staged: bool,
     _owner: Box<dyn Send + Sync>,
 }
 
@@ -267,8 +269,15 @@ impl PlanarImage {
             interlaced: interlace.is_some(),
             top_field_first: interlace.is_none_or(|i| i.top_field_first),
             planes,
+            staged: false,
             _owner: owner,
         }
+    }
+
+    /// The planes are a mapped D3D11 staging texture: the UI reports how long their upload took
+    /// (`ffmpeg_backend::report_staged_upload`), so a driver that maps such memory slowly turns the ring off.
+    pub fn is_staged(&self) -> bool {
+        self.staged
     }
 
     pub fn format(&self) -> PlanarFormat {

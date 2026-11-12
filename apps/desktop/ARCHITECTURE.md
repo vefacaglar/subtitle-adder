@@ -46,10 +46,22 @@ and deinterlacing on the CPU in `sa_player::soft`).
   height`, FFmpeg's own `fill_texture_ptrs` rule; byte-identical to `av_hwframe_transfer_data` in the unit test, also
   for 1920×800 / 3840×1600 frames in padded textures), which stays mapped until the frame is dropped. That removes
   the CPU copy `av_hwframe_transfer_data` makes (~25 MB per 4K P010 frame); the UI uploads straight from the mapping
-  and the RGBA path reads it in place. D3D calls run only on the decode thread under FFmpeg's device lock (a dropped
-  frame just marks its slot returned; only a frame that outlives its decoder unmaps its slot itself). No free slot,
-  another format or any D3D failure: that frame goes through `av_hwframe_transfer_data`. `SUBTITLE_ADDER_ZEROCOPY=0`
-  (`off` / `no` / `false`) turns the ring off. Measured (RTX 5070, maximized window, process CPU over 30 s, 3–6 runs):
+  and the RGBA path reads it in place. Copy, map and unmap run on the decode thread under FFmpeg's device lock (a
+  dropped frame just marks its slot returned); only a frame that outlives its slot's ring (the decoder closed, or the
+  frame size changed) unmaps its slot and releases the texture itself, on whichever thread drops it, under the same
+  lock. Each ring holds a reference to FFmpeg's device (`device_ref`) shared by its slots, so the device outlives
+  every mapping. No free slot, another format or any D3D failure: that frame goes through
+  `av_hwframe_transfer_data` (a staging texture that could not be created is not retried for that size). Memory: up
+  to 10 × ~25 MB of staging memory per player at 4K P010 (~250 MB; the copy path's pool held up to 8 × 25 MB).
+  When the ring is used: `SUBTITLE_ADDER_ZEROCOPY=0` (`off` / `no` / `false`) never; `=1` (`on` / `yes` / `true`) on
+  any GPU; by default only on NVIDIA adapters (DXGI vendor id 0x10DE, read once per process), since the read speed
+  of mapped READ staging memory was measured there only: a driver that maps it uncached would make the UI's upload
+  and the RGBA path slow. A runtime guard covers that too: after 16 start-up frames, the UI's upload of the next 60
+  ring frames is averaged, and below 1 GB/s (~25 ms per 4K P010 frame; uploads from ordinary memory run at ~12 GB/s
+  here) the ring is turned off for the rest of the process with one `[video] zero-copy off: <reason>` line. It is
+  also off with a libavutil other than 60 (the `AVD3D11VADeviceContext` mirror is that version's). Interlaced
+  content holds the most frames (two fields per frame queued, the GL side's current and previous image); 1080i50 and
+  1440p120 on the GPU and the RGBA path needed no fall-back copy (`staged=` / `copied=` on `[player-stats]`). Measured (RTX 5070, maximized window, process CPU over 30 s, 3–6 runs):
   4K60 HEVC 10-bit 0.62 → 0.47 cores (spread 0.56–0.67 → 0.43–0.52), HDR10 0.68 → 0.51, AV1 10-bit 0.66 → 0.50,
   4K60 H.264 0.48 → 0.44, 1440p120 0.64 → 0.56, a 2160p24 10-bit film 0.33 → 0.26; no dropped frames either way. At
   4K60 10-bit the transfer costs ~0.01 core afterwards and the GL upload ~0.10, so the GL interop route
