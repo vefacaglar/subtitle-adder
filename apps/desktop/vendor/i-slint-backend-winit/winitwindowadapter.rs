@@ -1424,6 +1424,28 @@ impl WinitWindowAdapter {
                     ..Default::default()
                 };
 
+                // Subtitle Adder patch (apps/desktop/Cargo.toml `[patch.crates-io]`): a `PopupWindow` takes the
+                // window's keyboard focus while it is open, also one that only shows a hover tooltip (the app's
+                // `ToolTip` components are `no-auto-close` popups, the only ones it has). With the pointer resting
+                // on a control, such a tooltip stays open and every key press went nowhere: the shortcuts did
+                // nothing until the pointer moved. A key press closes those popups first, as a native tooltip
+                // closes on a key press, and closing hands the focus back to where it was, so the key reaches it.
+                if event.event_type == KeyEventType::KeyPressed {
+                    let inner = WindowInner::from_pub(self.window());
+                    let tooltips: Vec<_> = inner
+                        .active_popups()
+                        .iter()
+                        .filter(|p| {
+                            matches!(p.close_policy, corelib::items::PopupClosePolicy::NoAutoClose)
+                                && !matches!(p.window_kind, corelib::window::WindowKind::Menu)
+                        })
+                        .map(|p| p.popup_id)
+                        .collect();
+                    for id in tooltips {
+                        inner.close_popup(id);
+                    }
+                }
+
                 self.dispatch_internal_event(event);
             }
             WinitWindowEvent::Ime(winit::event::Ime::Preedit(string, preedit_selection)) => {

@@ -107,9 +107,11 @@ core-foundation = "=0.10.1"
 # Tests
 tempfile = "=3.27.0"
 
-# Slint's winit backend 1.18.1 with one fix in `frame_throttle.rs` (marked "Subtitle Adder patch"): its redraw timer
-# drew every requested frame twice and paced at `1000 / refresh` whole milliseconds (3 ms at 280 Hz). Everything else
-# is the published crate unchanged; drop the patch once upstream fixes the throttle.
+# Slint's winit backend 1.18.1 with two fixes (marked "Subtitle Adder patch"): in `frame_throttle.rs` its redraw timer
+# drew every requested frame twice and paced at `1000 / refresh` whole milliseconds (3 ms at 280 Hz); in
+# `winitwindowadapter.rs` a key press first closes the open `no-auto-close` popups (the app's hover tooltips), which
+# held the keyboard focus so that no shortcut worked while the pointer rested on a control. Everything else is the
+# published crate unchanged; drop the patches once upstream fixes them.
 [patch.crates-io]
 i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
 
