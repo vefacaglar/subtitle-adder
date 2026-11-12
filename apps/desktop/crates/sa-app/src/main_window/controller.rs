@@ -294,6 +294,19 @@ fn full_screen_from_env() -> bool {
     std::env::var_os("SUBTITLE_ADDER_FULL_SCREEN").is_some_and(|v| v == "1")
 }
 
+/// `SUBTITLE_ADDER_SUBTITLE_TRACK=<stream index>` (diagnostics, scripted runs): once a file's tracks are known, that
+/// embedded subtitle stream (text or image) is chosen exactly as if the user picked it from the track menu, instead
+/// of the automatic choice. A value that is not a number, or names no subtitle stream of the file, is ignored (said
+/// on stderr) and the automatic choice applies.
+fn diagnostic_subtitle_track() -> Option<usize> {
+    let value = std::env::var("SUBTITLE_ADDER_SUBTITLE_TRACK").ok().filter(|v| !v.trim().is_empty())?;
+    let stream = value.trim().parse().ok();
+    if stream.is_none() {
+        eprintln!("[ui] SUBTITLE_ADDER_SUBTITLE_TRACK={value:?} is not a stream index: ignored");
+    }
+    stream
+}
+
 /// `SUBTITLE_ADDER_PLAYER_STATS=1`: the once-a-second `[player-stats]` line, written to stderr by a background thread
 /// (a write to a redirected stderr can block the UI thread for milliseconds, which would show up as a late frame in
 /// the very measurement the line is for).
@@ -1585,14 +1598,28 @@ impl MainWindowController {
             self.st.borrow_mut().auto_choice = None;
             return;
         }
-        let track = {
+        let (track, forced) = {
             let p = self.player.borrow();
             // Not opened yet (or no subtitle track at all, then it stays undecided until the next video: harmless).
             if p.tracks().subtitles.is_empty() {
                 return;
             }
-            media_tracks::auto_choice(p.tracks(), sa_core::l10n::LanguageState::shared().language().code())
+            let forced = diagnostic_subtitle_track().filter(|&stream| {
+                let known = p.tracks().subtitles.iter().any(|t| t.stream_index == stream);
+                if !known {
+                    eprintln!("[ui] SUBTITLE_ADDER_SUBTITLE_TRACK={stream}: no such subtitle stream in this file, ignored");
+                }
+                known
+            });
+            (media_tracks::auto_choice(p.tracks(), sa_core::l10n::LanguageState::shared().language().code()), forced)
         };
+        // The diagnostic choice: the user's pick, made for them.
+        if let Some(stream) = forced {
+            self.st.borrow_mut().auto_choice = None;
+            eprintln!("[ui] SUBTITLE_ADDER_SUBTITLE_TRACK={stream}: chosen as a user pick");
+            self.choose_track(TrackChoice::Subtitle(stream));
+            return;
+        }
         let choice = self.vm.embedded_auto_choice(&video);
         if choice == AutoChoice::Wait {
             return;
