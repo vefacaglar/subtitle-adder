@@ -278,9 +278,16 @@ export component MacMenu inherits PopupWindow {
     in property <length> max-menu-height: 100000px;
     property <[MenuEntry]> entries: MainBridge.menu-entries;
     property <length> sub-y;
-    Rectangle {
-        width: max(root.min-menu-width, list.preferred-width);
-        height: min(list.preferred-height, max(root.max-menu-height, 60px));
+    // The popup itself has the menu's size and the surface fills it. Slint sizes a popup from its own layout
+    // constraints (an explicitly sized child does not count; the popup's `width`/`height` are overwritten when it is
+    // shown, so they are given as min/max) and keeps that rectangle inside the window: the menu's top-left lands at
+    // the caller's x/y and moves left/up only as far as the window edge needs. A surface with its own size inside a
+    // smaller popup would be centred on the popup's origin instead.
+    min-width: max(root.min-menu-width, list.preferred-width);
+    max-width: max(root.min-menu-width, list.preferred-width);
+    min-height: min(list.preferred-height, max(root.max-menu-height, 60px));
+    max-height: min(list.preferred-height, max(root.max-menu-height, 60px));
+    surface := Rectangle {
         clip: true;
         background: MacTheme.menu-background;
         border-radius: 6px;
@@ -310,8 +317,9 @@ export component MacMenu inherits PopupWindow {
             }
         }
     }
+    // Cascades from the menu's trailing edge; kept inside the window like the menu.
     sub := PopupWindow {
-        x: root.min-menu-width - 4px;
+        x: surface.width - 4px;
         y: root.sub-y;
         Rectangle {
             min-width: 120px;
