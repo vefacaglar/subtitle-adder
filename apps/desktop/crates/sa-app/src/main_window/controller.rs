@@ -118,6 +118,8 @@ pub struct RowSyncCounters {
 #[derive(Default)]
 struct UiState {
     full_screen: bool,
+    /// `SUBTITLE_ADDER_FULL_SCREEN=1`: enter full screen when the first video frame is shown (diagnostics).
+    full_screen_on_first_frame: bool,
     editing_text: bool,
     list_focused: bool,
     anchor: Option<Uuid>,
@@ -249,6 +251,12 @@ fn to_menu_entry(e: Entry) -> MenuEntry {
     }
 }
 
+/// `SUBTITLE_ADDER_FULL_SCREEN=1` (diagnostics, scripted measurements): the main window enters full screen once, when
+/// the first video frame arrives, exactly as the `F` key would.
+fn full_screen_from_env() -> bool {
+    std::env::var_os("SUBTITLE_ADDER_FULL_SCREEN").is_some_and(|v| v == "1")
+}
+
 /// `SUBTITLE_ADDER_PLAYER_STATS=1`: the once-a-second `[player-stats]` line, written to stderr by a background thread
 /// (a write to a redirected stderr can block the UI thread for milliseconds, which would show up as a late frame in
 /// the very measurement the line is for).
@@ -326,7 +334,7 @@ impl MainWindowController {
             hud: RefCell::new(HudState::new(if mac { HudFlavor::Mac } else { HudFlavor::Windows })),
             error_bar: RefCell::new(ErrorBar::default()),
             drops: RefCell::new(DropBatcher::default()),
-            st: RefCell::new(UiState::default()),
+            st: RefCell::new(UiState { full_screen_on_first_frame: full_screen_from_env(), ..UiState::default() }),
             rows: Rc::new(VecModel::default()),
             queue_rows: Rc::new(VecModel::default()),
             explorer_rows: Rc::new(VecModel::default()),
@@ -475,7 +483,10 @@ impl MainWindowController {
                     );
                     let unchanged = self.video.window_unchanged().map(|n| format!(" window_unchanged={n}")).unwrap_or_default();
                     let up = stats.started.elapsed().as_secs_f64();
-                    let _ = stats.lines.send(format!("[player-stats] up={up:.1} {line} gpu={gpu} uploaded={uploads} renders={renders}{unchanged} {tracks}"));
+                    let geometry = self.geometry_fields();
+                    let _ = stats.lines.send(format!(
+                        "[player-stats] up={up:.1} {line} gpu={gpu} uploaded={uploads} renders={renders}{unchanged} {tracks} {geometry}"
+                    ));
                 }
             }
         }
@@ -642,7 +653,12 @@ impl MainWindowController {
                         win.global::<MainBridge>().set_video_aspect((w / h.max(1.0)) as f32);
                     }
                 }
-                PlayerOutput::FrameReady => self.present_frame(),
+                PlayerOutput::FrameReady => {
+                    self.present_frame();
+                    if std::mem::take(&mut self.st.borrow_mut().full_screen_on_first_frame) && !self.st.borrow().full_screen {
+                        self.set_full_screen(true);
+                    }
+                }
                 PlayerOutput::Failed(details) => {
                     let make: Rc<dyn Fn() -> String> = Rc::new(move || sa_core::l!("Video oynatılamadı: %@", details.clone()));
                     self.error_bar.borrow_mut().show_save_error(make);
@@ -1695,6 +1711,21 @@ impl MainWindowController {
         main.set_picker_visible(v.pickers);
     }
 
+    /// The window fields of the `[player-stats]` line: `full_screen=` (the controller's state), and
+    /// on Windows with the native chrome the window, client (screen coordinates) and monitor rectangles in physical px
+    /// and the chrome's own full-screen flag (`window=x,y,WxH client=… monitor=… maximized=… native_full_screen=…`).
+    fn geometry_fields(&self) -> String {
+        let st = self.st.borrow();
+        #[allow(unused_mut)]
+        let mut fields = format!("full_screen={}", st.full_screen);
+        #[cfg(windows)]
+        if let Some(n) = self.native.borrow().as_ref() {
+            let g = n.chrome.geometry();
+            fields.push_str(&format!(" {} native_full_screen={}", g.stats_fields(), g.full_screen));
+        }
+        fields
+    }
+
     fn sync_engagement(&self) {
         let Some(w) = self.win() else { return };
         // Same rule as `HubBridge.engagement-visible` (logged in and a video open in the player; rule 6).
@@ -2081,7 +2112,7 @@ impl MainWindowController {
                             c.sync_native_chrome();
                         }
                     });
-                    let full = window.with_winit_window(|ww| ww.fullscreen().is_some()).unwrap_or(false);
+                    let full = c.window_is_full_screen(window);
                     let maximized = window.is_maximized();
                     if let Some(win) = c.win() {
                         win.global::<AppBridge>().set_is_maximized(maximized);
@@ -2318,6 +2349,15 @@ impl MainWindowController {
             Some(h) => h(on),
             None => {
                 if let Some(w) = self.win() {
+                    // Windows: the chrome's own full screen (`MainChrome::set_full_screen`); winit's borderless
+                    // mode kept the maximized frame inset. macOS and windows without the chrome: winit / native.
+                    #[cfg(windows)]
+                    if let Some(n) = self.native.borrow().as_ref() {
+                        n.chrome.set_full_screen(&w, on);
+                    } else {
+                        w.window().set_fullscreen(on);
+                    }
+                    #[cfg(not(windows))]
                     w.window().set_fullscreen(on);
                 }
             }
@@ -2325,6 +2365,17 @@ impl MainWindowController {
         self.sync_layout(true);
         self.sync_toolbar();
         self.sync_native_chrome();
+    }
+
+    /// Whether the window really is full screen (the Windows chrome's state, else winit's), for changes made outside
+    /// the controller (macOS green button, `Esc` handled by the system).
+    fn window_is_full_screen(&self, window: &slint::Window) -> bool {
+        #[cfg(windows)]
+        if let Some(n) = self.native.borrow().as_ref() {
+            return n.chrome.is_full_screen();
+        }
+        use slint::winit_030::WinitWindowAccessor;
+        window.with_winit_window(|ww| ww.fullscreen().is_some()).unwrap_or(false)
     }
 
     fn leave_full_screen_or_theater(&self) {

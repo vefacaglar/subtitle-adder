@@ -16,28 +16,46 @@
 //!   immersive dark mode follows the content theme ([`WindowChrome::set_dark`]).
 //! * Size: min size `min_dip × scale` (scale at attach time, like C#), first-run default size centered on the work area,
 //!   restored size persisted in physical px (`mainWindowWidth/Height`).
+//! * Full screen ([`WindowChrome::set_full_screen`]), done here rather than through winit's borderless mode: winit keeps
+//!   `WS_MAXIMIZE` on a maximized window and changes the styles after the size messages, so the handlers below could
+//!   not tell full screen from maximized (the maximized top inset stayed, 9 px of the monitor were not client area).
+//!   The chrome sets its own full-screen flag before it touches the window, so every handler knows the state: the
+//!   caption and sizing frame are dropped (`WS_MAXIMIZE` and Windows' own restore / snap bookkeeping are left alone),
+//!   the client area is the whole window (no inset), hit testing is plain client area, the size is the monitor's
+//!   (`WM_GETMINMAXINFO` does not clamp it; `WM_WINDOWPOSCHANGING` keeps it on the monitor the window is on through
+//!   re-maximizing, monitor moves, resolution and DPI changes), corners are square and the DWM border is off, and the
+//!   shell is told it is a full-screen window (`ITaskbarList2::MarkFullscreenWindow`) so the taskbar stays below.
+//!   Leaving restores the frame styles and the previous rectangle ([`restore_rect`]).
 
 use std::cell::{Cell, RefCell};
 
 use sa_core::settings::SettingsStore;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
-    DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-    DWMWINDOWATTRIBUTE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+    DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE, DWMWA_SYSTEMBACKDROP_TYPE,
+    DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWINDOWATTRIBUTE,
+    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
 };
+use windows::Win32::Graphics::Gdi::{
+    ClientToScreen, GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromRect,
+    MonitorFromWindow, ScreenToClient,
+};
+use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, ScreenToClient};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent};
-use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+use windows::Win32::UI::Shell::{DefSubclassProc, ITaskbarList2, RemoveWindowSubclass, SetWindowSubclass, TaskbarList};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GWL_STYLE, GetWindowLongPtrW, GetWindowRect, HICON, HTCAPTION, HTCLIENT, HTMAXBUTTON, HTTOP, ICON_BIG, ICON_SMALL, IMAGE_ICON,
-    IsIconic, IsZoomed, LR_LOADFROMFILE, LoadImageW, MINMAXINFO, NCCALCSIZE_PARAMS, PostMessageW, SC_CLOSE, SC_MINIMIZE,
-    SM_CXICON, SM_CXPADDEDBORDER, SM_CXSMICON, SM_CYFRAME, SW_MAXIMIZE, SW_RESTORE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetWindowPos, ShowWindow, WM_GETMINMAXINFO, WM_MOUSEMOVE,
-    WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
-    WM_NCMOUSEMOVE, WM_SETICON, WM_SETTINGCHANGE, WM_SYSCOMMAND, WM_THEMECHANGED, WS_THICKFRAME, WM_DWMCOLORIZATIONCOLORCHANGED,
+    GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HICON, HTCAPTION, HTCLIENT,
+    HTMAXBUTTON, HTTOP, ICON_BIG, ICON_SMALL, IMAGE_ICON, IsIconic, IsZoomed, LR_LOADFROMFILE, LoadImageW, MINMAXINFO,
+    NCCALCSIZE_PARAMS, PostMessageW, RegisterWindowMessageW, SC_CLOSE, SC_MINIMIZE, SET_WINDOW_POS_FLAGS, SM_CXFRAME, SM_CXICON,
+    SM_CXPADDEDBORDER, SM_CXSMICON, SM_CYFRAME, SW_MAXIMIZE, SW_RESTORE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetWindowLongPtrW, SetWindowPos, ShowWindow, WINDOWPLACEMENT,
+    WINDOWPOS, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DWMCOLORIZATIONCOLORCHANGED, WM_GETMINMAXINFO, WM_MOUSEMOVE, WM_NCCALCSIZE,
+    WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SETICON,
+    WM_SETTINGCHANGE, WM_SYSCOMMAND, WM_THEMECHANGED, WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WS_CAPTION, WS_EX_CLIENTEDGE,
+    WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE, WS_THICKFRAME,
 };
 
 use super::wide::Wide;
@@ -143,6 +161,124 @@ pub fn saved_size(settings: &dyn SettingsStore, key: &str) -> Option<(u32, u32)>
     (w > 0 && h > 0).then(|| (w.min(u32::MAX as i64) as u32, h.min(u32::MAX as i64) as u32))
 }
 
+/// The window's frame state as the non-client handlers see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameState {
+    Restored,
+    Maximized,
+    FullScreen,
+}
+
+/// `(left, top, right, bottom)`, as in a Win32 `RECT`.
+pub type Edges = (i32, i32, i32, i32);
+
+/// The client rectangle `WM_NCCALCSIZE` answers. `window` is the proposed window rectangle, `default` what the
+/// default procedure made of it (frame on every side, caption at the top). The caption is dropped: restored windows
+/// keep the side and bottom resize borders and start the client area at the window top; a maximized window hangs
+/// `frame` px over every monitor edge, so the top is inset by that much; a full-screen window has no frame at all,
+/// the client area is the whole window.
+pub fn client_edges(window: Edges, default: Edges, state: FrameState, frame: i32) -> Edges {
+    match state {
+        FrameState::FullScreen => window,
+        FrameState::Restored => (default.0, window.1, default.2, default.3),
+        FrameState::Maximized => (default.0, window.1 + frame, default.2, default.3),
+    }
+}
+
+/// [`WindowChrome::geometry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowGeometry {
+    pub window: Rect,
+    pub client: Rect,
+    pub monitor: Rect,
+    pub maximized: bool,
+    pub full_screen: bool,
+}
+
+impl WindowGeometry {
+    /// `window=x,y,WxH client=x,y,WxH monitor=x,y,WxH maximized=b` (the `[player-stats]` fields).
+    pub fn stats_fields(&self) -> String {
+        let r = |r: Rect| format!("{},{},{}x{}", r.0, r.1, r.2, r.3);
+        format!("window={} client={} monitor={} maximized={}", r(self.window), r(self.client), r(self.monitor), self.maximized)
+    }
+}
+
+/// The window before it entered full screen (what leaving restores).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SavedWindow {
+    pub style: u32,
+    pub ex_style: u32,
+    /// Window rectangle (screen coordinates, physical px).
+    pub rect: Rect,
+    pub maximized: bool,
+    /// The monitor and work area the window was on, and its DPI.
+    pub monitor: Rect,
+    pub work: Rect,
+    pub dpi: u32,
+}
+
+/// The display the window is on when it leaves full screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Display {
+    pub monitor: Rect,
+    pub work: Rect,
+    pub dpi: u32,
+    /// Maximized frame overhang at `dpi` (horizontal, vertical).
+    pub frame: (i32, i32),
+}
+
+/// Where a window leaving full screen goes. Unchanged display: exactly the saved rectangle (maximized, snapped or
+/// normal alike; the style keeps `WS_MAXIMIZE` and Windows keeps its own restore and snap state, since entering
+/// never restored or moved the window through the system). A maximized window on a changed display (another
+/// monitor, resolution, DPI or taskbar) takes the new work area with the frame overhang; a restored one keeps its
+/// place relative to the work area, scaled by the DPI change and kept inside the new work area. `maximized` is the
+/// state now (it can change while in full screen, e.g. `Win+↓`); `normal` is the restored rectangle Windows keeps
+/// (`GetWindowPlacement`, screen coordinates), used when a window saved maximized is no longer maximized.
+pub fn restore_rect(saved: &SavedWindow, maximized: bool, normal: Rect, now: &Display) -> Rect {
+    let same = saved.monitor == now.monitor && saved.work == now.work && saved.dpi == now.dpi;
+    if maximized {
+        if saved.maximized && same {
+            return saved.rect;
+        }
+        let (fx, fy) = now.frame;
+        return (now.work.0 - fx, now.work.1 - fy, now.work.2 + 2 * fx, now.work.3 + 2 * fy);
+    }
+    let base = if saved.maximized { normal } else { saved.rect };
+    if same {
+        return base;
+    }
+    let k = now.dpi as f64 / saved.dpi.max(1) as f64;
+    let w = ((base.2 as f64 * k).round() as i32).clamp(1, now.work.2.max(1));
+    let h = ((base.3 as f64 * k).round() as i32).clamp(1, now.work.3.max(1));
+    let dx = ((base.0 - saved.work.0) as f64 * k).round() as i32;
+    let dy = ((base.1 - saved.work.1) as f64 * k).round() as i32;
+    let x = (now.work.0 + dx).clamp(now.work.0, now.work.0 + now.work.2 - w);
+    let y = (now.work.1 + dy).clamp(now.work.1, now.work.1 + now.work.3 - h);
+    (x, y, w, h)
+}
+
+/// Frame bits a full-screen window drops (`WS_CAPTION` = border + dialog frame, `WS_THICKFRAME`) and the edge
+/// extended styles.
+const FULL_SCREEN_DROPPED_STYLE: u32 = WS_CAPTION.0 | WS_THICKFRAME.0;
+const FULL_SCREEN_DROPPED_EX_STYLE: u32 = WS_EX_DLGMODALFRAME.0 | WS_EX_WINDOWEDGE.0 | WS_EX_CLIENTEDGE.0 | WS_EX_STATICEDGE.0;
+
+/// The styles in full screen (`entering`) or back out of it: only the frame bits change, every other bit stays what
+/// it is now (winit may have changed some while the window was full screen).
+pub fn full_screen_styles(current: (u32, u32), saved: (u32, u32), entering: bool) -> (u32, u32) {
+    let (s, e) = (current.0 & !FULL_SCREEN_DROPPED_STYLE, current.1 & !FULL_SCREEN_DROPPED_EX_STYLE);
+    if entering { (s, e) } else { (s | (saved.0 & FULL_SCREEN_DROPPED_STYLE), e | (saved.1 & FULL_SCREEN_DROPPED_EX_STYLE)) }
+}
+
+/// `WM_GETMINMAXINFO` track sizes: the minimum is raised to `min_px`; in full screen (`monitor`) neither limit may
+/// keep the window from covering the monitor exactly (a monitor smaller than the minimum size is still covered).
+pub fn min_max_track(min: (i32, i32), max: (i32, i32), min_px: (i32, i32), monitor: Option<Rect>) -> ((i32, i32), (i32, i32)) {
+    let min = (min.0.max(min_px.0), min.1.max(min_px.1));
+    match monitor {
+        None => (min, max),
+        Some(m) => ((min.0.min(m.2), min.1.min(m.3)), (max.0.max(m.2), max.1.max(m.3))),
+    }
+}
+
 /// Hover / press state of the (non-client) maximize button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptionHover {
@@ -160,6 +296,9 @@ struct State {
     hover_handler: RefCell<Option<Box<dyn Fn(CaptionHover)>>>,
     system_change_handler: RefCell<Option<Box<dyn Fn()>>>,
     attached: Cell<bool>,
+    /// `Some` while the window is full screen (set before the window is touched on the way in, cleared before it is
+    /// touched on the way out, so every handler sees the state the window is going to).
+    full: Cell<Option<SavedWindow>>,
 }
 
 impl State {
@@ -226,6 +365,7 @@ impl WindowChrome {
             hover_handler: RefCell::new(None),
             system_change_handler: RefCell::new(None),
             attached: Cell::new(false),
+            full: Cell::new(None),
         });
         unsafe {
             let ok = SetWindowSubclass(h, Some(subclass_proc), SUBCLASS_ID, &*state as *const State as usize).as_bool();
@@ -343,9 +483,92 @@ impl WindowChrome {
         unsafe { IsZoomed(self.state.hwnd).as_bool() }
     }
 
-    /// Physical outer size when restored (saved on close), `None` when maximized, minimized or full screen.
+    /// Window rectangle, client rectangle (screen coordinates) and the rectangle of the monitor the window is mostly
+    /// on, physical px (diagnostics: the `[player-stats]` line).
+    pub fn geometry(&self) -> WindowGeometry {
+        let h = self.state.hwnd;
+        unsafe {
+            let mut r = RECT::default();
+            let _ = GetWindowRect(h, &mut r);
+            let mut c = RECT::default();
+            let _ = GetClientRect(h, &mut c);
+            let mut origin = POINT { x: 0, y: 0 };
+            let _ = ClientToScreen(h, &mut origin);
+            let (monitor, _) = monitor_rects(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST));
+            WindowGeometry {
+                window: (r.left, r.top, r.right - r.left, r.bottom - r.top),
+                client: (origin.x, origin.y, c.right - c.left, c.bottom - c.top),
+                monitor,
+                maximized: IsZoomed(h).as_bool(),
+                full_screen: self.is_full_screen(),
+            }
+        }
+    }
+
+    /// Whether the window is full screen ([`WindowChrome::set_full_screen`]).
+    pub fn is_full_screen(&self) -> bool {
+        self.state.full.get().is_some()
+    }
+
+    /// Enters or leaves full screen (see the module docs): on the way in the window covers the monitor it is mostly
+    /// on, with no frame, border, rounded corners or non-client area, above the taskbar; on the way out it gets its
+    /// frame and previous rectangle back ([`restore_rect`]). Nothing happens when the state is already `on`.
+    pub fn set_full_screen(&self, on: bool) {
+        let h = self.state.hwnd;
+        if on == self.is_full_screen() {
+            return;
+        }
+        unsafe {
+            let current = (GetWindowLongPtrW(h, GWL_STYLE) as u32, GetWindowLongPtrW(h, GWL_EXSTYLE) as u32);
+            if on {
+                let mut r = RECT::default();
+                let _ = GetWindowRect(h, &mut r);
+                let (monitor, work) = monitor_rects(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST));
+                let saved = SavedWindow {
+                    style: current.0,
+                    ex_style: current.1,
+                    rect: (r.left, r.top, r.right - r.left, r.bottom - r.top),
+                    maximized: IsZoomed(h).as_bool(),
+                    monitor,
+                    work,
+                    dpi: dpi_of(h),
+                };
+                self.state.full.set(Some(saved));
+                let (s, e) = full_screen_styles(current, (saved.style, saved.ex_style), true);
+                SetWindowLongPtrW(h, GWL_STYLE, s as isize);
+                SetWindowLongPtrW(h, GWL_EXSTYLE, e as isize);
+                set_frame_look(h, true);
+                mark_full_screen(h, true);
+                let _ = SetWindowPos(h, None, monitor.0, monitor.1, monitor.2, monitor.3, FULL_SCREEN_SWP);
+            } else {
+                let Some(saved) = self.state.full.take() else { return };
+                let (s, e) = full_screen_styles(current, (saved.style, saved.ex_style), false);
+                SetWindowLongPtrW(h, GWL_STYLE, s as isize);
+                SetWindowLongPtrW(h, GWL_EXSTYLE, e as isize);
+                let (monitor, work) = monitor_rects(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST));
+                let dpi = dpi_of(h);
+                let now = Display { monitor, work, dpi, frame: frame_overhang(dpi) };
+                let mut wp = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+                let _ = GetWindowPlacement(h, &mut wp);
+                // Workspace coordinates: relative to the work area of the window's monitor.
+                let n = wp.rcNormalPosition;
+                let (ox, oy) = (work.0 - monitor.0, work.1 - monitor.1);
+                let normal = (n.left + ox, n.top + oy, n.right - n.left, n.bottom - n.top);
+                let (x, y, w, hh) = restore_rect(&saved, IsZoomed(h).as_bool(), normal, &now);
+                set_frame_look(h, false);
+                mark_full_screen(h, false);
+                let _ = SetWindowPos(h, None, x, y, w, hh, FULL_SCREEN_SWP);
+            }
+        }
+    }
+
+    /// Physical outer size when restored (saved on close), `None` when maximized, minimized or full screen from a
+    /// maximized window; full screen from a restored window reports the size it had before.
     pub fn restored_size(&self) -> Option<(u32, u32)> {
         let h = self.state.hwnd;
+        if let Some(saved) = self.state.full.get() {
+            return (!saved.maximized).then_some((saved.rect.2.max(0) as u32, saved.rect.3.max(0) as u32));
+        }
         unsafe {
             if IsZoomed(h).as_bool() || IsIconic(h).as_bool() {
                 return None;
@@ -401,6 +624,73 @@ impl Drop for WindowChrome {
     }
 }
 
+/// `SetWindowPos` flags of the full-screen transitions (the frame changes, the z-order and activation do not).
+const FULL_SCREEN_SWP: SET_WINDOW_POS_FLAGS =
+    SET_WINDOW_POS_FLAGS(SWP_FRAMECHANGED.0 | SWP_NOZORDER.0 | SWP_NOOWNERZORDER.0 | SWP_NOACTIVATE.0);
+
+/// Monitor and work area of `mon` (a 1280×800 primary fallback).
+fn monitor_rects(mon: HMONITOR) -> (Rect, Rect) {
+    let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    if unsafe { GetMonitorInfoW(mon, &mut mi) }.as_bool() {
+        let (m, w) = (mi.rcMonitor, mi.rcWork);
+        ((m.left, m.top, m.right - m.left, m.bottom - m.top), (w.left, w.top, w.right - w.left, w.bottom - w.top))
+    } else {
+        ((0, 0, 1280, 800), (0, 0, 1280, 800))
+    }
+}
+
+/// How far a maximized window hangs over the work area at `dpi` (horizontal, vertical).
+fn frame_overhang(dpi: u32) -> (i32, i32) {
+    unsafe {
+        let pad = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        (GetSystemMetricsForDpi(SM_CXFRAME, dpi) + pad, GetSystemMetricsForDpi(SM_CYFRAME, dpi) + pad)
+    }
+}
+
+/// Square corners and no DWM border in full screen; the rounded corners and the default border otherwise.
+fn set_frame_look(hwnd: HWND, full_screen: bool) {
+    let corner = if full_screen { DWMWCP_DONOTROUND } else { DWMWCP_ROUND };
+    let border: u32 = if full_screen { DWMWA_COLOR_NONE } else { DWMWA_COLOR_DEFAULT };
+    unsafe {
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as *const _, 4);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border as *const _ as *const _, 4);
+    }
+}
+
+/// Tells the shell the window is (no longer) full screen, so the taskbar goes below it even when the window is not
+/// the foreground window (`ITaskbarList2::MarkFullscreenWindow`; COM is initialized on the UI thread by winit).
+fn mark_full_screen(hwnd: HWND, on: bool) {
+    unsafe {
+        if let Ok(list) = CoCreateInstance::<_, ITaskbarList2>(&TaskbarList, None, CLSCTX_INPROC_SERVER)
+            && list.HrInit().is_ok()
+        {
+            let _ = list.MarkFullscreenWindow(hwnd, on);
+        }
+    }
+}
+
+/// Private message: put the full-screen window back over its monitor (after a display, DPI or work-area change, or
+/// a restore from minimized that left it elsewhere).
+fn refit_message() -> u32 {
+    static MSG: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *MSG.get_or_init(|| unsafe { RegisterWindowMessageW(windows::core::w!("SubtitleAdder.FullScreenRefit")) })
+}
+
+/// Moves a full-screen window over the monitor it is on when it is anywhere else (not while minimized).
+fn refit_full_screen(hwnd: HWND) {
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            return;
+        }
+        let (m, _) = monitor_rects(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST));
+        let mut r = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut r);
+        if (r.left, r.top, r.right - r.left, r.bottom - r.top) != m {
+            let _ = SetWindowPos(hwnd, None, m.0, m.1, m.2, m.3, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+        }
+    }
+}
+
 fn toggle_maximize(hwnd: HWND) {
     unsafe {
         let cmd = if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
@@ -414,20 +704,63 @@ fn lparam_point(lparam: LPARAM) -> POINT {
 
 unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
     let state = unsafe { &*(data as *const State) };
+    let full = state.full.get().is_some();
     match msg {
         WM_NCCALCSIZE if wparam.0 != 0 => unsafe {
             let params = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
-            let top = params.rgrc[0].top;
+            let w = params.rgrc[0];
+            let window = (w.left, w.top, w.right, w.bottom);
+            if full {
+                // The whole window is client area: nothing for the default procedure to subtract.
+                return LRESULT(0);
+            }
             let r = DefSubclassProc(hwnd, msg, wparam, lparam);
             if r.0 != 0 {
                 return r;
             }
-            params.rgrc[0].top = top;
-            if IsZoomed(hwnd).as_bool() {
-                params.rgrc[0].top += frame_thickness(dpi_of(hwnd));
-            }
+            let d = params.rgrc[0];
+            let frame_state = if IsZoomed(hwnd).as_bool() { FrameState::Maximized } else { FrameState::Restored };
+            let (l, t, rr, b) = client_edges(window, (d.left, d.top, d.right, d.bottom), frame_state, frame_thickness(dpi_of(hwnd)));
+            params.rgrc[0] = RECT { left: l, top: t, right: rr, bottom: b };
             LRESULT(0)
         },
+        // Full screen: no resize borders, no caption, no caption buttons.
+        WM_NCHITTEST if full => LRESULT(HTCLIENT as isize),
+        WM_WINDOWPOSCHANGING if full => unsafe {
+            let r = DefSubclassProc(hwnd, msg, wparam, lparam);
+            let wp = &mut *(lparam.0 as *mut WINDOWPOS);
+            let both = SWP_NOMOVE.0 | SWP_NOSIZE.0;
+            // Minimizing moves the window to -32000; anything else that moves or sizes it (re-maximizing after a
+            // work-area change, Win+Shift+arrow to another monitor, a DPI change) ends on the whole monitor it lands on.
+            if !IsIconic(hwnd).as_bool() && wp.flags.0 & both != both && wp.x > -32000 && wp.y > -32000 {
+                let mut cur = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut cur);
+                let (x, y) = if wp.flags.0 & SWP_NOMOVE.0 != 0 { (cur.left, cur.top) } else { (wp.x, wp.y) };
+                let (cw, ch) =
+                    if wp.flags.0 & SWP_NOSIZE.0 != 0 { (cur.right - cur.left, cur.bottom - cur.top) } else { (wp.cx, wp.cy) };
+                let proposed = RECT { left: x, top: y, right: x + cw, bottom: y + ch };
+                let (m, _) = monitor_rects(MonitorFromRect(&proposed, MONITOR_DEFAULTTONEAREST));
+                wp.x = m.0;
+                wp.y = m.1;
+                wp.cx = m.2;
+                wp.cy = m.3;
+                wp.flags = SET_WINDOW_POS_FLAGS(wp.flags.0 & !both);
+            }
+            r
+        },
+        WM_WINDOWPOSCHANGED | WM_DISPLAYCHANGE | WM_DPICHANGED if full => unsafe {
+            let r = DefSubclassProc(hwnd, msg, wparam, lparam);
+            // After the system's (and winit's) own handling: a restore from minimized can put the window at its
+            // normal rectangle, a display change can leave it at the old resolution.
+            let _ = PostMessageW(Some(hwnd), refit_message(), WPARAM(0), LPARAM(0));
+            r
+        },
+        m if m == refit_message() => {
+            if full {
+                refit_full_screen(hwnd);
+            }
+            LRESULT(0)
+        }
         WM_NCHITTEST => unsafe {
             let r = DefSubclassProc(hwnd, msg, wparam, lparam);
             if r.0 as u32 != HTCLIENT {
@@ -499,13 +832,29 @@ unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             {
                 f();
             }
+            if full {
+                // A taskbar change (size, auto-hide) moves the work area and re-maximizes maximized windows.
+                let _ = unsafe { PostMessageW(Some(hwnd), refit_message(), WPARAM(0), LPARAM(0)) };
+            }
             unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
         WM_GETMINMAXINFO => unsafe {
             let r = DefSubclassProc(hwnd, msg, wparam, lparam);
             let info = &mut *(lparam.0 as *mut MINMAXINFO);
-            info.ptMinTrackSize.x = info.ptMinTrackSize.x.max(state.min_px.0);
-            info.ptMinTrackSize.y = info.ptMinTrackSize.y.max(state.min_px.1);
+            let monitor = full.then(|| monitor_rects(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)).0);
+            let (min, max) = min_max_track(
+                (info.ptMinTrackSize.x, info.ptMinTrackSize.y),
+                (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y),
+                state.min_px,
+                monitor,
+            );
+            (info.ptMinTrackSize.x, info.ptMinTrackSize.y) = min;
+            (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y) = max;
+            if let Some(m) = monitor {
+                // Maximizing while full screen (a restore from minimized) covers the monitor, not the work area.
+                info.ptMaxPosition = POINT { x: 0, y: 0 };
+                info.ptMaxSize = POINT { x: m.2, y: m.3 };
+            }
             r
         },
         WM_NCDESTROY => unsafe {
@@ -590,6 +939,94 @@ mod tests {
         assert_eq!(saved_size(s.as_ref(), MAIN_SIZE_KEY), Some((1300, 900)));
     }
 
+    #[test]
+    fn the_client_area_drops_the_caption_and_in_full_screen_every_frame() {
+        for dpi in [96, 120, 144, 168, 192] {
+            let f = frame_thickness(dpi);
+            assert!(f > 0, "{dpi}");
+            // Restored 1550×1050 at (505,165): the default procedure leaves f on the sides and bottom and a caption.
+            let window = (505, 165, 2055, 1215);
+            let default = (505 + f, 165 + f + 31, 2055 - f, 1215 - f);
+            assert_eq!(client_edges(window, default, FrameState::Restored, f), (505 + f, 165, 2055 - f, 1215 - f), "{dpi}");
+            // Maximized: the window hangs f over every monitor edge; the top is inset by as much as the others.
+            let window = (-f, -f, 2560 + f, 1380 + f);
+            let default = (0, 31, 2560, 1380);
+            assert_eq!(client_edges(window, default, FrameState::Maximized, f), (0, 0, 2560, 1380), "{dpi}");
+            // Full screen: the whole window (the monitor) is client area, whatever the default made of it.
+            let window = (0, 0, 2560, 1440);
+            assert_eq!(client_edges(window, (0, f, 2560, 1440 - f), FrameState::FullScreen, f), window, "{dpi}");
+            // A second monitor left of the primary one.
+            let window = (-1920, 0, 0, 1080);
+            assert_eq!(client_edges(window, (-1920 + f, f, -f, 1080 - f), FrameState::FullScreen, f), window, "{dpi}");
+        }
+    }
+
+    fn saved(rect: Rect, maximized: bool) -> SavedWindow {
+        SavedWindow {
+            style: 0x16CF_0000,
+            ex_style: 0x0004_0110,
+            rect,
+            maximized,
+            monitor: (0, 0, 2560, 1440),
+            work: (0, 0, 2560, 1380),
+            dpi: 120,
+        }
+    }
+
+    #[test]
+    fn leaving_full_screen_restores_the_previous_rectangle() {
+        let here = Display { monitor: (0, 0, 2560, 1440), work: (0, 0, 2560, 1380), dpi: 120, frame: (9, 9) };
+        let none = (0, 0, 0, 0);
+        // Normal, maximized and snapped (left half) windows come back exactly where they were.
+        let normal = saved((505, 165, 1550, 1050), false);
+        assert_eq!(restore_rect(&normal, false, none, &here), (505, 165, 1550, 1050));
+        let max = saved((-9, -9, 2578, 1398), true);
+        assert_eq!(restore_rect(&max, true, (505, 165, 1550, 1050), &here), (-9, -9, 2578, 1398));
+        let snapped = saved((-7, 0, 1294, 1387), false);
+        assert_eq!(restore_rect(&snapped, false, none, &here), (-7, 0, 1294, 1387));
+        // Maximized on a changed display (here a taskbar that grew): the new work area plus the frame overhang.
+        let taller = Display { work: (0, 0, 2560, 1340), ..here };
+        assert_eq!(restore_rect(&max, true, none, &taller), (-9, -9, 2578, 1358));
+        // Un-maximized while full screen (Win+Down): Windows' restored rectangle.
+        assert_eq!(restore_rect(&max, false, (400, 100, 1500, 1000), &here), (400, 100, 1500, 1000));
+        // Moved to a 1080p monitor at 100 % on the left: same place relative to the work area, scaled, kept inside.
+        let left = Display { monitor: (-1920, 0, 1920, 1080), work: (-1920, 0, 1920, 1040), dpi: 96, frame: (8, 8) };
+        assert_eq!(restore_rect(&normal, false, none, &left), (-1920 + 404, 132, 1240, 840));
+        let big = saved((100, 50, 2400, 1300), false);
+        assert_eq!(restore_rect(&big, false, none, &left), (-1920, 0, 1920, 1040));
+        assert_eq!(restore_rect(&max, true, none, &left), (-1928, -8, 1936, 1056));
+    }
+
+    #[test]
+    fn full_screen_drops_only_the_frame_styles() {
+        let style = 0x16CF_0000u32; // WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN
+        let ex = 0x0004_0110u32 | WS_EX_WINDOWEDGE.0;
+        let (s, e) = full_screen_styles((style, ex), (style, ex), true);
+        assert_eq!(s & (WS_CAPTION.0 | WS_THICKFRAME.0), 0);
+        assert_eq!(s, style & !(WS_CAPTION.0 | WS_THICKFRAME.0));
+        assert_eq!(e & WS_EX_WINDOWEDGE.0, 0);
+        assert_eq!(full_screen_styles((s, e), (style, ex), false), (style, ex));
+        // A maximized window keeps WS_MAXIMIZE through full screen, and bits changed meanwhile survive leaving.
+        let maximized = style | 0x0100_0000;
+        let (s, e) = full_screen_styles((maximized, ex), (maximized, ex), true);
+        assert_ne!(s & 0x0100_0000, 0);
+        assert_eq!(full_screen_styles((s & !0x0100_0000, e), (maximized, ex), false).0, style);
+    }
+
+    #[test]
+    fn full_screen_track_sizes_never_clamp_the_monitor() {
+        assert_eq!(min_max_track((136, 39), (2576, 1456), (950, 725), None), ((950, 725), (2576, 1456)));
+        assert_eq!(min_max_track((136, 39), (2576, 1456), (950, 725), Some((0, 0, 3840, 2160))), ((950, 725), (3840, 2160)));
+        // A monitor smaller than the minimum window size is still covered exactly.
+        assert_eq!(min_max_track((136, 39), (1040, 784), (1330, 1015), Some((0, 0, 1024, 768))), ((1024, 768), (1040, 784)));
+    }
+
+    fn window_rect(hwnd: HWND) -> Rect {
+        let mut r = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut r).unwrap() };
+        (r.left, r.top, r.right - r.left, r.bottom - r.top)
+    }
+
     unsafe extern "system" fn plain_proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
         unsafe { DefWindowProcW(h, m, w, l) }
     }
@@ -669,8 +1106,36 @@ mod tests {
                 *hovers.borrow(),
                 vec![CaptionHover::MaximizeHover, CaptionHover::MaximizePressed, CaptionHover::MaximizeHover, CaptionHover::None]
             );
+            // Full screen from maximized: the client area is the whole monitor, no caption, hit testing is client.
+            let before = (window_rect(hwnd), GetWindowLongPtrW(hwnd, GWL_STYLE));
+            chrome.set_full_screen(true);
+            assert!(chrome.is_full_screen());
+            let g = chrome.geometry();
+            assert_eq!(g.client, g.monitor, "maximized → full screen: client == monitor");
+            assert_eq!(g.window, g.monitor);
+            assert_eq!(at(150, 1), HTCLIENT);
+            assert_eq!(at(310, 30), HTCLIENT);
+            assert_eq!(GetWindowLongPtrW(hwnd, GWL_STYLE) as u32 & (WS_CAPTION.0 | WS_THICKFRAME.0), 0);
+            assert_eq!(chrome.restored_size(), None, "maximized before: nothing to store");
+            chrome.set_full_screen(true); // no-op
+            chrome.set_full_screen(false);
+            assert_eq!((window_rect(hwnd), GetWindowLongPtrW(hwnd, GWL_STYLE)), before, "maximized again");
+            assert!(chrome.is_maximized());
+
             chrome.toggle_maximize();
             assert!(!chrome.is_maximized());
+            // From a restored window, and a move or resize while full screen cannot take it off the monitor.
+            let before = (window_rect(hwnd), GetWindowLongPtrW(hwnd, GWL_STYLE));
+            let restored = chrome.restored_size();
+            chrome.set_full_screen(true);
+            let g = chrome.geometry();
+            assert_eq!(g.client, g.monitor, "restored → full screen: client == monitor");
+            assert_eq!(chrome.restored_size(), restored, "the size before full screen is what is stored");
+            let _ = SetWindowPos(hwnd, None, g.monitor.0 + 50, g.monitor.1 + 50, 640, 480, SWP_NOZORDER | SWP_NOACTIVATE);
+            assert_eq!(chrome.geometry().client, g.monitor, "kept on the monitor");
+            chrome.set_full_screen(false);
+            assert_eq!((window_rect(hwnd), GetWindowLongPtrW(hwnd, GWL_STYLE)), before, "restored again");
+            assert_eq!(at(150, 1), HTTOP, "the frame is back");
 
             let settings = sa_core::settings::InMemorySettingsStore::new();
             chrome.save_size(settings.as_ref(), MAIN_SIZE_KEY);

@@ -5,7 +5,9 @@
 //!   `AppBridge.maximize-hover`), rounded corners, frame dark mode following the content theme, min size 760×580 DIP,
 //!   saved size (`mainWindowWidth/Height`, physical px, written on close only when restored) clamped to the work area
 //!   and centered on it. In full screen the title bar row is 0, so nothing is reported as caption. Mica behind the
-//!   window where DWM supports it (`AppBridge.mica-backdrop` makes the Slint background transparent).
+//!   window where DWM supports it (`AppBridge.mica-backdrop` makes the Slint background transparent). Full screen is
+//!   the chrome's own ([`MainChrome::set_full_screen`]: the window covers its monitor with no frame, Mica off), not
+//!   winit's borderless mode, whose styles the chrome's non-client handlers could not tell from maximized.
 //! * macOS (mac-ui §3.2, ARCHITECTURE §6.6): transparent title bar + full-size content view with a hidden title, so the
 //!   52 pt toolbar is the unified title bar; set through the winit window attributes before the window exists
 //!   ([`winit_attributes`], for `slint::BackendSelector::with_winit_window_attributes_hook`).
@@ -89,6 +91,8 @@ mod win {
     /// filter re-syncs it ([`MainChrome::sync`]) on resize, scale and theme changes.
     pub struct MainChrome {
         chrome: WindowChrome,
+        /// Whether DWM draws Mica behind the window (decided at attach; switched off while full screen).
+        mica: std::cell::Cell<bool>,
     }
 
     impl MainChrome {
@@ -101,6 +105,33 @@ mod win {
         pub fn is_maximized(&self) -> bool {
             self.chrome.is_maximized()
         }
+        pub fn is_full_screen(&self) -> bool {
+            self.chrome.is_full_screen()
+        }
+        /// Window / client / monitor rectangles (the `[player-stats]` line).
+        pub fn geometry(&self) -> sa_platform::win::chrome::WindowGeometry {
+            self.chrome.geometry()
+        }
+        /// Real full screen through the chrome (`sa_platform::win::chrome`, module docs). Mica is switched off while
+        /// full screen (the player covers the window; no backdrop for DWM to compose behind it) and back on after.
+        pub fn set_full_screen(&self, window: &MainWindow, on: bool) {
+            if on == self.chrome.is_full_screen() {
+                return;
+            }
+            let app = window.global::<AppBridge>();
+            if on {
+                if self.mica.get() {
+                    app.set_mica_backdrop(false);
+                    self.chrome.set_mica(false);
+                }
+                self.chrome.set_full_screen(true);
+            } else {
+                self.chrome.set_full_screen(false);
+                if self.mica.get() {
+                    app.set_mica_backdrop(self.chrome.set_mica(true));
+                }
+            }
+        }
         /// Saves the restored size on close (`mainWindowWidth/Height`, win-ui-main §4.3).
         pub fn save_size(&self, settings: &dyn SettingsStore) {
             self.chrome.save_size(settings, MAIN_SIZE_KEY);
@@ -109,7 +140,8 @@ mod win {
         pub fn sync(&self, window: &MainWindow) {
             let w = window.window();
             let app = window.global::<AppBridge>();
-            self.chrome.set_caption_layout(super::caption_layout(w.size().width, w.scale_factor(), app.get_is_full_screen()));
+            let full = self.chrome.is_full_screen() || app.get_is_full_screen();
+            self.chrome.set_caption_layout(super::caption_layout(w.size().width, w.scale_factor(), full));
             let max = self.chrome.is_maximized();
             if app.get_is_maximized() != max {
                 app.set_is_maximized(max);
@@ -141,7 +173,7 @@ mod win {
     /// `gpu_renderer`: whether the window's renderer is a GPU one, when already known (see `mica_renderer`).
     pub fn attach(window: &MainWindow, settings: &dyn SettingsStore, gpu_renderer: Option<bool>) -> Option<Rc<MainChrome>> {
         let hwnd = hwnd_of(window)?;
-        let chrome = Rc::new(MainChrome { chrome: WindowChrome::attach(hwnd, MAIN_MIN_DIP) });
+        let chrome = Rc::new(MainChrome { chrome: WindowChrome::attach(hwnd, MAIN_MIN_DIP), mica: std::cell::Cell::new(false) });
         chrome.chrome.place(saved_size(settings, MAIN_SIZE_KEY), MAIN_DEFAULT_DIP);
         if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
             let _ = chrome.chrome.set_icon_file(&dir.join("Assets").join("AppIcon.ico"));
@@ -172,6 +204,7 @@ mod win {
         // C# `window.SystemBackdrop = new MicaBackdrop()`: the Slint background turns transparent only where DWM
         // really draws Mica (Windows 11); elsewhere it stays the solid fallback color.
         let mica = super::mica_renderer(window.window(), gpu_renderer) && chrome.chrome.set_mica(true);
+        chrome.mica.set(mica);
         window.global::<AppBridge>().set_mica_backdrop(mica);
         Some(chrome)
     }
