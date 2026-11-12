@@ -100,12 +100,19 @@ fn encoders(ff: &Path) -> &'static [String] {
     })
 }
 
-/// Whether every encoder `args` names (`-c:v X`, `-c:a X`, `-c X`) is in the FFmpeg CLI; prints the skip reason when
-/// not (an LGPL-only build has no libx265 or libsvtav1, for example).
+/// Whether an FFmpeg CLI option names an encoder: `-c`, `-codec`, with any stream specifier (`-c:v`, `-c:s:1`,
+/// `-codec:a:0`), and `-vcodec` / `-acodec` / `-scodec`.
+fn names_encoder(option: &str) -> bool {
+    let base = option.split(':').next().unwrap_or(option);
+    matches!(base, "-c" | "-codec" | "-vcodec" | "-acodec" | "-scodec")
+}
+
+/// Whether every encoder `args` names (`-c:v X`, `-c:s:1 X`, `-c X`, ...) is in the FFmpeg CLI; prints the skip
+/// reason when not (an LGPL-only build has no libx265 or libsvtav1, for example).
 fn encoders_present(ff: &Path, name: &str, args: &[String]) -> bool {
     let list = encoders(ff);
     for w in args.windows(2) {
-        if matches!(w[0].as_str(), "-c:v" | "-c:a" | "-c" | "-vcodec" | "-acodec") && w[1] != "copy" && !list.iter().any(|e| *e == w[1]) {
+        if names_encoder(&w[0]) && w[1] != "copy" && !list.iter().any(|e| *e == w[1]) {
             eprintln!("skipped: the ffmpeg CLI has no {} encoder to generate {name}", w[1]);
             return false;
         }
@@ -175,6 +182,42 @@ pub fn custom_clip(name: &str, args: &[&str]) -> Option<PathBuf> {
         let _ = std::fs::remove_file(&tmp);
     }
     Some(path)
+}
+
+/// A file with `bytes`, written once into the fixtures folder (to a temporary name, renamed into place) and named
+/// `<stem>-<hash of bytes>.<ext>`: a changed generator never finds a stale or half-written file under the old name.
+pub fn fixture_file(stem: &str, ext: &str, bytes: &[u8]) -> PathBuf {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let path = fixtures_dir().join(format!("{stem}-{:016x}.{ext}", content_hash(&[bytes])));
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if !path.exists() {
+        let tmp = fixtures_dir().join(format!("tmp-{}-{stem}.{ext}", std::process::id()));
+        std::fs::write(&tmp, bytes).expect("fixture written");
+        if std::fs::rename(&tmp, &path).is_err() {
+            // Another test process won the race.
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+    path
+}
+
+/// FNV-1a over `parts` (stable across runs and Rust versions, for fixture names).
+pub fn content_hash(parts: &[&[u8]]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for &b in *part {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h = (h ^ 0xff).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// [`custom_clip`] named `<stem>-<hash of the arguments>.<ext>` (the arguments name the input files, whose names
+/// carry their own content hash): changing the clip's recipe makes a new file instead of reusing the old one.
+pub fn hashed_clip(stem: &str, ext: &str, args: &[&str]) -> Option<PathBuf> {
+    let parts: Vec<&[u8]> = args.iter().map(|a| a.as_bytes()).collect();
+    custom_clip(&format!("{stem}-{:016x}.{ext}", content_hash(&parts)), args)
 }
 
 /// One second of the 320×240 test pattern as uncompressed `pix_fmt` frames (NUT keeps every pixel format), so the
