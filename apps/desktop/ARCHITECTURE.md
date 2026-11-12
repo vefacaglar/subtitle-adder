@@ -120,7 +120,8 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   thread handles at the top of its loop, like an audio switch (newest wins, the active stream does nothing). It opens
   the stream's decoder first (`avcodec_parameters_to_context` with the extradata, where VobSub keeps its palette and
   size; `pkt_timebase` set); a stream that is no picture track or whose decoder does not open posts
-  `SubtitleTrackFailed` and the previous choice stays. Then the queued pictures go, and decoding restarts at the
+  `SubtitleTrackFailed` (with a typed reason, `PictureTrackFailure`: FFmpeg's own text, XSUB packets without a time
+  code, pictures too large; the app words the last two in TR / EN) and the previous choice stays. Then the queued pictures go, and decoding restarts at the
   position (`restart_decoding`, as for audio), because the demuxer reads seconds ahead and the new track's first
   seconds would be missing otherwise; paused stays paused. From then on the demux thread hands each packet of that
   stream to `avcodec_decode_subtitle2` itself (no extra thread or queue: subtitle packets are small and rare, and the
@@ -131,8 +132,14 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   timestamp (a VobSub subpicture spread over PES packets, of which only the first has a PTS: dvdsubdec reassembles
   it; FFmpeg's MPEG-PS demuxer already does so with its dvdsub parser, a demuxer without one would not). A rejected
   packet is skipped and counted (`picture_failures=`), never retried or waited on; playback is not touched. A track
-  whose decoder rejected 4 packets without producing a single event is given up: turned off as if "Off" were chosen,
-  with `SubtitleTrackFailed` (the app reports it; the menu no longer marks it). Times: `AVSubtitle.pts` (FFmpeg fills
+  whose decoder rejected 4 packets since it was chosen or last seeked without producing a single event in that time
+  is given up: turned off as if "Off" were chosen, with `SubtitleTrackFailed` (the app reports it when the user chose
+  the track, and drops a track it chose for the user without a notice; the menu no longer marks it). For PGS only the
+  rejections of self-contained sets count (an epoch start or acquisition point, from the PCS state byte), never those
+  of normal sets that build on an earlier set a seek or a mid-epoch selection skipped, so a healthy stream cannot
+  reach the threshold. Checked on generated media (FFmpeg 8.1): pgssubdec does not reject such sets at all (no
+  `AV_EF_EXPLODE`); a normal set joined in the middle of its epoch decodes to nothing or is dropped silently
+  (`picture_failures=0`), and the next acquisition point shows again. Times: `AVSubtitle.pts` (FFmpeg fills
   it in `AV_TIME_BASE` from the packet with `pkt_timebase`; pgssubdec sets it to the presentation composition's time,
   so a display set is shown from its PCS, not from the END segment that completed it), else the newest packet
   timestamp, on the player clock plus `start_display_time`. XSUB is timed by the `[HH:MM:SS.mmm-HH:MM:SS.mmm]` time
@@ -143,54 +150,78 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   when a damaged rectangle lies outside it (growing it would rescale every rectangle of the event; the UI brings such
   a rectangle on screen). Only when the decoder names none is one made up: 720 × 576 for DVB (the display a stream
   without a display definition segment means), else the video's coded size, grown to hold the rectangles. Every
-  picture carries the video's coded size for the UI's canvas rule.
+  picture carries the video's coded size for the UI's canvas rule, in the orientation it is shown (width and height
+  swapped for a video turned a quarter round by its display matrix).
   - Timing rule (`PictureTimeline::active_at`): every bitmap format describes the whole screen per event, so the
     picture on screen at `t` is the newest event that started at or before `t`, while `t` is before its end: its own
     end (at most 300 s after its start), the next event's start, and at most 30 s after its start for an event
     without an end (a PGS clearing set lost to a seek, or never sent). An event without rectangles (a PGS set without
     objects, an empty DVB page, transparent VobSub) clears. Events arriving ahead of the clock wait in start order
-    (out-of-order ones are sorted; equal starts: the later decoded wins); events that were replaced or ended are
-    dropped as time passes. Within a serial the asked time only moves forward (a late frame's pts behind the clock
-    cannot flicker back to a replaced picture).
+    (out-of-order ones are sorted). At a start already queued, the same event decoded again (same end, canvas and
+    rectangles) is ignored, so the picture on screen keeps its identity when a restart reads it again; a different
+    one replaces it, except that a PGS set decoded without the epoch it builds on (no epoch start or acquisition point
+    decoded since the last flush: `complete` false) never replaces one decoded with it. Replaced events stay queued
+    while they fit (a seek back may need them). Within a serial the asked time only moves forward (a late frame's pts
+    behind the clock cannot flicker back to a replaced picture). Known limit: a stream whose own times jump backwards
+    (a `sub.pts` reset in a damaged or concatenated file) sorts those events before the ones already queued, so they
+    may never be due; nothing re-bases them.
   - Which picture is on screen is decided by the presenter thread, the only per-frame cost: one atomic load while no
     image track is shown, otherwise an uncontended lock and a look at the front of a short queue. It asks at every
     published frame with that frame's pts (before `FrameReady`, so the picture and its frame reach the UI together),
     and with the clock while paused (a picture decoded after a paused seek's frame still appears) and while no frame
     is coming (audio only, after the last frame). A change posts `SubtitlePictureChanged`; `subtitle_picture()` hands
     the shown `Arc<SubtitlePicture>` out.
-  - Seeks: every queued event carries its demux serial, and a newer serial drops everything older, so from the first
-    frame of the new position on nothing of the old position shows (until that frame arrives the old frame and its
-    picture stay together, as a paused seek always showed the old frame); the decoder is flushed when the demuxer
-    seeks. Limitation, as in most players: a seek lands on the keyframe before the target, so an event that started
-    before that keyframe and lasts past the target is not shown (the next event is). The same holds for PGS sets
-    that build on an earlier one of their epoch (a palette-only update, a normal set reusing objects): after a seek
-    past their objects they show nothing until the next acquisition point or epoch start, which resend everything.
-    Restarts that keep the position (another speed, another audio track, a replaced video decoder:
-    `restart_decoding` without a deferred seek) are not seeks for the picture: the one on screen carries over to the
-    new serial with its own start and end (`PictureTimeline::carry_over`), so it neither blinks off nor outlives its
-    end, and the re-read stream decodes it again (a new id, the same start). A seek, a track switch or "Off" still
-    takes it off. Switching off drops the decoder and the pictures; another load drops everything with the session.
+  - Seeks: every queued event carries its demux serial; events demuxed for an older serial are ignored. Every seek and
+    every restart of decoding moves the timeline to its new serial when it is issued (`PictureTimeline::seek`, in
+    `start_seek` under the lock the presenter reads the serial under), whatever follows before the seek's first frame
+    (a speed change, an audio switch, the software fall-back of a failing hardware decoder): the queue knows the
+    screen exactly from its first event's start up to `known_until`, the newest start of the contiguous deliveries it
+    holds (the demuxer reads a stream in order); the events stay when the target lies in that span, and their own
+    times then say what is due there, otherwise everything goes. So from the first frame of the new position on only
+    pictures due there show (until that frame arrives the old frame and its picture stay together, as a paused seek
+    always showed the old frame), and events the demuxer does not deliver again are not lost: AVI interleaves XSUB
+    chunks by their number, not their time, so a film's subtitle chunks sit at the front of the file and are never
+    read again after a seek. The decoder is flushed when the demuxer seeks. Limitation, as in most players: a seek
+    outside the known span lands on the keyframe before the target, so an event that started before that keyframe and
+    lasts past the target is not shown (the next event is). The same holds for PGS sets that build on an earlier one
+    of their epoch (a palette-only update, a normal set reusing objects): after such a seek past their objects they
+    show nothing until the next acquisition point or epoch start, which resend everything. Restarts that keep the
+    position (another speed, another audio track, a replaced video decoder: `restart_decoding` without a deferred
+    seek) keep the picture on screen: inside the known span the queue stays as for a seek, beyond it (nothing
+    delivered after the picture's start yet) only the picture due at the newest asked time carries over, and only
+    when the restart follows the serial it was asked in, that time was asked at all, and the picture is also due at
+    the restart position (its window cut at the next event's start, which the restart reads again). The re-read
+    stream decodes the same event again, which is ignored, so the picture keeps its identity and no
+    `SubtitlePictureChanged` is posted. A track switch or "Off" still takes it off. Switching off drops the decoder and the pictures; another load drops everything with the session.
     When playback reaches the end the picture goes (the clock stops there, so an event without an end would
     otherwise stay on the end screen).
-  - Memory bounds: at most 64 queued events and 64 MiB of RGBA. Past either, events already replaced go first, then
-    the one farthest ahead (a new event that does not fit is refused); the event `active_at` would pick (the one on
+  - Memory bounds: 64 MiB of RGBA is the real bound, with a sanity limit of 4096 queued events (clearing events
+    weigh nothing; a whole film of small XSUB pictures read at once fits). Past either, events already replaced go
+    first (oldest first), then the one farthest ahead (a new event that does not fit is refused, and from then on the
+    queue claims to know the screen only up to the last event it kept); the event `active_at` would pick (the one on
     screen, or the next one due) is never dropped, so a full-frame sign or a fade of large objects cannot take the
     caption on screen with it (`picture_overflow=` counts the drops). An event above 3840 × 2160 pixels in total, or
-    a rectangle or canvas side above 8192, is dropped as damaged. In practice the queue holds the few events of the
-    demuxer's read-ahead (a PGS caption is ~1500 × 150 px, 0.9 MB).
+    a rectangle or canvas side above 8192, is dropped as damaged. A PGS caption is ~1500 × 150 px, 0.9 MB, so about
+    70 of them fit.
   - The UI (`sa-app/src/main_window/pictures.rs`, `PictureSubtitleOverlay` in `ui/shared/overlay_label.slint`, used by
     both trees): on `PictureChanged` the controller copies each rectangle once into a Slint image (`from_rgba8`:
     straight alpha) with its place on the canvas, the canvas and its fit (`MainBridge.picture-subtitles`), only when
     another event is shown (by `SubtitlePicture::id`). Where a rectangle goes on the player surface is Rust's rule
     (`pictures::place`), which the overlay asks for its own size through the pure callback `MainBridge.place-picture`
-    (re-evaluated on every resize, no frame of lag): an anamorphic canvas (under 1280 wide: DVD 720 × 480 / 576, DVB
-    720 × 576; or the video's coded size) stretches with the aspect-fit video rectangle, like the picture; a
-    square-pixel HD canvas (PGS 1920 × 1080 / 1280 × 720) keeps its shape, scaled uniformly to cover the video
-    rectangle and centred on it, as VLC and mpv do. So the captions of a cropped encode (1920 × 800 video,
-    1920 × 1080 canvas) sit unsquashed in the letterbox below the picture, where the disc put them, instead of 26 %
-    flatter inside it; with equal aspects both rules agree. A rectangle that would fall outside the surface (the
-    canvas reaches past a window as wide as the video, a damaged stream) is moved inside it, and shrunk to fit if
-    larger. The picture scales with the video in a window and in full screen and looks the same on the GPU path, the
+    (re-evaluated on every resize, no frame of lag). The fit is decided by the canvas's shape: only the picture's own
+    raster stretches with the aspect-fit video rectangle, like the picture (the video's coded size on a video shown
+    unturned, a canvas the player made up from it, or an SD raster: at most 720 wide and 480 or 576 high, DVD
+    720 / 704 / 352 × 480 / 576, DVB 720 × 576); every other canvas (PGS 1920 × 1080 / 1280 × 720, a 1024 × 576 or
+    960 × 540 DVB display, a UHD canvas over HD video, any canvas over a quarter-turned video) keeps its shape,
+    scaled uniformly to cover the video rectangle and centred on it, as VLC and mpv do. So the captions of a cropped
+    encode (1920 × 800 video, 1920 × 1080 canvas) sit unsquashed in the letterbox below the picture, where the disc
+    put them, instead of 26 % flatter inside it; with equal aspects both rules agree. An event that would fall
+    outside the surface (the canvas reaches past a window as wide as the video, a damaged stream) is brought inside as
+    a whole, by its bounding box (carried on every row): one offset moves all its rectangles, and when the box is
+    larger than the surface one factor shrinks them about its centre first. Lines that were apart stay apart (a 2.40:1
+    film full screen on 2560 × 1080 covers at 4 / 3 with 180 px of canvas past each edge: two lines at canvas y 870
+    and 950 move up together), and a sign at the top with a caption at the bottom both stay visible, the event scaled
+    down. The picture scales with the video in a window and in full screen and looks the same on the GPU path, the
     RGBA path and the software renderer: Slint draws it over whatever shows the video. It sits over the video and
     under the text
     overlay of the user's lines, the HUD and the controls, is not styled by the text-overlay settings, and uses plain
@@ -306,11 +337,15 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   that does not fit its field panics); the FFmpeg CLI muxes that `.sup` into Matroska and transcodes it to VobSub,
   DVB and XSUB (in AVI) and VobSub in MPEG-PS (`-fix_sub_duration`, bitmap to bitmap). A DVB track without a display
   definition is made by turning the encoder's DDS segments into stuffing segments of the same length, and a corrupt
-  one with the `noise` bitstream filter. `sa-player/tests/pictures.rs` checks exact pixels (straight alpha, RGBA
+  one by changing the sync byte of every packet's first segment (0x0f, which dvbsubdec requires) to 0xff, so the run
+  is deterministic. `sa-player/tests/pictures.rs` checks exact pixels (straight alpha, RGBA
   order), positions, canvases and times for every format (VobSub: 4-bit alpha and the DVD palette within a
-  tolerance), the clearing events, seeks, switches, off, a text stream refused, a speed change that keeps the
-  picture, the end of playback, a hopeless track and a VobSub subpicture fed in pieces without timestamps
-  (`ffmpeg_backend::decode_picture_stream`, a test hook). Every clip is cached under a name hashed from its recipe
+  tolerance), the clearing events, seeks, switches, off, a text stream refused, a speed change that keeps the very
+  picture (also one that started before the keyframe the restart reads from), a speed change, an audio switch and
+  the hardware fall-back racing a seek, 90 XSUB events across seeks, a PGS epoch joined in the middle, the end of
+  playback, a hopeless track and a VobSub subpicture fed in pieces without timestamps
+  (`ffmpeg_backend::decode_picture_stream`, a test hook: it stays public because the generated clip needs the
+  FFmpeg CLI and the `.sup` writer of `tests/common`, which the crate's unit tests do not have). Every clip is cached under a name hashed from its recipe
   and written atomically.
 
 Dependencies of `sa-player` (feature `ffmpeg`):
