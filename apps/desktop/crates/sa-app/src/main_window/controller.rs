@@ -732,7 +732,7 @@ impl MainWindowController {
                     self.consider_auto_track();
                 }
                 PlayerOutput::AudioTrackFailed(details) => self.show_track_failure(media_tracks::audio_track_failure(&details)),
-                PlayerOutput::SubtitleTrackFailed(reason) => self.show_track_failure(media_tracks::subtitle_track_failure(&reason)),
+                PlayerOutput::SubtitleTrackFailed(reason) => self.image_track_failed(&reason),
                 PlayerOutput::PictureChanged => self.sync_picture(),
             }
         }
@@ -1782,6 +1782,18 @@ impl MainWindowController {
 
     /// A failure of the track menu: the error bar on Windows (like a playback or save error); on macOS a
     /// dismissable notice in the status bar like a playback failure (the session's status and summary stay).
+    /// The player could not show an image track, or gave up the one shown. A track chosen for the user
+    /// (`consider_auto_track`) goes silently: nobody asked for it, so a notice would only puzzle. The user's own
+    /// choice is reported.
+    fn image_track_failed(&self, reason: &sa_player::PictureTrackFailure) {
+        let auto = std::mem::take(&mut self.st.borrow_mut().auto_image_track);
+        if auto {
+            eprintln!("[ui] the image track chosen automatically cannot be shown ({reason:?}); turned off without a notice");
+            return;
+        }
+        self.show_track_failure(media_tracks::subtitle_track_failure(reason));
+    }
+
     fn show_track_failure(&self, message: sa_core::l10n::LocalizedMessage) {
         if self.mac {
             self.st.borrow_mut().track_notice = Some(message);

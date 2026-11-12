@@ -1151,6 +1151,27 @@ fn the_picture_overlay_follows_the_players_events() {
 }
 
 #[test]
+fn an_image_track_chosen_for_the_user_that_cannot_be_shown_goes_without_a_notice() {
+    let r = rig(false);
+    open_images_only(&r, "a/film.mkv");
+    let (sink, generation) = {
+        let s = r.backend.lock();
+        (s.sink.clone().unwrap(), s.generation)
+    };
+    // Given up by the player (it turned the track off itself): nobody asked for it, so nothing is reported.
+    sink(PlayerEvent::SubtitleTrackFailed { generation, stream_index: 4, reason: PictureTrackFailure::NoTimeCode });
+    r.pump();
+    assert!(!r.main().get_error_open(), "{}", r.main().get_error_text());
+    // Chosen by the user afterwards, the same failure is reported.
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    sink(PlayerEvent::SubtitleTrackFailed { generation, stream_index: 4, reason: PictureTrackFailure::NoTimeCode });
+    r.pump();
+    assert!(r.main().get_error_open());
+    assert_eq!(r.main().get_error_text(), "Altyazı parçası gösterilemedi: XSUB paketlerinde zaman kodu yok");
+}
+
+#[test]
 fn choosing_an_image_track_never_touches_the_users_lines_or_the_disk_and_drops_unedited_track_lines() {
     let script = scripted_reader();
     let r = rig_with(false, Some(script.reader.clone()));
