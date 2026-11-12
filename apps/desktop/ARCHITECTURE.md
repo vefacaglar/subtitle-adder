@@ -40,6 +40,21 @@ and deinterlacing on the CPU in `sa_player::soft`).
   clips, which decode far faster than real 4K content). libavfilter (`bwdif`/`yadif`), swscale's and
   zscale's tone mapping, a 3D LUT and an RGB48 + LUT pass were rejected: other curves than the shader's, the `filter`
   feature, or a frame of latency.
+- Hardware frames on Windows (`ffmpeg_backend/staging.rs`): the decode thread copies the decoder's array slice into a
+  staging texture of its own (a ring of up to 10 per decoder, NV12 / P010 at the decoder texture's size, created as
+  needed) and maps it; the frame's planes point into the mapping (Y at `pData`, chroma at `pData + RowPitch × texture
+  height`, FFmpeg's own `fill_texture_ptrs` rule; byte-identical to `av_hwframe_transfer_data` in the unit test, also
+  for 1920×800 / 3840×1600 frames in padded textures), which stays mapped until the frame is dropped. That removes
+  the CPU copy `av_hwframe_transfer_data` makes (~25 MB per 4K P010 frame); the UI uploads straight from the mapping
+  and the RGBA path reads it in place. D3D calls run only on the decode thread under FFmpeg's device lock (a dropped
+  frame just marks its slot returned; only a frame that outlives its decoder unmaps its slot itself). No free slot,
+  another format or any D3D failure: that frame goes through `av_hwframe_transfer_data`. `SUBTITLE_ADDER_ZEROCOPY=0`
+  (`off` / `no` / `false`) turns the ring off. Measured (RTX 5070, maximized window, process CPU over 30 s, 3–6 runs):
+  4K60 HEVC 10-bit 0.62 → 0.47 cores (spread 0.56–0.67 → 0.43–0.52), HDR10 0.68 → 0.51, AV1 10-bit 0.66 → 0.50,
+  4K60 H.264 0.48 → 0.44, 1440p120 0.64 → 0.56, a 2160p24 10-bit film 0.33 → 0.26; no dropped frames either way. At
+  4K60 10-bit the transfer costs ~0.01 core afterwards and the GL upload ~0.10, so the GL interop route
+  (`WGL_NV_DX_interop2`, planes copied on the GPU) was not built: what it could still save is below the ~0.2 core that
+  would justify its risk. `[player-stats]` (`SUBTITLE_ADDER_PLAYER_STATS=1`) carries the attribution (`perf.rs`).
 - `SUBTITLE_ADDER_FRAME_DUMP=<dir>` dumps the GPU path's converted pictures and, as `...-cpu.png`, the RGBA path's.
 - `SUBTITLE_ADDER_FULL_SCREEN=1` makes the main window enter full screen once, when the first video frame arrives
   (as the `F` key would), so full screen can be measured without input. `SUBTITLE_ADDER_PLAYER_STATS=1` ends the
@@ -168,7 +183,9 @@ Dependencies of `sa-player` (feature `ffmpeg`):
 |---|---|---|
 | `ffmpeg-next` (workspace features `codec`, `format`, `software-resampling`, `software-scaling`) | all | decode, swscale, swresample; no `filter` feature (deinterlacing runs in the shader, or in `sa_player::soft` for the RGBA path) |
 | `cpal` | all | audio output |
-| `windows` (`Win32_Foundation`, `Win32_System_Threading`) | Windows | `SetThreadPriority` (incl. `THREAD_MODE_BACKGROUND_BEGIN/END`), `AvSetMmThreadCharacteristicsW` |
+| `windows` (`Win32_Foundation`, `Win32_System_Threading`) | Windows | `SetThreadPriority` (incl. `THREAD_MODE_BACKGROUND_BEGIN/END`), `AvSetMmThreadCharacteristicsW`, `GetThreadTimes` / `GetProcessTimes` (`perf.rs`) |
+| `windows` (`Win32_Graphics_Direct3D`, `Win32_Graphics_Direct3D11`, `Win32_Graphics_Dxgi`, `Win32_Graphics_Dxgi_Common`) | Windows | the mapped staging ring for D3D11VA frames (`staging.rs`: `CreateTexture2D`, `CopySubresourceRegion`, `Map` / `Unmap`) |
 | `libc` | macOS | `pthread_set_qos_class_self_np` (incl. `QOS_CLASS_BACKGROUND`) |
 
-`windows` and `libc` were already workspace dependencies (no new crate, no version change).
+`windows` and `libc` were already workspace dependencies (no new crate, no version change; the Direct3D features are
+new features of the same `windows` 0.62.2).
