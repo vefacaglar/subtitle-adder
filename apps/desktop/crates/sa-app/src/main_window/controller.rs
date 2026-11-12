@@ -413,6 +413,15 @@ impl MainWindowController {
         }));
         let weak = self.weak();
         self.video.set_trace_clock(Box::new(move || Some(weak.upgrade()?.player.try_borrow().ok()?.backend_position())));
+        // `SUBTITLE_ADDER_WINDOW_DUMP`'s moments: a picture on the overlay, overlay text, the playback position.
+        let weak = self.weak();
+        self.video.set_window_state(Box::new(move || {
+            let Some(c) = weak.upgrade() else { return super::video_gl::WindowState::default() };
+            use slint::Model as _;
+            let text = c.win().is_some_and(|w| !w.global::<MainBridge>().get_overlay_text().is_empty());
+            let position = c.player.try_borrow().ok().filter(|p| p.has_media()).map(|p| p.backend_position());
+            super::video_gl::WindowState { picture: c.picture_rects.row_count() > 0, text, position }
+        }));
     }
 
     fn wire_view_models(self: &Rc<Self>) {

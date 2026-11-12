@@ -39,6 +39,17 @@
 //!   renderer: tone-mapped and deinterlaced by the player on the CPU) are dumped the same way as
 //!   `...-<pts>[-field2]-cpu.png` ([`VideoSurface::dump_rgba`]).
 //!
+//! * `SUBTITLE_ADDER_WINDOW_DUMP=<path prefix>` writes the window's whole back buffer (read with `glReadPixels` in
+//!   the `AfterRendering` notifier, after Slint drew the video, the subtitle pictures, the text overlay and the
+//!   controls, before the swap; rows flipped top-down, alpha opaque) as PNG files
+//!   `<prefix>-<pid>-<n>-<moments>-<position>.png`, at a few moments only: the first render with a bitmap subtitle
+//!   picture on screen (`picture`), the first with overlay text (`text`), the first at or after 5 s of playback
+//!   (`after5s`), and the first at or after each playback position listed in `SUBTITLE_ADDER_WINDOW_DUMP_AT`
+//!   (seconds, comma separated; `at<t>s`); moments reached in the same render share one file; 8 files at most. Each
+//!   written file logs a `[video] window dump` line. Screen capture of the GL window returns white here, so this is
+//!   the way to see what the window presents. GPU renderer only (the software renderer has no notifier); off, and
+//!   free, without the variable.
+//!
 //! Known limits:
 //! * Without a previous frame (the first frame after a load, a seek or a pts discontinuity, and so a paused still
 //!   right after one) the other field's rows are always interpolated (bob), which halves the vertical detail of a
@@ -109,6 +120,7 @@ struct Inner {
     trace: Option<FrameTrace>,
     dump: Option<FrameDump>,
     probe: Option<WindowProbe>,
+    window_dump: Option<WindowDump>,
 }
 
 /// `SUBTITLE_ADDER_FRAME_TRACE`: render lines for a writer thread (see the module docs).
@@ -179,6 +191,148 @@ impl WindowProbe {
         let stats = std::env::var_os("SUBTITLE_ADDER_PLAYER_STATS").is_some_and(|v| v == "1");
         let trace = std::env::var_os("SUBTITLE_ADDER_FRAME_TRACE").is_some_and(|v| !v.is_empty());
         (stats || trace).then(|| Self { last: None, new_frame: false, unchanged: Rc::new(Cell::new(0)), run: 0 })
+    }
+}
+
+/// What the window shows, for [`WindowDump`]'s moments (the controller reports it: `VideoSurface::set_window_state`).
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct WindowState {
+    /// A bitmap subtitle picture is on the overlay.
+    pub picture: bool,
+    /// The text overlay holds text.
+    pub text: bool,
+    /// The playback position (s), when a video is open.
+    pub position: Option<f64>,
+}
+
+/// When [`WindowDump`] writes the window: the first render with a subtitle picture on screen, the first with overlay
+/// text, the first at or after [`WindowDumpPolicy::AFTER`] s of playback, and the first at or after each position of
+/// `SUBTITLE_ADDER_WINDOW_DUMP_AT`; never more than [`WindowDumpPolicy::MAX`] in all. A moment whose dump could not be
+/// taken (the writer still busy) is tried again at the next render.
+#[derive(Debug, Default)]
+struct WindowDumpPolicy {
+    picture: bool,
+    text: bool,
+    after: bool,
+    /// Positions still to dump, ascending.
+    at: Vec<f64>,
+    count: u32,
+}
+
+impl WindowDumpPolicy {
+    const MAX: u32 = 8;
+    const AFTER: f64 = 5.0;
+
+    /// `SUBTITLE_ADDER_WINDOW_DUMP_AT`: seconds, comma separated (anything else is ignored).
+    fn new(at: &str) -> Self {
+        let mut at: Vec<f64> = at.split(',').filter_map(|t| t.trim().parse::<f64>().ok()).filter(|t| t.is_finite() && *t >= 0.0).collect();
+        at.sort_by(f64::total_cmp);
+        at.dedup();
+        Self { at, ..Self::default() }
+    }
+
+    fn exhausted(&self) -> bool {
+        self.count >= Self::MAX || (self.picture && self.text && self.after && self.at.is_empty())
+    }
+
+    /// The moments `s` reaches that were not dumped yet, joined for the file name (`None`: nothing due). Taken only
+    /// when `take` (the dump is written): otherwise they stay due.
+    fn due(&mut self, s: WindowState, take: bool) -> Option<String> {
+        if self.count >= Self::MAX {
+            return None;
+        }
+        let mut reasons = Vec::new();
+        if s.picture && !self.picture {
+            reasons.push("picture".to_owned());
+        }
+        if s.text && !self.text {
+            reasons.push("text".to_owned());
+        }
+        let pos = s.position.filter(|p| p.is_finite());
+        if pos.is_some_and(|p| p >= Self::AFTER) && !self.after {
+            reasons.push(format!("after{}s", Self::AFTER));
+        }
+        let reached = pos.map_or(0, |p| self.at.iter().take_while(|t| **t <= p).count());
+        for t in &self.at[..reached] {
+            reasons.push(format!("at{t}s"));
+        }
+        if reasons.is_empty() {
+            return None;
+        }
+        if take {
+            self.picture |= s.picture;
+            self.text |= s.text;
+            self.after |= pos.is_some_and(|p| p >= Self::AFTER);
+            self.at.drain(..reached);
+            self.count += 1;
+        }
+        Some(reasons.join("+"))
+    }
+}
+
+/// `SUBTITLE_ADDER_WINDOW_DUMP=<path prefix>`: the window's whole back buffer, read after Slint rendered and before
+/// the swap (what is about to be presented: video, subtitle pictures, text overlay, controls), written as
+/// `<prefix>-<pid>-<n>-<moments>-<position>.png` at the moments of [`WindowDumpPolicy`] (see the module docs).
+/// Off, and free, without the variable; once every moment is taken, nothing more is read or asked.
+struct WindowDump {
+    prefix: String,
+    policy: WindowDumpPolicy,
+    images: mpsc::Sender<DumpImage>,
+    in_flight: Arc<AtomicUsize>,
+    state: Option<Box<dyn Fn() -> WindowState>>,
+}
+
+impl WindowDump {
+    fn from_env() -> Option<Self> {
+        let prefix = std::env::var("SUBTITLE_ADDER_WINDOW_DUMP").ok().filter(|p| !p.trim().is_empty())?;
+        let at = std::env::var("SUBTITLE_ADDER_WINDOW_DUMP_AT").unwrap_or_default();
+        if let Some(dir) = std::path::Path::new(&prefix).parent().filter(|d| !d.as_os_str().is_empty())
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            eprintln!("[video] window dumps off: cannot create {}: {e}", dir.display());
+            return None;
+        }
+        let (tx, rx) = mpsc::channel::<DumpImage>();
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let pending = in_flight.clone();
+        std::thread::Builder::new()
+            .name("window-dump".into())
+            .spawn(move || {
+                while let Ok(img) = rx.recv() {
+                    let r = image::save_buffer(&img.name, &img.rgba, img.width, img.height, image::ExtendedColorType::Rgba8);
+                    match r {
+                        Ok(()) => eprintln!("[video] window dump {} ({}x{})", img.name, img.width, img.height),
+                        Err(e) => eprintln!("[video] window dump {} failed: {e}", img.name),
+                    }
+                    drop(img);
+                    pending.fetch_sub(1, Ordering::AcqRel);
+                }
+            })
+            .ok()?;
+        Some(Self { prefix: format!("{prefix}-{}", std::process::id()), policy: WindowDumpPolicy::new(&at), images: tx, in_flight, state: None })
+    }
+
+    /// After a render: the back buffer, when a moment is due and the writer has room.
+    ///
+    /// # Safety
+    /// The renderer's GL context is current (the `AfterRendering` notifier).
+    unsafe fn after_render(&mut self, gl: &mut Gl) {
+        if self.policy.exhausted() {
+            return;
+        }
+        let Some(state) = self.state.as_ref().map(|f| f()) else { return };
+        let room = self.in_flight.load(Ordering::Acquire) < 2;
+        if self.policy.due(state, false).is_none() || !room {
+            return;
+        }
+        let Some((width, height, rgba)) = (unsafe { gl.window_pixels() }) else { return };
+        let Some(reasons) = self.policy.due(state, true) else { return };
+        let pos = state.position.map_or_else(|| "-".to_owned(), |p| format!("{p:.3}"));
+        let name = format!("{}-{:02}-{reasons}-{pos}.png", self.prefix, self.policy.count);
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        if self.images.send(DumpImage { name, width, height, rgba }).is_err() {
+            self.in_flight.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 }
 
@@ -330,6 +484,7 @@ impl VideoSurface {
                 trace: FrameTrace::from_env(),
                 dump: FrameDump::from_env(),
                 probe,
+                window_dump: WindowDump::from_env(),
             })),
             available: Rc::new(Cell::new(false)),
             uploads: Rc::new(Cell::new(0)),
@@ -417,6 +572,10 @@ impl VideoSurface {
                             p.last = hash;
                             p.new_frame = false;
                         }
+                        if let (Some(d), Some(g)) = (st.window_dump.as_mut(), st.gl.as_mut()) {
+                            // SAFETY: the renderer's context is current during the notifier.
+                            unsafe { d.after_render(g) };
+                        }
                     }
                     drop(s);
                     if let Some(f) = &after_render {
@@ -490,6 +649,15 @@ impl VideoSurface {
             && let Some(t) = &mut s.trace
         {
             t.clock = Some(clock);
+        }
+    }
+
+    /// What the window shows, for `SUBTITLE_ADDER_WINDOW_DUMP`'s moments (no effect without the variable).
+    pub fn set_window_state(&self, state: Box<dyn Fn() -> WindowState>) {
+        if let Ok(mut s) = self.inner.try_borrow_mut()
+            && let Some(d) = &mut s.window_dump
+        {
+            d.state = Some(state);
         }
     }
 
@@ -1005,6 +1173,48 @@ impl Gl {
         }
     }
 
+    /// The window's whole back buffer as top-down RGBA rows (alpha forced opaque), read in the `AfterRendering`
+    /// notifier before the buffer swap: what this render is about to present (`SUBTITLE_ADDER_WINDOW_DUMP`). GL
+    /// state it touches is restored.
+    unsafe fn window_pixels(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+        unsafe {
+            let gl = &self.gl;
+            let mut viewport = [0; 4];
+            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
+            let (w, h) = (viewport[2].max(0) as usize, viewport[3].max(0) as usize);
+            if w == 0 || h == 0 {
+                return None;
+            }
+            // An error left by the render itself is not this read's.
+            while gl.get_error() != glow::NO_ERROR {}
+            let read_fbo = gl.get_parameter_framebuffer(glow::READ_FRAMEBUFFER_BINDING);
+            let pack_buffer = gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING);
+            let pack_alignment = gl.get_parameter_i32(glow::PACK_ALIGNMENT);
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
+            let mut buf = vec![0u8; w * h * 4];
+            gl.read_pixels(0, 0, w as i32, h as i32, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut buf)));
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, read_fbo);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, pack_buffer);
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, pack_alignment);
+            let failed = gl.get_error() != glow::NO_ERROR;
+            if failed {
+                return None;
+            }
+            // GL rows run bottom-up.
+            let row = w * 4;
+            let mut out = Vec::with_capacity(buf.len());
+            for y in (0..h).rev() {
+                out.extend_from_slice(&buf[y * row..(y + 1) * row]);
+            }
+            for px in out.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+            Some((w as u32, h as u32, out))
+        }
+    }
+
     /// A hash of [`WindowProbe::ROWS`] rows of the window's back buffer (every 4th pixel), read in the
     /// `AfterRendering` notifier before the buffer swap: what this render actually put on screen. GL state it touches
     /// is restored.
@@ -1313,6 +1523,33 @@ impl Gl {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn window_dumps_are_taken_once_per_moment_and_bounded() {
+        let st = |picture, text, position| WindowState { picture, text, position };
+        let mut p = WindowDumpPolicy::new(" 12.5, x, 2,2 ,-1");
+        assert_eq!(p.at, vec![2.0, 12.5], "parsed, sorted, deduplicated");
+        assert_eq!(p.due(st(false, false, Some(1.0)), true), None);
+        // Not taken (the writer was busy): still due at the next render.
+        assert_eq!(p.due(st(true, false, Some(1.0)), false).as_deref(), Some("picture"));
+        assert_eq!(p.due(st(true, false, Some(1.0)), true).as_deref(), Some("picture"));
+        assert_eq!(p.due(st(true, false, Some(1.5)), true), None, "once");
+        assert_eq!(p.due(st(true, true, Some(2.1)), true).as_deref(), Some("text+at2s"), "moments of one render share a file");
+        assert_eq!(p.due(st(false, false, Some(6.0)), true).as_deref(), Some("after5s"));
+        assert!(!p.exhausted());
+        assert_eq!(p.due(st(false, false, Some(13.0)), true).as_deref(), Some("at12.5s"));
+        assert!(p.exhausted());
+        assert_eq!(p.count, 4);
+        // Never more than MAX, whatever is asked for.
+        let many: Vec<String> = (0..20).map(|i| i.to_string()).collect();
+        let mut p = WindowDumpPolicy::new(&many.join(","));
+        let taken = (0..20).filter(|i| p.due(st(false, false, Some(f64::from(*i))), true).is_some()).count();
+        assert_eq!(taken as u32, WindowDumpPolicy::MAX);
+        assert!(p.exhausted());
+        // Without a position only the overlay moments count.
+        let mut p = WindowDumpPolicy::new("");
+        assert_eq!(p.due(st(false, true, None), true).as_deref(), Some("text"));
+    }
+
     use super::*;
 
     #[test]
