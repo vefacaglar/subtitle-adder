@@ -250,7 +250,8 @@ pub fn announce_ffmpeg() {
 }
 
 /// A test that cannot run without a generated clip: says so where it shows, and fails instead when
-/// `SA_REQUIRE_FFMPEG=1` (CI and the run scripts, where a skip would hide a broken setup).
+/// `SA_REQUIRE_FFMPEG=1` (set it by hand where a skip would hide a broken setup: nothing sets it for you; it applies
+/// to the tests that go through `or_skip!`, the picture tests).
 pub fn skipped(test: &str) {
     if std::env::var("SA_REQUIRE_FFMPEG").is_ok_and(|v| v == "1") {
         panic!("{test}: no FFmpeg CLI or encoder to generate its clip, and SA_REQUIRE_FFMPEG=1");

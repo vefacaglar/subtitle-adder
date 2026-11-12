@@ -460,6 +460,60 @@ fn late_corrupt_dvb() -> Option<PathBuf> {
     Some(fixture_file("dvb-late-corrupt", "mkv", &bytes))
 }
 
+/// [`many_xsub_avi`] with the time codes of four packets (those of 8.0 to 8.3 s) damaged: the other 86 are fine.
+fn xsub_with_four_damaged_chunks() -> Option<PathBuf> {
+    let mut bytes = std::fs::read(many_xsub_avi()?).expect("clip");
+    let mut patched = 0;
+    for i in 0..bytes.len().saturating_sub(27) {
+        if bytes[i] == b'[' && bytes[i + 13] == b'-' && bytes[i + 26] == b']' && bytes[i + 1..i + 9] == *b"00:00:08" {
+            if bytes[i + 10..i + 12] < b"40"[..] {
+                bytes[i] = b'x';
+                patched += 1;
+            }
+        }
+    }
+    assert_eq!(patched, 4, "the time codes of 8.0, 8.1, 8.2 and 8.3");
+    Some(fixture_file("xsub-four-damaged", "avi", &bytes))
+}
+
+/// 6 s of video and a tone with one PGS epoch (stream 1): its start at 0.5 sends object 0 version 0 (white 40 × 10)
+/// and shows it at (20, 20); a normal set at 1.1 shows it again at (60, 20); a normal set at 2.0 sends object 0
+/// version 1 (red 40 × 10) and shows it at (100, 20); cleared at 3.0.
+fn pgs_redefined_object_mkv() -> Option<PathBuf> {
+    let canvas = (320, 240);
+    let white = Object::filled(0, 0, 40, 10, 1);
+    let red = Object::filled(0, 0, 40, 10, 2);
+    let set = |pts, state, x, palette, objects, n| DisplaySet {
+        pts,
+        segments_pts: None,
+        canvas,
+        composition_number: n,
+        state,
+        palette_update: false,
+        palette_id: 0,
+        compositions: vec![Composition { object: 0, window: 0, x, y: 20 }],
+        windows: Some(vec![(0, x, 20, 40, 10)]),
+        palette,
+        objects,
+    };
+    let mut out = Vec::new();
+    sup::display_set(&mut out, 0.0, canvas, &[], &PALETTE);
+    sup::write(&mut out, &set(0.5, State::EpochStart, 20, Some((0, 0, &PALETTE[..])), vec![(0, 0, &white)], 1));
+    sup::write(&mut out, &set(1.1, State::Normal, 60, None, vec![], 2));
+    sup::write(&mut out, &set(2.0, State::Normal, 100, None, vec![(0, 1, &red)], 3));
+    sup::display_set(&mut out, 3.0, canvas, &[], &PALETTE);
+    let sup_path = path_str(&fixture_file("pgs-redefined", "sup", &out));
+    hashed_clip(
+        "pgs-redefined",
+        "mkv",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-i", &sup_path,
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "6", "-map", "0:v", "-map", "1:s", "-map", "2:a",
+            "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p", "-c:s", "copy", "-c:a", "aac",
+        ],
+    )
+}
+
 /// [`many_xsub_avi`] with the `[` of every packet's time code changed: no packet says when it is shown.
 fn xsub_without_time_codes() -> Option<PathBuf> {
     let mut bytes = std::fs::read(many_xsub_avi()?).expect("clip");
@@ -1314,13 +1368,17 @@ fn switching_tracks_and_turning_them_off_replaces_the_picture_and_a_text_track_i
     assert!(r.wait_picture(|p| p.stream_index == VOBSUB).is_some(), "{:?}", r.picture());
     assert_eq!(r.p.tracks().active_image_subtitle, Some(VOBSUB));
     assert!((r.p.position() - 0.7).abs() < 0.05, "the position is kept: {}", r.p.position());
-    // Asking for the track shown does nothing: no switch is answered.
+    // Asking for the track shown changes nothing, but is answered all the same (the asker learns the outcome), with
+    // no restart and no failure.
     r.settle();
     let n = r.rec.len();
+    let decoded = r.p.stats().decoded;
     r.p.select_image_subtitle_track(Some(VOBSUB));
+    assert!(r.rec.wait_for(n, T, |e| matches!(e, PlayerEvent::TracksChanged { .. })).is_some());
     r.settle();
     let after = &r.rec.snapshot()[n..];
-    assert!(!after.iter().any(|e| matches!(e, PlayerEvent::TracksChanged { .. } | PlayerEvent::SubtitleTrackFailed { .. })), "{after:?}");
+    assert!(!after.iter().any(|e| matches!(e, PlayerEvent::SubtitleTrackFailed { .. } | PlayerEvent::SubtitlePictureChanged { .. })), "{after:?}");
+    assert_eq!(r.p.stats().decoded, decoded, "no restart");
     assert_eq!(r.picture().map(|p| p.stream_index), Some(VOBSUB));
     // A text track is not a picture track: refused, the shown one stays.
     let events = r.select(Some(SRT));
@@ -1343,26 +1401,58 @@ fn switching_tracks_and_turning_them_off_replaces_the_picture_and_a_text_track_i
     assert!(wait_until(T, || r.p.stats().presented > presented + 10), "frames keep coming");
 }
 
+/// Holds the next seek between moving the bitmap subtitle timeline to its serial and moving the clock until the
+/// presenter has asked for a picture with a time read before the seek (paused, it asks with the clock every 10 ms):
+/// the race the serial check guards against, forced. The returned flag says it happened.
+#[cfg(debug_assertions)]
+fn hold_the_next_seek_for_a_stale_ask(r: &Rig) -> Arc<std::sync::atomic::AtomicBool> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let tx = std::sync::Mutex::new(tx);
+    r.p.set_picture_ask_hook(Some(Box::new(move |of, serial| {
+        if of < serial {
+            let _ = tx.lock().unwrap().send(());
+        }
+    })));
+    let seen = Arc::new(AtomicBool::new(false));
+    let flag = seen.clone();
+    let rx = std::sync::Mutex::new(rx);
+    r.p.set_seek_gate(Some(Box::new(move || {
+        let rx = rx.lock().unwrap();
+        while rx.try_recv().is_ok() {}
+        if rx.recv_timeout(Duration::from_secs(5)).is_ok() {
+            flag.store(true, Ordering::SeqCst);
+        }
+    })));
+    seen
+}
+
+#[cfg(debug_assertions)]
 #[test]
 fn a_clock_reading_from_before_a_seek_never_pins_the_new_position() {
+    use std::sync::atomic::Ordering;
     let mut r = or_skip!(open());
     r.select(Some(PGS));
     // Paused at 2.7 (cleared at 2.5), the queue knowing the whole clip.
     r.seek_to_nothing(2.7);
     r.settle();
-    // The seek to 1.7 holds between moving the timeline and moving the clock long enough for the presenter (it
-    // polls every 10 ms while paused) to read the clock, still at 2.7, for the new serial.
-    r.p.set_seek_gate(Some(Box::new(|| std::thread::sleep(Duration::from_millis(150)))));
+    // The seek to 1.7 waits, between moving the timeline and moving the clock, until the presenter has read the
+    // clock, still at 2.7, and asked with it.
+    let raced = hold_the_next_seek_for_a_stale_ask(&r);
     r.p.seek(1.7);
     r.p.set_seek_gate(None);
+    r.p.set_picture_ask_hook(None);
+    assert!(raced.load(Ordering::SeqCst), "the presenter asked with a time of before the seek inside the window");
     watch_after_seek(&mut r, 1.7, Duration::from_millis(300), &PGS_DUE);
     // Read at 2.7 for the new serial, the time would stay there: nothing would show until playback passed 2.7.
     assert!(r.wait_picture(|p| (p.start - 1.5).abs() < 1e-3).is_some(), "{:?}", r.picture());
     // The same with the queue cleared (back before what it knows).
     r.seek_to_nothing(2.7);
-    r.p.set_seek_gate(Some(Box::new(|| std::thread::sleep(Duration::from_millis(150)))));
+    let raced = hold_the_next_seek_for_a_stale_ask(&r);
     r.p.seek(0.7);
     r.p.set_seek_gate(None);
+    r.p.set_picture_ask_hook(None);
+    assert!(raced.load(Ordering::SeqCst));
     assert!(r.wait_picture(|p| (p.start - 0.5).abs() < 1e-3).is_some(), "{:?}", r.picture());
 }
 
@@ -1406,13 +1496,15 @@ fn every_caption_of_a_front_loaded_xsub_stream_larger_than_the_byte_bound_shows_
             None => r.seek_to_nothing(t),
         }
     }
-    // Played through the middle: every caption on the way, none standing in for another.
+    // Played through the middle: every caption on the way, none standing in for another. Counted by the player
+    // (`pictures_shown`), not by this thread's polling, which a loaded machine starves: the pictures it does see only
+    // have to come in order.
     r.seek_to_nothing(big_start(40) - 0.1);
-    r.p.set_rate(2.0);
+    let shown_before = r.p.stats().pictures_shown;
     r.p.play();
     let mut widths = Vec::new();
     let deadline = Instant::now() + T;
-    while Instant::now() < deadline && r.p.position() < big_start(60) {
+    while Instant::now() < deadline && r.p.position() < big_start(52) {
         if let Some(p) = r.picture()
             && widths.last() != Some(&width(&p))
         {
@@ -1422,9 +1514,12 @@ fn every_caption_of_a_front_loaded_xsub_stream_larger_than_the_byte_bound_shows_
         std::thread::sleep(Duration::from_millis(2));
     }
     r.p.pause();
-    let expected: Vec<usize> = (40..60).collect();
-    assert!(widths.len() >= 18 && widths.windows(2).all(|w| w[1] == w[0] + 1), "{widths:?}");
-    assert!(widths.iter().all(|w| expected.contains(w) || *w == 60), "{widths:?}");
+    r.settle();
+    let at = r.p.position();
+    let due = |t: f64| (40..BIG).filter(|&i| big_start(i) <= t).count() as u64;
+    let shown = r.p.stats().pictures_shown - shown_before;
+    assert!((due(at - 0.05)..=due(at + 0.05)).contains(&shown) && shown >= 12, "{shown} pictures shown up to {at}");
+    assert!(widths.windows(2).all(|w| w[1] > w[0]) && widths.iter().all(|w| (40..=52).contains(w)), "{widths:?}");
     let s = r.p.stats();
     assert_eq!((s.picture_failures, s.picture_overflow, s.picture_store_overflow), (0, 0, 0), "{s:?}");
 }
@@ -1461,7 +1556,10 @@ fn a_restart_in_place_past_what_the_queue_knows_carries_the_very_picture_over() 
     let seen = play_and_record(&mut r);
     assert_eq!(starts(&seen), vec![Some(1.5), None], "{seen:?}");
     assert_eq!(seen[0].1.as_ref().map(|q| q.id), Some(p.id));
-    assert!((9.0 - 0.04..9.4).contains(&seen[1].0), "went at {}", seen[1].0);
+    // Judged by the newest frame this thread had taken when it saw the change (the picture changes as the frame at
+    // 9.0 is published, which this thread may take a few frames later at 4x): never before its time, and gone by the
+    // end. The exact moment is covered at 1x by `playing_shows_each_picture_when_it_is_due...`.
+    assert!((9.0 - 0.25..12.0).contains(&seen[1].0), "went at {}", seen[1].0);
 }
 
 #[test]
@@ -1591,4 +1689,70 @@ fn with_one_frame_a_second_captions_still_start_and_end_on_time() {
         assert!(*at >= due - 0.02 && *at < due + 0.15, "changed at {at}, due at {due}: {seen:?}");
     }
     assert!(r.picture_changes(from) >= 4);
+}
+
+#[test]
+fn a_few_damaged_xsub_chunks_anywhere_never_turn_the_track_off() {
+    // The scan and the demuxer both read the four damaged chunks at once, far from the position: they are turned
+    // away when stored and never count towards giving up.
+    let mut r = open_clip(&or_skip!(xsub_with_four_damaged_chunks()));
+    let from = r.rec.len();
+    r.select(Some(1));
+    let p = r.seek_to_picture(1.05, 1.0);
+    assert_eq!(p.bounds().0, 40);
+    r.settle();
+    assert!(!r.rec.snapshot()[from..].iter().any(|e| matches!(e, PlayerEvent::SubtitleTrackFailed { .. })), "{:?}", r.rec.snapshot());
+    assert_eq!(r.p.tracks().active_image_subtitle, Some(1));
+    assert!(r.p.stats().picture_failures >= 4, "the damaged chunks are counted: {:?}", r.p.stats());
+    // Selected again, and played over the damaged part: still on, the captions after it shown.
+    r.select(None);
+    r.select(Some(1));
+    r.seek_to_picture(7.85, 7.8);
+    r.p.play();
+    assert!(r.wait_picture(|p| (p.start - 8.4).abs() < 1e-3).is_some(), "{:?}", r.picture());
+    r.p.pause();
+    assert_eq!(r.p.tracks().active_image_subtitle, Some(1));
+}
+
+#[test]
+fn an_xsub_track_chosen_far_past_its_front_loaded_chunks_shows_the_caption_there() {
+    // The demuxer read every chunk at the start of the file long ago; only the scan delivers them now.
+    let mut r = open_clip(&or_skip!(big_xsub_avi()));
+    r.seek_to_nothing(0.5);
+    r.seek(20.0);
+    r.settle();
+    r.select(Some(1));
+    let p = r.wait_picture(|p| (p.start - big_start(79)).abs() < 2e-3).unwrap_or_else(|| panic!("{:?} {:?}", r.picture(), r.p.stats()));
+    assert_eq!(p.bounds().2 as usize, (400 + 79usize).next_multiple_of(2));
+}
+
+#[test]
+fn a_restart_in_place_never_decodes_a_set_again_against_objects_redefined_after_it() {
+    let mut r = open_clip(&or_skip!(pgs_redefined_object_mkv()));
+    r.select(Some(1));
+    // Played into the epoch to the normal set at 1.1 (object 0, version 0: white), paused there with the read-ahead
+    // past the set at 2.0, which redefined object 0 (version 1: red) in the decoder.
+    r.seek_to_picture(0.6, 0.5);
+    r.p.play();
+    let p = r.wait_picture(|p| (p.start - 1.1).abs() < 1e-3).unwrap_or_else(|| panic!("{:?}", r.picture()));
+    r.p.pause();
+    r.settle();
+    assert_eq!(p.bounds(), (60, 20, 40, 10));
+    assert!(!is_red(canvas_pixel(&p, 70, 25)), "white, its own version");
+    // Another speed: decoding restarts in place from the keyframe at 1.0 and reads the set at 1.1 again. Fed again
+    // to the decoder (which holds version 1 now) it would come out red and replace the queued one.
+    let from = r.rec.len();
+    let decoded = r.p.stats().decoded;
+    r.p.set_rate(1.5);
+    r.settle();
+    assert!(r.p.stats().decoded > decoded, "decoding did restart");
+    let q = r.picture().expect("still on screen");
+    assert_eq!(q.id, p.id, "the same picture");
+    assert!(!is_red(canvas_pixel(&q, 70, 25)));
+    assert_eq!(r.picture_changes(from), 0);
+    // Played on, the decoder (kept) shows the new version at 2.0.
+    r.p.play();
+    let n = r.wait_picture(|p| (p.start - 2.0).abs() < 1e-3).unwrap_or_else(|| panic!("{:?}", r.picture()));
+    assert_eq!(n.bounds(), (100, 20, 40, 10));
+    assert!(is_red(canvas_pixel(&n, 110, 25)));
 }

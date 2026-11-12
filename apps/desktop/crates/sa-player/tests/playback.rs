@@ -183,7 +183,10 @@ fn seeking_while_playing_continues_from_the_target() {
     opened(&rec, g);
     assert!(wait_until(T, || p.position() > 0.3));
     p.seek(2.0);
-    assert_eq!(p.position(), 2.0);
+    // The clock holds the target until the target frame is shown, then runs on; a starved test thread can read it
+    // a little after that, never before the target.
+    let at = p.position();
+    assert!((2.0..2.3).contains(&at), "{at}");
     // The first frame taken after the seek comes from the target. It is usually the target frame itself; when the
     // test thread is starved (parallel tests decoding 1080p) newer frames may replace it before it is taken, so a
     // few frames of slack are allowed. Frames of the old position (< 1 s) never show up.
