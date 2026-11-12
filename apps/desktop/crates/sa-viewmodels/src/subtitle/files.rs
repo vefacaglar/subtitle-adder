@@ -145,8 +145,12 @@ impl Inner {
         let ui = self.svc.ui.clone();
         let fail_visible = st.policy.single_jobs_as_list_rows == SingleJobsAsListRows::RecentJobs;
         let flavor = st.policy.import_flavor;
+        // Counted before the thread starts: if it cannot start, dropping the guard with the closure counts it down.
+        if let Some(s) = st.session_mut(sid) {
+            s.sidecar_lookups += 1;
+        }
         let lookup = SidecarLookup { key, ui: ui.clone(), sid, done: false };
-        let spawned = std::thread::Builder::new().name("sa-sidecar".into()).spawn(move || {
+        let _ = std::thread::Builder::new().name("sa-sidecar".into()).spawn(move || {
             let mut lookup = lookup;
             let found = subtitle_import::find_sidecar_subtitle(&video).map(|sidecar| {
                 let parsed = subtitle_import::parse_file_with(&sidecar, flavor);
@@ -186,11 +190,6 @@ impl Inner {
                 });
             });
         });
-        if spawned.is_ok()
-            && let Some(s) = st.session_mut(sid)
-        {
-            s.sidecar_lookups += 1;
-        }
     }
 
     /// `leave_foreground()`: commit drafts, clear undo, end or evict the old session.
