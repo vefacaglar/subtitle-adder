@@ -21,8 +21,10 @@
 //!
 //! The canvas is the decoder's (`width` × `height`: the PGS composition, the VobSub idx `size:`, the DVB display
 //! definition) as given, even when a damaged rectangle lies outside it (the UI keeps rectangles on screen); only when
-//! the decoder names none is one made up: 720 × 576 for DVB (its default display), else the video's coded size, grown
-//! to hold the rectangles.
+//! the decoder names none is one made up: 720 × 576 for DVB (its default display), else the video's coded size, never
+//! grown to hold the rectangles (one pixel more would change the canvas's fit in the UI); a side is clamped to 8192.
+//!
+//! XSUB and VobSub packets are kept encoded in a [`PacketStore`] and decoded near the position (see there).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
