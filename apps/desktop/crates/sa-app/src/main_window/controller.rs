@@ -118,6 +118,8 @@ pub struct RowSyncCounters {
 #[derive(Default)]
 struct UiState {
     full_screen: bool,
+    /// The pointer is hidden over the full-screen video (`HudState::cursor_hidden`).
+    cursor_hidden: bool,
     /// `SUBTITLE_ADDER_FULL_SCREEN=1`: enter full screen when the first video frame is shown (diagnostics).
     full_screen_on_first_frame: bool,
     editing_text: bool,
@@ -1709,21 +1711,33 @@ impl MainWindowController {
         let main = w.global::<MainBridge>();
         main.set_hud_visible(v.transport);
         main.set_picker_visible(v.pickers);
+        // Full screen: the pointer hides with the controls while it rests over the playing video. Set on the native
+        // window directly: Slint applies a `mouse-cursor` only on the next pointer event, and the pointer is still.
+        let hide = self.hud.borrow().cursor_hidden(self.st.borrow().full_screen);
+        if std::mem::replace(&mut self.st.borrow_mut().cursor_hidden, hide) != hide {
+            use slint::winit_030::WinitWindowAccessor;
+            w.window().with_winit_window(|ww| ww.set_cursor_visible(!hide));
+        }
     }
 
-    /// The window fields of the `[player-stats]` line: `full_screen=` (the controller's state), and
+    /// The window fields of the `[player-stats]` line: `full_screen=` (the controller's state), `cursor_hidden=`, and
     /// on Windows with the native chrome the window, client (screen coordinates) and monitor rectangles in physical px
     /// and the chrome's own full-screen flag (`window=x,y,WxH client=… monitor=… maximized=… native_full_screen=…`).
     fn geometry_fields(&self) -> String {
         let st = self.st.borrow();
         #[allow(unused_mut)]
-        let mut fields = format!("full_screen={}", st.full_screen);
+        let mut fields = format!("full_screen={} cursor_hidden={}", st.full_screen, st.cursor_hidden);
         #[cfg(windows)]
         if let Some(n) = self.native.borrow().as_ref() {
             let g = n.chrome.geometry();
             fields.push_str(&format!(" {} native_full_screen={}", g.stats_fields(), g.full_screen));
         }
         fields
+    }
+
+    /// Whether the pointer is hidden over the full-screen video (diagnostics, tests).
+    pub fn is_cursor_hidden(&self) -> bool {
+        self.st.borrow().cursor_hidden
     }
 
     fn sync_engagement(&self) {
@@ -2365,6 +2379,7 @@ impl MainWindowController {
         self.sync_layout(true);
         self.sync_toolbar();
         self.sync_native_chrome();
+        self.sync_hud();
     }
 
     /// Whether the window really is full screen (the Windows chrome's state, else winit's), for changes made outside

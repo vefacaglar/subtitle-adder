@@ -64,6 +64,13 @@ impl HudState {
         }
     }
 
+    /// Full screen only: the pointer hides with the controls once they went idle over the playing video (the same
+    /// idle delay), and shows again with them on the next move, a pause, a scrub or the pointer over a picker. Never
+    /// in a window.
+    pub fn cursor_hidden(&self, full_screen: bool) -> bool {
+        full_screen && self.playing && self.over_player && self.idle_hidden && !self.interacting && !self.over_picker
+    }
+
     pub fn is_timer_running(&self) -> bool {
         self.deadline.is_some()
     }
@@ -201,6 +208,51 @@ mod tests {
         h.reveal(t0);
         assert!(!h.visibility().transport);
         assert!(!h.is_timer_running());
+    }
+
+    #[test]
+    fn the_pointer_hides_with_the_controls_only_in_full_screen_while_playing() {
+        for flavor in [HudFlavor::Windows, HudFlavor::Mac] {
+            let t0 = Instant::now();
+            let idle = if flavor == HudFlavor::Windows { WINDOWS_IDLE } else { MAC_IDLE };
+            let mut h = HudState::new(flavor);
+            h.set_playing(true);
+            h.pointer_entered(t0);
+            assert!(!h.cursor_hidden(true), "{flavor:?}: visible while the controls are");
+            assert!(!h.poll(t0 + idle - Duration::from_millis(1)));
+            assert!(!h.cursor_hidden(true));
+            assert!(h.poll(t0 + idle));
+            assert!(h.cursor_hidden(true), "{flavor:?}: hidden after the idle delay");
+            assert!(!h.cursor_hidden(false), "{flavor:?}: never hidden in a window");
+            // A move shows it again and restarts the delay.
+            h.pointer_moved(t0 + idle + Duration::from_millis(500));
+            assert!(!h.cursor_hidden(true));
+            h.poll(t0 + 2 * idle + Duration::from_millis(500));
+            assert!(h.cursor_hidden(true));
+            // Paused: shown, and it stays shown when the timer fires.
+            h.set_playing(false);
+            assert!(!h.cursor_hidden(true));
+            h.pointer_moved(t0 + Duration::from_secs(20));
+            h.poll(t0 + Duration::from_secs(30));
+            assert!(!h.cursor_hidden(true));
+            // Over a picker or while scrubbing: shown.
+            h.set_playing(true);
+            h.pointer_moved(t0 + Duration::from_secs(40));
+            h.poll(t0 + Duration::from_secs(50));
+            assert!(h.cursor_hidden(true));
+            h.picker_entered(t0 + Duration::from_secs(51));
+            assert!(!h.cursor_hidden(true));
+            h.picker_exited(t0 + Duration::from_secs(52));
+            h.set_interacting(true, t0 + Duration::from_secs(52));
+            h.poll(t0 + Duration::from_secs(60));
+            assert!(!h.cursor_hidden(true));
+            // The pointer left the video: shown.
+            h.set_interacting(false, t0 + Duration::from_secs(60));
+            h.poll(t0 + Duration::from_secs(70));
+            assert!(h.cursor_hidden(true));
+            h.pointer_exited();
+            assert!(!h.cursor_hidden(true));
+        }
     }
 
     #[test]

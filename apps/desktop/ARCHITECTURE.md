@@ -41,6 +41,20 @@ and deinterlacing on the CPU in `sa_player::soft`).
   zscale's tone mapping, a 3D LUT and an RGB48 + LUT pass were rejected: other curves than the shader's, the `filter`
   feature, or a frame of latency.
 - `SUBTITLE_ADDER_FRAME_DUMP=<dir>` dumps the GPU path's converted pictures and, as `...-cpu.png`, the RGBA path's.
+- `SUBTITLE_ADDER_FULL_SCREEN=1` makes the main window enter full screen once, when the first video frame arrives
+  (as the `F` key would), so full screen can be measured without input. `SUBTITLE_ADDER_PLAYER_STATS=1` ends the
+  `[player-stats]` line with the window state: `full_screen=` (the controller's), `cursor_hidden=` (the pointer
+  hidden over the playing full-screen video) and, on Windows, `window=x,y,WxH client=x,y,WxH monitor=x,y,WxH`
+  (physical px, the client rectangle in screen coordinates, the monitor the window is mostly on), `maximized=` and
+  `native_full_screen=` (the chrome's own flag). In full screen `client` must equal `monitor`.
+- Full screen on Windows is the window chrome's (`sa_platform::win::chrome`, `WindowChrome::set_full_screen`), not
+  winit's borderless mode: winit kept `WS_MAXIMIZE` and changed the styles after the size messages, so the chrome's
+  `WM_NCCALCSIZE` still applied the maximized top inset (the client area was 9 px short of the monitor at 125 %).
+  The chrome sets its flag before touching the window; full screen drops only the caption and sizing frame (so
+  Windows keeps its maximized / snapped bookkeeping), covers the monitor the window is mostly on (kept there through
+  monitor, resolution, DPI and work-area changes), squares the corners, removes the DWM border, switches Mica off
+  and marks the window full screen for the shell (`ITaskbarList2`); leaving puts the frame and the previous
+  rectangle back.
 - AV1: the default decoder (`libdav1d`) has no hardware config, so hardware decoding uses the native `av1` decoder;
   a stream the GPU cannot decode goes back to `libdav1d`.
 - Thread priorities (`ffmpeg_backend/priority.rs`): presenter and audio decode in MMCSS "Playback", the cpal output
