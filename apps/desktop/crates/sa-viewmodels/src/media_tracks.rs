@@ -310,6 +310,11 @@ pub fn subtitle_track_failure(reason: &PictureTrackFailure) -> LocalizedMessage 
     })
 }
 
+/// `Altyazı parçası gösterilemedi: Video oynatılamıyor`: an image track picked while the video failed to play.
+pub fn subtitle_track_without_media() -> LocalizedMessage {
+    LocalizedMessage::new("subtitle-track-failed:no-media", || sa_core::l!("Altyazı parçası gösterilemedi: %@", sa_core::l("Video oynatılamıyor").as_str()))
+}
+
 /// `Ses parçası açılamadı: %@` (the player kept the previous audio track).
 pub fn audio_track_failure(details: &str) -> LocalizedMessage {
     let d = details.to_owned();

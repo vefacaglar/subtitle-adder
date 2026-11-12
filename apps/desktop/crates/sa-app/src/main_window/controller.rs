@@ -182,15 +182,17 @@ struct UiState {
 /// Who chose which image track, per stream, changed only on the player's word: a request the player has not
 /// answered yet, a late failure of a track nobody wants any more, or a refused pick never changes whose track is
 /// on screen.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ImageChoice {
     /// The stream chosen for the user (`consider_auto_track`), asked for or shown: it goes silently when it cannot
     /// be shown, and as soon as the session has lines of its own, so two captions never overlap without the user
     /// having asked for it.
     auto: Option<usize>,
-    /// The stream the user picked that the player has not confirmed yet (`TracksChanged` with it active): unedited
-    /// track lines it replaces stay until then (a refused pick leaves them), and its failure is reported.
-    asked: Option<usize>,
+    /// The streams the user picked that the player has not answered yet, oldest first (the player answers each
+    /// pick in turn: `TracksChanged` with it active, or a failure). Until then the unedited track lines a pick
+    /// replaces stay, and so does the video's "Off" (a refused pick changes neither); a failure is reported. Two
+    /// quick picks where the second is refused leave the first the user's.
+    asked: Vec<usize>,
     /// The stream the user picked that the player shows: its failure (given up) is reported.
     shown: Option<usize>,
 }
@@ -1511,47 +1513,49 @@ impl MainWindowController {
     /// `TracksChanged`, which marks it in the menu). Once the player confirms it ([`Self::image_track_confirmed`]),
     /// like choosing another text track, a read in flight stops and lines that are an embedded text track nobody
     /// changed go; a typed draft is committed now and then stays. A list that holds the user's own work is left
-    /// exactly as it is, and nothing is written anywhere. Without media (playback failed) nothing is asked and
-    /// nothing changes.
+    /// exactly as it is, and nothing is written anywhere. The player answers every pick, the track already shown
+    /// included (its own list here can be behind a switch in flight). Without media (playback failed) nothing is
+    /// asked and nothing changes; the failure is reported like a refused pick.
     fn choose_image_track(&self, stream: usize) {
         if !self.player.borrow().has_media() {
             eprintln!("[ui] image track {stream} chosen without playable media: nothing changes");
+            self.show_track_failure(media_tracks::subtitle_track_without_media());
             self.sync_tracks();
             return;
         }
         {
             let mut st = self.st.borrow_mut();
             st.auto_choice = None;
-            st.no_resume = None;
-            st.image_choice.asked = Some(stream);
+            st.image_choice.asked.push(stream);
         }
         self.vm.finish_editing();
-        self.vm.embedded_track_chosen();
-        // Already shown (the one chosen for the user, picked from the menu): the player has nothing to answer.
-        let already = self.player.borrow().tracks().active_image_subtitle == Some(stream);
         self.player.borrow_mut().select_image_subtitle_track(Some(stream));
-        if already {
-            self.image_track_confirmed(stream);
-        }
         self.drain_player();
         self.sync_tracks();
     }
 
-    /// `TracksChanged`: the image track the user asked for is on.
+    /// `TracksChanged`: an image track the user asked for is on. Picks made before it are answered by now (the
+    /// player answers in turn); later ones still wait.
     fn image_tracks_changed(&self) {
         let active = self.player.borrow().tracks().active_image_subtitle;
-        let asked = self.st.borrow().image_choice.asked;
-        if let Some(stream) = asked
-            && active == Some(stream)
-        {
+        let at = active.and_then(|a| self.st.borrow().image_choice.asked.iter().position(|&s| s == a));
+        if let (Some(stream), Some(at)) = (active, at) {
+            self.st.borrow_mut().image_choice.asked.drain(..=at);
             self.image_track_confirmed(stream);
         }
     }
 
-    /// The player shows the image track the user picked: it is theirs now (it stays when lines come), and what it
-    /// replaces goes: a read in flight, and lines that are an embedded text track nobody changed.
+    /// The player shows the image track the user picked: it is theirs now (it stays when lines come), "Off" no
+    /// longer holds for the video nor does a failed read's stop, and what it replaces goes: a read in flight, and
+    /// lines that are an embedded text track nobody changed.
     fn image_track_confirmed(&self, stream: usize) {
-        self.st.borrow_mut().image_choice = ImageChoice { auto: None, asked: None, shown: Some(stream) };
+        {
+            let mut st = self.st.borrow_mut();
+            st.no_resume = None;
+            st.image_choice.auto = None;
+            st.image_choice.shown = Some(stream);
+        }
+        self.vm.embedded_track_chosen();
         let cancelled = self.reads.borrow_mut().cancel();
         if let Some(read) = cancelled {
             self.read_stopped_early(&read);
@@ -1612,8 +1616,11 @@ impl MainWindowController {
     /// track the user picked from the menu stays; while the user's pick is still in flight it decides (it replaces
     /// the automatic one, or, refused, `image_track_failed` asks here again).
     fn drop_auto_image_track_for_own_lines(&self) {
-        let choice = self.st.borrow().image_choice;
-        if choice.auto.is_some() && choice.asked.is_none() && !self.vm.sentences().is_empty() {
+        let waiting = {
+            let c = &self.st.borrow().image_choice;
+            c.auto.is_some() && c.asked.is_empty()
+        };
+        if waiting && !self.vm.sentences().is_empty() {
             self.hide_image_track();
             self.sync_tracks();
         }
@@ -1837,9 +1844,11 @@ impl MainWindowController {
         {
             let mut st = self.st.borrow_mut();
             let c = &mut st.image_choice;
-            let users = c.asked == Some(stream) || c.shown == Some(stream);
+            // The oldest pick of it is the one answered.
+            let asked = c.asked.iter().position(|&s| s == stream).map(|at| c.asked.remove(at)).is_some();
+            let users = asked || c.shown == Some(stream);
             let auto = c.auto == Some(stream);
-            for slot in [&mut c.asked, &mut c.shown, &mut c.auto] {
+            for slot in [&mut c.shown, &mut c.auto] {
                 if *slot == Some(stream) {
                     *slot = None;
                 }

@@ -67,11 +67,31 @@ struct BackendState {
     refuse: Vec<usize>,
     /// Image track requests are not answered (still in flight); `Rig::answer_image` answers.
     hold: bool,
+    /// The requests held, oldest first.
+    held: Vec<Option<usize>>,
     picture: Option<Arc<SubtitlePicture>>,
     position: f64,
 }
 
 struct FakeBackend(Arc<Mutex<BackendState>>);
+
+/// The fake player's answer to an image track request (see `select_image_subtitle_track`).
+fn answer_image(state: &Arc<Mutex<BackendState>>, stream_index: Option<usize>) {
+    let (sink, generation, refused) = {
+        let mut s = state.lock();
+        let shown = stream_index.is_none_or(|i| s.tracks.subtitles.iter().any(|t| t.stream_index == i && t.is_image()) && !s.refuse.contains(&i));
+        if shown {
+            s.tracks.active_image_subtitle = stream_index;
+        }
+        (s.sink.clone(), s.generation, if shown { None } else { stream_index })
+    };
+    if let Some(sink) = sink {
+        if let Some(stream_index) = refused {
+            sink(PlayerEvent::SubtitleTrackFailed { generation, stream_index, reason: PictureTrackFailure::Ffmpeg("Decoder not found".into()) });
+        }
+        sink(PlayerEvent::TracksChanged { generation });
+    }
+}
 
 impl MediaPlayerBackend for FakeBackend {
     fn load(&mut self, source: Option<MediaSource>, _auto_play: bool) -> LoadGeneration {
@@ -124,27 +144,18 @@ impl MediaPlayerBackend for FakeBackend {
     fn select_audio_track(&mut self, stream_index: usize) {
         self.0.lock().selected.push(stream_index);
     }
-    /// Shows an image track as the real player does: the active stream changes (a picture track only) and
-    /// `TracksChanged` answers.
+    /// Answers as the real player does (`switch_pictures`): every request gets `TracksChanged`, the one for what is
+    /// already shown included; a stream it cannot show (refused, or not a picture track) gets `SubtitleTrackFailed`
+    /// first and the active stream stays.
     fn select_image_subtitle_track(&mut self, stream_index: Option<usize>) {
-        let (sink, generation, refused) = {
-            let mut s = self.0.lock();
-            s.images.push(stream_index);
-            if s.hold {
-                return;
-            }
-            let refused = stream_index.filter(|i| s.refuse.contains(i));
-            if refused.is_none() && stream_index.is_none_or(|i| s.tracks.subtitles.iter().any(|t| t.stream_index == i && t.is_image())) {
-                s.tracks.active_image_subtitle = stream_index;
-            }
-            (s.sink.clone(), s.generation, refused)
-        };
-        if let Some(sink) = sink {
-            match refused {
-                Some(stream_index) => sink(PlayerEvent::SubtitleTrackFailed { generation, stream_index, reason: PictureTrackFailure::Ffmpeg("Decoder not found".into()) }),
-                None => sink(PlayerEvent::TracksChanged { generation }),
-            }
+        let mut s = self.0.lock();
+        s.images.push(stream_index);
+        if s.hold {
+            s.held.push(stream_index);
+            return;
         }
+        drop(s);
+        answer_image(&self.0, stream_index);
     }
     fn subtitle_picture(&self) -> Option<Arc<SubtitlePicture>> {
         self.0.lock().picture.clone()
@@ -1075,14 +1086,14 @@ fn pgs_picture(id: u64) -> Arc<SubtitlePicture> {
 }
 
 impl Rig {
-    /// The player answers a held image track request: `stream` is shown now.
+    /// The player answers the oldest held image track request for `stream` (as it would have, `refuse` applied).
     fn answer_image(&self, stream: Option<usize>) {
-        let (sink, generation) = {
+        {
             let mut s = self.backend.lock();
-            s.tracks.active_image_subtitle = stream;
-            (s.sink.clone().unwrap(), s.generation)
-        };
-        sink(PlayerEvent::TracksChanged { generation });
+            let at = s.held.iter().position(|h| *h == stream).expect("a held request");
+            s.held.remove(at);
+        }
+        answer_image(&self.backend, stream);
         self.pump();
     }
     /// The player reports image track `stream` failed (refused, or given up).
@@ -1407,6 +1418,97 @@ fn unedited_track_lines_go_only_once_the_player_shows_the_image_track_and_never_
     assert!(r.backend.lock().images.is_empty(), "the player was not asked");
     assert_eq!(r.vm.sentences().len(), 2, "the lines stay");
     assert!(r.vm.embedded_lines().is_some_and(|e| e.pristine));
+    // ... and the pick is answered all the same: why nothing shows.
+    assert!(r.main().get_error_open());
+    assert_eq!(r.main().get_error_text(), "Altyazı parçası gösterilemedi: Video oynatılamıyor");
+}
+
+#[test]
+fn a_refused_image_track_pick_keeps_off_for_the_video() {
+    let script = scripted_reader();
+    let r = rig_with(false, Some(script.reader.clone()));
+    r._lang.set(UiLanguage::En);
+    r.open_with_tracks("film.mkv", film_tracks());
+    r.env.eventually("the English track is read", || script.asked.lock().len() == 1);
+    script.steps.send(Step::Finish(track(&[(0.5, 1.5, "One")]))).unwrap();
+    r.env.eventually("loaded", || r.rows().len() == 1);
+    r.pump();
+    r.main().invoke_menu_activated("subtitle:off".into());
+    r.pump();
+    // The image track is refused: "Off" still holds for the video.
+    r.backend.lock().refuse = vec![4];
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    assert!(r.main().get_error_open());
+    r.open_video("other.mkv");
+    r.open_with_tracks("film.mkv", film_tracks());
+    for _ in 0..5 {
+        r.pump();
+    }
+    assert_eq!(script.asked.lock().len(), 1, "Off holds when the video opens again");
+    // Shown, the pick ends "Off" for the video: opened again, its track is read for the user.
+    r.backend.lock().refuse.clear();
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    assert_eq!(r.backend.lock().tracks.active_image_subtitle, Some(4));
+    r.open_video("other.mkv");
+    r.open_with_tracks("film.mkv", film_tracks());
+    r.env.eventually("read again", || script.asked.lock().len() == 2);
+}
+
+#[test]
+fn two_quick_image_picks_where_the_second_is_refused_leave_the_first_the_users() {
+    let r = rig(false);
+    open_two_image_tracks(&r, "film.mkv");
+    {
+        let mut b = r.backend.lock();
+        b.hold = true;
+        b.images.clear();
+    }
+    // 6, then 4 (shown for the user) again: both in flight; the player shows 6, then refuses 4.
+    r.main().invoke_menu_activated("subtitle:6".into());
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    r.backend.lock().refuse = vec![4];
+    r.answer_image(Some(6));
+    assert!(!r.main().get_error_open());
+    r.answer_image(Some(4));
+    assert!(r.main().get_error_open(), "the refused pick is reported");
+    assert_eq!(r.backend.lock().tracks.active_image_subtitle, Some(6));
+    // 6 is the user's: it stays when lines come.
+    r.backend.lock().hold = false;
+    r.load_three_lines();
+    assert_eq!(r.backend.lock().images, vec![Some(6), Some(4)], "{:?}", r.backend.lock().images);
+    assert_eq!(r.backend.lock().tracks.active_image_subtitle, Some(6));
+}
+
+#[test]
+fn picking_back_the_shown_image_track_waits_for_the_players_answer_to_every_pick() {
+    let r = rig(false);
+    open_two_image_tracks(&r, "film.mkv");
+    {
+        let mut b = r.backend.lock();
+        b.hold = true;
+        b.images.clear();
+    }
+    // 4 is shown (for the user); 6 is asked for, then 4 again before the player answers: the track list still says
+    // 4, but the player is about to show 6, so only its answers decide.
+    r.main().invoke_menu_activated("subtitle:6".into());
+    r.main().invoke_menu_activated("subtitle:4".into());
+    r.pump();
+    assert_eq!(r.backend.lock().images, vec![Some(6), Some(4)], "both asked, the shown one included");
+    // Lines while both wait: the automatic track is not dropped, the picks decide.
+    r.load_three_lines();
+    assert_eq!(r.backend.lock().images, vec![Some(6), Some(4)]);
+    r.answer_image(Some(6));
+    r.answer_image(Some(4));
+    assert_eq!(r.backend.lock().tracks.active_image_subtitle, Some(4));
+    assert!(!r.main().get_error_open());
+    // 4 is the user's now: more lines leave it on.
+    r.backend.lock().hold = false;
+    r.load_three_lines();
+    assert_eq!(r.backend.lock().images, vec![Some(6), Some(4)]);
+    assert_eq!(r.backend.lock().tracks.active_image_subtitle, Some(4));
 }
 
 #[test]

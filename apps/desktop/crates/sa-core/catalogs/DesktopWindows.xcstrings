@@ -545,6 +545,23 @@
         }
       }
     },
+    "Video oynatılamıyor": {
+      "comment": "Added by the Rust desktop app (reason a bitmap subtitle track cannot be shown: the video failed to play; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The video cannot be played"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video oynatılamıyor"
+          }
+        }
+      }
+    },
     "Altyazı resimleri gösterilemeyecek kadar büyük": {
       "comment": "Added by the Rust desktop app (reason a bitmap subtitle track cannot be shown; both platforms).",
       "localizations": {
