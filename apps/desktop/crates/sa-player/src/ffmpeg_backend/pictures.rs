@@ -180,6 +180,8 @@ pub(crate) struct PictureTrack {
     fallback_canvas: (u32, u32),
     /// The video's coded size in the orientation it is shown (handed on with every picture).
     video_size: Option<(u32, u32)>,
+    /// The video is shown a quarter turned.
+    video_turned: bool,
     /// The timestamp (stream time base) and duration of the newest packet that carried one.
     last_ts: Option<(i64, i64)>,
     /// PGS: the display set being decoded started with an epoch start or an acquisition point (needs nothing of
@@ -240,6 +242,7 @@ impl PictureTrack {
             format,
             fallback_canvas: fallback_canvas(format, video_size),
             video_size: video_size.map(|(w, h)| if turned { (h, w) } else { (w, h) }),
+            video_turned: turned && video_size.is_some(),
             last_ts: None,
             self_contained: format != Format::Pgs,
             epoch_known: format != Format::Pgs,
@@ -478,6 +481,7 @@ impl PictureTrack {
             stream_index: self.stream,
             canvas: canvas(given, self.fallback_canvas),
             video_size: self.video_size,
+            video_turned: self.video_turned,
             start,
             end,
             rects,

@@ -60,6 +60,7 @@ fn demo_picture() -> sa_player::SubtitlePicture {
         stream_index: 7,
         canvas: (1920, 1080),
         video_size: Some((1920, 1080)),
+        video_turned: false,
         start: 7.0,
         end: None,
         rects: vec![rect(570, 930, 780, 64, [255, 255, 255, 255]), rect(830, 90, 260, 44, [255, 220, 0, 200])],

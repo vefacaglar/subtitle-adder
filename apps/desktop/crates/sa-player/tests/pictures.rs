@@ -1662,6 +1662,7 @@ fn pictures_over_a_quarter_turned_video_carry_its_turned_size() {
     let p = r.seek_to_picture(0.7, 0.5);
     assert_eq!(p.canvas, (320, 240), "the track's own canvas");
     assert_eq!(p.video_size, Some((240, 320)), "the video as shown, a quarter turned");
+    assert!(p.video_turned);
 }
 
 #[test]

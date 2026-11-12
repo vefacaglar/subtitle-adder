@@ -1234,7 +1234,7 @@ mod tests {
         assert!(r.player.take_outputs().is_empty(), "a stale load is ignored");
         r.player.handle_event(PlayerEvent::SubtitlePictureChanged { generation: g });
         assert_eq!(r.player.take_outputs(), vec![PlayerOutput::PictureChanged]);
-        let picture = Arc::new(SubtitlePicture { id: 7, stream_index: 4, canvas: (720, 480), video_size: None, start: 1.0, end: None, rects: vec![] });
+        let picture = Arc::new(SubtitlePicture { id: 7, stream_index: 4, canvas: (720, 480), video_size: None, video_turned: false, start: 1.0, end: None, rects: vec![] });
         r.state.borrow_mut().picture = Some(picture.clone());
         assert_eq!(r.player.subtitle_picture(), Some(picture));
         let reason = PictureTrackFailure::Ffmpeg("not a picture track".into());

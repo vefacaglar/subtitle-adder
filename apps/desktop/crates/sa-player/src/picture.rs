@@ -76,6 +76,8 @@ pub struct SubtitlePicture {
     /// The coded size of the video it is shown over, when there is one, in the orientation it is shown (width and
     /// height swapped for a video turned a quarter round).
     pub video_size: Option<(u32, u32)>,
+    /// The video is shown turned a quarter round (its display matrix says so): `video_size` is swapped.
+    pub video_turned: bool,
     pub start: f64,
     /// The event's own end (s), when it has one.
     pub end: Option<f64>,
@@ -366,6 +368,7 @@ mod tests {
             stream_index: 3,
             canvas: (1920, 1080),
             video_size: None,
+            video_turned: false,
             start: 0.0,
             end: None,
             rects: vec![SubtitleBitmap { x: id as u32, y: 20, width: 2, height: 1, rgba: Arc::new(vec![0; 8]) }],
@@ -567,6 +570,7 @@ mod tests {
             stream_index: 3,
             canvas: (3840, 2160),
             video_size: None,
+            video_turned: false,
             start: 0.0,
             end: None,
             rects: vec![SubtitleBitmap { x: id as u32, y: 0, width: 3840, height: 2160, rgba: Arc::new(vec![0; 3840 * 2160 * 4]) }],

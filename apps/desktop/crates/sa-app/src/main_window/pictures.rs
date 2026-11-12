@@ -8,17 +8,19 @@
 //! How the canvas lies over the video ([`fit`], decided by the canvas's and the video's shapes):
 //! * It stretches with the video, like the picture itself, when it is the picture's own raster: the video's coded
 //!   size (including a canvas the player made up from it), or an SD raster (at most 720 wide and 480 or 576 high:
-//!   DVD 720 / 704 / 352 × 480 / 576, DVB 720 × 576) over HD video, where nothing tells how the SD frame was scaled
-//!   into the HD one.
-//! * An SD raster over SD video of its own raster (at most 720 wide, at least two thirds of the canvas wide and
-//!   no taller: cropped or not, not a half-D1 352-wide encode, which is stretched) lies at the video's pixel scale, each axis apart (the pixels
-//!   are anamorphic), centred on the video: a cropped DVD rip (720 × 432 of a 720 × 576 frame) gets its captions
-//!   unsquashed and where the disc put them, in the letterbox; a 720-wide canvas over 704-wide video reaches 8
-//!   pixels past each side.
-//! * A landscape canvas over a portrait video (a video turned a quarter round: the player hands its size over
-//!   turned) never stretches; it covers, as below.
+//!   DVD 720 / 704 / 352 × 480 / 576, DVB 720 × 576) over any video it is not known to be a crop of (HD video, a
+//!   resized 640 × 480 or 544 × 576 rip, a 352-wide half-D1 encode, 704-wide broadcast video under a 720-wide
+//!   canvas): nothing tells how the SD frame was scaled into the video's, so it follows the picture, as VLC and mpv
+//!   do.
+//! * The one case where the scale is certain: an SD raster over video of the canvas's own width (or 704 under
+//!   720) and fewer lines, a vertical crop of the same raster (a 720 × 432 DVD rip of a 720 × 576 frame). The canvas
+//!   lies at the video's pixel scale, each axis apart (the pixels are anamorphic), centred on the video, so its
+//!   captions stay unsquashed where the disc put them, in the letterbox.
+//! * A landscape canvas over a video turned a quarter round (its display matrix says so; the player hands its size
+//!   over turned, `SubtitlePicture::video_turned`) never stretches; it covers, as below. Video merely coded
+//!   narrower than tall (544 × 576) is not turned.
 //! * Every other canvas keeps its own shape (PGS 1920 × 1080 or 1280 × 720, a 1024 × 576 or 960 × 540 DVB
-//!   display, a UHD canvas over HD video, any canvas over a video turned a quarter round): scaled uniformly to cover
+//!   display, a UHD canvas over HD video, any landscape canvas over a quarter-turned video): scaled uniformly to cover
 //!   the fitted video rectangle and centred on it, as VLC and mpv do. When the video is cropped (a 1920 × 800 encode
 //!   of a 1920 × 1080 Blu-ray), the canvas reaches past the video into the letterbox, where the disc's captions were
 //!   meant to be; when the aspects agree this is the same as stretching.
@@ -46,16 +48,16 @@ pub enum Fit {
 }
 
 /// The rule for `canvas` over a video of coded size `video_size`, given in the orientation it is shown (the player
-/// swaps width and height for a video turned a quarter round, so a canvas of the coded size then covers): module
-/// docs.
-pub fn fit(canvas: (u32, u32), video_size: Option<(u32, u32)>) -> Fit {
+/// swaps width and height for a video turned a quarter round and says so, `turned`, so a canvas of the coded size
+/// then covers; a video coded narrower than tall, a 544 × 576 broadcast encode, is not turned): module docs.
+pub fn fit(canvas: (u32, u32), video_size: Option<(u32, u32)>, turned: bool) -> Fit {
     let sd_raster = canvas.0 <= 720 && matches!(canvas.1, 480 | 576);
-    let turned = canvas.0 > canvas.1 && video_size.is_some_and(|(w, h)| h > w);
+    let turned = turned && canvas.0 > canvas.1 && video_size.is_some_and(|(w, h)| h > w);
     match video_size {
         _ if turned => Fit::Cover,
         Some(v) if v == canvas => Fit::Stretch,
-        // The canvas's own raster, cropped or not (not a half-D1 352-wide encode: a scaled-down frame).
-        Some((width, height)) if sd_raster && width <= 720 && width * 3 >= canvas.0 * 2 && height > 0 && height <= canvas.1 => {
+        // A vertical crop of the canvas's own raster: the only SD case whose pixel scale is known.
+        Some((width, height)) if sd_raster && (width == canvas.0 || (width == 704 && canvas.0 == 720)) && height > 0 && height < canvas.1 => {
             Fit::VideoPixels { width, height }
         }
         _ if sd_raster => Fit::Stretch,
@@ -121,7 +123,7 @@ pub fn install(bridge: &MainBridge) {
 
 /// The overlay's rows for `picture` (one per rectangle; the RGBA bytes copied once into Slint's buffers).
 pub fn overlay_rects(picture: &SubtitlePicture) -> Vec<PictureSubtitleRect> {
-    let rule = fit(picture.canvas, picture.video_size);
+    let rule = fit(picture.canvas, picture.video_size, picture.video_turned);
     let cover = rule == Fit::Cover;
     let (pixel_width, pixel_height) = match rule {
         Fit::VideoPixels { width, height } => (width as f32, height as f32),
@@ -182,34 +184,46 @@ mod tests {
 
     #[test]
     fn the_canvas_rule_stretches_only_the_pictures_own_raster_and_covers_with_every_other_shape() {
-        assert_eq!(fit((720, 480), Some((720, 480))), Fit::Stretch, "NTSC DVD");
-        assert_eq!(fit((720, 576), Some((720, 576))), Fit::Stretch, "PAL DVD / DVB");
-        assert_eq!(fit((720, 576), Some((720, 432))), Fit::VideoPixels { width: 720, height: 432 }, "a cropped DVD rip");
-        assert_eq!(fit((720, 576), Some((704, 576))), Fit::VideoPixels { width: 704, height: 576 });
-        assert_eq!(fit((720, 480), Some((352, 240))), Fit::Stretch, "half-D1 video: a scaled-down frame");
-        assert_eq!(fit((720, 576), Some((704, 400))), Fit::VideoPixels { width: 704, height: 400 }, "cropped on all sides");
-        assert_eq!(fit((720, 576), Some((1920, 1080))), Fit::Stretch, "an SD raster over HD video");
-        assert_eq!(fit((704, 576), Some((1920, 1080))), Fit::Stretch, "704 wide");
-        assert_eq!(fit((352, 480), None), Fit::Stretch, "half-D1");
-        assert_eq!(fit((1920, 1080), Some((1920, 1080))), Fit::Stretch, "the video's own size");
-        assert_eq!(fit((640, 360), Some((640, 360))), Fit::Stretch, "a canvas made up from the video");
-        assert_eq!(fit((1920, 1080), Some((1920, 800))), Fit::Cover, "a cropped Blu-ray encode");
-        assert_eq!(fit((1920, 1080), Some((1440, 1080))), Fit::Cover);
-        assert_eq!(fit((1280, 720), None), Fit::Cover);
-        assert_eq!(fit((1024, 576), Some((1024, 576 * 2))), Fit::Cover, "a 1024 × 576 DVB display: square pixels");
-        assert_eq!(fit((960, 540), Some((1920, 1080))), Fit::Cover, "960 × 540");
-        assert_eq!(fit((3840, 2160), Some((1920, 1080))), Fit::Cover, "a UHD canvas over 1080p");
-        assert_eq!(fit((320, 240), Some((640, 480))), Fit::Cover, "not an SD raster: same shape, uniformly scaled");
+        assert_eq!(fit((720, 480), Some((720, 480)), false), Fit::Stretch, "NTSC DVD");
+        assert_eq!(fit((720, 576), Some((720, 576)), false), Fit::Stretch, "PAL DVD / DVB");
+        assert_eq!(fit((720, 576), Some((720, 432)), false), Fit::VideoPixels { width: 720, height: 432 }, "a cropped DVD rip");
+        assert_eq!(fit((720, 576), Some((704, 432)), false), Fit::VideoPixels { width: 704, height: 432 }, "a crop of 704-wide video");
+        assert_eq!(fit((720, 480), Some((720, 360)), false), Fit::VideoPixels { width: 720, height: 360 }, "an NTSC crop");
+        // Every SD case that could be a resize stretches over the picture.
+        assert_eq!(fit((720, 576), Some((704, 576)), false), Fit::Stretch, "DVB 720 × 576 over 704 × 576 broadcast video");
+        assert_eq!(fit((720, 480), Some((640, 480)), false), Fit::Stretch, "a resized 640 × 480 rip");
+        assert_eq!(fit((720, 576), Some((640, 360)), false), Fit::Stretch, "a resized 640 × 360 rip");
+        assert_eq!(fit((720, 576), Some((544, 576)), false), Fit::Stretch, "544 × 576 broadcast video");
+        assert_eq!(fit((720, 576), Some((352, 288)), false), Fit::Stretch, "a CIF encode");
+        assert_eq!(fit((720, 480), Some((352, 240)), false), Fit::Stretch, "half-D1 video: a scaled-down frame");
+        assert_eq!(fit((720, 576), Some((688, 432)), false), Fit::Stretch, "cropped on the sides too: the scale is unknown");
+        assert_eq!(fit((720, 576), Some((1920, 1080)), false), Fit::Stretch, "an SD raster over HD video");
+        assert_eq!(fit((704, 576), Some((1920, 1080)), false), Fit::Stretch, "704 wide");
+        assert_eq!(fit((352, 480), None, false), Fit::Stretch, "half-D1");
+        assert_eq!(fit((1920, 1080), Some((1920, 1080)), false), Fit::Stretch, "the video's own size");
+        assert_eq!(fit((640, 360), Some((640, 360)), false), Fit::Stretch, "a canvas made up from the video");
+        assert_eq!(fit((1920, 1080), Some((1920, 800)), false), Fit::Cover, "a cropped Blu-ray encode");
+        assert_eq!(fit((1920, 1080), Some((1440, 1080)), false), Fit::Cover);
+        assert_eq!(fit((1280, 720), None, false), Fit::Cover);
+        assert_eq!(fit((1024, 576), Some((1024, 576 * 2)), false), Fit::Cover, "a 1024 × 576 DVB display: square pixels");
+        assert_eq!(fit((960, 540), Some((1920, 1080)), false), Fit::Cover, "960 × 540");
+        assert_eq!(fit((3840, 2160), Some((1920, 1080)), false), Fit::Cover, "a UHD canvas over 1080p");
+        assert_eq!(fit((320, 240), Some((640, 480)), false), Fit::Cover, "not an SD raster: same shape, uniformly scaled");
         // A video turned a quarter round: the player hands its size over turned (1080 × 1920), so a canvas of the
         // coded size keeps its shape instead of being stretched onto the portrait picture.
-        assert_eq!(fit((1920, 1080), Some((1080, 1920))), Fit::Cover);
-        assert_eq!(fit((720, 576), Some((576, 720))), Fit::Cover, "nor does an SD raster");
-        assert_eq!(fit((720, 576), Some((432, 720))), Fit::Cover);
-        assert_eq!(fit((720, 576), Some((1080, 1920))), Fit::Cover);
+        assert_eq!(fit((1920, 1080), Some((1080, 1920)), true), Fit::Cover);
+        assert_eq!(fit((720, 576), Some((576, 720)), true), Fit::Cover, "nor does an SD raster");
+        assert_eq!(fit((720, 576), Some((432, 720)), true), Fit::Cover);
+        assert_eq!(fit((720, 576), Some((1080, 1920)), true), Fit::Cover);
+        // Coded narrower than tall but not turned (544 × 576 broadcast video, a portrait phone recording with no
+        // display matrix): the picture's own frame, stretched like any other SD case.
+        assert_eq!(fit((720, 576), Some((544, 576)), false), Fit::Stretch);
+        assert_eq!(fit((720, 576), Some((1080, 1920)), false), Fit::Stretch);
+        assert_eq!(fit((1920, 1080), Some((1080, 1920)), false), Fit::Cover, "not an SD raster: keeps its shape");
         // The player never grows a canvas to hold a rectangle (`sa-player` `canvas`), so a damaged rectangle cannot
         // turn the video's own raster into another shape; one pixel off is another raster and keeps its shape.
-        assert_eq!(fit((640, 360), Some((640, 360))), Fit::Stretch);
-        assert_eq!(fit((641, 360), Some((640, 360))), Fit::Cover);
+        assert_eq!(fit((640, 360), Some((640, 360)), false), Fit::Stretch);
+        assert_eq!(fit((641, 360), Some((640, 360)), false), Fit::Cover);
     }
 
     #[test]
@@ -217,7 +231,7 @@ mod tests {
         let surface = (1920.0, 1080.0);
         let pal = (720.0, 576.0);
         let whole = (0.0, 0.0, 720.0, 576.0);
-        let fit_over = |video| fit((720, 576), Some(video));
+        let fit_over = |video| fit((720, 576), Some(video), false);
         // PAL 16:9 and 4:3, uncropped: the same as stretching.
         assert_near!(place(whole, whole, pal, fit_over((720, 576)), surface, 16.0 / 9.0), (0.0, 0.0, 1920.0, 1080.0));
         assert_near!(place(whole, whole, pal, fit_over((720, 576)), surface, 4.0 / 3.0), (240.0, 0.0, 1440.0, 1080.0));
@@ -234,18 +248,23 @@ mod tests {
         // Stretched it would have been squashed into the picture.
         let squashed = place(caption, caption, pal, Fit::Stretch, surface, aspect);
         assert!(squashed.3 < at.3 * 0.8 && squashed.1 + squashed.3 <= 135.0 + 810.0 + 0.01, "{squashed:?}");
-        // 704 × 576 video under a 720 × 576 canvas: the canvas reaches 8 video pixels past each side, so the
-        // 704 pixels in the middle of the canvas are the picture's.
-        let middle = (8.0, 0.0, 704.0, 576.0);
-        assert_near!(place(middle, middle, pal, fit_over((704, 576)), surface, 16.0 / 9.0), (0.0, 0.0, 1920.0, 1080.0));
+        // 704 × 432 cropped from 704 × 576 video under a 720 × 576 canvas: the canvas reaches 8 video pixels past
+        // each side, so the 704 pixels in the middle of the canvas are the picture's.
+        let aspect704 = 704.0 * (16.0 / 9.0) / 704.0 * 576.0 / 432.0;
+        let middle = (8.0, 72.0, 704.0, 432.0);
+        assert_near!(place(middle, middle, pal, fit_over((704, 432)), surface, aspect704), (0.0, 135.0, 1920.0, 810.0));
+        // A resized 640 × 480 rip, or 704 × 576 broadcast video: stretched onto the picture, never past its sides.
+        for video in [(640, 480), (704, 576), (544, 576)] {
+            assert_near!(place(whole, whole, pal, fit_over(video), surface, 4.0 / 3.0), (240.0, 0.0, 1440.0, 1080.0));
+        }
         // NTSC 4:3: 720 × 480 over 720 × 480 shown in 1440 × 1080 at x 240.
         let ntsc = (0.0, 0.0, 720.0, 480.0);
-        assert_near!(place(ntsc, ntsc, (720.0, 480.0), fit((720, 480), Some((720, 480))), surface, 4.0 / 3.0), (240.0, 0.0, 1440.0, 1080.0));
+        assert_near!(place(ntsc, ntsc, (720.0, 480.0), fit((720, 480), Some((720, 480)), false), surface, 4.0 / 3.0), (240.0, 0.0, 1440.0, 1080.0));
         // A half-D1 NTSC encode (352 × 240) under a full 720 × 480 canvas: stretched onto the picture.
-        let at = place(ntsc, ntsc, (720.0, 480.0), fit((720, 480), Some((352, 240))), surface, 4.0 / 3.0);
+        let at = place(ntsc, ntsc, (720.0, 480.0), fit((720, 480), Some((352, 240)), false), surface, 4.0 / 3.0);
         assert_near!(at, (240.0, 0.0, 1440.0, 1080.0));
         // Over HD video the SD canvas stretches onto the picture (how the frame was scaled is unknown).
-        assert_eq!(fit((720, 576), Some((1920, 1080))), Fit::Stretch);
+        assert_eq!(fit((720, 576), Some((1920, 1080)), false), Fit::Stretch);
         assert_near!(place(whole, whole, pal, Fit::Stretch, surface, 16.0 / 9.0), (0.0, 0.0, 1920.0, 1080.0));
     }
 
@@ -254,7 +273,7 @@ mod tests {
         // 720 × 576 video turned (shown 576 × 720, portrait) in 1920 × 1080: fitted 864 × 1080 at x 528. The canvas
         // keeps a 1.25 shape, covering: 1350 × 1080 at x 285, never 864 × 1080 (glyphs 2.2 times taller than wide).
         let whole = (0.0, 0.0, 720.0, 576.0);
-        let at = place(whole, whole, (720.0, 576.0), fit((720, 576), Some((576, 720))), (1920.0, 1080.0), 576.0 / 720.0);
+        let at = place(whole, whole, (720.0, 576.0), fit((720, 576), Some((576, 720)), true), (1920.0, 1080.0), 576.0 / 720.0);
         assert_near!(at, (285.0, 0.0, 1350.0, 1080.0));
         assert!((at.2 / at.3 - 1.25).abs() < 1e-3);
     }
@@ -336,7 +355,7 @@ mod tests {
     fn a_square_hd_canvas_over_anamorphic_video_of_the_same_display_aspect_maps_like_the_picture() {
         // 1440 × 1080 coded, shown 16:9: the 1920 × 1080 canvas covers the fitted rectangle exactly.
         let rect = (0.0, 0.0, 1920.0, 1080.0);
-        let cover = place(rect, rect, (1920.0, 1080.0), fit((1920, 1080), Some((1440, 1080))), (1280.0, 720.0), 16.0 / 9.0);
+        let cover = place(rect, rect, (1920.0, 1080.0), fit((1920, 1080), Some((1440, 1080)), false), (1280.0, 720.0), 16.0 / 9.0);
         assert_near!(cover, (0.0, 0.0, 1280.0, 720.0));
         assert_near!(place((960.0, 540.0, 96.0, 54.0), (960.0, 540.0, 96.0, 54.0), (1920.0, 1080.0), Fit::Cover, (1280.0, 800.0), 16.0 / 9.0), (640.0, 400.0, 64.0, 36.0));
         // Shown 4:3 (square pixels) in a 1280 × 720 surface: the 960 × 720 picture at x 160; the canvas keeps 16:9
@@ -350,7 +369,7 @@ mod tests {
     #[test]
     fn an_anamorphic_pal_dvd_canvas_stretches_with_the_picture() {
         // 720 × 576 shown 16:9 in a 1920 × 1080 surface: x scaled 1920 / 720, y 1080 / 576.
-        let at = place((72.0, 500.0, 576.0, 60.0), (72.0, 500.0, 576.0, 60.0), (720.0, 576.0), fit((720, 576), Some((720, 576))), (1920.0, 1080.0), 16.0 / 9.0);
+        let at = place((72.0, 500.0, 576.0, 60.0), (72.0, 500.0, 576.0, 60.0), (720.0, 576.0), fit((720, 576), Some((720, 576)), false), (1920.0, 1080.0), 16.0 / 9.0);
         assert_near!(at, (192.0, 937.5, 1536.0, 112.5));
         // Pillarboxed 4:3 in the same surface: the canvas follows the picture rectangle (1440 wide at x 240).
         let at = place((0.0, 0.0, 720.0, 576.0), (0.0, 0.0, 720.0, 576.0), (720.0, 576.0), Fit::Stretch, (1920.0, 1080.0), 4.0 / 3.0);
@@ -388,6 +407,7 @@ mod tests {
             stream_index: 3,
             canvas: (720, 480),
             video_size: None,
+            video_turned: false,
             start: 1.0,
             end: None,
             rects: vec![rect(72, 400, 360, 48, 360 * 48 * 4), rect(0, 0, 10, 10, 12), rect(36, 24, 72, 24, 72 * 24 * 4)],
