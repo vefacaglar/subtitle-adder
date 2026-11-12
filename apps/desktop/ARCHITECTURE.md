@@ -90,11 +90,12 @@ and deinterlacing on the CPU in `sa_player::soft`).
 
 Tracks (`ffmpeg_backend/tracks.rs`, `subtitles.rs`; the menu model is `sa_viewmodels::media_tracks`). After the input
 opens, the demux thread lists every audio and subtitle stream (language/title tags, codec, channels, default/forced,
-and for subtitles text or image from the codec descriptor's `TEXT_SUB`/`BITMAP_SUB` properties; a text codec this
-FFmpeg build has no decoder for is listed as unsupported). It emits `PlayerEvent::TracksChanged`. `open_streams`
-falls back to the next audio stream when the best one cannot be decoded. `MediaPlayerBackend::tracks` and
-`select_audio_track` have no default bodies, so a wrapper backend (the Windows `CachedPlayer`) that forgets to forward
-them does not build.
+and for subtitles text or image from the codec descriptor's `TEXT_SUB`/`BITMAP_SUB` properties: text when it is only
+text, image when it is only pictures, either only with a decoder in this build; a codec without a decoder and
+teletext, which is both, are listed as unsupported). It emits `PlayerEvent::TracksChanged`. `open_streams` falls back
+to the next audio stream when the best one cannot be decoded. `MediaPlayerBackend::tracks`, `select_audio_track`,
+`select_image_subtitle_track` and `subtitle_picture` have no default bodies, so a wrapper backend (the Windows
+`CachedPlayer`) that forgets to forward them does not build.
 
 - Switching audio (`Player::select_audio_track`): the request goes into a slot that the demux thread handles at the top
   of its loop (a newer request replaces one not yet handled, and asking for the active stream does nothing, so
@@ -107,6 +108,63 @@ them does not build.
   the serials. The output device stays open, because swresample is rebuilt per input format (another rate or layout
   needs no reopen). A paused player stays paused, and the audio clock (master) resumes from the restarted packets. At
   EOF the switch takes effect at the next seek. With no output device only the active track changes.
+- Bitmap subtitles (`ffmpeg_backend/pictures.rs`, the pure `sa_player::picture`): an image track (PGS, VobSub, DVB,
+  XSUB) is not read into the list; the player shows it over the video while it is selected
+  (`select_image_subtitle_track(Some(stream))`, `None` turns it off). Data flow: the request goes into a slot the demux
+  thread handles at the top of its loop, like an audio switch (newest wins, the active stream does nothing). It opens
+  the stream's decoder first (`avcodec_parameters_to_context` with the extradata, where VobSub keeps its palette and
+  size; `pkt_timebase` set); a stream that is no picture track or whose decoder does not open posts
+  `SubtitleTrackFailed` and the previous choice stays. Then the queued pictures go, and decoding restarts at the
+  position (`restart_decoding`, as for audio), because the demuxer reads seconds ahead and the new track's first
+  seconds would be missing otherwise; paused stays paused. From then on the demux thread hands each packet of that
+  stream to `avcodec_decode_subtitle2` itself (no extra thread or queue: subtitle packets are small and rare, and the
+  queues ahead of the decoders hold seconds of video and audio, so a decode never starves them), turns every
+  `SUBTITLE_BITMAP` rectangle (PAL8 + a palette of native-endian `0xAARRGGBB` words with straight alpha, FFmpeg's
+  `RGBA()` macro in every bitmap decoder) into straight-alpha RGBA8, and queues the event on the `PictureTimeline`
+  with the seek serial it was demuxed for. A rejected packet is skipped and counted (`picture_failures=`), never
+  retried or waited on; playback is not touched. Times: packet pts (else dts) on the player clock plus
+  `start_display_time`; the end is `end_display_time` when the decoder gives one, else the packet duration (not for
+  PGS: its events end with the next display set), else none. The canvas is the decoder's `width` × `height` (PGS from
+  the composition segment, VobSub from its idx `size:`, DVB from its display definition), else the video's coded size,
+  grown to cover its rectangles.
+  - Timing rule (`PictureTimeline::active_at`): every bitmap format describes the whole screen per event, so the
+    picture on screen at `t` is the newest event that started at or before `t`, while `t` is before its end: its own
+    end (at most 300 s after its start), the next event's start, and at most 30 s after its start for an event
+    without an end (a PGS clearing set lost to a seek, or never sent). An event without rectangles (a PGS set without
+    objects, an empty DVB page, transparent VobSub) clears. Events arriving ahead of the clock wait in start order
+    (out-of-order ones are sorted; equal starts: the later decoded wins); events that were replaced or ended are
+    dropped as time passes. Within a serial the asked time only moves forward (a late frame's pts behind the clock
+    cannot flicker back to a replaced picture).
+  - Which picture is on screen is decided by the presenter thread, the only per-frame cost: one atomic load while no
+    image track is shown, otherwise an uncontended lock and a look at the front of a short queue. It asks at every
+    published frame with that frame's pts (before `FrameReady`, so the picture and its frame reach the UI together),
+    and with the clock while paused (a picture decoded after a paused seek's frame still appears) and while no frame
+    is coming (audio only, after the last frame). A change posts `SubtitlePictureChanged`; `subtitle_picture()` hands
+    the shown `Arc<SubtitlePicture>` out.
+  - Seeks: every queued event carries its demux serial, and a newer serial drops everything older, so from the first
+    frame of the new position on nothing of the old position shows (until that frame arrives the old frame and its
+    picture stay together, as a paused seek always showed the old frame); the decoder is flushed when the demuxer
+    seeks. Limitation, as in most players: a seek lands on the keyframe before the target, so an event that started
+    before that keyframe and lasts past the target is not shown (the next event is). Switching off drops the decoder
+    and the pictures; another load drops everything with the session. At the end of the file the last event keeps its
+    end rule.
+  - Memory bounds: at most 64 queued events and 64 MiB of RGBA (the oldest go first, counted as overflow); an event
+    above 3840 × 2160 pixels in total, or a rectangle or canvas side above 8192, is dropped as damaged. In practice
+    the queue holds the few events of the demuxer's read-ahead (a PGS caption is ~1500 × 150 px, 0.9 MB).
+  - The UI (`sa-app/src/main_window/pictures.rs`, `PictureSubtitleOverlay` in `ui/shared/overlay_label.slint`, used by
+    both trees): on `PictureChanged` the controller copies each rectangle once into a Slint image (`from_rgba8`:
+    straight alpha) with its place as fractions of the canvas (`MainBridge.picture-subtitles`), only when another
+    event is shown (by `SubtitlePicture::id`). The overlay maps the fractions onto the same aspect-fit video rectangle
+    as the text overlay (the canvas covers the whole picture, so anamorphic video needs nothing more), so the picture
+    scales with the video in a window and in full screen and looks the same on the GPU path, the RGBA path and the
+    software renderer: Slint draws it over whatever shows the video. It sits over the video and under the text
+    overlay of the user's lines, the HUD and the controls, is not styled by the text-overlay settings, and uses plain
+    `Image` items (no opacity, clip or radius, any of which would draw the player through a cached layer, the
+    slideshow bug of 2026-11-11).
+  - Diagnostics on `[player-stats]`: `image_subtitle=` (the stream shown, `-` none), `picture_events=` (events
+    decoded, clearing ones included), `pictures_shown=`, `picture_failures=`, `picture_size=WxH` (bounding box of the
+    picture on screen, `0x0` none) and `picture_canvas=`; the controller adds `subtitle_active=<stream>:image|text`
+    and what the overlay holds (`overlay_picture_rects=`, `overlay_picture_pixels=`).
 - Reading an embedded text subtitle track (`stream_text_subtitles`; `extract_text_subtitles` without snapshots)
   uses its own demuxer, with every other stream set to `AVDISCARD_ALL`, so it never touches the playing session. It
   runs on a worker thread of the app (never the UI or player threads) at background priority (`priority.rs`
@@ -181,13 +239,34 @@ them does not build.
   read that fails before its first lines also drops what an earlier, replaced read left half done. When a typed
   draft stopped a read and is then taken back (or an undo leaves the track's lines as read), the read goes on
   (`continue_unfinished_track`), except after a failure of that read. A half-read track is removed when another
-  video opens (`abandon_embedded_read`), so it is read again next time. Image tracks (PGS, VobSub, DVB) are listed
-  but disabled; more than three collapse into one summary row.
+  video opens (`abandon_embedded_read`), so it is read again next time.
+- Image tracks in the menu: the subtitle section is one radio group, "Off", the text tracks and the image tracks, every
+  image track a row of its own however many (a Blu-ray remux carries dozens; the menu scrolls). The image track shown
+  (`MediaTracks::active_image_subtitle`) is the one marked, before a text track whose lines are in the list; "Off" is
+  there whenever a text or image track is, checked while neither is on the video, and enabled while an image track is
+  shown (it hides it) besides the existing cases. Choosing an image track (`choose_image_track`) is display only: it
+  never modifies, overwrites or writes the user's subtitle list or any file. It treats the video's own text track like
+  choosing another text track does: a read in flight stops, and lines that are an embedded track nobody changed go
+  (`clear_embedded_lines_for_picture_track`, after a typed draft is committed: then they are the user's and stay);
+  unlike "Off" it is not remembered for the video. A list holding the user's own work (an opened or generated
+  subtitle, edited track lines) is left exactly as it is, and their text overlay stays on top of the pictures.
+  Choosing a text track or "Off" takes the image track off the video first. Automatic choice: text tracks keep
+  priority (`auto_track`); only when that rule finds none, the same rule over the image tracks (`auto_image_track`:
+  the UI language's, non-forced first, else the default one) shows one, under exactly the conditions that allow the
+  automatic text load (an empty, idle session, no subtitle file next to the video, no job or batch, "Off" not chosen
+  for the video in this run). A failure (`SubtitleTrackFailed`) is reported like an audio track failure:
+  `Altyazı parçası gösterilemedi: …`.
 - The read opens the file directly (`MediaSource::File`), not through the Windows `BufferedVideoStream`: it bypasses
   the encrypted SSD chunk cache and reads Matroska through to the end, at background I/O priority so playback keeps
   its share of a slow drive.
 - Test hooks (`#[doc(hidden)]`): `use_audio_tap` replaces the device with a virtual real-time output that records
   `(pts, samples)` blocks, and `simulate_audio_decoder_failure` makes opening a given audio stream fail.
+- Test media for bitmap subtitles: FFmpeg has no PGS encoder, so `sa-player/tests/common/sup.rs` writes PGS display
+  sets (PCS / WDS / PDS / ODS with PGS run-length coding / END; a set without objects clears) with known pixels,
+  palette and times; the FFmpeg CLI muxes that `.sup` into Matroska and transcodes it to VobSub and DVB
+  (`-fix_sub_duration`, bitmap to bitmap). `sa-player/tests/pictures.rs` checks exact pixels (straight alpha, RGBA
+  order), positions, canvases and times for PGS, VobSub (4-bit alpha and the DVD palette: within a tolerance) and DVB
+  (placed by canvas fractions), the clearing events, seeks, switches, off and a text stream refused.
 
 Dependencies of `sa-player` (feature `ffmpeg`):
 
