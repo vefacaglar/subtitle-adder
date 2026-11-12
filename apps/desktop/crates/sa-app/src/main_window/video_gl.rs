@@ -39,14 +39,15 @@
 //!   renderer: tone-mapped and deinterlaced by the player on the CPU) are dumped the same way as
 //!   `...-<pts>[-field2]-cpu.png` ([`VideoSurface::dump_rgba`]).
 //!
-//! * `SUBTITLE_ADDER_WINDOW_DUMP=<path prefix>` writes the window's whole back buffer (read with `glReadPixels` in
+//! * `SUBTITLE_ADDER_WINDOW_DUMP=<path prefix>` (or a folder: a value ending in a separator, or an existing folder,
+//!   means `<folder>/window`; the folder is created) writes the window's whole back buffer (read with `glReadPixels` in
 //!   the `AfterRendering` notifier, after Slint drew the video, the subtitle pictures, the text overlay and the
 //!   controls, before the swap; rows flipped top-down, alpha opaque) as PNG files
 //!   `<prefix>-<pid>-<n>-<moments>-<position>.png`, at a few moments only: the first render with a bitmap subtitle
 //!   picture on screen (`picture`), the first with overlay text (`text`), the first at or after 5 s of playback
 //!   (`after5s`), and the first at or after each playback position listed in `SUBTITLE_ADDER_WINDOW_DUMP_AT`
 //!   (seconds, comma separated; `at<t>s`); moments reached in the same render share one file; 8 files at most. Each
-//!   written file logs a `[video] window dump` line. Screen capture of the GL window returns white here, so this is
+//!   written file logs a `[video] window dump` line; only the first write that fails is reported on stderr. Screen capture of the GL window returns white here, so this is
 //!   the way to see what the window presents. GPU renderer only (the software renderer has no notifier); off, and
 //!   free, without the variable.
 //!
@@ -282,12 +283,24 @@ struct WindowDump {
     state: Option<Box<dyn Fn() -> WindowState>>,
 }
 
+/// `SUBTITLE_ADDER_WINDOW_DUMP`'s value as (the folder to create, the file name prefix): a value ending in a path
+/// separator, or naming an existing folder, is a folder (`<folder>/window`); otherwise a prefix in its parent folder.
+fn window_dump_prefix(value: &str) -> (Option<std::path::PathBuf>, String) {
+    let path = std::path::Path::new(value);
+    if value.ends_with(['/', '\\']) || path.is_dir() {
+        let dir = path.to_path_buf();
+        return (Some(dir.clone()), dir.join("window").to_string_lossy().into_owned());
+    }
+    (path.parent().filter(|d| !d.as_os_str().is_empty()).map(std::path::Path::to_path_buf), value.to_owned())
+}
+
 impl WindowDump {
     fn from_env() -> Option<Self> {
-        let prefix = std::env::var("SUBTITLE_ADDER_WINDOW_DUMP").ok().filter(|p| !p.trim().is_empty())?;
+        let value = std::env::var("SUBTITLE_ADDER_WINDOW_DUMP").ok().filter(|p| !p.trim().is_empty())?;
         let at = std::env::var("SUBTITLE_ADDER_WINDOW_DUMP_AT").unwrap_or_default();
-        if let Some(dir) = std::path::Path::new(&prefix).parent().filter(|d| !d.as_os_str().is_empty())
-            && let Err(e) = std::fs::create_dir_all(dir)
+        let (dir, prefix) = window_dump_prefix(&value);
+        if let Some(dir) = dir
+            && let Err(e) = std::fs::create_dir_all(&dir)
         {
             eprintln!("[video] window dumps off: cannot create {}: {e}", dir.display());
             return None;
@@ -298,11 +311,18 @@ impl WindowDump {
         std::thread::Builder::new()
             .name("window-dump".into())
             .spawn(move || {
+                let mut failed = 0u32;
                 while let Ok(img) = rx.recv() {
                     let r = image::save_buffer(&img.name, &img.rgba, img.width, img.height, image::ExtendedColorType::Rgba8);
                     match r {
                         Ok(()) => eprintln!("[video] window dump {} ({}x{})", img.name, img.width, img.height),
-                        Err(e) => eprintln!("[video] window dump {} failed: {e}", img.name),
+                        Err(e) => {
+                            // Once: the same cause (a folder that went, a full disk) fails every later write too.
+                            if failed == 0 {
+                                eprintln!("[video] window dump {} failed: {e}", img.name);
+                            }
+                            failed += 1;
+                        }
                     }
                     drop(img);
                     pending.fetch_sub(1, Ordering::AcqRel);
@@ -1565,6 +1585,31 @@ impl PackState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_window_dump_value_naming_a_folder_dumps_into_it() {
+        use std::path::PathBuf;
+        let root = std::env::temp_dir().join(format!("sa-window-dump-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // Ending in a separator: a folder, created, files named `window-...` in it.
+        for sep in ['/', '\\'] {
+            let value = format!("{}{sep}", root.join("new").display());
+            let (dir, prefix) = super::window_dump_prefix(&value);
+            assert_eq!(dir.as_deref().map(|d| d.components().collect::<PathBuf>()), Some(root.join("new")));
+            assert_eq!(PathBuf::from(&prefix).file_name().and_then(|n| n.to_str()), Some("window"));
+            assert_eq!(PathBuf::from(&prefix).parent().map(|p| p.components().collect::<PathBuf>()), Some(root.join("new")));
+        }
+        // An existing folder without the separator: the same.
+        std::fs::create_dir_all(root.join("there")).unwrap();
+        let (dir, prefix) = super::window_dump_prefix(&root.join("there").to_string_lossy());
+        assert_eq!(dir, Some(root.join("there")));
+        assert_eq!(PathBuf::from(prefix), root.join("there").join("window"));
+        // Otherwise a prefix in its parent folder.
+        let value = root.join("shots").join("run1").to_string_lossy().into_owned();
+        assert_eq!(super::window_dump_prefix(&value), (Some(root.join("shots")), value.clone()));
+        assert_eq!(super::window_dump_prefix("run1"), (None, "run1".to_owned()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn window_dumps_are_taken_once_per_moment_and_bounded() {
         let st = |picture, text, position| WindowState { picture, text, position };
