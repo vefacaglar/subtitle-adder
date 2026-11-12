@@ -1060,7 +1060,7 @@ fn choosing_an_embedded_text_track_loads_it_without_a_file_and_marks_it_in_the_m
 
 fn pgs_picture(id: u64) -> Arc<SubtitlePicture> {
     let rect = |x, y, w: u32, h: u32| SubtitleBitmap { x, y, width: w, height: h, rgba: Arc::new(vec![255; (w * h * 4) as usize]) };
-    Arc::new(SubtitlePicture { id, stream_index: 4, canvas: (1920, 1080), start: 1.0, end: None, rects: vec![rect(480, 900, 960, 108), rect(0, 0, 192, 54)] })
+    Arc::new(SubtitlePicture { id, stream_index: 4, canvas: (1920, 1080), video_size: Some((1920, 1080)), start: 1.0, end: None, rects: vec![rect(480, 900, 960, 108), rect(0, 0, 192, 54)] })
 }
 
 impl Rig {

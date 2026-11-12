@@ -97,6 +97,8 @@ pub(crate) struct Stats {
     pub picture_events: AtomicU64,
     pub pictures_shown: AtomicU64,
     pub picture_failures: AtomicU64,
+    /// Bitmap subtitle events dropped because the queue was full (`PictureTimeline::overflowed`).
+    pub picture_overflow: AtomicU64,
 }
 
 /// The bitmap subtitle events queued for the presenter and the picture on screen.
@@ -397,9 +399,14 @@ impl Control {
         self.speed_bits.store(speed.to_bits(), Ordering::Relaxed);
         self.clock.set_speed(speed);
         if self.audio_active.load(Ordering::Acquire) && self.info.lock().opened {
-            // Queued audio was resampled for the old speed: restart from the current position.
-            let p = self.position();
-            self.request_seek(p);
+            // Queued audio was resampled for the old speed: restart from the current position (a seek the user
+            // started meanwhile still wins).
+            if self.deferred_seek.lock().is_none() {
+                self.restart_decoding(self.position());
+            } else {
+                let p = self.position();
+                self.request_seek(p);
+            }
         }
     }
 
@@ -418,14 +425,17 @@ impl Control {
 
     /// The picture due at `t` (a frame's pts, or the clock while no frame is coming) on screen, announced when it
     /// changed. A lock and a look at the front of a short queue, and only while a bitmap track is shown.
+    /// After the end of playback nothing is shown (the clock stops there, so an event without an end would stay).
     fn update_picture(&self, t: f64) {
         if !self.pictures_on.load(Ordering::Acquire) {
             return;
         }
-        let serial = self.serial.load(Ordering::Acquire);
         let changed = {
             let mut p = self.pictures.lock();
-            let now = p.timeline.active_at(serial, t);
+            // Read under the lock: a restart that carries the picture over (`start_seek`) bumps the serial under it.
+            let serial = self.serial.load(Ordering::Acquire);
+            let now = if self.ended.load(Ordering::Acquire) { None } else { p.timeline.active_at(serial, t) };
+            self.stats.picture_overflow.store(p.timeline.overflowed, Ordering::Relaxed);
             if now.as_ref().map(|n| n.id) == p.shown.as_ref().map(|n| n.id) {
                 false
             } else {
@@ -477,7 +487,7 @@ impl Control {
             *deferred = None;
             *self.seek_started.lock() = Instant::now();
         }
-        self.start_seek(target);
+        self.start_seek(target, false);
     }
 
     fn clamp_target(&self, seconds: f64) -> f64 {
@@ -492,21 +502,31 @@ impl Control {
     }
 
     /// Restarts decoding from the keyframe at or before `at` (the video decoder was replaced and starts without
-    /// one), bypassing the seek deferral: a deferred seek would leave the new decoder with the packets after the
-    /// keyframe the failed decoder consumed. A seek the user requested meanwhile (deferred) is the target instead.
+    /// one, another audio track or speed), bypassing the seek deferral: a deferred seek would leave the new decoder
+    /// with the packets after the keyframe the failed decoder consumed. A seek the user requested meanwhile
+    /// (deferred) is the target instead. Unless it is, the position stays and so does the bitmap subtitle picture on
+    /// screen (`PictureTimeline::carry_over`; its own end still applies): the restart only re-reads the stream.
     fn restart_decoding(&self, at: f64) {
-        let target = {
+        let (target, keep) = {
             let mut deferred = self.deferred_seek.lock();
-            let t = deferred.take().unwrap_or(at);
+            let d = deferred.take();
             *self.seek_started.lock() = Instant::now();
-            t
+            (d.unwrap_or(at), d.is_none())
         };
-        self.start_seek(self.clamp_target(target));
+        self.start_seek(self.clamp_target(target), keep);
     }
 
     /// Starts a seek to `target` (clamped): a new serial, flushed queues, the clock at the target, the demuxer asked.
-    fn start_seek(&self, target: f64) {
-        let serial = self.serial.fetch_add(1, Ordering::AcqRel) + 1;
+    /// `keep_picture`: the bitmap subtitle picture on screen carries over to the new serial (a restart in place).
+    fn start_seek(&self, target: f64, keep_picture: bool) {
+        let serial = if keep_picture {
+            let mut p = self.pictures.lock();
+            let serial = self.serial.fetch_add(1, Ordering::AcqRel) + 1;
+            p.timeline.carry_over(serial);
+            serial
+        } else {
+            self.serial.fetch_add(1, Ordering::AcqRel) + 1
+        };
         *self.seek_target.lock() = (serial, target);
         // Flush before the demuxer can see the request (it is published last): flushing afterwards could drop the
         // first packets it already queued for the new serial (the keyframe the target is decoded from). Packets of
@@ -995,6 +1015,19 @@ fn switch_pictures(ctl: &Control, input: &mut OpenedInput, current: &mut Option<
     ctl.emit(PlayerEvent::TracksChanged { generation: ctl.generation });
 }
 
+/// The shown bitmap track decoded nothing and its decoder rejected packet after packet: it is turned off (as if
+/// "Off" were chosen) and `SubtitleTrackFailed` says why, so the menu does not mark a track that shows nothing.
+fn give_up_pictures(ctl: &Control, current: &mut Option<PictureTrack>) {
+    let Some(track) = current.take() else { return };
+    let message = track.last_error.clone().unwrap_or_else(|| ffmpeg_next::Error::InvalidData.to_string());
+    eprintln!("[player] subtitle stream {} given up after {} failed packets ({message})", track.stream, track.failed + track.oversized);
+    ctl.pictures_on.store(false, Ordering::Release);
+    ctl.tracks.lock().active_image_subtitle = None;
+    ctl.clear_pictures();
+    ctl.emit(PlayerEvent::SubtitleTrackFailed { generation: ctl.generation, stream_index: track.stream, message });
+    ctl.emit(PlayerEvent::TracksChanged { generation: ctl.generation });
+}
+
 /// Where the demux loop sends packets.
 struct Routes {
     video: Option<usize>,
@@ -1064,8 +1097,14 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, routes: Routes) {
                     ctl.stats.picture_failures.store(p.failed + p.oversized, Ordering::Relaxed);
                     if let Some(e) = event {
                         ctl.stats.picture_events.fetch_add(1, Ordering::Relaxed);
-                        ctl.pictures.lock().timeline.push(serial, e.start, e.end, e.picture.map(Arc::new));
+                        {
+                            let mut q = ctl.pictures.lock();
+                            q.timeline.push(serial, e.start, e.end, e.picture.map(Arc::new));
+                            ctl.stats.picture_overflow.store(q.timeline.overflowed, Ordering::Relaxed);
+                        }
                         ctl.wake.notify();
+                    } else if p.hopeless() {
+                        give_up_pictures(ctl, &mut pictures);
                     }
                 }
             }
@@ -1656,6 +1695,8 @@ fn check_end(ctl: &Control) {
     ctl.audio_wake.notify();
     ctl.announce_playing();
     ctl.emit(PlayerEvent::Ended { generation: ctl.generation });
+    // Nothing of the last event stays on the end screen.
+    ctl.update_picture(final_pos);
 }
 
 fn audio_main(ctl: Arc<Control>, mut stream: usize, mut dec: codec::decoder::Audio, mut tb: Rational) {

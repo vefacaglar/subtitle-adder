@@ -37,6 +37,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::{FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, NativeStackInfo, PlayerEvent, VideoFrame};
 use session::{Control, PlayerShared};
 
+#[doc(hidden)]
+pub use pictures::{DecodedPictureEvent, decode_picture_stream};
 pub use subtitles::{
     ExtractError, ExtractedSubtitle, StreamOptions, extract_text_subtitles, extract_text_subtitles_with, snapshot_interval, stream_text_subtitles,
 };
@@ -130,6 +132,8 @@ pub struct PlaybackStats {
     pub pictures_shown: u64,
     /// Bitmap subtitle packets the decoder rejected, or events dropped as too large, on the current track.
     pub picture_failures: u64,
+    /// Bitmap subtitle events dropped because the queue was full.
+    pub picture_overflow: u64,
 }
 
 impl PlaybackStats {
@@ -249,6 +253,7 @@ impl FfmpegPlayer {
             picture_events: s.stats.picture_events.load(Ordering::Relaxed),
             pictures_shown: s.stats.pictures_shown.load(Ordering::Relaxed),
             picture_failures: s.stats.picture_failures.load(Ordering::Relaxed),
+            picture_overflow: s.stats.picture_overflow.load(Ordering::Relaxed),
         }
     }
 
@@ -387,7 +392,7 @@ impl MediaPlayerBackend for FfmpegPlayer {
             .unwrap_or_else(|| ("0x0".to_owned(), "-".to_owned()));
         Some(format!(
             "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={} dropped_fields={} soft_tonemapped={} soft_deinterlaced={} \
-             image_subtitle={image} picture_events={} pictures_shown={} picture_failures={} picture_size={size} picture_canvas={canvas}",
+             image_subtitle={image} picture_events={} pictures_shown={} picture_failures={} picture_overflow={} picture_size={size} picture_canvas={canvas}",
             s.decoded,
             s.hardware,
             s.planar,
@@ -399,7 +404,8 @@ impl MediaPlayerBackend for FfmpegPlayer {
             s.soft_deinterlaced,
             s.picture_events,
             s.pictures_shown,
-            s.picture_failures
+            s.picture_failures,
+            s.picture_overflow
         ))
     }
 

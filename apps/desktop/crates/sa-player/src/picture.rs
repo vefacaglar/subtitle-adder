@@ -15,9 +15,10 @@ use std::sync::Arc;
 pub const OPEN_EVENT_MAX: f64 = 30.0;
 /// Any event is shown at most this long, whatever end it claims.
 pub const EVENT_MAX: f64 = 300.0;
-/// Events queued ahead of (or kept behind) the clock; the oldest go first past this.
+/// Events queued ahead of (or kept behind) the clock. Past this, events already replaced go first, then the ones
+/// farthest ahead; the event on screen (or due next) is never dropped.
 pub const MAX_QUEUED_EVENTS: usize = 64;
-/// RGBA bytes of the queued pictures; the oldest go first past this.
+/// RGBA bytes of the queued pictures, bounded the same way.
 pub const MAX_QUEUED_BYTES: usize = 64 << 20;
 /// Pixels of one event (all its rectangles): a full UHD canvas. Larger events are dropped as damaged.
 pub const MAX_EVENT_PIXELS: u64 = 3840 * 2160;
@@ -50,8 +51,8 @@ impl SubtitleBitmap {
 }
 
 /// A subtitle event's pictures, as shown: every rectangle positioned on the `canvas` (the subtitle's own coordinate
-/// space, which covers the whole video picture: PGS / VobSub / DVB give it, else the video's coded size), shown from
-/// `start` (s, on the player clock).
+/// space: PGS / VobSub / DVB give it, else it is made up from the video's coded size; how it lies over the video is
+/// the UI's rule, `sa-app`'s `main_window::pictures`), shown from `start` (s, on the player clock).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubtitlePicture {
     /// Unique per player (a new id for every event, also for equal pictures).
@@ -59,6 +60,8 @@ pub struct SubtitlePicture {
     /// The subtitle stream it came from.
     pub stream_index: usize,
     pub canvas: (u32, u32),
+    /// The coded size of the video it is shown over, when there is one.
+    pub video_size: Option<(u32, u32)>,
     pub start: f64,
     /// The event's own end (s), when it has one.
     pub end: Option<f64>,
@@ -148,10 +151,34 @@ impl PictureTimeline {
         self.events.insert(at, Entry { start, end, picture, bytes });
         self.bytes += bytes;
         while self.events.len() > MAX_QUEUED_EVENTS || (self.bytes > MAX_QUEUED_BYTES && self.events.len() > 1) {
-            if let Some(e) = self.events.pop_front() {
+            // Never the event `active_at` would pick now (the one on screen, or the next one due): events it already
+            // replaced go first, then the one farthest ahead (which the demuxer reads again after a seek).
+            let current = self.events.iter().rposition(|e| e.start <= self.asked).unwrap_or(0);
+            let drop = if current > 0 { 0 } else { self.events.len() - 1 };
+            if drop == current {
+                break;
+            }
+            if let Some(e) = self.events.remove(drop) {
                 self.bytes -= e.bytes;
                 self.overflowed += 1;
             }
+        }
+    }
+
+    /// A restart of decoding that keeps the position (another audio track, another speed, a new video decoder): the
+    /// event on screen at the newest asked time carries over to `serial` with its own start and end (so it still
+    /// ends when it would have), and everything else queued goes (the restarted demuxer reads it again).
+    pub fn carry_over(&mut self, serial: u64) {
+        if serial <= self.serial {
+            return;
+        }
+        let asked = self.asked;
+        let kept = self.events.iter().rposition(|e| e.start <= asked).and_then(|i| self.events.remove(i));
+        self.adopt(serial);
+        if let Some(e) = kept {
+            self.asked = asked;
+            self.bytes = e.bytes;
+            self.events.push_back(e);
         }
     }
 
@@ -198,6 +225,7 @@ mod tests {
             id,
             stream_index: 3,
             canvas: (1920, 1080),
+            video_size: None,
             start: 0.0,
             end: None,
             rects: vec![SubtitleBitmap { x: 10, y: 20, width: 2, height: 1, rgba: Arc::new(vec![0; 8]) }],
@@ -273,30 +301,78 @@ mod tests {
         assert_eq!(shown(&mut t, 1, 1.99), Some(2));
     }
 
+    fn big(id: u64) -> Option<Arc<SubtitlePicture>> {
+        Some(Arc::new(SubtitlePicture {
+            id,
+            stream_index: 3,
+            canvas: (3840, 2160),
+            video_size: None,
+            start: 0.0,
+            end: None,
+            rects: vec![SubtitleBitmap { x: 0, y: 0, width: 3840, height: 2160, rgba: Arc::new(vec![0; 3840 * 2160 * 4]) }],
+        }))
+    }
+
     #[test]
-    fn the_queue_is_bounded_by_count_and_bytes() {
+    fn the_queue_is_bounded_by_count_and_bytes_and_drops_the_farthest_ahead() {
         let mut t = PictureTimeline::new();
         for i in 0..(MAX_QUEUED_EVENTS as u64 + 10) {
             t.push(1, 100.0 + i as f64, None, pic(i));
         }
         assert_eq!(t.len(), MAX_QUEUED_EVENTS);
         assert_eq!(t.overflowed, 10);
-        let big = |id| {
-            Some(Arc::new(SubtitlePicture {
-                id,
-                stream_index: 3,
-                canvas: (3840, 2160),
-                start: 0.0,
-                end: None,
-                rects: vec![SubtitleBitmap { x: 0, y: 0, width: 3840, height: 2160, rgba: Arc::new(vec![0; 3840 * 2160 * 4]) }],
-            }))
-        };
+        assert_eq!(shown(&mut t, 1, 100.5), Some(0), "the next one due was kept");
+        assert_eq!(shown(&mut t, 1, 163.5), Some(63));
+        assert_eq!(shown(&mut t, 1, 164.5), Some(63), "the last ten were the ones dropped");
+        // Pictures of 33 MB: two fit; a third never at the cost of the one on screen.
         let mut t = PictureTimeline::new();
-        for i in 0u32..4 {
+        t.push(1, 0.0, None, big(0));
+        assert_eq!(shown(&mut t, 1, 0.5), Some(0));
+        for i in 1u32..4 {
             t.push(1, f64::from(i), None, big(u64::from(i)));
+            assert!(t.bytes() <= MAX_QUEUED_BYTES, "{}", t.bytes());
+            assert_eq!(shown(&mut t, 1, 0.6), Some(0), "the picture on screen stays");
         }
-        assert!(t.bytes() <= MAX_QUEUED_BYTES, "{}", t.bytes());
-        assert_eq!(shown(&mut t, 1, 3.5), Some(3), "the newest stays");
+        assert_eq!(t.overflowed, 2, "the ones farthest ahead");
+        assert_eq!(shown(&mut t, 1, 1.0), Some(1));
+    }
+
+    #[test]
+    fn the_picture_on_screen_is_never_the_one_dropped_even_when_replaced_ones_are_queued_before_it() {
+        let mut t = PictureTimeline::new();
+        t.push(1, 1.0, None, big(1));
+        assert_eq!(shown(&mut t, 1, 2.5), Some(1));
+        t.push(1, 3.0, None, big(2));
+        // A late event that sorts before the one on screen (already replaced) is the one that goes.
+        t.push(1, 0.5, None, big(0));
+        assert_eq!(t.overflowed, 1);
+        assert_eq!(shown(&mut t, 1, 2.6), Some(1));
+        assert_eq!(shown(&mut t, 1, 3.0), Some(2), "and the one ahead stayed");
+    }
+
+    #[test]
+    fn a_restart_at_the_same_position_carries_the_picture_on_screen_over_with_its_own_end() {
+        let mut t = PictureTimeline::new();
+        t.push(1, 1.0, Some(4.0), pic(1));
+        t.push(1, 5.0, None, pic(2));
+        assert_eq!(shown(&mut t, 1, 2.0), Some(1));
+        t.carry_over(2);
+        assert_eq!(shown(&mut t, 2, 2.0), Some(1), "still on screen after the restart");
+        assert_eq!(t.len(), 1, "what lies ahead is demuxed again");
+        // The restarted demuxer decodes the same event again (a new picture with the same start) and the next.
+        t.push(2, 1.0, Some(4.0), pic(3));
+        t.push(2, 5.0, None, pic(2));
+        assert_eq!(shown(&mut t, 2, 2.1), Some(3));
+        assert_eq!(shown(&mut t, 2, 4.0), None, "its own end still holds");
+        assert_eq!(shown(&mut t, 2, 5.0), Some(2));
+        // Nothing on screen: nothing carried. An old serial is ignored.
+        t.carry_over(1);
+        assert_eq!(shown(&mut t, 2, 5.1), Some(2));
+        let mut t = PictureTimeline::new();
+        t.push(1, 3.0, None, pic(1));
+        assert_eq!(shown(&mut t, 1, 2.0), None);
+        t.carry_over(2);
+        assert!(t.is_empty());
     }
 
     #[test]

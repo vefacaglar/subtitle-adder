@@ -54,6 +54,7 @@ mod tests {
             id: 1,
             stream_index: 3,
             canvas: (720, 480),
+            video_size: None,
             start: 1.0,
             end: None,
             rects: vec![rect(72, 400, 360, 48, 360 * 48 * 4), rect(0, 0, 10, 10, 12), rect(36, 24, 72, 24, 72 * 24 * 4)],
