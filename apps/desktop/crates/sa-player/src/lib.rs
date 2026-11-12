@@ -30,7 +30,7 @@ pub mod timeline;
 pub mod ffmpeg_backend;
 
 pub use gate::{PlayerEventToken, PlayerSessionGate, SourceId};
-pub use picture::{SubtitleBitmap, SubtitlePicture};
+pub use picture::{PictureTrackFailure, SubtitleBitmap, SubtitlePicture};
 pub use timeline::PlaybackTimeline;
 
 /// A decoded video frame. `width` × `height` is the size as shown (sample aspect ratio and rotation applied), or half
@@ -459,9 +459,11 @@ pub enum PlayerEvent {
     TracksChanged { generation: LoadGeneration },
     /// The audio stream asked for could not be played (its decoder did not open); the previous one keeps playing.
     AudioTrackFailed { generation: LoadGeneration, stream_index: usize, message: String },
-    /// The bitmap subtitle stream asked for cannot be shown (not a picture track, or its decoder did not open); the
-    /// previous choice stays.
-    SubtitleTrackFailed { generation: LoadGeneration, stream_index: usize, message: String },
+    /// A bitmap subtitle stream cannot be shown. Asked for and not opened (not a picture track, or its decoder did
+    /// not open): the previous choice stays. Shown and given up (its decoder rejected packet after packet without
+    /// producing a picture, `ffmpeg_backend::pictures::GIVE_UP_AFTER`): it is turned off, as if "Off" were chosen, and
+    /// `TracksChanged` follows.
+    SubtitleTrackFailed { generation: LoadGeneration, stream_index: usize, reason: PictureTrackFailure },
     /// The picture on screen changed ([`MediaPlayerBackend::subtitle_picture`]): a bitmap subtitle event started or
     /// ended, a seek or a track switch removed it. Posted only on a change.
     SubtitlePictureChanged { generation: LoadGeneration },

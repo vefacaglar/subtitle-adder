@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use sa_core::cancel::CancellationToken;
 use sa_core::l10n::LocalizedMessage;
 use sa_core::models::SubtitleLanguage;
-use sa_player::{AudioTrack, ExtractError, MediaTracks, SubtitleKind, SubtitleTrack};
+use sa_player::{AudioTrack, ExtractError, MediaTracks, PictureTrackFailure, SubtitleKind, SubtitleTrack};
 
 /// One menu entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,11 +296,17 @@ fn details_text(details: &str) -> String {
     if d.is_empty() { sa_core::l("Bilinmeyen hata") } else { d.to_owned() }
 }
 
-/// `Altyazı parçası gösterilemedi: %@` (the player could not show the image track; the previous choice stays).
-pub fn subtitle_track_failure(details: &str) -> LocalizedMessage {
-    let d = details.to_owned();
-    LocalizedMessage::new(format!("subtitle-track-failed:{details}"), move || {
-        sa_core::l!("Altyazı parçası gösterilemedi: %@", details_text(&d).as_str())
+/// `Altyazı parçası gösterilemedi: %@` (the player could not show the image track: a track it refused leaves the
+/// previous choice on, a track it gave up is off). The reason in the UI language; FFmpeg's own text as is.
+pub fn subtitle_track_failure(reason: &PictureTrackFailure) -> LocalizedMessage {
+    let r = reason.clone();
+    LocalizedMessage::new(format!("subtitle-track-failed:{reason:?}"), move || {
+        let why = match &r {
+            PictureTrackFailure::Ffmpeg(details) => details_text(details),
+            PictureTrackFailure::NoTimeCode => sa_core::l("XSUB paketlerinde zaman kodu yok"),
+            PictureTrackFailure::TooLarge => sa_core::l("Altyazı resimleri gösterilemeyecek kadar büyük"),
+        };
+        sa_core::l!("Altyazı parçası gösterilemedi: %@", why.as_str())
     })
 }
 

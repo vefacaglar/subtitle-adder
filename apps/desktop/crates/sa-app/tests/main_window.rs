@@ -24,8 +24,8 @@ use sa_core::l10n::{CatalogChain, UiLanguage};
 use sa_core::models::ModelCatalog;
 use sa_core::settings::SettingsStore;
 use sa_player::{
-    AudioTrack, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, PlayerEvent, SubtitleBitmap, SubtitleKind, SubtitlePicture, SubtitleTrack,
-    VideoFrame,
+    AudioTrack, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, PictureTrackFailure, PlayerEvent, SubtitleBitmap, SubtitleKind,
+    SubtitlePicture, SubtitleTrack, VideoFrame,
 };
 use sa_viewmodels::SubtitleViewModel;
 use sa_viewmodels::types::Workspace;
@@ -1140,10 +1140,14 @@ fn the_picture_overlay_follows_the_players_events() {
         let s = r.backend.lock();
         (s.sink.clone().unwrap(), s.generation)
     };
-    sink(PlayerEvent::SubtitleTrackFailed { generation, stream_index: 4, message: "Decoder not found".into() });
+    sink(PlayerEvent::SubtitleTrackFailed { generation, stream_index: 4, reason: PictureTrackFailure::Ffmpeg("Decoder not found".into()) });
     r.pump();
     assert!(r.main().get_error_open());
     assert_eq!(r.main().get_error_text(), "Altyazı parçası gösterilemedi: Decoder not found");
+    // The player's own reasons are worded in the UI language.
+    sink(PlayerEvent::SubtitleTrackFailed { generation, stream_index: 4, reason: PictureTrackFailure::TooLarge });
+    r.pump();
+    assert_eq!(r.main().get_error_text(), "Altyazı parçası gösterilemedi: Altyazı resimleri gösterilemeyecek kadar büyük");
 }
 
 #[test]

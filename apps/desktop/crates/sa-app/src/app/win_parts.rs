@@ -509,7 +509,8 @@ mod tests {
         let wait_tracks = |rx: &std::sync::mpsc::Receiver<PlayerEvent>| loop {
             match rx.recv_timeout(Duration::from_secs(10)).expect("an event") {
                 PlayerEvent::TracksChanged { .. } => break,
-                PlayerEvent::Failed { message, .. } | PlayerEvent::SubtitleTrackFailed { message, .. } => panic!("{message}"),
+                PlayerEvent::Failed { message, .. } => panic!("{message}"),
+                PlayerEvent::SubtitleTrackFailed { reason, .. } => panic!("{reason:?}"),
                 _ => {}
             }
         };

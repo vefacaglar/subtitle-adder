@@ -15,15 +15,28 @@ use std::sync::Arc;
 pub const OPEN_EVENT_MAX: f64 = 30.0;
 /// Any event is shown at most this long, whatever end it claims.
 pub const EVENT_MAX: f64 = 300.0;
-/// Events queued ahead of (or kept behind) the clock. Past this, events already replaced go first, then the ones
-/// farthest ahead; the event on screen (or due next) is never dropped.
-pub const MAX_QUEUED_EVENTS: usize = 64;
-/// RGBA bytes of the queued pictures, bounded the same way.
+/// The real bound of the queued events is their RGBA bytes: past it, events already replaced go first (oldest
+/// first), then the ones farthest ahead; the event on screen (or due next) is never dropped.
 pub const MAX_QUEUED_BYTES: usize = 64 << 20;
+/// A sanity limit on the number of queued events (clearing events weigh nothing), bounded the same way. High enough
+/// for a whole film's worth of small pictures: AVI files can put every XSUB packet at the front of the file, where
+/// the demuxer reads them all at once and never again after a seek.
+pub const MAX_QUEUED_EVENTS: usize = 4096;
 /// Pixels of one event (all its rectangles): a full UHD canvas. Larger events are dropped as damaged.
 pub const MAX_EVENT_PIXELS: u64 = 3840 * 2160;
 /// Width or height of one rectangle or of the canvas.
 pub const MAX_SIDE: u32 = 8192;
+
+/// Why a bitmap subtitle track cannot be shown (`PlayerEvent::SubtitleTrackFailed`); the UI words it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PictureTrackFailure {
+    /// FFmpeg's own error text (the stream is no picture track, its decoder did not open or rejected the packets).
+    Ffmpeg(String),
+    /// XSUB packets without the time code they must start with.
+    NoTimeCode,
+    /// Pictures larger than the player keeps ([`MAX_EVENT_PIXELS`], [`MAX_SIDE`]).
+    TooLarge,
+}
 
 /// One rectangle of a picture: straight (not premultiplied) RGBA8, `width * 4` bytes per row, at `(x, y)` on the
 /// event's canvas.
@@ -60,7 +73,8 @@ pub struct SubtitlePicture {
     /// The subtitle stream it came from.
     pub stream_index: usize,
     pub canvas: (u32, u32),
-    /// The coded size of the video it is shown over, when there is one.
+    /// The coded size of the video it is shown over, when there is one, in the orientation it is shown (width and
+    /// height swapped for a video turned a quarter round).
     pub video_size: Option<(u32, u32)>,
     pub start: f64,
     /// The event's own end (s), when it has one.
@@ -94,24 +108,62 @@ struct Entry {
     end: Option<f64>,
     /// `None`: a clearing event (nothing on screen from its start).
     picture: Option<Arc<SubtitlePicture>>,
+    /// Decoded with all the earlier state it builds on (see `push`).
+    complete: bool,
     bytes: usize,
+}
+
+impl Entry {
+    /// The same event decoded again: same times and the same pictures.
+    fn same_as(&self, end: Option<f64>, picture: &Option<Arc<SubtitlePicture>>) -> bool {
+        self.end == end
+            && match (&self.picture, picture) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b) || (a.canvas == b.canvas && a.rects == b.rects),
+                _ => false,
+            }
+    }
 }
 
 /// The decoded events of the selected picture track, in start order, and which one is on screen.
 ///
-/// Events carry the player's seek serial they were demuxed for; asking with a newer serial drops the older ones, so
-/// nothing of the position before a seek is ever shown after it. Within one serial the asked times only move
-/// forward (a frame's pts can fall a little behind the clock the previous check used), and events that ended before
-/// the newest asked time are dropped.
-#[derive(Default)]
+/// The queue holds what the demuxer delivered: events ahead of the clock and, as long as they fit, the ones already
+/// replaced. It knows the screen exactly from its first event's start up to `known_until`, the newest start of a
+/// contiguous run of deliveries: the demuxer reads a stream in order, so no event between two delivered ones is
+/// missing.
+///
+/// Events carry the player's seek serial they were demuxed for; events of an older serial than the newest seen are
+/// ignored. A seek or a restart of decoding moves the timeline to a new serial when it is issued ([`Self::seek`]):
+/// the events stay only while the queue knows the screen at the new position (their own times then say what is due
+/// there), so nothing of the old position is ever shown at the new one, and events the demuxer will not deliver
+/// again (packets before the point it resumes reading from) are not lost. Within one serial the asked times only
+/// move forward (a frame's pts can fall a little behind the clock the previous check used).
 pub struct PictureTimeline {
     events: VecDeque<Entry>,
     bytes: usize,
     serial: u64,
     /// The newest time asked for in `serial`.
     asked: f64,
+    /// The newest start of the contiguous deliveries the queue holds (`NEG_INFINITY`: none).
+    known_until: f64,
+    /// An event ahead was dropped (queue full): `known_until` stays below it until the queue is cleared.
+    capped: bool,
     /// Events dropped because the queue was full (diagnostics).
     pub overflowed: u64,
+}
+
+impl Default for PictureTimeline {
+    fn default() -> Self {
+        Self {
+            events: VecDeque::new(),
+            bytes: 0,
+            serial: 0,
+            asked: f64::NEG_INFINITY,
+            known_until: f64::NEG_INFINITY,
+            capped: false,
+            overflowed: 0,
+        }
+    }
 }
 
 impl PictureTimeline {
@@ -119,9 +171,12 @@ impl PictureTimeline {
         Self::default()
     }
 
+    /// Forgets every event (another track, or none).
     pub fn clear(&mut self) {
         self.events.clear();
         self.bytes = 0;
+        self.known_until = f64::NEG_INFINITY;
+        self.capped = false;
     }
 
     pub fn len(&self) -> usize {
@@ -137,48 +192,107 @@ impl PictureTimeline {
         self.bytes
     }
 
+    /// The serial the timeline is at.
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    /// Whether the queue knows what is on screen at `t`.
+    fn knows(&self, t: f64) -> bool {
+        self.events.front().is_some_and(|e| e.start <= t) && t <= self.known_until
+    }
+
+    /// A seek to `target` (or a restart of decoding at the same position: another audio track or speed, a new video
+    /// decoder) issued as `serial`. The queue stays when it knows the screen at `target`; otherwise it goes, except
+    /// that a restart in place (`in_place`, straight after the serial before it) keeps the picture on screen at the
+    /// newest asked time when it is also due at `target`: the restarted demuxer reads only from the keyframe before
+    /// `target` and might not deliver it again. Either way, what is due at `target` is the event whose window holds
+    /// it, exactly as before the seek.
+    pub fn seek(&mut self, serial: u64, target: f64, in_place: bool) {
+        if serial <= self.serial {
+            return;
+        }
+        let follows = serial == self.serial + 1;
+        let asked = self.asked;
+        self.serial = serial;
+        self.asked = f64::NEG_INFINITY;
+        if target.is_finite() && self.knows(target) {
+            return;
+        }
+        let kept = (in_place && follows && asked.is_finite() && target.is_finite())
+            .then(|| self.window_at(asked))
+            .flatten()
+            .filter(|&(i, end)| self.events[i].start <= target && target < end);
+        let kept = kept.and_then(|(i, end)| self.events.remove(i).map(|e| (e, end)));
+        self.clear();
+        if let Some((mut e, end)) = kept {
+            // Its window ended where the next event started: that event is gone, so the end is its own now.
+            if e.end.is_none_or(|own| own > end) {
+                e.end = Some(end);
+            }
+            self.bytes = e.bytes;
+            self.known_until = e.start;
+            self.events.push_back(e);
+        }
+    }
+
+    /// The index of the event due at `t` and the end of its window (its own end, capped, or the next start).
+    fn window_at(&self, t: f64) -> Option<(usize, f64)> {
+        let i = self.events.partition_point(|e| e.start <= t).checked_sub(1)?;
+        let e = &self.events[i];
+        let mut end = e.start + e.end.map_or(OPEN_EVENT_MAX, |end| (end - e.start).min(EVENT_MAX));
+        if let Some(next) = self.events.get(i + 1) {
+            end = end.min(next.start);
+        }
+        Some((i, end))
+    }
+
     /// Adds an event demuxed for `serial` (`picture` `None`: it clears the screen from `start`). Events of an older
-    /// serial than the newest seen are ignored; a newer serial drops what is queued.
-    pub fn push(&mut self, serial: u64, start: f64, end: Option<f64>, picture: Option<Arc<SubtitlePicture>>) {
+    /// serial than the newest seen are ignored; a newer serial drops what is queued. At a start already queued the
+    /// same event decoded again is ignored (the queued picture keeps its identity), and a different one replaces
+    /// it, except that an incomplete one (`complete` false: a PGS set decoded without the epoch it builds on) never
+    /// replaces a complete one.
+    pub fn push(&mut self, serial: u64, start: f64, end: Option<f64>, picture: Option<Arc<SubtitlePicture>>, complete: bool) {
         if !start.is_finite() || serial < self.serial {
             return;
         }
         self.adopt(serial);
         let end = end.filter(|e| e.is_finite() && *e > start);
         let bytes = picture.as_ref().map_or(0, |p| p.rects.iter().map(|r| r.rgba.len()).sum());
-        // After every queued event with a start at or before this one (equal starts: the later decoded replaces).
-        let at = self.events.iter().rposition(|e| e.start <= start).map_or(0, |i| i + 1);
-        self.events.insert(at, Entry { start, end, picture, bytes });
-        self.bytes += bytes;
+        let at = self.events.partition_point(|e| e.start < start);
+        if let Some(old) = self.events.get_mut(at).filter(|e| e.start == start) {
+            if old.same_as(end, &picture) || (old.complete && !complete) {
+                old.complete |= complete;
+                return;
+            }
+            self.bytes = self.bytes - old.bytes + bytes;
+            *old = Entry { start, end, picture, complete, bytes };
+        } else {
+            self.events.insert(at, Entry { start, end, picture, complete, bytes });
+            self.bytes += bytes;
+        }
+        if start > self.known_until && !self.capped {
+            self.known_until = start;
+        }
+        self.evict();
+    }
+
+    /// Bounds the queue: replaced events first (oldest first), then the one farthest ahead (after that the queue
+    /// knows the screen only up to it). Never the event `active_at` would pick now (on screen, or due next).
+    fn evict(&mut self) {
         while self.events.len() > MAX_QUEUED_EVENTS || (self.bytes > MAX_QUEUED_BYTES && self.events.len() > 1) {
-            // Never the event `active_at` would pick now (the one on screen, or the next one due): events it already
-            // replaced go first, then the one farthest ahead (which the demuxer reads again after a seek).
-            let current = self.events.iter().rposition(|e| e.start <= self.asked).unwrap_or(0);
+            let current = self.events.partition_point(|e| e.start <= self.asked).saturating_sub(1);
             let drop = if current > 0 { 0 } else { self.events.len() - 1 };
             if drop == current {
                 break;
             }
-            if let Some(e) = self.events.remove(drop) {
-                self.bytes -= e.bytes;
-                self.overflowed += 1;
+            let Some(e) = self.events.remove(drop) else { break };
+            self.bytes -= e.bytes;
+            self.overflowed += 1;
+            if drop > 0 {
+                self.capped = true;
+                self.known_until = self.known_until.min(self.events.back().map_or(f64::NEG_INFINITY, |b| b.start));
             }
-        }
-    }
-
-    /// A restart of decoding that keeps the position (another audio track, another speed, a new video decoder): the
-    /// event on screen at the newest asked time carries over to `serial` with its own start and end (so it still
-    /// ends when it would have), and everything else queued goes (the restarted demuxer reads it again).
-    pub fn carry_over(&mut self, serial: u64) {
-        if serial <= self.serial {
-            return;
-        }
-        let asked = self.asked;
-        let kept = self.events.iter().rposition(|e| e.start <= asked).and_then(|i| self.events.remove(i));
-        self.adopt(serial);
-        if let Some(e) = kept {
-            self.asked = asked;
-            self.bytes = e.bytes;
-            self.events.push_back(e);
         }
     }
 
@@ -200,19 +314,8 @@ impl PictureTimeline {
             self.asked = t;
         }
         let t = self.asked;
-        // The newest event started by `t`; everything before it has been replaced.
-        let i = self.events.iter().rposition(|e| e.start <= t)?;
-        for _ in 0..i {
-            if let Some(e) = self.events.pop_front() {
-                self.bytes -= e.bytes;
-            }
-        }
-        let e = &self.events[0];
-        let mut end = e.start + e.end.map_or(OPEN_EVENT_MAX, |end| (end - e.start).min(EVENT_MAX));
-        if let Some(next) = self.events.get(1) {
-            end = end.min(next.start);
-        }
-        if t < end { e.picture.clone() } else { None }
+        let (i, end) = self.window_at(t)?;
+        if t < end { self.events[i].picture.clone() } else { None }
     }
 }
 
@@ -220,6 +323,7 @@ impl PictureTimeline {
 mod tests {
     use super::*;
 
+    /// A small picture; its rectangle sits at `x = id`, so pictures of different ids differ.
     fn pic(id: u64) -> Option<Arc<SubtitlePicture>> {
         Some(Arc::new(SubtitlePicture {
             id,
@@ -228,8 +332,15 @@ mod tests {
             video_size: None,
             start: 0.0,
             end: None,
-            rects: vec![SubtitleBitmap { x: 10, y: 20, width: 2, height: 1, rgba: Arc::new(vec![0; 8]) }],
+            rects: vec![SubtitleBitmap { x: id as u32, y: 20, width: 2, height: 1, rgba: Arc::new(vec![0; 8]) }],
         }))
+    }
+
+    /// The same event as `pic(like)`, decoded again: a new id, equal pictures.
+    fn again(id: u64, like: u64) -> Option<Arc<SubtitlePicture>> {
+        let mut p = (*pic(like).unwrap()).clone();
+        p.id = id;
+        Some(Arc::new(p))
     }
 
     fn shown(t: &mut PictureTimeline, serial: u64, at: f64) -> Option<u64> {
@@ -239,9 +350,9 @@ mod tests {
     #[test]
     fn an_open_event_lasts_until_the_next_one_and_a_clearing_event_ends_it() {
         let mut t = PictureTimeline::new();
-        t.push(1, 1.0, None, pic(1));
-        t.push(1, 3.0, None, None);
-        t.push(1, 5.0, None, pic(2));
+        t.push(1, 1.0, None, pic(1), true);
+        t.push(1, 3.0, None, None, true);
+        t.push(1, 5.0, None, pic(2), true);
         assert_eq!(shown(&mut t, 1, 0.5), None, "ahead of the clock");
         assert_eq!(shown(&mut t, 1, 1.0), Some(1));
         assert_eq!(shown(&mut t, 1, 2.999), Some(1));
@@ -249,44 +360,63 @@ mod tests {
         assert_eq!(shown(&mut t, 1, 5.0), Some(2));
         assert_eq!(shown(&mut t, 1, 5.0 + OPEN_EVENT_MAX - 0.01), Some(2));
         assert_eq!(shown(&mut t, 1, 5.0 + OPEN_EVENT_MAX), None, "nothing stays forever");
-        assert_eq!(t.len(), 1, "the past is dropped");
+        assert_eq!(t.len(), 3, "replaced events stay while they fit (a seek back may need them)");
     }
 
     #[test]
     fn an_explicit_end_holds_unless_a_newer_event_replaces_it_earlier() {
         let mut t = PictureTimeline::new();
-        t.push(1, 1.0, Some(2.0), pic(1));
-        t.push(1, 4.0, Some(9.0), pic(2));
-        t.push(1, 6.0, Some(7.0), pic(3));
+        t.push(1, 1.0, Some(2.0), pic(1), true);
+        t.push(1, 4.0, Some(9.0), pic(2), true);
+        t.push(1, 6.0, Some(7.0), pic(3), true);
         assert_eq!(shown(&mut t, 1, 1.5), Some(1));
         assert_eq!(shown(&mut t, 1, 2.0), None);
         assert_eq!(shown(&mut t, 1, 5.9), Some(2));
         assert_eq!(shown(&mut t, 1, 6.5), Some(3), "a new event replaces the screen");
         assert_eq!(shown(&mut t, 1, 7.5), None, "and does not bring the older one back");
         // Absurd ends are capped.
-        t.push(1, 10.0, Some(1e9), pic(4));
+        t.push(1, 10.0, Some(1e9), pic(4), true);
         assert_eq!(shown(&mut t, 1, 10.0 + EVENT_MAX + 1.0), None);
     }
 
     #[test]
-    fn events_out_of_order_are_sorted_and_equal_starts_take_the_later_one() {
+    fn events_out_of_order_are_sorted_and_a_different_event_at_the_same_start_replaces() {
         let mut t = PictureTimeline::new();
-        t.push(1, 4.0, None, pic(2));
-        t.push(1, 2.0, None, pic(1));
-        t.push(1, 4.0, None, pic(3));
+        t.push(1, 4.0, None, pic(2), true);
+        t.push(1, 2.0, None, pic(1), true);
+        t.push(1, 4.0, None, pic(3), true);
         assert_eq!(shown(&mut t, 1, 3.0), Some(1));
         assert_eq!(shown(&mut t, 1, 4.0), Some(3));
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn the_same_event_decoded_again_keeps_its_identity_and_an_incomplete_one_never_replaces_a_complete_one() {
+        let mut t = PictureTimeline::new();
+        t.push(1, 2.0, None, pic(1), true);
+        assert_eq!(shown(&mut t, 1, 2.5), Some(1));
+        t.push(1, 2.0, None, again(7, 1), true);
+        assert_eq!(shown(&mut t, 1, 2.6), Some(1), "re-delivered after a restart: the same picture stays");
+        // A PGS normal set decoded without its epoch: missing objects (here: none at all).
+        t.push(1, 2.0, None, None, false);
+        t.push(1, 2.0, None, pic(8), false);
+        assert_eq!(shown(&mut t, 1, 2.7), Some(1));
+        assert_eq!((t.len(), t.bytes()), (1, 8));
+        // An incomplete event is replaced by the complete decode of the same set.
+        t.push(1, 4.0, None, None, false);
+        t.push(1, 4.0, None, pic(9), true);
+        assert_eq!(shown(&mut t, 1, 4.0), Some(9));
     }
 
     #[test]
     fn a_newer_serial_drops_everything_older_and_old_pushes_are_ignored() {
         let mut t = PictureTimeline::new();
-        t.push(1, 1.0, None, pic(1));
+        t.push(1, 1.0, None, pic(1), true);
         assert_eq!(shown(&mut t, 1, 1.5), Some(1));
-        assert_eq!(shown(&mut t, 2, 1.5), None, "a seek: nothing of before it");
-        t.push(1, 1.0, None, pic(9));
+        assert_eq!(shown(&mut t, 2, 1.5), None, "a serial nobody announced: nothing of before it");
+        t.push(1, 1.0, None, pic(9), true);
         assert_eq!(shown(&mut t, 2, 1.5), None, "a packet demuxed before the seek is not shown after it");
-        t.push(2, 0.5, None, pic(2));
+        t.push(2, 0.5, None, pic(2), true);
         assert_eq!(shown(&mut t, 2, 0.6), Some(2), "a backward seek starts its own time again");
         assert_eq!(shown(&mut t, 1, 0.6), None, "an older serial asks for nothing");
     }
@@ -294,11 +424,100 @@ mod tests {
     #[test]
     fn time_only_moves_forward_within_a_serial() {
         let mut t = PictureTimeline::new();
-        t.push(1, 1.0, None, pic(1));
-        t.push(1, 2.0, None, pic(2));
+        t.push(1, 1.0, None, pic(1), true);
+        t.push(1, 2.0, None, pic(2), true);
         assert_eq!(shown(&mut t, 1, 2.01), Some(2));
         // A late frame's pts behind the clock: no flicker back to the replaced picture (or to none).
         assert_eq!(shown(&mut t, 1, 1.99), Some(2));
+    }
+
+    #[test]
+    fn a_seek_keeps_the_events_only_where_the_queue_knows_the_screen() {
+        let mut t = PictureTimeline::new();
+        t.push(1, 1.0, Some(3.0), pic(1), true);
+        t.push(1, 5.0, None, pic(2), true);
+        t.push(1, 8.0, None, None, true);
+        assert_eq!(shown(&mut t, 1, 6.0), Some(2));
+        // Back to 2.0 (known: from 1.0 up to 8.0): the events stay and their own times say what is due.
+        t.seek(2, 2.0, false);
+        assert_eq!(t.serial(), 2);
+        assert_eq!(shown(&mut t, 2, 2.0), Some(1), "the earlier event, even if the demuxer never delivers it again");
+        assert_eq!(shown(&mut t, 2, 3.5), None);
+        assert_eq!(shown(&mut t, 2, 5.5), Some(2));
+        // To 20.0, past the last delivery: something unknown may start in between, so nothing stays.
+        t.seek(3, 20.0, false);
+        assert!(t.is_empty());
+        assert_eq!(shown(&mut t, 3, 20.0), None);
+        // Before the first event: what was on screen there is unknown.
+        let mut t = PictureTimeline::new();
+        t.push(1, 4.0, None, pic(1), true);
+        t.push(1, 6.0, None, pic(2), true);
+        t.seek(2, 3.0, false);
+        assert!(t.is_empty());
+        // An old serial does nothing.
+        t.push(2, 4.0, None, pic(3), true);
+        t.seek(2, 4.0, false);
+        assert_eq!(shown(&mut t, 2, 4.5), Some(3));
+    }
+
+    #[test]
+    fn a_seek_never_lets_a_restart_carry_a_picture_that_misses_the_new_position() {
+        // On screen at 10.0, nothing known after it: a seek to 40.0, then a restart (another speed, an audio
+        // track) before the seek's first frame was asked for.
+        let mut t = PictureTimeline::new();
+        t.push(1, 10.0, None, pic(1), true);
+        assert_eq!(shown(&mut t, 1, 12.0), Some(1));
+        t.seek(2, 40.0, false);
+        t.seek(3, 40.0, true);
+        assert!(t.is_empty(), "nothing asked in serial 2: no picture of serial 1 can come back");
+        assert_eq!(shown(&mut t, 3, 40.0), None);
+        // The same while paused: several restarts in a row after the seek.
+        let mut t = PictureTimeline::new();
+        t.push(1, 10.0, None, pic(1), true);
+        assert_eq!(shown(&mut t, 1, 12.0), Some(1));
+        t.seek(2, 14.0, false);
+        t.seek(3, 14.0, true);
+        t.seek(4, 14.0, true);
+        assert!(t.is_empty());
+        // A restart that skips a serial (a seek in between it never saw) carries nothing either.
+        let mut t = PictureTimeline::new();
+        t.push(1, 10.0, None, pic(1), true);
+        assert_eq!(shown(&mut t, 1, 12.0), Some(1));
+        t.seek(3, 12.0, true);
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn a_restart_in_place_carries_the_picture_on_screen_over_with_its_window() {
+        // Past the last delivery (12.0 > 10.0): the picture on screen carries over, and only it.
+        let mut t = PictureTimeline::new();
+        t.push(1, 10.0, None, pic(1), true);
+        assert_eq!(shown(&mut t, 1, 12.0), Some(1));
+        t.seek(2, 12.0, true);
+        assert_eq!(t.len(), 1);
+        assert_eq!(shown(&mut t, 2, 12.0), Some(1), "still on screen after the restart");
+        assert_eq!(shown(&mut t, 2, 10.0 + OPEN_EVENT_MAX), None, "its own end still holds");
+        // Not due at the restart position: not carried.
+        let mut t = PictureTimeline::new();
+        t.push(1, 1.0, Some(4.0), pic(1), true);
+        assert_eq!(shown(&mut t, 1, 3.9), Some(1));
+        t.seek(2, 4.5, true);
+        assert!(t.is_empty());
+        // Nothing asked yet in the serial before (nothing on screen yet): nothing carried.
+        let mut t = PictureTimeline::new();
+        t.push(1, 1.0, None, pic(1), true);
+        t.seek(2, 2.0, true);
+        assert!(t.is_empty());
+        // Where the queue knows the screen, a restart keeps it all, and the picture keeps its identity.
+        let mut t = PictureTimeline::new();
+        t.push(1, 1.0, None, pic(1), true);
+        t.push(1, 3.0, None, pic(2), true);
+        assert_eq!(shown(&mut t, 1, 2.0), Some(1));
+        t.seek(2, 2.0, true);
+        assert_eq!(t.len(), 2);
+        assert_eq!(shown(&mut t, 2, 2.0), Some(1));
+        t.push(2, 3.0, None, again(5, 2), true);
+        assert_eq!(shown(&mut t, 2, 3.0), Some(2), "the re-delivered event is the queued one");
     }
 
     fn big(id: u64) -> Option<Arc<SubtitlePicture>> {
@@ -309,77 +528,68 @@ mod tests {
             video_size: None,
             start: 0.0,
             end: None,
-            rects: vec![SubtitleBitmap { x: 0, y: 0, width: 3840, height: 2160, rgba: Arc::new(vec![0; 3840 * 2160 * 4]) }],
+            rects: vec![SubtitleBitmap { x: id as u32, y: 0, width: 3840, height: 2160, rgba: Arc::new(vec![0; 3840 * 2160 * 4]) }],
         }))
     }
 
     #[test]
-    fn the_queue_is_bounded_by_count_and_bytes_and_drops_the_farthest_ahead() {
+    fn the_queue_is_bounded_by_bytes_with_a_count_limit_and_drops_replaced_events_first() {
+        // Small pictures: thousands fit (a whole film of XSUB events read at once from the front of an AVI).
         let mut t = PictureTimeline::new();
-        for i in 0..(MAX_QUEUED_EVENTS as u64 + 10) {
-            t.push(1, 100.0 + i as f64, None, pic(i));
+        for i in 0..2000u64 {
+            t.push(1, i as f64, None, pic(i), true);
         }
-        assert_eq!(t.len(), MAX_QUEUED_EVENTS);
-        assert_eq!(t.overflowed, 10);
-        assert_eq!(shown(&mut t, 1, 100.5), Some(0), "the next one due was kept");
-        assert_eq!(shown(&mut t, 1, 163.5), Some(63));
-        assert_eq!(shown(&mut t, 1, 164.5), Some(63), "the last ten were the ones dropped");
+        assert_eq!((t.len(), t.overflowed), (2000, 0));
+        assert_eq!(shown(&mut t, 1, 1500.5), Some(1500));
+        // Past the count limit, replaced events go first.
+        for i in 2000..(MAX_QUEUED_EVENTS as u64 + 10) {
+            t.push(1, i as f64, None, pic(i), true);
+        }
+        assert_eq!((t.len(), t.overflowed), (MAX_QUEUED_EVENTS, 10));
+        assert_eq!(shown(&mut t, 1, (MAX_QUEUED_EVENTS + 9) as f64), Some(MAX_QUEUED_EVENTS as u64 + 9), "the newest stayed");
         // Pictures of 33 MB: two fit; a third never at the cost of the one on screen.
         let mut t = PictureTimeline::new();
-        t.push(1, 0.0, None, big(0));
+        t.push(1, 0.0, None, big(0), true);
         assert_eq!(shown(&mut t, 1, 0.5), Some(0));
         for i in 1u32..4 {
-            t.push(1, f64::from(i), None, big(u64::from(i)));
+            t.push(1, f64::from(i), None, big(u64::from(i)), true);
             assert!(t.bytes() <= MAX_QUEUED_BYTES, "{}", t.bytes());
             assert_eq!(shown(&mut t, 1, 0.6), Some(0), "the picture on screen stays");
         }
         assert_eq!(t.overflowed, 2, "the ones farthest ahead");
         assert_eq!(shown(&mut t, 1, 1.0), Some(1));
+        // An event ahead was dropped (3.0): the queue no longer claims to know the screen past what it holds.
+        t.seek(2, 2.5, false);
+        assert!(t.is_empty(), "2.5 lies past the last event kept (1.0), where the dropped one may matter");
+        // Later on the replaced one goes first.
+        let mut t = PictureTimeline::new();
+        t.push(1, 0.0, None, big(0), true);
+        t.push(1, 1.0, None, big(1), true);
+        assert_eq!(shown(&mut t, 1, 1.5), Some(1));
+        t.push(1, 2.0, None, big(2), true);
+        assert_eq!(t.overflowed, 1);
+        assert_eq!(shown(&mut t, 1, 1.6), Some(1));
+        assert_eq!(shown(&mut t, 1, 2.0), Some(2));
     }
 
     #[test]
     fn the_picture_on_screen_is_never_the_one_dropped_even_when_replaced_ones_are_queued_before_it() {
         let mut t = PictureTimeline::new();
-        t.push(1, 1.0, None, big(1));
+        t.push(1, 1.0, None, big(1), true);
         assert_eq!(shown(&mut t, 1, 2.5), Some(1));
-        t.push(1, 3.0, None, big(2));
+        t.push(1, 3.0, None, big(2), true);
         // A late event that sorts before the one on screen (already replaced) is the one that goes.
-        t.push(1, 0.5, None, big(0));
+        t.push(1, 0.5, None, big(0), true);
         assert_eq!(t.overflowed, 1);
         assert_eq!(shown(&mut t, 1, 2.6), Some(1));
         assert_eq!(shown(&mut t, 1, 3.0), Some(2), "and the one ahead stayed");
     }
 
     #[test]
-    fn a_restart_at_the_same_position_carries_the_picture_on_screen_over_with_its_own_end() {
-        let mut t = PictureTimeline::new();
-        t.push(1, 1.0, Some(4.0), pic(1));
-        t.push(1, 5.0, None, pic(2));
-        assert_eq!(shown(&mut t, 1, 2.0), Some(1));
-        t.carry_over(2);
-        assert_eq!(shown(&mut t, 2, 2.0), Some(1), "still on screen after the restart");
-        assert_eq!(t.len(), 1, "what lies ahead is demuxed again");
-        // The restarted demuxer decodes the same event again (a new picture with the same start) and the next.
-        t.push(2, 1.0, Some(4.0), pic(3));
-        t.push(2, 5.0, None, pic(2));
-        assert_eq!(shown(&mut t, 2, 2.1), Some(3));
-        assert_eq!(shown(&mut t, 2, 4.0), None, "its own end still holds");
-        assert_eq!(shown(&mut t, 2, 5.0), Some(2));
-        // Nothing on screen: nothing carried. An old serial is ignored.
-        t.carry_over(1);
-        assert_eq!(shown(&mut t, 2, 5.1), Some(2));
-        let mut t = PictureTimeline::new();
-        t.push(1, 3.0, None, pic(1));
-        assert_eq!(shown(&mut t, 1, 2.0), None);
-        t.carry_over(2);
-        assert!(t.is_empty());
-    }
-
-    #[test]
     fn bounds_cover_every_rect() {
         let mut p = (*pic(1).unwrap()).clone();
         p.rects.push(SubtitleBitmap { x: 100, y: 900, width: 50, height: 40, rgba: Arc::new(vec![0; 50 * 40 * 4]) });
-        assert_eq!(p.bounds(), (10, 20, 140, 920));
+        assert_eq!(p.bounds(), (1, 20, 149, 920));
         assert_eq!(p.pixels(), 2 + 2000);
         p.rects.clear();
         assert_eq!(p.bounds(), (0, 0, 0, 0));

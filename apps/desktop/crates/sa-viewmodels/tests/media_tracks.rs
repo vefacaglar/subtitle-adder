@@ -7,7 +7,7 @@ use std::path::Path;
 
 use sa_core::l10n::{CatalogChain, UiLanguage};
 use sa_core::settings::SettingsStore;
-use sa_player::{AudioTrack, ExtractError, MediaTracks, SubtitleKind, SubtitleTrack};
+use sa_player::{AudioTrack, ExtractError, MediaTracks, PictureTrackFailure, SubtitleKind, SubtitleTrack};
 use sa_viewmodels::media_tracks::{
     AutoChoice, AutoTrack, EmbeddedSubtitleReads, ReadMode, SUBTITLE_OFF_ID, SessionMark, SnapshotOutcome, TrackChoice, TrackMenu, audio_label,
     audio_track_failure, auto_choice, auto_image_track, auto_track, channels_text, codec_title, embedded_read_empty, embedded_read_failure,
@@ -229,9 +229,18 @@ fn failures_are_worded_in_the_ui_language() {
     let lang = LanguageScope::new(CatalogChain::Windows, UiLanguage::En);
     assert_eq!(audio_track_failure("Decoder not found").text(), "The audio track could not be played: Decoder not found");
     assert_eq!(audio_track_failure("  ").text(), "The audio track could not be played: Unknown error");
-    assert_eq!(subtitle_track_failure("Decoder not found").text(), "The subtitle track could not be shown: Decoder not found");
-    assert_eq!(subtitle_track_failure("").text(), "The subtitle track could not be shown: Unknown error");
-    let shown = subtitle_track_failure("x");
+    let ffmpeg = |s: &str| subtitle_track_failure(&PictureTrackFailure::Ffmpeg(s.into()));
+    assert_eq!(ffmpeg("Decoder not found").text(), "The subtitle track could not be shown: Decoder not found");
+    assert_eq!(ffmpeg("").text(), "The subtitle track could not be shown: Unknown error");
+    assert_eq!(
+        subtitle_track_failure(&PictureTrackFailure::NoTimeCode).text(),
+        "The subtitle track could not be shown: The XSUB packets carry no time code"
+    );
+    assert_eq!(
+        subtitle_track_failure(&PictureTrackFailure::TooLarge).text(),
+        "The subtitle track could not be shown: The subtitle pictures are too large to show"
+    );
+    let shown = ffmpeg("x");
     assert!(embedded_read_failure(&ExtractError::Cancelled).is_none());
     let text = |e: ExtractError| embedded_read_failure(&e).unwrap().text();
     assert_eq!(text(ExtractError::NotText), "The subtitles in the video could not be read: This track is not a text subtitle track");
@@ -242,6 +251,11 @@ fn failures_are_worded_in_the_ui_language() {
     assert_eq!(message.text(), "Videodaki altyazı okunamadı: Bu parça metin altyazısı değil", "re-worded on a language switch");
     assert_eq!(audio_track_failure("").text(), "Ses parçası açılamadı: Bilinmeyen hata");
     assert_eq!(shown.text(), "Altyazı parçası gösterilemedi: x");
+    assert_eq!(
+        subtitle_track_failure(&PictureTrackFailure::TooLarge).text(),
+        "Altyazı parçası gösterilemedi: Altyazı resimleri gösterilemeyecek kadar büyük"
+    );
+    assert_eq!(subtitle_track_failure(&PictureTrackFailure::NoTimeCode).text(), "Altyazı parçası gösterilemedi: XSUB paketlerinde zaman kodu yok");
     assert!(embedded_read_outdated().text().starts_with("Videodaki altyazı yüklenmedi"));
     assert_eq!(embedded_read_empty().text(), "Videodaki altyazı okunamadı: Parçada satır yok");
     assert!(embedded_read_partial().text().starts_with("Videodaki altyazının yalnızca bir kısmı yüklendi"));

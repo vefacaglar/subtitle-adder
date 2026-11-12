@@ -32,7 +32,7 @@ use ffmpeg_next::{Packet, Rational, codec};
 
 use super::tracks;
 use crate::SubtitleKind;
-use crate::picture::{MAX_EVENT_PIXELS, MAX_SIDE, SubtitleBitmap, SubtitlePicture};
+use crate::picture::{MAX_EVENT_PIXELS, MAX_SIDE, PictureTrackFailure, SubtitleBitmap, SubtitlePicture};
 
 static NEXT_PICTURE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -41,6 +41,10 @@ pub(crate) struct DecodedEvent {
     pub start: f64,
     pub end: Option<f64>,
     pub picture: Option<SubtitlePicture>,
+    /// Decoded with all the earlier state it builds on (always, except a PGS display set decoded before any epoch
+    /// start or acquisition point since the decoder was opened or flushed: its objects or palette may be missing).
+    /// `PictureTimeline::push` never lets an incomplete event replace a complete one at the same time.
+    pub complete: bool,
 }
 
 /// Frees the `AVSubtitle` a decode filled (ffmpeg-next's wrapper does not).
@@ -52,7 +56,7 @@ impl Drop for SubtitleGuard {
     }
 }
 
-//// The formats whose timing or canvas needs a rule of its own.
+/// The formats whose timing or canvas needs a rule of its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Format {
     Pgs,
@@ -61,7 +65,10 @@ enum Format {
     Other,
 }
 
-/// Failed packets after which a track that has not decoded a single event is given up (`SubtitleTrackFailed`).
+/// Rejected packets after which a track that decoded nothing since it was chosen or last seeked is given up
+/// (`SubtitleTrackFailed`). Only rejections a healthy stream cannot cause count: for PGS, those of display sets that
+/// carry everything they need (an epoch start or an acquisition point), never those of normal sets, which build on
+/// an earlier set of their epoch that a seek or a mid-epoch selection skipped.
 pub(crate) const GIVE_UP_AFTER: u64 = 4;
 
 /// The decoder of the bitmap subtitle stream being shown.
@@ -72,22 +79,32 @@ pub(crate) struct PictureTrack {
     format: Format,
     /// The canvas when the decoder names none.
     fallback_canvas: (u32, u32),
-    /// The video's coded size (handed on with every picture).
+    /// The video's coded size in the orientation it is shown (handed on with every picture).
     video_size: Option<(u32, u32)>,
     /// The timestamp (stream time base) and duration of the newest packet that carried one.
     last_ts: Option<(i64, i64)>,
-    /// Events decoded / packets the decoder rejected / events dropped as too large (diagnostics).
+    /// PGS: the display set being decoded started with an epoch start or an acquisition point (needs nothing of
+    /// before it).
+    self_contained: bool,
+    /// PGS: such a set was decoded since the decoder was opened or flushed (the sets after it have what they need).
+    epoch_known: bool,
+    /// Events decoded / packets the decoder rejected / events dropped as too large (diagnostics, the whole track).
     pub decoded: u64,
     pub failed: u64,
     pub oversized: u64,
-    /// The decoder's last error.
-    pub last_error: Option<String>,
+    /// Since the track was chosen or last seeked: events decoded, and rejections that count towards giving up.
+    decoded_lately: u64,
+    failed_lately: u64,
+    /// Why the decoder last failed.
+    pub last_error: Option<PictureTrackFailure>,
 }
 
 impl PictureTrack {
     /// Opens the decoder of picture stream `stream` (codec parameters with extradata: the VobSub palette and size
-    /// live there; the packet time base set). `video_size`: the video's coded size.
-    pub fn open(ictx: &ffmpeg_next::format::context::Input, stream: usize, video_size: Option<(u32, u32)>) -> Result<Self, String> {
+    /// live there; the packet time base set). `video_size`: the video's coded size; `turned`: it is shown a quarter
+    /// turn round (the pictures then carry the size with width and height swapped, so that the UI never takes a
+    /// canvas of the coded size for the picture's own raster).
+    pub fn open(ictx: &ffmpeg_next::format::context::Input, stream: usize, video_size: Option<(u32, u32)>, turned: bool) -> Result<Self, String> {
         let s = ictx.stream(stream).ok_or_else(|| ffmpeg_next::Error::StreamNotFound.to_string())?;
         let params = s.parameters();
         let codec_id = unsafe { (*params.as_ptr()).codec_id };
@@ -111,24 +128,43 @@ impl PictureTrack {
             tb,
             format,
             fallback_canvas: fallback_canvas(format, video_size),
-            video_size,
+            video_size: video_size.map(|(w, h)| if turned { (h, w) } else { (w, h) }),
             last_ts: None,
+            self_contained: format != Format::Pgs,
+            epoch_known: format != Format::Pgs,
             decoded: 0,
             failed: 0,
             oversized: 0,
+            decoded_lately: 0,
+            failed_lately: 0,
             last_error: None,
         })
     }
 
-    /// A seek: the decoder forgets the display set it was building.
+    /// A seek: the decoder forgets the display set it was building, and the give-up count starts again.
     pub fn flush(&mut self) {
         self.dec.flush();
         self.last_ts = None;
+        self.self_contained = self.format != Format::Pgs;
+        self.epoch_known = self.format != Format::Pgs;
+        self.decoded_lately = 0;
+        self.failed_lately = 0;
     }
 
-    /// Whether the track decoded nothing and the decoder rejected enough packets to give it up.
+    /// Whether the track decoded nothing since it was chosen or last seeked and the decoder rejected enough packets
+    /// a healthy stream would not have to give it up ([`GIVE_UP_AFTER`]).
     pub fn hopeless(&self) -> bool {
-        self.decoded == 0 && self.failed + self.oversized >= GIVE_UP_AFTER
+        self.decoded_lately == 0 && self.failed_lately >= GIVE_UP_AFTER
+    }
+
+    /// A packet or event that failed: counted, and towards giving up only when the stream could not have caused it
+    /// by being joined mid-epoch.
+    fn reject(&mut self, why: PictureTrackFailure) {
+        self.failed += 1;
+        if self.self_contained {
+            self.failed_lately += 1;
+        }
+        self.last_error = Some(why);
     }
 
     /// Decodes one packet of the stream. `None`: no complete event yet (a PGS segment before its END, a VobSub
@@ -137,27 +173,35 @@ impl PictureTrack {
         if let Some(ts) = packet.pts().or(packet.dts()) {
             self.last_ts = Some((ts, packet.duration()));
         }
+        if self.format == Format::Pgs
+            && let Some(state) = packet.data().and_then(pgs_composition_state)
+        {
+            // 0x80 epoch start, 0x40 acquisition point, 0x00 normal (builds on the epoch's earlier sets).
+            self.self_contained = state & 0xC0 != 0;
+        }
         let mut sub = SubtitleGuard(codec::subtitle::Subtitle::new());
         match self.dec.decode(packet, &mut sub.0) {
             Ok(true) => {}
             Ok(false) => return None,
             Err(e) => {
-                self.failed += 1;
-                if self.failed <= 3 {
+                if self.failed < 3 {
                     eprintln!("[player] subtitle packet of stream {} not decoded: {e}", self.stream);
                 }
-                self.last_error = Some(e.to_string());
+                self.reject(PictureTrackFailure::Ffmpeg(e.to_string()));
                 return None;
             }
         }
+        if self.self_contained {
+            self.epoch_known = true;
+        }
+        let complete = self.epoch_known;
         let raw = unsafe { sub.0.as_ptr() };
         let (pts, shown_from, shown_to) = unsafe { ((*raw).pts, (*raw).start_display_time, (*raw).end_display_time) };
         let tb = f64::from(self.tb);
         let (start, end) = match self.format {
             Format::Xsub => {
                 let Some((from, to)) = packet.data().and_then(xsub_times) else {
-                    self.failed += 1;
-                    self.last_error = Some("no XSUB time code".to_owned());
+                    self.reject(PictureTrackFailure::NoTimeCode);
                     return None;
                 };
                 (from - start_time, Some(to - start_time))
@@ -189,15 +233,18 @@ impl PictureTrack {
         let rects = match unsafe { bitmaps(raw) } {
             Ok(r) => r,
             Err(()) => {
+                // Counted as oversized rather than rejected, and towards giving up like a rejection.
                 self.oversized += 1;
-                self.last_error = Some(format!("a picture larger than {MAX_EVENT_PIXELS} pixels or {MAX_SIDE} on a side"));
+                self.failed_lately += 1;
+                self.last_error = Some(PictureTrackFailure::TooLarge);
                 eprintln!("[player] subtitle picture at {start:.3}s skipped: larger than {MAX_EVENT_PIXELS} pixels or {MAX_SIDE} on a side");
                 return None;
             }
         };
         self.decoded += 1;
+        self.decoded_lately += 1;
         if rects.is_empty() {
-            return Some(DecodedEvent { start, end, picture: None });
+            return Some(DecodedEvent { start, end, picture: None, complete });
         }
         let picture = SubtitlePicture {
             id: NEXT_PICTURE_ID.fetch_add(1, Ordering::Relaxed),
@@ -208,8 +255,15 @@ impl PictureTrack {
             end,
             rects,
         };
-        Some(DecodedEvent { start, end, picture: Some(picture) })
+        Some(DecodedEvent { start, end, picture: Some(picture), complete })
     }
+}
+
+/// The composition state byte of the PGS presentation composition segment `data` starts with, if it does (a
+/// display set's first packet: segment type 0x16, its 2-byte length, then width, height, frame rate, composition
+/// number and the state).
+fn pgs_composition_state(data: &[u8]) -> Option<u8> {
+    (data.len() > 10 && data[0] == 0x16).then(|| data[10])
 }
 
 /// One event of [`decode_picture_stream`]: start, end and picture (`None`: it clears the screen).
@@ -230,7 +284,7 @@ pub fn decode_picture_stream(path: &std::path::Path, stream: usize, fragments: u
         let p = s.parameters();
         ((*p.as_ptr()).width.max(0) as u32, (*p.as_ptr()).height.max(0) as u32)
     });
-    let mut track = PictureTrack::open(&ictx, stream, video)?;
+    let mut track = PictureTrack::open(&ictx, stream, video, false)?;
     let mut out = Vec::new();
     for (s, packet) in ictx.packets() {
         if s.index() != stream {
@@ -290,7 +344,7 @@ fn xsub_times(data: &[u8]) -> Option<(f64, f64)> {
     Some((time(&data[1..13])?, time(&data[14..26])?))
 }
 
-// The bitmap rectangles of a decoded subtitle as straight-alpha RGBA (empty and fully transparent rectangles left
+/// The bitmap rectangles of a decoded subtitle as straight-alpha RGBA (empty and fully transparent rectangles left
 /// out). `Err` when the event is larger than [`MAX_EVENT_PIXELS`] or a side larger than [`MAX_SIDE`].
 ///
 /// # Safety

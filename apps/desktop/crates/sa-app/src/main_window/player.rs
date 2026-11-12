@@ -11,7 +11,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sa_core::engine_types::Sentence;
-use sa_player::{FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, PlaybackTimeline, PlayerEvent, SubtitlePicture, VideoFrame};
+use sa_player::{
+    FailureKind, LoadGeneration, MediaPlayerBackend, MediaSource, MediaTracks, PictureTrackFailure, PlaybackTimeline, PlayerEvent, SubtitlePicture,
+    VideoFrame,
+};
 use sa_viewmodels::hub::PlaybackReport;
 use sa_viewmodels::shortcuts::adjusted_volume;
 use uuid::Uuid;
@@ -90,8 +93,10 @@ pub enum PlayerOutput {
     TracksChanged,
     /// The audio track asked for could not be played (the previous one keeps playing); FFmpeg's details.
     AudioTrackFailed(String),
-    /// The image subtitle track asked for cannot be shown (the previous choice stays); FFmpeg's details.
-    SubtitleTrackFailed(String),
+    /// The image subtitle track cannot be shown: one asked for that the player refused (the previous choice stays),
+    /// or the one shown, given up after its decoder rejected packet after packet (it is off now; `TracksChanged`
+    /// follows).
+    SubtitleTrackFailed(PictureTrackFailure),
     /// The bitmap subtitle picture to draw over the video changed: [`PlayerController::subtitle_picture`].
     PictureChanged,
 }
@@ -451,9 +456,9 @@ impl PlayerController {
                     self.emit(PlayerOutput::AudioTrackFailed(message.trim().to_owned()));
                 }
             }
-            PlayerEvent::SubtitleTrackFailed { generation, message, .. } => {
+            PlayerEvent::SubtitleTrackFailed { generation, reason, .. } => {
                 if generation == self.backend_generation && self.current_path.is_some() {
-                    self.emit(PlayerOutput::SubtitleTrackFailed(message.trim().to_owned()));
+                    self.emit(PlayerOutput::SubtitleTrackFailed(reason));
                 }
             }
             PlayerEvent::SubtitlePictureChanged { generation } => {
@@ -1232,8 +1237,9 @@ mod tests {
         let picture = Arc::new(SubtitlePicture { id: 7, stream_index: 4, canvas: (720, 480), video_size: None, start: 1.0, end: None, rects: vec![] });
         r.state.borrow_mut().picture = Some(picture.clone());
         assert_eq!(r.player.subtitle_picture(), Some(picture));
-        r.player.handle_event(PlayerEvent::SubtitleTrackFailed { generation: g, stream_index: 3, message: " not a picture track ".into() });
-        assert_eq!(r.player.take_outputs(), vec![PlayerOutput::SubtitleTrackFailed("not a picture track".into())]);
+        let reason = PictureTrackFailure::Ffmpeg("not a picture track".into());
+        r.player.handle_event(PlayerEvent::SubtitleTrackFailed { generation: g, stream_index: 3, reason: reason.clone() });
+        assert_eq!(r.player.take_outputs(), vec![PlayerOutput::SubtitleTrackFailed(reason)]);
         r.player.dispose();
         assert!(r.player.subtitle_picture().is_none());
     }

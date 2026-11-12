@@ -732,7 +732,7 @@ impl MainWindowController {
                     self.consider_auto_track();
                 }
                 PlayerOutput::AudioTrackFailed(details) => self.show_track_failure(media_tracks::audio_track_failure(&details)),
-                PlayerOutput::SubtitleTrackFailed(details) => self.show_track_failure(media_tracks::subtitle_track_failure(&details)),
+                PlayerOutput::SubtitleTrackFailed(reason) => self.show_track_failure(media_tracks::subtitle_track_failure(&reason)),
                 PlayerOutput::PictureChanged => self.sync_picture(),
             }
         }

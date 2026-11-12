@@ -527,6 +527,40 @@
           }
         }
       }
+    },
+    "XSUB paketlerinde zaman kodu yok": {
+      "comment": "Added by the Rust desktop app (reason a bitmap subtitle track cannot be shown; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The XSUB packets carry no time code"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "XSUB paketlerinde zaman kodu yok"
+          }
+        }
+      }
+    },
+    "Altyazı resimleri gösterilemeyecek kadar büyük": {
+      "comment": "Added by the Rust desktop app (reason a bitmap subtitle track cannot be shown; both platforms).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The subtitle pictures are too large to show"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Altyazı resimleri gösterilemeyecek kadar büyük"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

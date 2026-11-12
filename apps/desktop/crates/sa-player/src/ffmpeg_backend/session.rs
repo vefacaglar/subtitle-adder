@@ -27,7 +27,7 @@ use super::priority;
 use super::sync::{Clock, Notify};
 use super::tracks;
 use super::video::{self, Converter, HdrLevels, StreamLayout};
-use crate::picture::{PictureTimeline, SubtitlePicture};
+use crate::picture::{PictureTimeline, PictureTrackFailure, SubtitlePicture};
 use crate::{FailureKind, LoadGeneration, MediaSource, MediaTracks, PlayerEvent, PlayerEventToken, PlayerSessionGate, SourceId, VideoFrame};
 
 pub(crate) type Sink = Arc<dyn Fn(PlayerEvent) + Send + Sync>;
@@ -505,7 +505,7 @@ impl Control {
     /// one, another audio track or speed), bypassing the seek deferral: a deferred seek would leave the new decoder
     /// with the packets after the keyframe the failed decoder consumed. A seek the user requested meanwhile
     /// (deferred) is the target instead. Unless it is, the position stays and so does the bitmap subtitle picture on
-    /// screen (`PictureTimeline::carry_over`; its own end still applies): the restart only re-reads the stream.
+    /// screen (`PictureTimeline::seek` in place; its own end still applies): the restart only re-reads the stream.
     fn restart_decoding(&self, at: f64) {
         let (target, keep) = {
             let mut deferred = self.deferred_seek.lock();
@@ -517,15 +517,16 @@ impl Control {
     }
 
     /// Starts a seek to `target` (clamped): a new serial, flushed queues, the clock at the target, the demuxer asked.
-    /// `keep_picture`: the bitmap subtitle picture on screen carries over to the new serial (a restart in place).
+    /// `keep_picture`: a restart in place, after which the bitmap subtitle picture on screen may stay
+    /// (`PictureTimeline::seek`). The timeline moves to the new serial here, when the seek is issued, under the lock
+    /// `update_picture` reads the serial under: whatever restarts before the seek's first frame, no picture of the
+    /// old position can be shown at the new one.
     fn start_seek(&self, target: f64, keep_picture: bool) {
-        let serial = if keep_picture {
+        let serial = {
             let mut p = self.pictures.lock();
             let serial = self.serial.fetch_add(1, Ordering::AcqRel) + 1;
-            p.timeline.carry_over(serial);
+            p.timeline.seek(serial, target, keep_picture);
             serial
-        } else {
-            self.serial.fetch_add(1, Ordering::AcqRel) + 1
         };
         *self.seek_target.lock() = (serial, target);
         // Flush before the demuxer can see the request (it is published last): flushing afterwards could drop the
@@ -835,6 +836,7 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
     }
     let video_index = streams.video.as_ref().map(|v| v.0);
     let video_coded = streams.video.as_ref().map(|(_, v)| (v.dec.width(), v.dec.height()));
+    let video_turned = streams.video.as_ref().is_some_and(|(_, v)| v.layout.geometry(v.dec.width(), v.dec.height(), None).quarter_turns % 2 == 1);
     if let Some((_, track)) = streams.video {
         let c = ctl.clone();
         if let Ok(h) = std::thread::Builder::new().name("player-video".into()).spawn(move || video_main(c, track)) {
@@ -863,7 +865,7 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
     }
 
     let pipeline = audio_index.is_some();
-    demux_loop(&ctl, &mut input, Routes { video: video_index, video_size: video_coded, audio: audio_index, pipeline });
+    demux_loop(&ctl, &mut input, Routes { video: video_index, video_size: video_coded, video_turned, audio: audio_index, pipeline });
 
     ctl.shutdown();
     for h in handles {
@@ -985,7 +987,7 @@ fn switch_audio(ctl: &Control, input: &mut OpenedInput, audio: &mut Option<usize
 /// are demuxed and its picture due now is shown (the demuxer reads seconds ahead: without the restart the new
 /// track's first seconds would be missing). After the end the switch waits for the next seek. Turning the track off
 /// just drops the decoder and the pictures.
-fn switch_pictures(ctl: &Control, input: &mut OpenedInput, current: &mut Option<PictureTrack>, video_size: Option<(u32, u32)>, want: Option<usize>) {
+fn switch_pictures(ctl: &Control, input: &mut OpenedInput, current: &mut Option<PictureTrack>, video: (Option<(u32, u32)>, bool), want: Option<usize>) {
     if current.as_ref().map(|p| p.stream) == want {
         return;
     }
@@ -996,10 +998,11 @@ fn switch_pictures(ctl: &Control, input: &mut OpenedInput, current: &mut Option<
             ctl.tracks.lock().active_image_subtitle = None;
             ctl.clear_pictures();
         }
-        Some(stream) => match PictureTrack::open(input.input(), stream, video_size) {
+        Some(stream) => match PictureTrack::open(input.input(), stream, video.0, video.1) {
             Err(message) => {
                 eprintln!("[player] subtitle stream {stream} cannot be shown ({message})");
-                ctl.emit(PlayerEvent::SubtitleTrackFailed { generation: ctl.generation, stream_index: stream, message });
+                let reason = PictureTrackFailure::Ffmpeg(message);
+                ctl.emit(PlayerEvent::SubtitleTrackFailed { generation: ctl.generation, stream_index: stream, reason });
             }
             Ok(track) => {
                 *current = Some(track);
@@ -1015,16 +1018,17 @@ fn switch_pictures(ctl: &Control, input: &mut OpenedInput, current: &mut Option<
     ctl.emit(PlayerEvent::TracksChanged { generation: ctl.generation });
 }
 
-/// The shown bitmap track decoded nothing and its decoder rejected packet after packet: it is turned off (as if
-/// "Off" were chosen) and `SubtitleTrackFailed` says why, so the menu does not mark a track that shows nothing.
+/// The shown bitmap track decoded nothing since it was chosen or last seeked and its decoder rejected packet after
+/// packet a healthy stream would not (`PictureTrack::hopeless`): it is turned off (as if "Off" were chosen) and
+/// `SubtitleTrackFailed` says why, so the menu does not mark a track that shows nothing.
 fn give_up_pictures(ctl: &Control, current: &mut Option<PictureTrack>) {
     let Some(track) = current.take() else { return };
-    let message = track.last_error.clone().unwrap_or_else(|| ffmpeg_next::Error::InvalidData.to_string());
-    eprintln!("[player] subtitle stream {} given up after {} failed packets ({message})", track.stream, track.failed + track.oversized);
+    let reason = track.last_error.clone().unwrap_or_else(|| PictureTrackFailure::Ffmpeg(ffmpeg_next::Error::InvalidData.to_string()));
+    eprintln!("[player] subtitle stream {} given up after {} failed packets ({reason:?})", track.stream, track.failed + track.oversized);
     ctl.pictures_on.store(false, Ordering::Release);
     ctl.tracks.lock().active_image_subtitle = None;
     ctl.clear_pictures();
-    ctl.emit(PlayerEvent::SubtitleTrackFailed { generation: ctl.generation, stream_index: track.stream, message });
+    ctl.emit(PlayerEvent::SubtitleTrackFailed { generation: ctl.generation, stream_index: track.stream, reason });
     ctl.emit(PlayerEvent::TracksChanged { generation: ctl.generation });
 }
 
@@ -1033,12 +1037,14 @@ struct Routes {
     video: Option<usize>,
     /// The video's coded size: the canvas of a bitmap subtitle track that names none.
     video_size: Option<(u32, u32)>,
+    /// The video is shown a quarter turn round (its display matrix).
+    video_turned: bool,
     audio: Option<usize>,
     pipeline: bool,
 }
 
 fn demux_loop(ctl: &Control, input: &mut OpenedInput, routes: Routes) {
-    let Routes { video, video_size, mut audio, pipeline } = routes;
+    let Routes { video, video_size, video_turned, mut audio, pipeline } = routes;
     let mut serial = 1u64;
     let mut eof = false;
     let start = ctl.start_time();
@@ -1053,7 +1059,7 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, routes: Routes) {
         }
         let switch = ctl.picture_select.lock().take();
         if let Some(want) = switch {
-            switch_pictures(ctl, input, &mut pictures, video_size, want);
+            switch_pictures(ctl, input, &mut pictures, (video_size, video_turned), want);
         }
         let req = ctl.seek_req.lock().take();
         if let Some((target, s)) = req {
@@ -1099,7 +1105,7 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, routes: Routes) {
                         ctl.stats.picture_events.fetch_add(1, Ordering::Relaxed);
                         {
                             let mut q = ctl.pictures.lock();
-                            q.timeline.push(serial, e.start, e.end, e.picture.map(Arc::new));
+                            q.timeline.push(serial, e.start, e.end, e.picture.map(Arc::new), e.complete);
                             ctl.stats.picture_overflow.store(q.timeline.overflowed, Ordering::Relaxed);
                         }
                         ctl.wake.notify();
