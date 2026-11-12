@@ -122,6 +122,11 @@ struct UiState {
     cursor_hidden: bool,
     /// `SUBTITLE_ADDER_FULL_SCREEN=1`: enter full screen when the first video frame is shown (diagnostics).
     full_screen_on_first_frame: bool,
+    /// A video frame has been shown (the env-var entry waits for one and, on Windows, for the native chrome).
+    frame_shown: bool,
+    /// Full screen was entered through winit / Slint (`slint::Window::set_fullscreen`: macOS, or Windows before
+    /// the native chrome was attached); leaving goes the same way.
+    winit_full_screen: bool,
     editing_text: bool,
     list_focused: bool,
     anchor: Option<Uuid>,
@@ -661,9 +666,8 @@ impl MainWindowController {
                 }
                 PlayerOutput::FrameReady => {
                     self.present_frame();
-                    if std::mem::take(&mut self.st.borrow_mut().full_screen_on_first_frame) && !self.st.borrow().full_screen {
-                        self.set_full_screen(true);
-                    }
+                    self.st.borrow_mut().frame_shown = true;
+                    self.full_screen_from_env_when_ready();
                 }
                 PlayerOutput::Failed(details) => {
                     let make: Rc<dyn Fn() -> String> = Rc::new(move || sa_core::l!("Video oynatılamadı: %@", details.clone()));
@@ -1747,6 +1751,8 @@ impl MainWindowController {
         main.set_picker_visible(v.pickers);
         // Full screen: the pointer hides with the controls while it rests over the playing video. Set on the native
         // window directly: Slint applies a `mouse-cursor` only on the next pointer event, and the pointer is still.
+        // Windows: `ShowCursor` through winit, measured. macOS: winit hides it through the view's cursor rects
+        // (`NSCursor`), not verified for a resting pointer.
         let hide = self.hud.borrow().cursor_hidden(self.st.borrow().full_screen);
         if std::mem::replace(&mut self.st.borrow_mut().cursor_hidden, hide) != hide {
             use slint::winit_030::WinitWindowAccessor;
@@ -2167,8 +2173,13 @@ impl MainWindowController {
                     }
                     if full != c.st.borrow().full_screen {
                         c.st.borrow_mut().full_screen = full;
+                        if !full {
+                            c.st.borrow_mut().winit_full_screen = false;
+                        }
                         c.sync_layout(true);
                         c.sync_toolbar();
+                        // Left through the system (macOS window menu, Mission Control): show a hidden pointer.
+                        c.sync_hud();
                     }
                 }
                 winit::event::WindowEvent::ThemeChanged(_) => c.sync_native_chrome(),
@@ -2324,6 +2335,24 @@ impl MainWindowController {
                 key.post(&ui, move |c| c.apply_accent(p));
             }));
             *self.native.borrow_mut() = Some(NativeChrome { chrome, _accent: watcher });
+            self.full_screen_from_env_when_ready();
+        }
+    }
+
+    /// `SUBTITLE_ADDER_FULL_SCREEN=1`: enters full screen once a frame was shown and, on Windows, the native chrome
+    /// is attached (so the chrome's full screen is used and `F` / `Esc` later leave it the same way).
+    fn full_screen_from_env_when_ready(&self) {
+        let ready = {
+            let st = self.st.borrow();
+            st.full_screen_on_first_frame && st.frame_shown
+        };
+        #[cfg(windows)]
+        let ready = ready && self.native.borrow().is_some();
+        if ready {
+            self.st.borrow_mut().full_screen_on_first_frame = false;
+            if !self.st.borrow().full_screen {
+                self.set_full_screen(true);
+            }
         }
     }
 
@@ -2399,14 +2428,24 @@ impl MainWindowController {
                 if let Some(w) = self.win() {
                     // Windows: the chrome's own full screen (`MainChrome::set_full_screen`); winit's borderless
                     // mode kept the maximized frame inset. macOS and windows without the chrome: winit / native.
+                    // Leaving always goes through the mechanism that entered.
                     #[cfg(windows)]
-                    if let Some(n) = self.native.borrow().as_ref() {
-                        n.chrome.set_full_screen(&w, on);
-                    } else {
-                        w.window().set_fullscreen(on);
-                    }
+                    let chrome_used = {
+                        let via_winit = self.st.borrow().winit_full_screen;
+                        match self.native.borrow().as_ref() {
+                            Some(n) if !via_winit => {
+                                n.chrome.set_full_screen(&w, on);
+                                true
+                            }
+                            _ => false,
+                        }
+                    };
                     #[cfg(not(windows))]
-                    w.window().set_fullscreen(on);
+                    let chrome_used = false;
+                    if !chrome_used {
+                        w.window().set_fullscreen(on);
+                        self.st.borrow_mut().winit_full_screen = on;
+                    }
                 }
             }
         }
@@ -2420,7 +2459,9 @@ impl MainWindowController {
     /// the controller (macOS green button, `Esc` handled by the system).
     fn window_is_full_screen(&self, window: &slint::Window) -> bool {
         #[cfg(windows)]
-        if let Some(n) = self.native.borrow().as_ref() {
+        if !self.st.borrow().winit_full_screen
+            && let Some(n) = self.native.borrow().as_ref()
+        {
             return n.chrome.is_full_screen();
         }
         use slint::winit_030::WinitWindowAccessor;
