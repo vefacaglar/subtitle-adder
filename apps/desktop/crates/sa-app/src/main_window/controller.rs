@@ -396,6 +396,7 @@ impl MainWindowController {
         main.set_target_items(ModelRc::from(self.target_items.clone()));
         main.set_menu_entries(ModelRc::from(self.menu_entries.clone()));
         main.set_picture_subtitles(ModelRc::from(self.picture_rects.clone()));
+        super::pictures::install(&main);
         w.global::<ExplorerBridge>().set_rows(ModelRc::from(self.explorer_rows.clone()));
     }
 

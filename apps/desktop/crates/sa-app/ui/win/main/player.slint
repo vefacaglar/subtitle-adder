@@ -443,6 +443,7 @@ export component PlayerSurface inherits Rectangle {
             height: parent.height;
             aspect: MainBridge.video-aspect;
             rects: MainBridge.picture-subtitles;
+            place(r, w, h, a) => { MainBridge.place-picture(r, w, h, a) }
         }
 
         SubtitleOverlay {

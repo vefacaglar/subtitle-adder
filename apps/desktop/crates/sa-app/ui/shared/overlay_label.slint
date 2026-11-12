@@ -3,7 +3,7 @@
 // of that rectangle. Text/size/colors/background come from `OverlayStyle` (pushed by Rust); placement and the shadow
 // copies follow the platform (`mac`).
 
-import { PictureSubtitleRect } from "main_types.slint";
+import { PictureSubtitleRect, PictureBox } from "main_types.slint";
 
 export component SubtitleOverlay inherits Rectangle {
     in property <float> aspect: 1.7778;
@@ -106,27 +106,23 @@ export component SubtitleOverlay inherits Rectangle {
     }
 }
 
-// The picture of a bitmap subtitle track (PGS, VobSub, DVB) over the video: the rectangles Rust placed on the subtitle
-// canvas, drawn over the fitted video rectangle (the same aspect fit as the text overlay) and scaled with it. Not
-// styled: the user's text-overlay settings do not apply to pictures. Plain images, no opacity, clip or radius (any
-// of those would draw the player through a cached layer).
+// The picture of a bitmap subtitle track (PGS, VobSub, DVB, XSUB) over the video: each rectangle where `place` (Rust's
+// rule for the canvas over the fitted video, `main_window::pictures::place`) puts it for this surface's size, asked
+// again whenever the size or the video aspect changes. Not styled: the user's text-overlay settings do not apply to
+// pictures. Plain images, no opacity, clip or radius (any of those would draw the player through a cached layer).
 export component PictureSubtitleOverlay inherits Rectangle {
     in property <float> aspect: 1.7778;
     in property <[PictureSubtitleRect]> rects;
-
-    property <float> safe-aspect: root.aspect > 0 ? root.aspect : 1.7778;
-    property <length> fit-w: min(root.width, root.height * root.safe-aspect);
-    property <length> fit-h: root.fit-w / root.safe-aspect;
-    property <length> fit-x: (root.width - root.fit-w) / 2;
-    property <length> fit-y: (root.height - root.fit-h) / 2;
+    pure callback place(rect: PictureSubtitleRect, width: float, height: float, aspect: float) -> PictureBox;
 
     accessible-role: none;
 
     for r in root.rects: Image {
-        x: root.fit-x + root.fit-w * r.x;
-        y: root.fit-y + root.fit-h * r.y;
-        width: root.fit-w * r.width;
-        height: root.fit-h * r.height;
+        property <PictureBox> box: root.place(r, root.width / 1px, root.height / 1px, root.aspect);
+        x: self.box.x * 1px;
+        y: self.box.y * 1px;
+        width: self.box.width * 1px;
+        height: self.box.height * 1px;
         source: r.image;
         image-fit: fill;
     }

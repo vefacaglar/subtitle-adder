@@ -284,6 +284,7 @@ pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
             main.set_overlay_text("".into());
             let rows = super::pictures::overlay_rects(&demo_picture());
             main.set_picture_subtitles(ModelRc::new(VecModel::from(rows)));
+            super::pictures::install(&main);
         }
         "working" => {
             main.set_is_working(true);

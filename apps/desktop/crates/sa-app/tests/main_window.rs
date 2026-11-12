@@ -1095,9 +1095,20 @@ fn an_image_track_is_drawn_over_the_video_from_the_players_pictures_and_cleared(
     r.show_picture(Some(pgs_picture(1)));
     let rects = r.picture_rects();
     assert_eq!(rects.len(), 2);
-    assert_eq!((rects[0].x, rects[0].y, rects[0].width, rects[0].height), (0.25, 900.0 / 1080.0, 0.5, 0.1));
+    assert_eq!((rects[0].x, rects[0].y, rects[0].width, rects[0].height), (480.0, 900.0, 960.0, 108.0));
+    assert_eq!((rects[0].canvas_width, rects[0].canvas_height, rects[0].cover), (1920.0, 1080.0, false), "the video's own size stretches");
     assert_eq!((rects[0].image.size().width, rects[0].image.size().height), (960, 108));
-    assert_eq!((rects[1].x, rects[1].y, rects[1].width), (0.0, 0.0, 0.1));
+    assert_eq!((rects[1].x, rects[1].y, rects[1].width), (0.0, 0.0, 192.0));
+    // The overlay asks the window where each goes, for its own size (here a 960 × 540 surface, 16:9 video).
+    let b = r.main().invoke_place_picture(rects[0].clone(), 960.0, 540.0, 16.0 / 9.0);
+    assert_eq!((b.x, b.y, b.width, b.height), (240.0, 450.0, 480.0, 54.0));
+    // A cropped encode (1920 × 800) with a 1920 × 1080 PGS canvas: the canvas keeps its shape over the video.
+    let cropped = Arc::new(SubtitlePicture { video_size: Some((1920, 800)), id: 9, ..(*pgs_picture(9)).clone() });
+    r.show_picture(Some(cropped));
+    let rects = r.picture_rects();
+    assert!(rects[0].cover);
+    let b = r.main().invoke_place_picture(rects[0].clone(), 1600.0, 900.0, 2.4);
+    assert!((b.y - 750.0).abs() < 0.01 && (b.height - 90.0).abs() < 0.01, "{:?}", (b.x, b.y, b.width, b.height));
     // The text overlay style is the user's text lines'; pictures are not styled, and the line overlay stays as is.
     assert_eq!(r.main().get_overlay_text(), "");
     // Off hides it (the player is told; its next picture event empties the overlay).

@@ -82,10 +82,22 @@ export struct QueueRowData {
     accessible-label: string,
 }
 
-// One rectangle of the bitmap subtitle picture shown over the video (PGS, VobSub, DVB): its straight-alpha image and
-// where it goes, as fractions of the video picture (the subtitle canvas maps onto the letterboxed video rectangle).
+// One rectangle of the bitmap subtitle picture shown over the video (PGS, VobSub, DVB, XSUB): its straight-alpha
+// image, its place on the subtitle canvas (canvas pixels), the canvas and whether the canvas covers the video with
+// its own shape (`cover`) or stretches with it. Where that is on screen is Rust's rule (`MainBridge.place-picture`).
 export struct PictureSubtitleRect {
     image: image,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    canvas-width: float,
+    canvas-height: float,
+    cover: bool,
+}
+
+// A rectangle on the player surface, in logical pixels.
+export struct PictureBox {
     x: float,
     y: float,
     width: float,
