@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 
+pub mod sup;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
