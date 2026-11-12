@@ -23,6 +23,8 @@ mod io;
 pub mod perf;
 mod priority;
 mod session;
+#[cfg(windows)]
+mod staging;
 pub mod subtitles;
 mod sync;
 mod tracks;

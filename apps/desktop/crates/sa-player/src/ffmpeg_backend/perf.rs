@@ -111,6 +111,16 @@ pub static TRANSFER: Section = Section::new();
 /// The UI's plane upload (sa-app `video_gl.rs`).
 pub static UPLOAD: Section = Section::new();
 static DECODE_CPU_NS: AtomicU64 = AtomicU64::new(0);
+/// Hardware frames read through the mapped staging ring / through `av_hwframe_transfer_data`.
+static STAGED: AtomicU64 = AtomicU64::new(0);
+static COPIED: AtomicU64 = AtomicU64::new(0);
+
+/// Counts one hardware frame download (`staged`: through the staging ring).
+pub(crate) fn count_staged(staged: bool) {
+    if enabled() {
+        if staged { &STAGED } else { &COPIED }.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// A running measurement of one section ([`Timer::start`] → [`Timer::finish`]); `None` while the counters are off.
 pub struct Timer {
@@ -158,12 +168,14 @@ pub fn line() -> String {
     let ui = thread_cpu_ns().unwrap_or(0);
     let decode = DECODE_CPU_NS.load(Ordering::Relaxed);
     format!(
-        "cpu_proc={:.3} cpu_decode={:.3} cpu_ui={:.3} cpu_other={:.3} xfer={} upload={}",
+        "cpu_proc={:.3} cpu_decode={:.3} cpu_ui={:.3} cpu_other={:.3} xfer={} upload={} staged={} copied={}",
         s(proc_),
         s(decode),
         s(ui),
         s(proc_.saturating_sub(decode + ui)),
         TRANSFER.text(),
-        UPLOAD.text()
+        UPLOAD.text(),
+        STAGED.load(Ordering::Relaxed),
+        COPIED.load(Ordering::Relaxed)
     )
 }

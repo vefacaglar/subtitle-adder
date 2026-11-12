@@ -35,7 +35,8 @@ pub use timeline::PlaybackTimeline;
 ///
 /// RGBA output (the default): `rgba` holds RGBA8, tightly packed (`stride == width * 4`) unless stated, and `planar`
 /// is `None`. Planar output ([`MediaPlayerBackend::set_planar_output`]): `planar` holds the decoder's YUV planes
-/// (zero-copy for software decoding, one copy out of the GPU for hardware decoding) and `rgba` is empty; the UI
+/// (zero-copy for software decoding; for hardware decoding a GPU copy into a mapped staging texture read in place on
+/// Windows, else one CPU copy out of the GPU) and `rgba` is empty; the UI
 /// uploads the planes as textures and converts them on the GPU ([`PlanarImage`] says how). Pixel formats without a
 /// planar description (RGB, palette, packed YUV, big-endian...) are converted to RGBA by swscale and handed over as a
 /// one-plane [`PlaneLayout::Packed`] image, so the planar path covers every frame.
@@ -164,7 +165,8 @@ pub struct PlaneInfo {
     pub row_bytes: usize,
 }
 
-/// GPU-ready planes of one decoded frame (kept alive by the decoder frame they point into).
+/// GPU-ready planes of one decoded frame (kept alive by the decoder frame, download or mapped staging texture they
+/// point into).
 pub struct PlanarImage {
     pub layout: PlaneLayout,
     /// Bits per sample (8 = one byte per sample; 9..=16 = two bytes per sample, little-endian).

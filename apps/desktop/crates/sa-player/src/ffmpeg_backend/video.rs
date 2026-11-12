@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use ffmpeg_next::ffi;
 
-use super::hw::OwnedFrame;
+use super::hw::{Downloaded, OwnedFrame};
 use crate::color::{ColorMode, ColorParams, ToneLuts};
 use crate::soft;
 use crate::{ColorInfo, Interlace, PlanarFormat, PlanarImage, PlaneInfo, PlaneLayout, Primaries, Transfer, YuvMatrix};
@@ -170,7 +170,7 @@ impl Converter {
         &mut self,
         raw: *const ffi::AVFrame,
         src: *const ffi::AVFrame,
-        downloaded: Option<Arc<OwnedFrame>>,
+        downloaded: Option<Arc<Downloaded>>,
         geo: Geometry,
         hdr: &HdrLevels,
     ) -> SoftSource {

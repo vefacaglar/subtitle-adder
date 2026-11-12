@@ -20,9 +20,17 @@ ffmpeg-next = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }
 
 # Thread priorities of the player threads (`ffmpeg_backend/priority.rs`): MMCSS / SetThreadPriority on Windows,
-# pthread QoS classes on macOS.
+# pthread QoS classes on macOS. Direct3D 11 (Windows): the mapped staging ring for D3D11VA frames
+# (`ffmpeg_backend/staging.rs`).
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, optional = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows = { workspace = true, optional = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true, optional = true }

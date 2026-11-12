@@ -21,8 +21,11 @@
 //! hardware decoder fail as a GPU without support for the codec would (each packet errors with ENOSYS), to exercise
 //! the fall-back; such simulated failures are not remembered. Tests use `FfmpegPlayer::simulate_hardware_failure`.
 //!
-//! Decoded GPU surfaces are downloaded once into reusable system-memory frames (NV12 / P010): one copy, no per-frame
-//! buffer allocation. The UI uploads those planes and converts them to RGB on the GPU.
+//! Decoded GPU surfaces are downloaded once (NV12 / P010), with no per-frame buffer allocation: on Windows into a
+//! ring of staging textures that stay mapped while the frame is held (`staging`: the GPU copies, the CPU reads the
+//! mapping in place), otherwise (`SUBTITLE_ADDER_ZEROCOPY=0`, no free slot, a failure; macOS) by
+//! `av_hwframe_transfer_data` into reusable system-memory frames. The UI uploads those planes and converts them to
+//! RGB on the GPU.
 
 use std::ffi::c_int;
 use std::ptr;
@@ -257,17 +260,60 @@ unsafe extern "C" fn get_format(ctx: *mut ffi::AVCodecContext, fmts: *const AVPi
     }
 }
 
-/// Downloads GPU frames into recycled system-memory frames.
+/// A hardware frame in system memory: a recycled frame `av_hwframe_transfer_data` copied it into, or (Windows) a
+/// mapped staging texture of the ring (`staging`), which stays mapped and reserved until this is dropped. Either way
+/// [`Downloaded::frame`] is a software frame (NV12 / P010) whose planes stay valid and unchanged while it lives.
+pub(crate) struct Downloaded {
+    frame: OwnedFrame,
+    /// Dropped after `frame` (field order): the mapping its planes point into.
+    #[cfg(windows)]
+    _lease: Option<super::staging::Lease>,
+}
+
+impl Downloaded {
+    fn copied(frame: OwnedFrame) -> Self {
+        Self {
+            frame,
+            #[cfg(windows)]
+            _lease: None,
+        }
+    }
+
+    /// The frame (format, size, `data` / `linesize`; no colour properties, as `av_hwframe_transfer_data` leaves them).
+    pub fn frame(&self) -> *mut ffi::AVFrame {
+        self.frame.0
+    }
+}
+
+/// Downloads GPU frames: on Windows into the mapped staging ring when it is on and has a free slot, otherwise into
+/// recycled system-memory frames.
 #[derive(Default)]
 pub(crate) struct Download {
-    pool: Vec<Arc<OwnedFrame>>,
+    pool: Vec<Arc<Downloaded>>,
+    #[cfg(windows)]
+    ring: super::staging::StagingRing,
 }
 
 const POOL: usize = 8;
 
 impl Download {
     /// The software copy of hardware frame `hw` (NV12 / P010); `None` when the transfer failed.
-    pub unsafe fn download(&mut self, hw: *const ffi::AVFrame) -> Option<Arc<OwnedFrame>> {
+    pub unsafe fn download(&mut self, hw: *const ffi::AVFrame) -> Option<Arc<Downloaded>> {
+        unsafe {
+            #[cfg(windows)]
+            if super::staging::enabled()
+                && let Some((frame, lease)) = self.ring.download(hw)
+            {
+                super::perf::count_staged(true);
+                return Some(Arc::new(Downloaded { frame, _lease: Some(lease) }));
+            }
+            super::perf::count_staged(false);
+            self.transfer(hw)
+        }
+    }
+
+    /// [`Download::download`] through `av_hwframe_transfer_data` only.
+    pub unsafe fn transfer(&mut self, hw: *const ffi::AVFrame) -> Option<Arc<Downloaded>> {
         unsafe {
             let (w, h) = ((*hw).width, (*hw).height);
             let frames = (*hw).hw_frames_ctx;
@@ -278,18 +324,18 @@ impl Download {
             // Reuse a frame nobody else holds any more (same size and format: the transfer writes into its buffers).
             let reuse = self.pool.iter().position(|f| {
                 Arc::strong_count(f) == 1 && Arc::weak_count(f) == 0 && {
-                    let p = f.0;
+                    let p = f.frame();
                     (*p).width == w && (*p).height == h && (*p).format == sw_format && !(*p).buf[0].is_null()
                 }
             });
             let dst = match reuse {
                 Some(i) => self.pool.swap_remove(i),
-                None => Arc::new(OwnedFrame::alloc()?),
+                None => Arc::new(Downloaded::copied(OwnedFrame::alloc()?)),
             };
-            if ffi::av_hwframe_transfer_data(dst.0, hw, 0) < 0 {
+            if ffi::av_hwframe_transfer_data(dst.frame(), hw, 0) < 0 {
                 return None;
             }
-            self.pool.retain(|f| (*f.0).width == w && (*f.0).height == h);
+            self.pool.retain(|f| (*f.frame()).width == w && (*f.frame()).height == h);
             if self.pool.len() < POOL {
                 self.pool.push(dst.clone());
             }

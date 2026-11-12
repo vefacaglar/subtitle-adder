@@ -19,7 +19,7 @@ use parking_lot::{Condvar, Mutex, RwLock};
 
 use super::AudioTap;
 use super::audio::{self, AudioChunk, AudioRing, DeviceFormat, Resampler};
-use super::hw::{self, Download, OwnedFrame};
+use super::hw::{self, Download, Downloaded, OwnedFrame};
 use super::io::{self, OpenFailure, OpenedInput};
 use super::perf;
 use super::priority;
@@ -557,7 +557,7 @@ fn software_threads() -> usize {
 /// (native) decoder of the same codec that has one: FFmpeg's default AV1 decoder is `libdav1d`, which has none, so AV1
 /// decodes through the native `av1` decoder (hardware only). The software decoder is always the default one, so a
 /// fall-back from hardware never lands on a decoder that cannot decode without the GPU.
-fn open_video_decoder(params: &codec::Parameters, tb: Rational, hardware: bool) -> Result<(codec::decoder::Video, bool, bool), ffmpeg_next::Error> {
+pub(super) fn open_video_decoder(params: &codec::Parameters, tb: Rational, hardware: bool) -> Result<(codec::decoder::Video, bool, bool), ffmpeg_next::Error> {
     if hardware && let Some(choice) = unsafe { hw::decoder_for(params.as_ptr()) } {
         let mut cctx = codec::context::Context::from_parameters(params.clone())?;
         let attached = unsafe {
@@ -1135,6 +1135,9 @@ fn video_main(ctl: Arc<Control>, track: VideoTrack) {
             out.fields.reset();
             out.soft_prev = None;
             out.since_start = 0;
+            // The staging ring and download pool of the hardware decoder are not needed any more (frames still held
+            // keep their slots until they are dropped).
+            out.download = Download::default();
             // Decode again from the keyframe at or before where playback stands: the new decoder starts without one,
             // and the packets up to here went to the failed decoder.
             let at = if emitted { ctl.clock.now() } else { target };
@@ -1264,7 +1267,7 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
         let r = (*raw).sample_aspect_ratio;
         layout.geometry((*raw).width.max(1) as u32, (*raw).height.max(1) as u32, Some((r.num, r.den)))
     };
-    let mut downloaded: Option<Arc<OwnedFrame>> = None;
+    let mut downloaded: Option<Arc<Downloaded>> = None;
     let mut src = raw;
     if unsafe { hw::is_hw_format((*raw).format) } {
         let timer = perf::Timer::start();
@@ -1274,7 +1277,7 @@ fn push_frame(ctl: &Control, out: &mut FrameOutput, raw: *const ffi::AVFrame, la
         }
         out.since_start = out.since_start.saturating_add(1);
         let Some(d) = d else { return Pushed::DownloadFailed };
-        src = d.0;
+        src = d.frame();
         downloaded = Some(d);
     }
     unsafe { out.hdr.update(raw) };
