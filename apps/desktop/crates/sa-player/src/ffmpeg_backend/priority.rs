@@ -41,6 +41,8 @@ pub(crate) struct Guard {
     /// The class and relative priority the thread had before a background read lowered it (restored on drop).
     #[cfg(target_os = "macos")]
     restore: Option<(libc::qos_class_t, libc::c_int)>,
+    /// Not `Send`: what the drop undoes applies to the thread that raised it.
+    _thread: std::marker::PhantomData<*const ()>,
 }
 
 impl Drop for Guard {
@@ -80,6 +82,7 @@ pub(crate) fn raise(role: Role) -> Guard {
             background: false,
             #[cfg(target_os = "macos")]
             restore: None,
+            _thread: std::marker::PhantomData,
         };
     }
     imp::raise(role)
@@ -112,7 +115,7 @@ mod imp {
             // SAFETY: the pseudo handle of the calling thread. Fails (and is not left on drop) when the thread is in
             // background mode already.
             let background = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) }.is_ok();
-            return Guard { mmcss: None, background };
+            return Guard { mmcss: None, background, _thread: std::marker::PhantomData };
         }
         let (task, fallback): (Option<PCWSTR>, THREAD_PRIORITY) = match role {
             Role::Presenter | Role::AudioDecode => (Some(w!("Playback")), THREAD_PRIORITY_HIGHEST),
@@ -134,7 +137,7 @@ mod imp {
             // SAFETY: the pseudo handle of the calling thread.
             let _ = unsafe { SetThreadPriority(GetCurrentThread(), fallback) };
         }
-        Guard { mmcss, background: false }
+        Guard { mmcss, background: false, _thread: std::marker::PhantomData }
     }
 }
 
@@ -167,7 +170,7 @@ mod imp {
             // SAFETY: applies to the calling thread only.
             let _ = unsafe { libc::pthread_set_qos_class_self_np(class, 0) };
         }
-        Guard { restore }
+        Guard { restore, _thread: std::marker::PhantomData }
     }
 }
 
@@ -176,7 +179,7 @@ mod imp {
     use super::{Guard, Role};
 
     pub(super) fn raise(_role: Role) -> Guard {
-        Guard {}
+        Guard { _thread: std::marker::PhantomData }
     }
 }
 
