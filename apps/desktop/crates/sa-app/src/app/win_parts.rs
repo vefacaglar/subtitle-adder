@@ -418,10 +418,8 @@ mod tests {
     #[test]
     fn the_cached_player_lists_and_switches_tracks() {
         use sa_player::ffmpeg_backend::{AudioTap, PlayerOptions};
-        let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-        let ff = std::env::var("FFMPEG_DIR").map(|d| Path::new(&d).join("bin").join(exe)).ok().filter(|p| p.is_file());
-        let Some(ff) = ff else {
-            eprintln!("skipped: no ffmpeg CLI (FFMPEG_DIR) to generate the test clip");
+        let Some(ff) = test_ffmpeg() else {
+            eprintln!("skipped: no ffmpeg CLI (SA_TEST_FFMPEG, FFMPEG_DIR or PATH) to generate the test clip");
             return;
         };
         let dir = tempfile::tempdir().unwrap();
@@ -473,13 +471,20 @@ mod tests {
         0x00, 0x00, 0x17, 0x00, 0x01, 0x00, 0x50, 0x47, 0x00, 0x02, 0xbf, 0x20, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
     ];
 
+    /// The FFmpeg CLI as the player's tests find it: `SA_TEST_FFMPEG`, `$FFMPEG_DIR/bin/ffmpeg`, then `ffmpeg` on PATH.
+    fn test_ffmpeg() -> Option<std::path::PathBuf> {
+        let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        [std::env::var_os("SA_TEST_FFMPEG").map(std::path::PathBuf::from), std::env::var_os("FFMPEG_DIR").map(|d| Path::new(&d).join("bin").join(exe)), Some(exe.into())]
+            .into_iter()
+            .flatten()
+            .find(|c| std::process::Command::new(c).arg("-version").output().is_ok_and(|o| o.status.success()))
+    }
+
     /// The wrapper also forwards the bitmap subtitle calls: a PGS track chosen through it is shown, and turned off.
     #[test]
     fn the_cached_player_shows_and_hides_a_bitmap_subtitle_track() {
-        let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-        let ff = std::env::var("FFMPEG_DIR").map(|d| Path::new(&d).join("bin").join(exe)).ok().filter(|p| p.is_file());
-        let Some(ff) = ff else {
-            eprintln!("skipped: no ffmpeg CLI (FFMPEG_DIR) to generate the test clip");
+        let Some(ff) = test_ffmpeg() else {
+            eprintln!("skipped: no ffmpeg CLI (SA_TEST_FFMPEG, FFMPEG_DIR or PATH) to generate the test clip");
             return;
         };
         let dir = tempfile::tempdir().unwrap();
