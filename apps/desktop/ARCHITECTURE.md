@@ -76,6 +76,9 @@ and deinterlacing on the CPU in `sa_player::soft`).
   ending in a path separator, or naming an existing folder, is a folder (`<folder>/window-…`, created); a write that
   fails is reported once on stderr. Screen capture of the GL window returns white, so this is how the real window is
   checked (`video_gl.rs` module docs).
+- `SUBTITLE_ADDER_SUBTITLE_TRACK=<stream index>` chooses that embedded subtitle stream (text or image) once a
+  file's tracks are known, exactly as a pick from the track menu (instead of the automatic choice), so image subtitles
+  can be checked live without input; a value naming no subtitle stream of the file is ignored (said on stderr).
 - `SUBTITLE_ADDER_FULL_SCREEN=1` makes the main window enter full screen once, when the first video frame arrives
   (as the `F` key would), so full screen can be measured without input. `SUBTITLE_ADDER_PLAYER_STATS=1` ends the
   `[player-stats]` line with the window state: `full_screen=` (the controller's), `cursor_hidden=` (the pointer
@@ -132,7 +135,10 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   start order and bounded at 64 MiB of bytes (a caption is a few KB, so tens of thousands fit; more are turned away
   and counted, `picture_store_overflow=`), from the playing demuxer and from a scan of the whole stream by a demuxer
   of its own (thread `player-subscan`, every other stream discarded, background priority, while the track is
-  shown). Only what starts within 8 s of the position is decoded (`STORE_LOOKAHEAD`), never what an event at the
+  shown; detached, it stops at its next packet once the track goes, and it opens the file by its path, not through
+  the `BufferedVideoStream` reader the playing demuxer may use; a scan that cannot be started is not tried again for
+  that stream, which then has the playing demuxer's packets only). Each source builds its own entry (an XSUB or
+  VobSub packet split over several demuxer packets), and a packet both deliver is kept once. Only what starts within 8 s of the position is decoded (`STORE_LOOKAHEAD`), never what an event at the
   position already replaced, and a seek decodes from the store again: a film's front-loaded AVI XSUB chunks, or
   packets the demuxer read before a selection or will not read again after a seek, are all shown at their times,
   with the RGBA held for a few seconds of captions only. The demux thread then turns every
@@ -145,9 +151,13 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   whose decoder rejected 4 packets since it was chosen or last seeked without producing a single event in that time
   is given up: turned off as if "Off" were chosen, with `SubtitleTrackFailed` (the app reports it when the user chose
   the track, and drops a track it chose for the user without a notice; the menu no longer marks it). The count
-  starts again at every seek and at every restart that keeps the position. XSUB packets without their time code
-  count as rejected (`NoTimeCode`), and so does an event too large to keep (`TooLarge`, also counted in
-  `picture_failures=`). For PGS only the rejections and oversized events of self-contained sets count (an epoch
+  starts again at every seek and at every restart that keeps the position, and only decodes that follow the playback
+  position count, each packet once: for a storing stream, what the store decodes within its window. An event too
+  large to keep counts as rejected (`TooLarge`, also counted in `picture_failures=`). XSUB packets without their time
+  code are turned away when stored (`NoTimeCode`, counted in `picture_failures=`) and never count towards that rule,
+  since the scan and the front-loaded AVI chunks deliver them far from the position: a few damaged chunks anywhere
+  leave the track on. A storing track is given up for them only when the whole stream was read (the scan ended, or
+  without a scan the demuxer reached the end) with nothing stored and at least 4 packets turned away. For PGS only the rejections and oversized events of self-contained sets count (an epoch
   start or acquisition point, from the PCS state byte), never those of normal sets that build on an earlier set a
   seek or a mid-epoch selection skipped, so a healthy stream cannot reach the threshold. Known limit: pgssubdec and
   dvdsubdec do not return errors for damaged data (no `AV_EF_EXPLODE`), so a broken PGS or VobSub track is never
@@ -168,7 +178,8 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   without a display definition segment means), else the video's coded size, never grown to hold the rectangles (a
   canvas one pixel larger would change its fit in the UI); a canvas side is clamped to 8192. Every
   picture carries the video's coded size for the UI's canvas rule, in the orientation it is shown (width and height
-  swapped for a video turned a quarter round by its display matrix).
+  swapped for a video turned a quarter round by its display matrix, which `video_turned` says). Known limit: that size
+  is the decoder's at session open; a stream that changes resolution mid-way keeps the first one for the rule.
   - Timing rule (`PictureTimeline::active_at`): every bitmap format describes the whole screen per event, so the
     picture on screen at `t` is the newest event that started at or before `t`, while `t` is before its end: its own
     end (at most 300 s after its start), the next event's start, and at most 30 s after its start for an event
@@ -214,7 +225,12 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
     seek) keep the picture on screen: inside the known span the queue stays as for a seek, beyond it (nothing
     delivered after the picture's start yet) only the picture due at the newest asked time carries over, and only
     when the restart follows the serial it was asked in, that time was asked at all, and the picture is also due at
-    the restart position (its window cut at the next event's start, which the restart reads again). The re-read
+    the restart position (its window cut at the next event's start, which the restart reads again). A restart that
+    keeps the position does not feed the decoder PGS or DVB packets it already consumed (up to the newest timestamp
+    fed): pgssubdec keeps its objects, so a set read again after a later set redefined an object would decode
+    against the new object. Seeks and restarts are serialized (`seek_lock`), and a restart reads the position it
+    keeps inside that lock; the end of playback is decided under it too, so it cannot interleave with a seek. The
+    store's window is placed at the executing seek's position, not at one deferred behind it. The re-read
     stream decodes the same event again, which is ignored (compared by the end it was decoded with, not the cut
     one), so the picture keeps its identity and no `SubtitlePictureChanged` is posted (`pictures_carried` in the
     stats counts the carry-overs). A track switch or "Off" still takes it off. Switching off drops the decoder and the pictures; another load drops everything with the session.
@@ -240,14 +256,15 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
     (re-evaluated on every resize, no frame of lag). The fit is decided by the canvas's and the video's shapes: the
     picture's own raster stretches with the aspect-fit video rectangle, like the picture (the video's coded size,
     including a canvas the player made up from it, or an SD raster, at most 720 wide and 480 or 576 high: DVD
-    720 / 704 / 352 × 480 / 576, DVB 720 × 576, over HD video, where nothing tells how the SD frame was scaled
-    into the HD one, or over a half-D1 encode). An SD raster over SD video of its own raster (at most 720 wide, at
-    least two thirds of the canvas wide and no taller, cropped or not) lies at the video's pixel scale, each axis
-    apart, centred on the video: a 720 × 432 crop of a 16:9 PAL frame keeps its captions unsquashed in the letterbox
-    where the disc put them, and a 720-wide canvas over 704-wide video reaches 8 pixels past each side. A landscape
-    canvas over a portrait (quarter-turned) video never stretches. Every other canvas (PGS 1920 × 1080 /
-    1280 × 720, a 1024 × 576 or 960 × 540 DVB display, a UHD canvas over HD video, any landscape canvas over a
-    quarter-turned video) keeps its shape, scaled uniformly to cover the video rectangle and centred on it, as VLC
+    720 / 704 / 352 × 480 / 576, DVB 720 × 576, over any video it is not known to be a crop of: HD video, a resized
+    640 × 480 or 640 × 360 rip, 544 × 576 or 704 × 576 broadcast video under a 720-wide canvas, a CIF or half-D1
+    encode, where nothing tells how the SD frame was scaled). Only over video of the canvas's own width (or 704
+    under 720) and fewer lines, a vertical crop of the same raster, does an SD raster lie at the video's pixel scale,
+    each axis apart, centred on the video: a 720 × 432 crop of a 16:9 PAL frame keeps its captions unsquashed in the
+    letterbox where the disc put them. A landscape canvas over a quarter-turned video (the player says so,
+    `SubtitlePicture::video_turned`; video merely coded narrower than tall is not turned) never stretches. Every
+    other canvas (PGS 1920 × 1080 / 1280 × 720, a 1024 × 576 or 960 × 540 DVB display, a UHD canvas over HD video,
+    any landscape canvas over a quarter-turned video) keeps its shape, scaled uniformly to cover the video rectangle and centred on it, as VLC
     and mpv do. So the captions of a cropped
     encode (1920 × 800 video, 1920 × 1080 canvas) sit unsquashed in the letterbox below the picture, where the disc
     put them, instead of 26 % flatter inside it; with equal aspects both rules agree. An event that would fall
@@ -396,7 +413,9 @@ to the next audio stream when the best one cannot be decoded. `MediaPlayerBacken
   FFmpeg CLI and the `.sup` writer of `tests/common`, which the crate's unit tests do not have). Every clip is cached
   under a name hashed from its recipe and the FFmpeg CLI's version line (printed once per test run), and written
   atomically. A test skipped for want of the FFmpeg CLI or an encoder says so on stderr, and `SA_REQUIRE_FFMPEG=1`
-  makes it fail instead.
+  (set by hand; no script sets it) makes the tests that go through `or_skip!` (the picture tests) fail instead. The
+  seek-race test of `tests/pictures.rs` uses debug-only hooks (`set_seek_gate`, `set_picture_ask_hook`) and is left
+  out of release test builds.
 
 Dependencies of `sa-player` (feature `ffmpeg`):
 
