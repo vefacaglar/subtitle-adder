@@ -28,6 +28,9 @@ export component ToolTip {
             popup.close();
         }
     }
+    // `no-auto-close` marks this popup as a hover tooltip for the vendored winit backend: every key press closes
+    // such popups (they would hold the keyboard focus; "Subtitle Adder patch" in
+    // `vendor/i-slint-backend-winit/winitwindowadapter.rs`). A popup the user types into must use another policy.
     popup := PopupWindow {
         close-policy: no-auto-close;
         x: 0;

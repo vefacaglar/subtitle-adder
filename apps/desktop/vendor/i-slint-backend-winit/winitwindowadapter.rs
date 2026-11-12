@@ -1430,6 +1430,8 @@ impl WinitWindowAdapter {
                 // on a control, such a tooltip stays open and every key press went nowhere: the shortcuts did
                 // nothing until the pointer moved. A key press closes those popups first, as a native tooltip
                 // closes on a key press, and closing hands the focus back to where it was, so the key reaches it.
+                // `no-auto-close` is the app's tooltip marker (commented in both `ToolTip` components): a popup the
+                // user types into must not use it.
                 if event.event_type == KeyEventType::KeyPressed {
                     let inner = WindowInner::from_pub(self.window());
                     let tooltips: Vec<_> = inner
