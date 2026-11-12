@@ -314,6 +314,213 @@ fn pgs_epoch_mkv() -> Option<PathBuf> {
     )
 }
 
+/// 12 s of video (a keyframe every second) and a tone (another speed restarts decoding only with audio) with a PGS
+/// track (stream 1): cleared at 0.0, a white 40 × 10 at (100, 200)
+/// from 1.5, cleared at 9.0, far beyond the demuxer's read-ahead from the picture's start.
+fn pgs_sparse_mkv() -> Option<PathBuf> {
+    let canvas = (320, 240);
+    let mut out = Vec::new();
+    sup::display_set(&mut out, 0.0, canvas, &[], &PALETTE);
+    sup::display_set(&mut out, 1.5, canvas, &[Object::filled(100, 200, 40, 10, 1)], &PALETTE);
+    sup::display_set(&mut out, 9.0, canvas, &[], &PALETTE);
+    let sup_path = path_str(&fixture_file("pgs-sparse", "sup", &out));
+    hashed_clip(
+        "pgs-sparse",
+        "mkv",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-i", &sup_path,
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "12", "-map", "0:v", "-map", "1:s", "-map", "2:a",
+            "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p", "-c:s", "copy", "-c:a", "aac",
+        ],
+    )
+}
+
+/// 12 s of video and a tone with one PGS epoch (stream 1): its start at 0.2 sends object 0 (white 40 × 20) and the palette;
+/// normal sets at 1.0, 2.0 … 11.0 show it again at x = 10 · i, y 50 (no object, no palette).
+fn pgs_long_epoch_mkv() -> Option<PathBuf> {
+    let canvas = (320, 240);
+    let object = Object::filled(0, 0, 40, 20, 1);
+    let set = |pts, state, x, palette, objects, n| DisplaySet {
+        pts,
+        segments_pts: None,
+        canvas,
+        composition_number: n,
+        state,
+        palette_update: false,
+        palette_id: 0,
+        compositions: vec![Composition { object: 0, window: 0, x, y: 50 }],
+        windows: Some(vec![(0, x, 50, 40, 20)]),
+        palette,
+        objects,
+    };
+    let mut out = Vec::new();
+    sup::display_set(&mut out, 0.0, canvas, &[], &PALETTE);
+    sup::write(&mut out, &set(0.2, State::EpochStart, 0, Some((0, 0, &PALETTE[..])), vec![(0, 0, &object)], 0));
+    for i in 1..=11u16 {
+        sup::write(&mut out, &set(f64::from(i), State::Normal, 10 * i, None, vec![], i));
+    }
+    let sup_path = path_str(&fixture_file("pgs-long-epoch", "sup", &out));
+    hashed_clip(
+        "pgs-long-epoch",
+        "mkv",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-i", &sup_path,
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "12", "-map", "0:v", "-map", "1:s", "-map", "2:a",
+            "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p", "-c:s", "copy", "-c:a", "aac",
+        ],
+    )
+}
+
+/// A PGS track (stream 1) as Blu-ray discs write them, over 5 s of video: an epoch start at 0.5 shows object 0
+/// (white 40 × 10 at (20, 20)); a normal set with no composition clears at 1.5; a normal set at 2.5 sends object
+/// 0 again as version 1 (red 60 × 10) with a palette update and shows it at (40, 40); a normal set clears at 3.5.
+fn pgs_bd_mkv() -> Option<PathBuf> {
+    let canvas = (320, 240);
+    let first = Object::filled(0, 0, 40, 10, 1);
+    let second = Object::filled(0, 0, 60, 10, 2);
+    let set = |pts, state, compositions, windows, palette, objects, n| DisplaySet {
+        pts,
+        segments_pts: None,
+        canvas,
+        composition_number: n,
+        state,
+        palette_update: false,
+        palette_id: 0,
+        compositions,
+        windows,
+        palette,
+        objects,
+    };
+    let mut out = Vec::new();
+    sup::display_set(&mut out, 0.0, canvas, &[], &PALETTE);
+    sup::write(
+        &mut out,
+        &set(0.5, State::EpochStart, vec![Composition { object: 0, window: 0, x: 20, y: 20 }], Some(vec![(0, 20, 20, 40, 10)]), Some((0, 0, &PALETTE[..])), vec![(0, 0, &first)], 1),
+    );
+    sup::write(&mut out, &set(1.5, State::Normal, vec![], Some(vec![(0, 20, 20, 40, 10)]), None, vec![], 2));
+    sup::write(
+        &mut out,
+        &set(2.5, State::Normal, vec![Composition { object: 0, window: 0, x: 40, y: 40 }], Some(vec![(0, 40, 40, 60, 10)]), Some((0, 1, &PALETTE[..])), vec![(0, 1, &second)], 3),
+    );
+    sup::write(&mut out, &set(3.5, State::Normal, vec![], Some(vec![(0, 40, 40, 60, 10)]), None, vec![], 4));
+    let sup_path = path_str(&fixture_file("pgs-bd", "sup", &out));
+    hashed_clip(
+        "pgs-bd",
+        "mkv",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-i", &sup_path, "-t", "5", "-map", "0:v", "-map", "1:s",
+            "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p", "-c:s", "copy",
+        ],
+    )
+}
+
+/// The number of pictures of [`big_xsub_avi`].
+const BIG: usize = 120;
+
+/// The start of picture `i` of [`big_xsub_avi`].
+fn big_start(i: usize) -> f64 {
+    1.0 + 0.24 * i as f64
+}
+
+/// [`BIG`] XSUB events in AVI (stream 1) over 31 s of 640 × 480 video: picture `i` is a white (400 + i) × 400 block at
+/// (20, 40) from [`big_start`] for 0.12 s. Decoded, they hold 77 MB of RGBA, more than the timeline's 64 MiB bound,
+/// and FFmpeg's AVI muxer puts every one of their chunks with the first seconds of video.
+fn big_xsub_avi() -> Option<PathBuf> {
+    let canvas = (640, 480);
+    let mut out = Vec::new();
+    sup::display_set(&mut out, 0.0, canvas, &[], &PALETTE);
+    for i in 0..BIG {
+        sup::display_set(&mut out, big_start(i), canvas, &[Object::filled(20, 40, 400 + i, 400, 1)], &PALETTE);
+        sup::display_set(&mut out, big_start(i) + 0.12, canvas, &[], &PALETTE);
+    }
+    let sup_path = path_str(&fixture_file("big-xsub", "sup", &out));
+    hashed_clip(
+        "big-xsub",
+        "avi",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=640x480:rate=30", "-fix_sub_duration", "-i", &sup_path, "-t", "31",
+            "-map", "0:v", "-map", "1:s", "-c:v", "mpeg4", "-g", "30", "-c:s", "xsub",
+        ],
+    )
+}
+
+/// The DVB track of [`picture_mkv`] (stream 1) whose packets from the second on (from 1.5: dvbsub writes each
+/// set after the first as a clearing packet and a showing one) are damaged like [`corrupt_dvb`]'s: only the set at
+/// 0.5 decodes. A cluster per keyframe, so that a seek to 1.6 reads from 1.0 on.
+fn late_corrupt_dvb() -> Option<PathBuf> {
+    let source = path_str(&picture_mkv()?);
+    let copy = hashed_clip("dvb-only-clustered", "mkv", &["-i", &source, "-map", "0:v", "-map", "0:4", "-c", "copy", "-cluster_time_limit", "900"])?;
+    let mut bytes = std::fs::read(&copy).expect("clip");
+    let pattern = [0x0f, 0x14, 0x00, 0x01, 0x00, 0x05];
+    let at: Vec<usize> = (0..bytes.len().saturating_sub(pattern.len())).filter(|&i| bytes[i..i + pattern.len()] == pattern).collect();
+    assert_eq!(at.len(), 6, "one display definition per packet");
+    for &i in &at[1..] {
+        bytes[i] = 0xff;
+    }
+    Some(fixture_file("dvb-late-corrupt", "mkv", &bytes))
+}
+
+/// [`many_xsub_avi`] with the `[` of every packet's time code changed: no packet says when it is shown.
+fn xsub_without_time_codes() -> Option<PathBuf> {
+    let mut bytes = std::fs::read(many_xsub_avi()?).expect("clip");
+    let mut patched = 0;
+    for i in 0..bytes.len().saturating_sub(27) {
+        if bytes[i] == b'[' && bytes[i + 13] == b'-' && bytes[i + 26] == b']' {
+            bytes[i] = b'x';
+            patched += 1;
+        }
+    }
+    assert_eq!(patched, MANY, "every packet's time code");
+    Some(fixture_file("xsub-no-time-code", "avi", &bytes))
+}
+
+/// A PGS track (stream 1) on a 3840 × 2160 canvas whose epoch starts at 0.5, 1.0, 1.5 and 2.0 each show two
+/// 3000 × 1500 objects: 9 M pixels an event, more than the player keeps. 3 s of video; nothing else decodes (a clearing
+/// set would count as a decoded event and keep the track).
+fn pgs_too_large_mkv() -> Option<PathBuf> {
+    let canvas = (3840, 2160);
+    let mut out = Vec::new();
+    for i in 1..=4 {
+        sup::display_set(&mut out, 0.5 * f64::from(i), canvas, &[Object::filled(0, 0, 3000, 1500, 1), Object::filled(0, 1600, 3000, 1500, 2)], &PALETTE);
+    }
+    let sup_path = path_str(&fixture_file("pgs-too-large", "sup", &out));
+    hashed_clip(
+        "pgs-too-large",
+        "mkv",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30", "-i", &sup_path, "-t", "3", "-map", "0:v", "-map", "1:s",
+            "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p", "-c:s", "copy",
+        ],
+    )
+}
+
+/// [`picture_mkv`]'s video, turned a quarter round by its display matrix, with its PGS track (stream 1).
+fn rotated_pgs_mkv() -> Option<PathBuf> {
+    let source = path_str(&picture_mkv()?);
+    hashed_clip("pictures-rotated", "mkv", &["-display_rotation:v:0", "90", "-i", &source, "-map", "0:v", "-map", "0:2", "-c", "copy"])
+}
+
+/// 6 s of video at one frame a second (each a keyframe) with a PGS track (stream 1): a white 40 × 10 at (100, 200)
+/// from 0.5, cleared at 1.7; a red 8 × 2 at (10, 10) from 2.3, cleared at 3.4: every change falls between frames.
+fn one_fps_mkv() -> Option<PathBuf> {
+    let canvas = (320, 240);
+    let mut out = Vec::new();
+    sup::display_set(&mut out, 0.0, canvas, &[], &PALETTE);
+    sup::display_set(&mut out, 0.5, canvas, &[Object::filled(100, 200, 40, 10, 1)], &PALETTE);
+    sup::display_set(&mut out, 1.7, canvas, &[], &PALETTE);
+    sup::display_set(&mut out, 2.3, canvas, &[Object::filled(10, 10, 8, 2, 2)], &PALETTE);
+    sup::display_set(&mut out, 3.4, canvas, &[], &PALETTE);
+    let sup_path = path_str(&fixture_file("one-fps", "sup", &out));
+    hashed_clip(
+        "one-fps",
+        "mkv",
+        &[
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=1", "-i", &sup_path, "-t", "6", "-map", "0:v", "-map", "1:s",
+            "-c:v", "libx264", "-preset", "ultrafast", "-g", "1", "-pix_fmt", "yuv420p", "-c:s", "copy",
+        ],
+    )
+}
+
 /// [`picture_mkv`] with a second audio track (a lower tone): video 0, audio 1 and 2, the PGS track 3.
 fn two_audio_mkv() -> Option<PathBuf> {
     let source = path_str(&picture_mkv()?);
@@ -328,15 +535,16 @@ fn two_audio_mkv() -> Option<PathBuf> {
 }
 
 macro_rules! or_skip {
-    ($e:expr) => {
+    ($e:expr) => {{
+        common::announce_ffmpeg();
         match $e {
             Some(p) => p,
             None => {
-                eprintln!("skipped: no ffmpeg CLI or encoder to generate the test clip");
+                common::skipped(&format!("{} line {}", file!(), line!()));
                 return;
             }
         }
-    };
+    }};
 }
 
 struct Rig {
@@ -551,7 +759,17 @@ fn pgs_pictures_have_their_exact_pixels_positions_and_times_and_the_empty_set_cl
 
 #[test]
 fn pgs_display_sets_split_objects_palette_updates_reused_objects_and_acquisition_points() {
-    let mut r = open_clip(&or_skip!(pgs_sets_mkv()));
+    let sets = or_skip!(pgs_sets_mkv());
+    // The premise, checked: Matroska keeps a display set in one block at its PCS time (FFmpeg's muxer merges the
+    // segments, `pgs_frame_merge`), so in MKV the set written with its other segments at 0.6 is a single packet at
+    // 0.5. The start from the PCS of a set whose segments arrive in packets of their own (.sup, Blu-ray .m2ts) is
+    // proved on a raw .sup by `pictures::tests::a_display_set_split_over_packets_starts_at_its_composition`.
+    let mut ictx = ffmpeg_next::format::input(&sets).expect("mkv");
+    let tb = ictx.stream(1).expect("pgs").time_base();
+    let times: Vec<f64> = ictx.packets().filter(|(s, _)| s.index() == 1).filter_map(|(_, p)| p.pts()).map(|t| t as f64 * f64::from(tb)).collect();
+    drop(ictx);
+    assert!(times.iter().any(|t| (t - 0.5).abs() < 0.002) && !times.iter().any(|t| (t - 0.6).abs() < 0.002), "{times:?}");
+    let mut r = open_clip(&sets);
     r.select(Some(1));
     // Shown from its composition (0.5), not from the END segment that completed it (0.6).
     let p = r.seek_to_picture(0.55, 0.5);
@@ -892,16 +1110,49 @@ fn watch_after_seek(r: &mut Rig, t: f64, wait: Duration, due: &[(f64, f64)]) {
         }),
         "no frame at {t} (last {last:?})"
     );
+    // The picture follows the presented frames (and the clock only while paused or between sparse frames): it is
+    // judged against the newest frame seen before and after reading it, with one frame of slack each way.
     let deadline = Instant::now() + wait;
+    let mut shown = last.unwrap_or(t);
     while Instant::now() < deadline {
-        let at = r.p.position();
-        if let Some(q) = r.picture() {
-            let ok = due.iter().any(|&(s, e)| (q.start - s).abs() < 1e-3 && at >= s - 0.05 && at < e + 0.05);
-            assert!(ok, "picture from {} shown at {at} after the seek to {t}", q.start);
+        let before = shown;
+        let q = r.picture();
+        if let Some(f) = r.p.latest_frame() {
+            shown = f.pts;
         }
-        let _ = r.p.latest_frame();
+        if let Some(q) = q {
+            let due_at = |at: f64| due.iter().any(|&(s, e)| (q.start - s).abs() < 1e-3 && at >= s - 0.04 && at < e + 0.04);
+            assert!(due_at(before) || due_at(shown), "picture from {} shown with the frames at {before}..{shown} after the seek to {t}", q.start);
+        }
         std::thread::sleep(Duration::from_millis(2));
     }
+}
+
+/// Plays `r` from where it stands until playback ends (or `T` passes) and records every picture change with the pts
+/// of the newest frame presented when it was seen.
+fn play_and_record(r: &mut Rig) -> Vec<(f64, Option<Arc<SubtitlePicture>>)> {
+    let from = r.rec.len();
+    r.p.play();
+    let mut seen: Vec<(f64, Option<Arc<SubtitlePicture>>)> = Vec::new();
+    let mut at = r.p.position();
+    let deadline = Instant::now() + T;
+    while !r.p.is_ended() && Instant::now() < deadline {
+        if let Some(f) = r.p.latest_frame() {
+            at = f.pts;
+        }
+        let now = r.picture();
+        if seen.last().is_none_or(|l| l.1.as_ref().map(|p| p.id) != now.as_ref().map(|p| p.id)) {
+            seen.push((at, now));
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(r.rec.wait_for(from, T, is_ended(r.g)).is_some(), "played to the end");
+    seen
+}
+
+/// The starts (to 0.01 s) of the pictures in a recording, `None` for nothing on screen.
+fn starts(seen: &[(f64, Option<Arc<SubtitlePicture>>)]) -> Vec<Option<f64>> {
+    seen.iter().map(|(_, p)| p.as_ref().map(|p| (p.start * 100.0).round() / 100.0)).collect()
 }
 
 /// The windows of the main clip's PGS events.
@@ -1022,7 +1273,10 @@ fn joining_a_pgs_epoch_in_the_middle_never_gives_the_track_up() {
     r.select(Some(1));
     r.settle();
     let joined = r.p.stats();
-    eprintln!("joined mid-epoch: {joined:?} picture={:?}", r.picture().map(|p| (p.start, p.bounds())));
+    // The premise: the sets were delivered and decoded, without their epoch (FFmpeg 8.1's pgssubdec rejects none
+    // of them; were it to, they would not count towards giving up either, being normal sets).
+    assert!(joined.picture_events >= 1, "the normal sets reached the decoder: {joined:?}");
+    assert!(r.picture().is_none(), "decoded without their object they show nothing: {:?}", r.picture());
     assert_eq!(r.p.tracks().active_image_subtitle, Some(1), "not given up");
     // The same by a seek, several times (each seek starts the give-up count again).
     for t in [1.1, 1.5, 2.1, 1.3] {
@@ -1036,19 +1290,16 @@ fn joining_a_pgs_epoch_in_the_middle_never_gives_the_track_up() {
     let a = r.wait_picture(|p| (p.start - 3.0).abs() < 1e-3).unwrap_or_else(|| panic!("{:?}", r.rec.snapshot()));
     assert_eq!(a.bounds(), (200, 100, 40, 20));
     assert!(!r.rec.snapshot()[from..].iter().any(|e| matches!(e, PlayerEvent::SubtitleTrackFailed { .. })));
-    let s = r.p.stats();
-    eprintln!("after playing: {s:?}");
     // From the start, the whole epoch is decoded: every normal set shows the object where it says.
     let mut r = open_clip(&or_skip!(pgs_epoch_mkv()));
     r.select(Some(1));
-    for i in 0..6u32 {
-        let start = 1.2 + f64::from(i) * 0.2;
-        if i == 0 {
-            r.seek_to_picture(0.3, 0.2);
-            r.p.play();
-        }
-        let p = r.wait_picture(|p| (p.start - start).abs() < 1e-3).unwrap_or_else(|| panic!("no set at {start}: {:?}", r.picture()));
-        assert_eq!(p.bounds(), (10 * (i + 1), 50, 40, 20));
+    r.seek_to_picture(0.3, 0.2);
+    let seen = play_and_record(&mut r);
+    let shown: Vec<_> = seen.iter().filter_map(|(_, p)| p.clone()).collect();
+    let want: Vec<f64> = [0.2, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 3.0].to_vec();
+    assert_eq!(shown.iter().map(|p| (p.start * 10.0).round() / 10.0).collect::<Vec<_>>(), want, "{seen:?}");
+    for (i, p) in shown[1..7].iter().enumerate() {
+        assert_eq!(p.bounds(), (10 * (i as u32 + 1), 50, 40, 20));
     }
     assert_eq!(r.p.stats().picture_failures, 0);
 }
@@ -1090,4 +1341,254 @@ fn switching_tracks_and_turning_them_off_replaces_the_picture_and_a_text_track_i
     assert!(r.wait_picture(|p| p.stream_index == PGS && (p.start - 1.5).abs() < 1e-6).is_some());
     let presented = r.p.stats().presented;
     assert!(wait_until(T, || r.p.stats().presented > presented + 10), "frames keep coming");
+}
+
+#[test]
+fn a_clock_reading_from_before_a_seek_never_pins_the_new_position() {
+    let mut r = or_skip!(open());
+    r.select(Some(PGS));
+    // Paused at 2.7 (cleared at 2.5), the queue knowing the whole clip.
+    r.seek_to_nothing(2.7);
+    r.settle();
+    // The seek to 1.7 holds between moving the timeline and moving the clock long enough for the presenter (it
+    // polls every 10 ms while paused) to read the clock, still at 2.7, for the new serial.
+    r.p.set_seek_gate(Some(Box::new(|| std::thread::sleep(Duration::from_millis(150)))));
+    r.p.seek(1.7);
+    r.p.set_seek_gate(None);
+    watch_after_seek(&mut r, 1.7, Duration::from_millis(300), &PGS_DUE);
+    // Read at 2.7 for the new serial, the time would stay there: nothing would show until playback passed 2.7.
+    assert!(r.wait_picture(|p| (p.start - 1.5).abs() < 1e-3).is_some(), "{:?}", r.picture());
+    // The same with the queue cleared (back before what it knows).
+    r.seek_to_nothing(2.7);
+    r.p.set_seek_gate(Some(Box::new(|| std::thread::sleep(Duration::from_millis(150)))));
+    r.p.seek(0.7);
+    r.p.set_seek_gate(None);
+    assert!(r.wait_picture(|p| (p.start - 0.5).abs() < 1e-3).is_some(), "{:?}", r.picture());
+}
+
+#[test]
+fn every_caption_of_a_front_loaded_xsub_stream_larger_than_the_byte_bound_shows_before_and_after_any_seek() {
+    let path = or_skip!(big_xsub_avi());
+    // The premise: every subtitle chunk comes before the video of 5 s, though the events run to 29.7 s.
+    let mut ictx = ffmpeg_next::format::input(&path).expect("avi");
+    let mut subs = 0;
+    let mut late_video_first = 0;
+    for (s, packet) in ictx.packets() {
+        if s.index() == 1 {
+            subs += 1;
+        } else if subs < BIG && packet.pts().is_some_and(|t| t >= 150) {
+            late_video_first += 1;
+        }
+    }
+    drop(ictx);
+    assert_eq!((subs, late_video_first), (BIG, 0));
+    // Which picture by its start (xsubenc rounds a width up to even, so the width only checks it).
+    let width = |p: &SubtitlePicture| {
+        let i = ((p.start - 1.0) / 0.24).round() as usize;
+        assert!((p.start - big_start(i)).abs() < 2e-3 && p.bounds().2 as usize == (400 + i).next_multiple_of(2), "{p:?}");
+        i
+    };
+    let mut r = open_clip(&path);
+    r.select(Some(1));
+    // Into the end region and played to the end: the last captions, decoded from the store.
+    r.seek_to_nothing(big_start(116) - 0.05);
+    let seen = play_and_record(&mut r);
+    let late: Vec<usize> = seen.iter().filter_map(|(_, p)| p.as_ref().map(|p| width(p))).collect();
+    assert_eq!(late, vec![116, 117, 118, 119], "{:?}", starts(&seen));
+    // Back to before the first event, then to it, past the last start, into the middle, and back to the start.
+    r.seek_to_nothing(0.5);
+    for (t, i) in [(1.05, Some(0)), (29.9, None), (15.0, Some(58)), (big_start(3) + 0.05, Some(3)), (29.6, Some(119)), (1.05, Some(0))] {
+        match i {
+            Some(i) => {
+                let p = r.seek_to_picture(t, big_start(i));
+                assert_eq!(width(&p), i, "at {t}");
+            }
+            None => r.seek_to_nothing(t),
+        }
+    }
+    // Played through the middle: every caption on the way, none standing in for another.
+    r.seek_to_nothing(big_start(40) - 0.1);
+    r.p.set_rate(2.0);
+    r.p.play();
+    let mut widths = Vec::new();
+    let deadline = Instant::now() + T;
+    while Instant::now() < deadline && r.p.position() < big_start(60) {
+        if let Some(p) = r.picture()
+            && widths.last() != Some(&width(&p))
+        {
+            widths.push(width(&p));
+        }
+        let _ = r.p.latest_frame();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    r.p.pause();
+    let expected: Vec<usize> = (40..60).collect();
+    assert!(widths.len() >= 18 && widths.windows(2).all(|w| w[1] == w[0] + 1), "{widths:?}");
+    assert!(widths.iter().all(|w| expected.contains(w) || *w == 60), "{widths:?}");
+    let s = r.p.stats();
+    assert_eq!((s.picture_failures, s.picture_overflow, s.picture_store_overflow), (0, 0, 0), "{s:?}");
+}
+
+#[test]
+fn a_restart_in_place_past_what_the_queue_knows_carries_the_very_picture_over() {
+    let mut r = open_clip(&or_skip!(pgs_sparse_mkv()));
+    r.select(Some(1));
+    // On the picture from 1.5; its clearing set at 9.0 lies far beyond the read-ahead, so the queue knows the screen
+    // only up to 1.5.
+    let p = r.seek_to_picture(1.6, 1.5);
+    r.settle();
+    let from = r.rec.len();
+    let decoded = r.p.stats().decoded;
+    r.p.set_rate(1.5);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        assert_eq!(r.picture().map(|q| q.id), Some(p.id), "the caption went away or changed during the restart");
+        let _ = r.p.latest_frame();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    r.settle();
+    assert!(r.p.stats().decoded > decoded, "decoding did restart");
+    assert!(r.p.stats().pictures_carried >= 1, "the carry-over ran: {:?}", r.p.stats());
+    assert_eq!(r.picture_changes(from), 0);
+    // A seek past its end, and another speed before the seek's first frame: the carried picture does not come back.
+    r.p.seek(10.0);
+    r.p.set_rate(1.0);
+    watch_after_seek(&mut r, 10.0, Duration::from_millis(500), &[]);
+    // Back on the picture, carried over another restart, then played (fast): the same picture until 9.0, then
+    // nothing.
+    let p = r.seek_to_picture(1.6, 1.5);
+    r.p.set_rate(4.0);
+    let seen = play_and_record(&mut r);
+    assert_eq!(starts(&seen), vec![Some(1.5), None], "{seen:?}");
+    assert_eq!(seen[0].1.as_ref().map(|q| q.id), Some(p.id));
+    assert!((9.0 - 0.04..9.4).contains(&seen[1].0), "went at {}", seen[1].0);
+}
+
+#[test]
+fn a_restart_in_place_keeps_the_pgs_epoch_so_later_normal_sets_still_show() {
+    let mut r = open_clip(&or_skip!(pgs_long_epoch_mkv()));
+    r.select(Some(1));
+    // Played into the epoch, then another speed at 1.3: the restart reads from the keyframe at 1.0, after the epoch
+    // start at 0.2, which it does not read again.
+    r.seek_to_picture(0.3, 0.2);
+    r.p.play();
+    assert!(r.wait_picture(|p| (p.start - 1.0).abs() < 1e-3).is_some());
+    r.p.pause();
+    r.settle();
+    let decoded = r.p.stats().decoded;
+    r.p.set_rate(1.5);
+    r.settle();
+    assert!(r.p.stats().decoded > decoded, "decoding did restart");
+    // The sets after the read-ahead (6.0 on) still find their object. (Settled by a mutation: with FFmpeg 8.1 this
+    // also holds when the restart flushes the decoder, since pgssubdec keeps its objects over a flush; what the
+    // player keeps, its knowledge of the epoch, is checked by
+    // `pictures::tests::a_restart_in_place_keeps_the_pgs_epoch_and_a_seek_forgets_it`.)
+    r.p.set_rate(4.0);
+    r.p.play();
+    let p = r.wait_picture(|p| (p.start - 8.0).abs() < 1e-3).unwrap_or_else(|| panic!("no set at 8.0: {:?}", r.picture()));
+    assert_eq!(p.bounds(), (80, 50, 40, 20));
+}
+
+#[test]
+fn blu_ray_style_clears_and_object_updates_in_one_epoch() {
+    let path = or_skip!(pgs_bd_mkv());
+    let mut r = open_clip(&path);
+    r.select(Some(1));
+    r.seek_to_nothing(0.0);
+    let seen = play_and_record(&mut r);
+    assert_eq!(starts(&seen), vec![None, Some(0.5), None, Some(2.5), None], "{seen:?}");
+    let shown: Vec<_> = seen.iter().filter_map(|(_, p)| p.clone()).collect();
+    assert_eq!(shown[0].bounds(), (20, 20, 40, 10));
+    assert_eq!(shown[1].bounds(), (40, 40, 60, 10), "the object's new version");
+    assert!(is_red(canvas_pixel(&shown[1], 45, 45)));
+    // Seeks back inside the epoch after playing it: the complete decodes stay, whatever the re-read sets decode to.
+    let again = r.seek_to_picture(2.7, 2.5);
+    assert_eq!(again.id, shown[1].id);
+    let again = r.seek_to_picture(0.7, 0.5);
+    assert_eq!(again.id, shown[0].id);
+    r.seek_to_nothing(1.7);
+    // Cold, straight into the second show: its set sends its object and palette, so it shows on its own.
+    let mut r = open_clip(&path);
+    r.seek(2.7);
+    r.select(Some(1));
+    let p = r.wait_picture(|p| (p.start - 2.5).abs() < 1e-3).unwrap_or_else(|| panic!("{:?}", r.picture()));
+    assert_eq!(p.bounds(), (40, 40, 60, 10));
+}
+
+#[test]
+fn a_track_that_decoded_is_given_up_only_after_a_seek_into_its_damaged_part() {
+    let path = or_skip!(late_corrupt_dvb());
+    // Played through: it decoded its first events, so the damaged rest never gives it up.
+    let mut r = open_clip(&path);
+    r.select(Some(1));
+    r.seek_to_picture(0.7, 0.5);
+    let from = r.rec.len();
+    play_and_record(&mut r);
+    assert!(!r.rec.snapshot()[from..].iter().any(|e| matches!(e, PlayerEvent::SubtitleTrackFailed { .. })));
+    assert_eq!(r.p.tracks().active_image_subtitle, Some(1));
+    assert!(r.p.stats().picture_failures >= 4, "{:?}", r.p.stats());
+    // A seek into the damaged part starts the count again: nothing decodes there, and the track goes.
+    let from = r.rec.len();
+    r.p.seek(1.6);
+    let failed = r.rec.wait_for(from, T, |e| matches!(e, PlayerEvent::SubtitleTrackFailed { stream_index: 1, .. }));
+    assert!(matches!(failed, Some(PlayerEvent::SubtitleTrackFailed { reason: PictureTrackFailure::Ffmpeg(_), .. })), "{failed:?} {:?} {:?}", r.p.stats(), &r.rec.snapshot()[from..]);
+    assert!(wait_until(T, || r.p.tracks().active_image_subtitle.is_none()));
+}
+
+#[test]
+fn xsub_packets_without_time_codes_give_the_track_up_with_that_reason() {
+    let mut r = open_clip(&or_skip!(xsub_without_time_codes()));
+    let from = r.rec.len();
+    r.select(Some(1));
+    let failed = r.rec.wait_for(from, T, |e| matches!(e, PlayerEvent::SubtitleTrackFailed { stream_index: 1, .. }));
+    assert!(matches!(failed, Some(PlayerEvent::SubtitleTrackFailed { reason: PictureTrackFailure::NoTimeCode, .. })), "{failed:?}");
+    assert!(wait_until(T, || r.p.tracks().active_image_subtitle.is_none()));
+}
+
+#[test]
+fn pictures_too_large_to_keep_give_the_track_up_with_that_reason() {
+    let mut r = open_clip(&or_skip!(pgs_too_large_mkv()));
+    let from = r.rec.len();
+    r.select(Some(1));
+    r.p.play();
+    let failed = r.rec.wait_for(from, T, |e| matches!(e, PlayerEvent::SubtitleTrackFailed { stream_index: 1, .. }));
+    assert!(matches!(failed, Some(PlayerEvent::SubtitleTrackFailed { reason: PictureTrackFailure::TooLarge, .. })), "{failed:?}");
+    assert!(r.picture().is_none());
+}
+
+#[test]
+fn pictures_over_a_quarter_turned_video_carry_its_turned_size() {
+    let path = or_skip!(rotated_pgs_mkv());
+    let mut r = open_clip(&path);
+    r.select(Some(1));
+    let p = r.seek_to_picture(0.7, 0.5);
+    assert_eq!(p.canvas, (320, 240), "the track's own canvas");
+    assert_eq!(p.video_size, Some((240, 320)), "the video as shown, a quarter turned");
+}
+
+#[test]
+fn with_one_frame_a_second_captions_still_start_and_end_on_time() {
+    let mut r = open_clip(&or_skip!(one_fps_mkv()));
+    r.select(Some(1));
+    r.seek_to_nothing(0.0);
+    let from = r.rec.len();
+    r.p.play();
+    let mut seen: Vec<(f64, Option<f64>)> = Vec::new();
+    let deadline = Instant::now() + T;
+    while !r.p.is_ended() && Instant::now() < deadline && r.p.position() < 4.0 {
+        let now = r.picture().map(|p| p.start);
+        if seen.last().map(|s| s.1) != Some(now) {
+            seen.push((r.p.position(), now));
+        }
+        let _ = r.p.latest_frame();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    r.p.pause();
+    let starts: Vec<Option<f64>> = seen.iter().map(|s| s.1.map(|t| (t * 10.0).round() / 10.0)).collect();
+    assert_eq!(starts, vec![None, Some(0.5), None, Some(2.3), None], "{seen:?}");
+    // Each change within a few polls of its time, not at the next frame (up to a second later).
+    for ((at, _), due) in seen.iter().zip([0.0, 0.5, 1.7, 2.3, 3.4]).skip(1) {
+        assert!(*at >= due - 0.02 && *at < due + 0.15, "changed at {at}, due at {due}: {seen:?}");
+    }
+    assert!(r.picture_changes(from) >= 4);
 }

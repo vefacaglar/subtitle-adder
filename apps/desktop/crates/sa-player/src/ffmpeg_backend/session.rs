@@ -97,8 +97,12 @@ pub(crate) struct Stats {
     pub picture_events: AtomicU64,
     pub pictures_shown: AtomicU64,
     pub picture_failures: AtomicU64,
-    /// Bitmap subtitle events dropped because the queue was full (`PictureTimeline::overflowed`).
+    /// Bitmap subtitle events ahead of the position lost because the queue was full (`PictureTimeline::overflowed`).
     pub picture_overflow: AtomicU64,
+    /// `PictureTimeline::carried`.
+    pub pictures_carried: AtomicU64,
+    /// `PictureTrack::store_overflow`.
+    pub picture_store_overflow: AtomicU64,
 }
 
 /// The bitmap subtitle events queued for the presenter and the picture on screen.
@@ -120,6 +124,9 @@ pub(crate) struct Info {
 }
 
 const VIDEO_QUEUE_PACKETS: usize = 90;
+/// The next frame is this far ahead (s): frames are sparse, and the bitmap subtitle picture follows the clock
+/// meanwhile.
+const SPARSE_FRAMES: f64 = 0.1;
 const AUDIO_QUEUE_PACKETS: usize = 150;
 const MAX_QUEUED_BYTES: usize = 48 * 1024 * 1024;
 /// Decoded frames queued for the presenter (an interlaced frame is queued as two fields: twice the items).
@@ -222,12 +229,20 @@ pub(crate) struct Control {
     token: PlayerEventToken,
     stop: Arc<AtomicBool>,
     pub serial: AtomicU64,
+    /// The serial whose seek last moved the clock (`start_seek` stores it after `clock.jump`): a clock reading taken
+    /// after loading it belongs to that serial or to none newer (`update_picture_at_clock`).
+    clock_serial: AtomicU64,
+    /// Tests (debug builds only): runs in `start_seek` between moving the timeline to the new serial and moving the
+    /// clock, so a test can let the presenter run in that window.
+    #[cfg(debug_assertions)]
+    pub(crate) seek_gate: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     pub playing: AtomicBool,
     /// The `playing` value the last `PlayingChanged` reported (events only report real changes).
     announced: Mutex<bool>,
     pub ended: AtomicBool,
     speed_bits: AtomicU64,
-    seek_req: Mutex<Option<(f64, u64)>>,
+    /// (target, serial, a restart that keeps the position).
+    seek_req: Mutex<Option<(f64, u64, bool)>>,
     seek_target: Mutex<(u64, f64)>,
     force_show: AtomicBool,
     /// The newest seek requested while the previous one had no frame on screen yet (see `request_seek`).
@@ -279,6 +294,9 @@ impl Control {
             token,
             stop: Arc::new(AtomicBool::new(false)),
             serial: AtomicU64::new(1),
+            clock_serial: AtomicU64::new(1),
+            #[cfg(debug_assertions)]
+            seek_gate: Mutex::new(None),
             playing: AtomicBool::new(playing),
             announced: Mutex::new(false),
             ended: AtomicBool::new(false),
@@ -423,17 +441,23 @@ impl Control {
         self.space.notify();
     }
 
-    /// The picture due at `t` (a frame's pts, or the clock while no frame is coming) on screen, announced when it
-    /// changed. A lock and a look at the front of a short queue, and only while a bitmap track is shown.
-    /// After the end of playback nothing is shown (the clock stops there, so an event without an end would stay).
-    fn update_picture(&self, t: f64) {
+    /// The picture due at `t` on screen, announced when it changed: `t` is a time of serial `of` (a frame's pts with
+    /// the frame's serial, or a clock reading, `update_picture_at_clock`), and a time of any other serial than the
+    /// current one is ignored, so a time from before a seek can never become the new serial's (the timeline's time
+    /// only moves forward within a serial: one stale reading would pin it there). A lock and a look at a short
+    /// queue, and only while a bitmap track is shown. After the end of playback nothing is shown (the clock stops
+    /// there, so an event without an end would stay).
+    fn update_picture(&self, of: u64, t: f64) {
         if !self.pictures_on.load(Ordering::Acquire) {
             return;
         }
         let changed = {
             let mut p = self.pictures.lock();
-            // Read under the lock: a restart that carries the picture over (`start_seek`) bumps the serial under it.
+            // Read under the lock: `start_seek` bumps the serial and moves the timeline under it.
             let serial = self.serial.load(Ordering::Acquire);
+            if of != serial {
+                return;
+            }
             let now = if self.ended.load(Ordering::Acquire) { None } else { p.timeline.active_at(serial, t) };
             self.stats.picture_overflow.store(p.timeline.overflowed, Ordering::Relaxed);
             if now.as_ref().map(|n| n.id) == p.shown.as_ref().map(|n| n.id) {
@@ -449,6 +473,16 @@ impl Control {
         if changed {
             self.emit(PlayerEvent::SubtitlePictureChanged { generation: self.generation });
         }
+    }
+
+    /// [`Self::update_picture`] at the clock: the clock's serial is loaded before the clock is read, so a reading
+    /// taken before a seek's `clock.jump` carries the old serial and is ignored once the new serial is current.
+    fn update_picture_at_clock(&self) {
+        if !self.pictures_on.load(Ordering::Acquire) {
+            return;
+        }
+        let of = self.clock_serial.load(Ordering::Acquire);
+        self.update_picture(of, self.clock.now());
     }
 
     /// Drops every queued picture and takes the shown one off the screen (track switched or turned off).
@@ -526,8 +560,13 @@ impl Control {
             let mut p = self.pictures.lock();
             let serial = self.serial.fetch_add(1, Ordering::AcqRel) + 1;
             p.timeline.seek(serial, target, keep_picture);
+            self.stats.pictures_carried.store(p.timeline.carried, Ordering::Relaxed);
             serial
         };
+        #[cfg(debug_assertions)]
+        if let Some(gate) = self.seek_gate.lock().as_ref() {
+            gate();
+        }
         *self.seek_target.lock() = (serial, target);
         // Flush before the demuxer can see the request (it is published last): flushing afterwards could drop the
         // first packets it already queued for the new serial (the keyframe the target is decoded from). Packets of
@@ -549,10 +588,11 @@ impl Control {
         // (the demuxer releases both for audio-only sources once they open).
         let show = has_video || !opened;
         self.clock.jump(target, show);
+        self.clock_serial.store(serial, Ordering::Release);
         self.force_show.store(show, Ordering::Release);
         *self.last_frame_end.lock() = target;
         // Last: everything above is in place before the demuxer acts on the request.
-        *self.seek_req.lock() = Some((target, serial));
+        *self.seek_req.lock() = Some((target, serial, keep_picture));
         self.wake_all();
     }
 
@@ -746,6 +786,11 @@ fn open_audio_decoder(
 }
 
 fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
+    // The file itself, for a scan of a bitmap subtitle stream (`scan_pictures`).
+    let path = match &source {
+        MediaSource::File(p) => p.clone(),
+        MediaSource::Reader { path, .. } => path.clone(),
+    };
     let _ = ffmpeg_next::init();
     let mut input = match io::open_input(source, ctl.stop.clone()) {
         Ok(i) => i,
@@ -824,7 +869,7 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
     }
     // A seek requested before the source opened is clamped now.
     let pending = *ctl.seek_req.lock();
-    if let Some((t, _)) = pending {
+    if let Some((t, _, _)) = pending {
         if duration > 0.0 && t > duration {
             ctl.request_seek(duration);
         }
@@ -865,7 +910,7 @@ fn demux_main(ctl: Arc<Control>, source: MediaSource, audio_output: bool) {
     }
 
     let pipeline = audio_index.is_some();
-    demux_loop(&ctl, &mut input, Routes { video: video_index, video_size: video_coded, video_turned, audio: audio_index, pipeline });
+    demux_loop(&ctl, &mut input, Routes { video: video_index, video_size: video_coded, video_turned, audio: audio_index, pipeline, path });
 
     ctl.shutdown();
     for h in handles {
@@ -1041,14 +1086,95 @@ struct Routes {
     video_turned: bool,
     audio: Option<usize>,
     pipeline: bool,
+    /// The source file (a storing picture track scans its stream from it).
+    path: std::path::PathBuf,
+}
+
+/// A packet of a bitmap subtitle stream read by [`scan_pictures`].
+struct ScannedPacket {
+    data: Vec<u8>,
+    pts: Option<i64>,
+    dts: Option<i64>,
+    duration: i64,
+}
+
+/// The scan of a storing picture track's stream (`PictureTrack::stores`), running while that track is shown.
+struct Scan {
+    stream: usize,
+    stop: Arc<AtomicBool>,
+    rx: std::sync::mpsc::Receiver<ScannedPacket>,
+}
+
+impl Scan {
+    fn start(path: std::path::PathBuf, stream: usize) -> Option<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::sync_channel(1024);
+        let s = stop.clone();
+        std::thread::Builder::new().name("player-subscan".into()).spawn(move || scan_pictures(path, stream, s, tx)).ok()?;
+        Some(Self { stream, stop, rx })
+    }
+}
+
+impl Drop for Scan {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Reads every packet of bitmap subtitle stream `stream` of `path` with a demuxer of its own (every other stream
+/// discarded, at background priority) and hands them over for the track's packet store: a stream whose packets
+/// the playing demuxer delivers only once, far from their time (FFmpeg's AVI muxer puts a film's XSUB chunks with
+/// its first seconds), or not at all after a seek or a selection past them, is complete this way. Stops at the end,
+/// on `stop`, or when the receiver goes.
+fn scan_pictures(path: std::path::PathBuf, stream: usize, stop: Arc<AtomicBool>, tx: std::sync::mpsc::SyncSender<ScannedPacket>) {
+    let _background = priority::raise(priority::Role::BackgroundRead);
+    let Ok(mut input) = io::open_input(MediaSource::File(path), stop.clone()) else { return };
+    unsafe {
+        let p = input.input().as_mut_ptr();
+        for i in 0..(*p).nb_streams as usize {
+            let st = *(*p).streams.add(i);
+            (*st).discard = if i == stream { ffi::AVDiscard::AVDISCARD_DEFAULT } else { ffi::AVDiscard::AVDISCARD_ALL };
+        }
+    }
+    let mut packet = Packet::empty();
+    while !stop.load(Ordering::SeqCst) {
+        match packet.read(input.input()) {
+            Ok(()) if packet.stream() == stream => {
+                let k = ScannedPacket { data: packet.data().unwrap_or_default().to_vec(), pts: packet.pts(), dts: packet.dts(), duration: packet.duration() };
+                if tx.send(k).is_err() {
+                    return;
+                }
+            }
+            Ok(()) => {}
+            Err(ffmpeg_next::Error::Other { errno }) if errno == ffi::EAGAIN => std::thread::sleep(Duration::from_millis(5)),
+            Err(_) => return,
+        }
+    }
+}
+
+/// Queues decoded bitmap subtitle events for `serial` and wakes the presenter.
+fn queue_pictures(ctl: &Control, serial: u64, events: Vec<super::pictures::DecodedEvent>) {
+    if events.is_empty() {
+        return;
+    }
+    ctl.stats.picture_events.fetch_add(events.len() as u64, Ordering::Relaxed);
+    {
+        let mut q = ctl.pictures.lock();
+        for e in events {
+            q.timeline.push(serial, e.start, e.end, e.picture.map(Arc::new), e.complete);
+        }
+        ctl.stats.picture_overflow.store(q.timeline.overflowed, Ordering::Relaxed);
+    }
+    ctl.wake.notify();
 }
 
 fn demux_loop(ctl: &Control, input: &mut OpenedInput, routes: Routes) {
-    let Routes { video, video_size, video_turned, mut audio, pipeline } = routes;
+    let Routes { video, video_size, video_turned, mut audio, pipeline, path } = routes;
     let mut serial = 1u64;
     let mut eof = false;
     let start = ctl.start_time();
     let mut pictures: Option<PictureTrack> = None;
+    let mut scan: Option<Scan> = None;
     loop {
         if ctl.stopped() {
             return;
@@ -1062,7 +1188,7 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, routes: Routes) {
             switch_pictures(ctl, input, &mut pictures, (video_size, video_turned), want);
         }
         let req = ctl.seek_req.lock().take();
-        if let Some((target, s)) = req {
+        if let Some((target, s, in_place)) = req {
             let ts = ((target + start) * ffi::AV_TIME_BASE as f64) as i64;
             let ictx = input.input();
             if ictx.seek(ts, ..ts).is_err() && ictx.seek(ts, ..).is_err() {
@@ -1073,7 +1199,32 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, routes: Routes) {
             ctl.vq.flush();
             ctl.aq.flush();
             if let Some(p) = pictures.as_mut() {
-                p.flush();
+                if in_place {
+                    p.restart();
+                } else {
+                    p.flush();
+                }
+                p.rewind(target);
+            }
+        }
+        // A storing picture track: its scan runs while it is shown, and what comes within reach of the position is
+        // decoded (also at the end of the file and while the queues are full).
+        if pictures.as_ref().filter(|p| p.stores()).map(|p| p.stream) != scan.as_ref().map(|s| s.stream) {
+            scan = pictures.as_ref().filter(|p| p.stores()).and_then(|p| Scan::start(path.clone(), p.stream));
+        }
+        if let Some(p) = pictures.as_mut().filter(|p| p.stores()) {
+            if let Some(sc) = &scan {
+                while let Ok(k) = sc.rx.try_recv() {
+                    p.take(&k.data, k.pts, k.dts, k.duration, start);
+                }
+            }
+            let events = p.feed(serial, ctl.position(), start);
+            ctl.stats.picture_failures.store(p.failed + p.oversized, Ordering::Relaxed);
+            ctl.stats.picture_store_overflow.store(p.store_overflow(), Ordering::Relaxed);
+            let hopeless = events.is_empty() && p.hopeless();
+            queue_pictures(ctl, serial, events);
+            if hopeless {
+                give_up_pictures(ctl, &mut pictures);
             }
         }
         if eof {
@@ -1097,20 +1248,23 @@ fn demux_loop(ctl: &Control, input: &mut OpenedInput, routes: Routes) {
                 } else if Some(idx) == audio {
                     ctl.aq.push(PacketItem { serial, stream: Some(idx), packet: Some(packet) });
                 } else if let Some(p) = pictures.as_mut().filter(|p| p.stream == idx) {
-                    // Decoded here, ahead of the clock (subtitle packets are small and rare); the presenter shows
-                    // each when it is due.
-                    let event = p.decode(&packet, start);
-                    ctl.stats.picture_failures.store(p.failed + p.oversized, Ordering::Relaxed);
-                    if let Some(e) = event {
-                        ctl.stats.picture_events.fetch_add(1, Ordering::Relaxed);
-                        {
-                            let mut q = ctl.pictures.lock();
-                            q.timeline.push(serial, e.start, e.end, e.picture.map(Arc::new), e.complete);
-                            ctl.stats.picture_overflow.store(q.timeline.overflowed, Ordering::Relaxed);
+                    if p.stores() {
+                        // Kept, and decoded when it comes within reach of the position (above).
+                        p.take(packet.data().unwrap_or_default(), packet.pts(), packet.dts(), packet.duration(), start);
+                        ctl.stats.picture_failures.store(p.failed + p.oversized, Ordering::Relaxed);
+                        if p.hopeless() {
+                            give_up_pictures(ctl, &mut pictures);
                         }
-                        ctl.wake.notify();
-                    } else if p.hopeless() {
-                        give_up_pictures(ctl, &mut pictures);
+                    } else {
+                        // Decoded here, ahead of the clock (subtitle packets are small and rare); the presenter shows
+                        // each when it is due.
+                        let event = p.decode(&packet, start);
+                        ctl.stats.picture_failures.store(p.failed + p.oversized, Ordering::Relaxed);
+                        if let Some(e) = event {
+                            queue_pictures(ctl, serial, vec![e]);
+                        } else if p.hopeless() {
+                            give_up_pictures(ctl, &mut pictures);
+                        }
                     }
                 }
             }
@@ -1594,7 +1748,7 @@ fn present_main(ctl: Arc<Control>) {
                     ctl.frames.space.notify_all();
                     drop(q);
                     if ctl.serial.load(Ordering::Acquire) == serial && ctl.force_show.swap(false, Ordering::AcqRel) {
-                        ctl.update_picture(f.pts);
+                        ctl.update_picture(serial, f.pts);
                         ctl.publish(f);
                         ctl.clock.release();
                         ctl.run_deferred_seek();
@@ -1621,7 +1775,7 @@ fn present_main(ctl: Arc<Control>) {
                 drop(q);
                 check_end(&ctl);
                 // No frame coming (audio only, after the last frame, a stalled decoder): the clock decides.
-                ctl.update_picture(ctl.clock.now());
+                ctl.update_picture_at_clock();
                 ctl.wake.wait(Duration::from_millis(10));
             }
             Some(FrameItem::Eof { .. }) => {
@@ -1633,7 +1787,7 @@ fn present_main(ctl: Arc<Control>) {
                 if !ctl.clock.is_running() {
                     drop(q);
                     // Paused: a picture decoded after the frame on screen (just after a seek) still shows.
-                    ctl.update_picture(ctl.clock.now());
+                    ctl.update_picture_at_clock();
                     ctl.wake.wait(Duration::from_millis(10));
                     continue;
                 }
@@ -1641,6 +1795,12 @@ fn present_main(ctl: Arc<Control>) {
                 let delay = f.pts - now;
                 if delay > 0.001 {
                     drop(q);
+                    if delay > SPARSE_FRAMES {
+                        // Frames far apart (a still image, a slideshow, variable frame rate): the picture follows the
+                        // clock until the next frame, so a caption starts and ends on time (the waits below are at
+                        // most 10 ms). Never for ordinary video, where each change comes with its frame.
+                        ctl.update_picture_at_clock();
+                    }
                     let wait = delay / ctl.speed().max(0.1);
                     if wait <= PRECISE_WAIT {
                         // Condvar timeouts follow the coarse system tick (15.6 ms on Windows), which would show
@@ -1659,7 +1819,7 @@ fn present_main(ctl: Arc<Control>) {
                 if next_due {
                     ctl.stats.dropped_late.fetch_add(1, Ordering::Relaxed);
                 } else if ctl.serial.load(Ordering::Acquire) == serial {
-                    ctl.update_picture(f.pts);
+                    ctl.update_picture(serial, f.pts);
                     ctl.publish(f);
                 }
             }
@@ -1702,7 +1862,7 @@ fn check_end(ctl: &Control) {
     ctl.announce_playing();
     ctl.emit(PlayerEvent::Ended { generation: ctl.generation });
     // Nothing of the last event stays on the end screen.
-    ctl.update_picture(final_pos);
+    ctl.update_picture(ctl.serial.load(Ordering::Acquire), final_pos);
 }
 
 fn audio_main(ctl: Arc<Control>, mut stream: usize, mut dec: codec::decoder::Audio, mut tb: Rational) {

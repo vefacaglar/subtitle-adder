@@ -132,8 +132,13 @@ pub struct PlaybackStats {
     pub pictures_shown: u64,
     /// Bitmap subtitle packets the decoder rejected, or events dropped as too large, on the current track.
     pub picture_failures: u64,
-    /// Bitmap subtitle events dropped because the queue was full.
+    /// Bitmap subtitle events ahead of the position lost because the queue was full.
     pub picture_overflow: u64,
+    /// Bitmap subtitle pictures kept on screen across a restart that keeps the position although the queue no longer
+    /// knew the screen there (`PictureTimeline::seek` in place, the carry-over).
+    pub pictures_carried: u64,
+    /// Encoded XSUB / VobSub packets turned away because the track's packet store was full.
+    pub picture_store_overflow: u64,
 }
 
 impl PlaybackStats {
@@ -237,6 +242,17 @@ impl FfmpegPlayer {
         self.session.as_ref().is_some_and(|s| s.info.lock().has_audio_output)
     }
 
+    /// Tests (debug builds only): `gate` runs inside every seek of the current source between moving the bitmap
+    /// subtitle timeline to the seek's serial and moving the clock (`None`: no gate), so a test can let the presenter
+    /// run in that window.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn set_seek_gate(&self, gate: Option<Box<dyn Fn() + Send + Sync>>) {
+        if let Some(s) = &self.session {
+            *s.seek_gate.lock() = gate;
+        }
+    }
+
     /// Counters of the current source.
     pub fn stats(&self) -> PlaybackStats {
         let Some(s) = &self.session else { return PlaybackStats::default() };
@@ -254,6 +270,8 @@ impl FfmpegPlayer {
             pictures_shown: s.stats.pictures_shown.load(Ordering::Relaxed),
             picture_failures: s.stats.picture_failures.load(Ordering::Relaxed),
             picture_overflow: s.stats.picture_overflow.load(Ordering::Relaxed),
+            pictures_carried: s.stats.pictures_carried.load(Ordering::Relaxed),
+            picture_store_overflow: s.stats.picture_store_overflow.load(Ordering::Relaxed),
         }
     }
 
@@ -392,7 +410,7 @@ impl MediaPlayerBackend for FfmpegPlayer {
             .unwrap_or_else(|| ("0x0".to_owned(), "-".to_owned()));
         Some(format!(
             "decoded={} hardware={} planar={} presented={} dropped_late={} dropped_decoder={} dropped_fields={} soft_tonemapped={} soft_deinterlaced={} \
-             image_subtitle={image} picture_events={} pictures_shown={} picture_failures={} picture_overflow={} picture_size={size} picture_canvas={canvas}",
+             image_subtitle={image} picture_events={} pictures_shown={} picture_failures={} picture_overflow={} picture_store_overflow={} picture_size={size} picture_canvas={canvas}",
             s.decoded,
             s.hardware,
             s.planar,
@@ -405,7 +423,8 @@ impl MediaPlayerBackend for FfmpegPlayer {
             s.picture_events,
             s.pictures_shown,
             s.picture_failures,
-            s.picture_overflow
+            s.picture_overflow,
+            s.picture_store_overflow
         ))
     }
 

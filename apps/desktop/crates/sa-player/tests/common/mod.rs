@@ -213,11 +213,49 @@ pub fn content_hash(parts: &[&[u8]]) -> u64 {
     h
 }
 
-/// [`custom_clip`] named `<stem>-<hash of the arguments>.<ext>` (the arguments name the input files, whose names
-/// carry their own content hash): changing the clip's recipe makes a new file instead of reusing the old one.
+/// [`custom_clip`] named `<stem>-<hash of the FFmpeg CLI's version and the arguments>.<ext>` (the arguments name
+/// the input files, whose names carry their own content hash): changing the clip's recipe, or another FFmpeg whose
+/// encoders may behave differently, makes a new file instead of reusing the old one.
 pub fn hashed_clip(stem: &str, ext: &str, args: &[&str]) -> Option<PathBuf> {
-    let parts: Vec<&[u8]> = args.iter().map(|a| a.as_bytes()).collect();
+    let version = ffmpeg_version();
+    let mut parts: Vec<&[u8]> = vec![version.as_bytes()];
+    parts.extend(args.iter().map(|a| a.as_bytes()));
     custom_clip(&format!("{stem}-{:016x}.{ext}", content_hash(&parts)), args)
+}
+
+/// The first line of `ffmpeg -version` (empty without a CLI).
+pub fn ffmpeg_version() -> String {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            let Some(ff) = ffmpeg_cli() else { return String::new() };
+            Command::new(ff).arg("-version").output().map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or_default().to_owned()).unwrap_or_default()
+        })
+        .clone()
+}
+
+/// Writes `line` to the real stderr, past the test harness's capture, so it shows in every run.
+pub fn visible(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
+}
+
+/// Says once per test binary which FFmpeg CLI generates the clips (or that there is none).
+pub fn announce_ffmpeg() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| match ffmpeg_cli() {
+        Some(ff) => visible(&format!("[sa-player tests] clips made with {} ({})", ff.display(), ffmpeg_version())),
+        None => visible("[sa-player tests] no FFmpeg CLI: the tests that need generated clips are skipped"),
+    });
+}
+
+/// A test that cannot run without a generated clip: says so where it shows, and fails instead when
+/// `SA_REQUIRE_FFMPEG=1` (CI and the run scripts, where a skip would hide a broken setup).
+pub fn skipped(test: &str) {
+    if std::env::var("SA_REQUIRE_FFMPEG").is_ok_and(|v| v == "1") {
+        panic!("{test}: no FFmpeg CLI or encoder to generate its clip, and SA_REQUIRE_FFMPEG=1");
+    }
+    visible(&format!("[sa-player tests] SKIPPED {test}: no FFmpeg CLI or encoder to generate its clip"));
 }
 
 /// One second of the 320×240 test pattern as uncompressed `pix_fmt` frames (NUT keeps every pixel format), so the

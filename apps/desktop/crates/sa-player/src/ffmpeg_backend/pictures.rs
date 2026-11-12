@@ -62,7 +62,89 @@ enum Format {
     Pgs,
     Dvb,
     Xsub,
+    Dvd,
     Other,
+}
+
+/// Formats whose packets decode on their own (no state carried from one event to the next), kept encoded in a
+/// [`PacketStore`]: XSUB and VobSub. FFmpeg's AVI muxer puts every XSUB chunk of a film with its first seconds of
+/// video, and the demuxer never reads them again after a seek; PGS and DVB build on earlier packets and arrive
+/// interleaved by time, so they are decoded as they are read.
+fn stores_packets(format: Format) -> bool {
+    matches!(format, Format::Xsub | Format::Dvd)
+}
+
+/// How far ahead of the playback position stored packets are decoded (s): only this window's pictures are held as
+/// RGBA, so a film's worth of captions never meets the timeline's byte bound.
+pub(crate) const STORE_LOOKAHEAD: f64 = 8.0;
+/// Encoded bytes a [`PacketStore`] holds (an XSUB or VobSub caption is a few KB: tens of thousands fit).
+pub(crate) const MAX_STORED_BYTES: usize = 64 << 20;
+
+/// One stored packet: its bytes (a VobSub subpicture's fragments joined) and timestamps.
+struct Stored {
+    /// On the player clock: the XSUB time code's start, or the packet time.
+    start: f64,
+    data: Vec<u8>,
+    pts: Option<i64>,
+    dts: Option<i64>,
+    duration: i64,
+    /// The serial it was last decoded for (each seek or restart decodes what it needs again).
+    fed: u64,
+}
+
+/// The encoded packets of a stream that decodes packet by packet, in start order, from both the playing demuxer and
+/// a scan of the whole stream (`session::scan_pictures`): nothing is lost to a seek or to the timeline's RGBA bound,
+/// because a packet is decoded only when it comes within [`STORE_LOOKAHEAD`] of the position, and again after a seek.
+#[derive(Default)]
+struct PacketStore {
+    entries: Vec<Stored>,
+    bytes: usize,
+    /// The first entry not decoded yet for the current serial (an entry inserted before it moves it back).
+    next: usize,
+    /// The entry the VobSub fragments without a timestamp that follow belong to, and whether it is a copy of one
+    /// already stored (its fragments are then skipped).
+    building: Option<(usize, bool)>,
+    overflowed: u64,
+}
+
+impl PacketStore {
+    /// Adds a packet that starts at `start` (`None`: a fragment of the subpicture before it).
+    fn add(&mut self, start: Option<f64>, data: &[u8], pts: Option<i64>, dts: Option<i64>, duration: i64) {
+        let Some(start) = start.filter(|s| s.is_finite()) else {
+            if let Some((i, false)) = self.building
+                && self.bytes + data.len() <= MAX_STORED_BYTES
+            {
+                self.entries[i].data.extend_from_slice(data);
+                self.bytes += data.len();
+            }
+            return;
+        };
+        let at = self.entries.partition_point(|e| e.start < start);
+        // The same packet again (the demuxer after a seek, or the scan): a copy, or the first fragment of one.
+        if let Some(i) = (at..self.entries.len()).take_while(|&i| self.entries[i].start == start).find(|&i| self.entries[i].data.starts_with(data)) {
+            self.building = Some((i, true));
+            return;
+        }
+        if self.bytes + data.len() > MAX_STORED_BYTES {
+            self.overflowed += 1;
+            self.building = None;
+            return;
+        }
+        let at = self.entries.partition_point(|e| e.start <= start);
+        self.entries.insert(at, Stored { start, data: data.to_vec(), pts, dts, duration, fed: 0 });
+        self.bytes += data.len();
+        if at < self.next {
+            self.next = at;
+        }
+        self.building = Some((at, false));
+    }
+
+    /// A seek to `target`: decoding starts again at the event on screen there (every event replaces the screen, so
+    /// the newest one started by `target` is all that can be due).
+    fn rewind(&mut self, target: f64) {
+        self.next = self.entries.partition_point(|e| e.start <= target).saturating_sub(1);
+        self.building = None;
+    }
 }
 
 /// Rejected packets after which a track that decoded nothing since it was chosen or last seeked is given up
@@ -97,6 +179,8 @@ pub(crate) struct PictureTrack {
     failed_lately: u64,
     /// Why the decoder last failed.
     pub last_error: Option<PictureTrackFailure>,
+    /// XSUB / VobSub: the stream's packets, decoded near the position ([`PacketStore`]).
+    store: Option<PacketStore>,
 }
 
 impl PictureTrack {
@@ -119,6 +203,7 @@ impl PictureTrack {
             ffi::AVCodecID::AV_CODEC_ID_HDMV_PGS_SUBTITLE => Format::Pgs,
             ffi::AVCodecID::AV_CODEC_ID_DVB_SUBTITLE => Format::Dvb,
             ffi::AVCodecID::AV_CODEC_ID_XSUB => Format::Xsub,
+            ffi::AVCodecID::AV_CODEC_ID_DVD_SUBTITLE => Format::Dvd,
             _ => Format::Other,
         };
         let video_size = video_size.filter(|(w, h)| *w > 0 && *h > 0);
@@ -138,7 +223,87 @@ impl PictureTrack {
             decoded_lately: 0,
             failed_lately: 0,
             last_error: None,
+            store: stores_packets(format).then(PacketStore::default),
         })
+    }
+
+    /// Whether the stream's packets are kept and decoded near the position ([`Self::take`], [`Self::feed`]) rather
+    /// than decoded as they are read ([`Self::decode`]).
+    pub fn stores(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// Keeps a packet of a storing stream (from the playing demuxer or the scan). An XSUB packet without its time
+    /// code counts as rejected.
+    pub fn take(&mut self, data: &[u8], pts: Option<i64>, dts: Option<i64>, duration: i64, start_time: f64) {
+        let tb = f64::from(self.tb);
+        let start = match self.format {
+            Format::Xsub => match xsub_times(data) {
+                Some((from, _)) => Some(from - start_time),
+                None => {
+                    self.reject(PictureTrackFailure::NoTimeCode);
+                    return;
+                }
+            },
+            _ => pts.map(|t| t as f64 * tb - start_time),
+        };
+        if let Some(store) = self.store.as_mut() {
+            store.add(start, data, pts, dts, duration);
+        }
+    }
+
+    /// A seek to `target` of a storing stream: what is due there is decoded again.
+    pub fn rewind(&mut self, target: f64) {
+        if let Some(store) = self.store.as_mut() {
+            store.rewind(target);
+        }
+    }
+
+    /// Decodes the stored packets that start up to `at + STORE_LOOKAHEAD` and were not decoded for `serial` yet.
+    /// Nothing replaced by `at` is decoded (only the event on screen there): a track chosen, or packets stored,
+    /// after a seek far into the file start at the position, not at the store's beginning.
+    pub fn feed(&mut self, serial: u64, at: f64, start_time: f64) -> Vec<DecodedEvent> {
+        let until = at + STORE_LOOKAHEAD;
+        if let Some(store) = self.store.as_mut() {
+            let on_screen = store.entries.partition_point(|e| e.start <= at).saturating_sub(1);
+            store.next = store.next.max(on_screen);
+        }
+        let mut out = Vec::new();
+        loop {
+            let packet = {
+                let Some(store) = self.store.as_mut() else { break };
+                let Some(e) = store.entries.get_mut(store.next).filter(|e| e.start <= until) else { break };
+                store.next += 1;
+                if e.fed == serial {
+                    continue;
+                }
+                e.fed = serial;
+                let mut packet = Packet::copy(&e.data);
+                packet.set_stream(self.stream);
+                packet.set_pts(e.pts);
+                packet.set_dts(e.dts);
+                packet.set_duration(e.duration);
+                packet
+            };
+            if let Some(event) = self.decode(&packet, start_time) {
+                out.push(event);
+            }
+        }
+        out
+    }
+
+    /// Stored packets turned away because the store was full (diagnostics).
+    pub fn store_overflow(&self) -> u64 {
+        self.store.as_ref().map_or(0, |s| s.overflowed)
+    }
+
+    /// A restart that keeps the position (another speed or audio track, a new video decoder): the decoder keeps what
+    /// it built (a PGS epoch's objects and palette, which the re-read stream may not send again before the sets that
+    /// use them); only the give-up count starts again. The packets read again from the keyframe decode to the
+    /// events already queued, which the timeline ignores.
+    pub fn restart(&mut self) {
+        self.decoded_lately = 0;
+        self.failed_lately = 0;
     }
 
     /// A seek: the decoder forgets the display set it was building, and the give-up count starts again.
@@ -233,9 +398,12 @@ impl PictureTrack {
         let rects = match unsafe { bitmaps(raw) } {
             Ok(r) => r,
             Err(()) => {
-                // Counted as oversized rather than rejected, and towards giving up like a rejection.
+                // Counted as oversized rather than rejected, and towards giving up like a rejection (for PGS only
+                // in a self-contained set, as for rejections).
                 self.oversized += 1;
-                self.failed_lately += 1;
+                if self.self_contained {
+                    self.failed_lately += 1;
+                }
                 self.last_error = Some(PictureTrackFailure::TooLarge);
                 eprintln!("[player] subtitle picture at {start:.3}s skipped: larger than {MAX_EVENT_PIXELS} pixels or {MAX_SIDE} on a side");
                 return None;
@@ -249,7 +417,7 @@ impl PictureTrack {
         let picture = SubtitlePicture {
             id: NEXT_PICTURE_ID.fetch_add(1, Ordering::Relaxed),
             stream_index: self.stream,
-            canvas: canvas(given, self.fallback_canvas, &rects),
+            canvas: canvas(given, self.fallback_canvas),
             video_size: self.video_size,
             start,
             end,
@@ -317,15 +485,12 @@ fn fallback_canvas(format: Format, video_size: Option<(u32, u32)>) -> (u32, u32)
     }
 }
 
-/// The event's canvas: the decoder's when it gives one (rectangles outside it stay outside), else `fallback` grown to
-/// hold every rectangle.
-fn canvas(given: (u32, u32), fallback: (u32, u32), rects: &[SubtitleBitmap]) -> (u32, u32) {
-    if given.0 > 0 && given.1 > 0 {
-        return (given.0.min(MAX_SIDE), given.1.min(MAX_SIDE));
-    }
-    let w = rects.iter().map(|r| r.x.saturating_add(r.width)).max().unwrap_or(0).max(fallback.0).min(MAX_SIDE);
-    let h = rects.iter().map(|r| r.y.saturating_add(r.height)).max().unwrap_or(0).max(fallback.1).min(MAX_SIDE);
-    (w, h)
+/// The event's canvas: the decoder's when it gives one, else `fallback`, each side clamped to [`MAX_SIDE`]. A
+/// rectangle outside it stays outside (the UI brings the event on screen as a whole): growing the canvas to hold it
+/// would rescale every rectangle of the event and could change how the canvas lies over the video.
+fn canvas(given: (u32, u32), fallback: (u32, u32)) -> (u32, u32) {
+    let (w, h) = if given.0 > 0 && given.1 > 0 { given } else { fallback };
+    (w.clamp(1, MAX_SIDE), h.clamp(1, MAX_SIDE))
 }
 
 /// The start and end (s) of an XSUB packet: `[HH:MM:SS.mmm-HH:MM:SS.mmm]` at its start.
@@ -506,12 +671,12 @@ mod tests {
 
     #[test]
     fn the_decoders_canvas_is_kept_and_only_a_missing_one_is_made_up() {
-        let r = |x, y, width, height| SubtitleBitmap { x, y, width, height, rgba: Arc::new(Vec::new()) };
-        // Given: kept, even with a damaged rectangle outside it.
-        assert_eq!(canvas((1920, 1080), (720, 576), &[r(1800, 1000, 400, 200)]), (1920, 1080));
-        // Made up: the fallback, grown to hold the rectangles.
-        assert_eq!(canvas((0, 0), (720, 576), &[r(10, 10, 20, 20)]), (720, 576));
-        assert_eq!(canvas((0, 480), (720, 576), &[r(700, 500, 100, 100)]), (800, 600));
+        // Given: kept (a damaged rectangle outside it stays outside).
+        assert_eq!(canvas((1920, 1080), (720, 576)), (1920, 1080));
+        // Made up: the fallback.
+        assert_eq!(canvas((0, 0), (720, 576)), (720, 576));
+        assert_eq!(canvas((0, 480), (720, 576)), (720, 576), "a made-up canvas never grows: the fit stays");
+        assert_eq!(canvas((16000, 1080), (720, 576)), (MAX_SIDE, 1080), "clamped, not dropped");
         assert_eq!(fallback_canvas(Format::Dvb, Some((1920, 1080))), (720, 576), "DVB's default display");
         assert_eq!(fallback_canvas(Format::Other, Some((1920, 1080))), (1920, 1080));
         assert_eq!(fallback_canvas(Format::Other, None), (720, 576));
@@ -524,5 +689,86 @@ mod tests {
         assert_eq!(xsub_times(b"[00:01:02.500-01:00:00.001"), None);
         assert_eq!(xsub_times(b"(00:01:02.500-01:00:00.001]"), None);
         assert_eq!(xsub_times(b"[00:01:0x.500-01:00:00.001]"), None);
+    }
+
+    /// One PGS segment of a .sup file at `pts` (s).
+    fn segment(out: &mut Vec<u8>, pts: f64, kind: u8, body: &[u8]) {
+        out.extend_from_slice(b"PG");
+        out.extend_from_slice(&((pts * 90_000.0).round() as u32).to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.push(kind);
+        out.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        out.extend_from_slice(body);
+    }
+
+    #[test]
+    fn a_display_set_split_over_packets_starts_at_its_composition() {
+        // A raw .sup (FFmpeg's sup demuxer: one packet per segment) whose epoch start has its PCS at 0.5 and its
+        // WDS, PDS, ODS and END at 0.6, as Blu-ray streams can; the set is complete only at the END packet.
+        let mut sup = Vec::new();
+        segment(&mut sup, 0.5, 0x16, &[1, 64, 0, 240, 0x10, 0, 0, 0x80, 0, 0, 1, 0, 0, 0, 0, 0, 10, 0, 20]);
+        segment(&mut sup, 0.6, 0x17, &[1, 0, 0, 10, 0, 20, 0, 2, 0, 1]);
+        segment(&mut sup, 0.6, 0x14, &[0, 0, 1, 235, 128, 128, 255]);
+        segment(&mut sup, 0.6, 0x15, &[0, 0, 0, 0xC0, 0, 0, 8, 0, 2, 0, 1, 1, 1, 0, 0]);
+        segment(&mut sup, 0.6, 0x80, &[]);
+        let path = std::env::temp_dir().join(format!("sa-player-split-set-{}.sup", std::process::id()));
+        std::fs::write(&path, &sup).expect("sup");
+        ffmpeg_next::init().expect("ffmpeg");
+        let mut ictx = ffmpeg_next::format::input(&path).expect("sup demuxer");
+        let mut track = PictureTrack::open(&ictx, 0, Some((320, 240)), false).expect("pgs decoder");
+        let tb = f64::from(ictx.stream(0).expect("stream").time_base());
+        let mut times = Vec::new();
+        let mut events = Vec::new();
+        for (_, packet) in ictx.packets() {
+            times.push(packet.pts().map(|t| (t as f64 * tb * 100.0).round() / 100.0));
+            events.extend(track.decode(&packet, 0.0));
+        }
+        drop(ictx);
+        let _ = std::fs::remove_file(&path);
+        // The premise: the segments reached the decoder in packets of their own times.
+        assert_eq!(times, vec![Some(0.5), Some(0.6), Some(0.6), Some(0.6), Some(0.6)]);
+        assert_eq!(events.len(), 1, "one event, at the END packet");
+        let e = &events[0];
+        assert!((e.start - 0.5).abs() < 1e-3, "shown from the PCS, not from the END at 0.6: {}", e.start);
+        let p = e.picture.as_ref().expect("a picture");
+        assert_eq!((p.rects.len(), p.rects[0].x, p.rects[0].y, p.rects[0].width, p.rects[0].height), (1, 10, 20, 2, 1));
+    }
+
+    #[test]
+    fn a_restart_in_place_keeps_the_pgs_epoch_and_a_seek_forgets_it() {
+        // An epoch start at 0.5 (object 0, palette), then normal sets at 1.0 and 1.5 that show object 0 again.
+        let mut sup = Vec::new();
+        segment(&mut sup, 0.5, 0x16, &[1, 64, 0, 240, 0x10, 0, 0, 0x80, 0, 0, 1, 0, 0, 0, 0, 0, 10, 0, 20]);
+        segment(&mut sup, 0.5, 0x17, &[1, 0, 0, 10, 0, 20, 0, 2, 0, 1]);
+        segment(&mut sup, 0.5, 0x14, &[0, 0, 1, 235, 128, 128, 255]);
+        segment(&mut sup, 0.5, 0x15, &[0, 0, 0, 0xC0, 0, 0, 8, 0, 2, 0, 1, 1, 1, 0, 0]);
+        segment(&mut sup, 0.5, 0x80, &[]);
+        for (pts, n) in [(1.0, 1u8), (1.5, 2)] {
+            segment(&mut sup, pts, 0x16, &[1, 64, 0, 240, 0x10, 0, n, 0x00, 0, 0, 1, 0, 0, 0, 0, 0, 10, 0, 20]);
+            segment(&mut sup, pts, 0x80, &[]);
+        }
+        let path = std::env::temp_dir().join(format!("sa-player-epoch-restart-{}.sup", std::process::id()));
+        std::fs::write(&path, &sup).expect("sup");
+        ffmpeg_next::init().expect("ffmpeg");
+        let mut ictx = ffmpeg_next::format::input(&path).expect("sup demuxer");
+        let mut track = PictureTrack::open(&ictx, 0, Some((320, 240)), false).expect("pgs decoder");
+        let packets: Vec<Packet> = ictx.packets().map(|(_, p)| p).collect();
+        drop(ictx);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(packets.len(), 9);
+        let decode = |track: &mut PictureTrack, from: usize, to: usize| -> Vec<DecodedEvent> { packets[from..to].iter().filter_map(|p| track.decode(p, 0.0)).collect() };
+        let first = decode(&mut track, 0, 5);
+        assert!(first.len() == 1 && first[0].complete);
+        // Another speed or audio track: the decoder and what it knows of the epoch stay.
+        track.restart();
+        let normal = decode(&mut track, 5, 7);
+        assert_eq!(normal.len(), 1);
+        assert!(normal[0].complete, "the normal set after a restart builds on the epoch it knows");
+        assert_eq!(normal[0].picture.as_ref().map(|p| p.rects.len()), Some(1));
+        // A seek: the normal set read next is decoded without the epoch as far as the player knows.
+        track.flush();
+        let after_seek = decode(&mut track, 7, 9);
+        assert_eq!(after_seek.len(), 1);
+        assert!(!after_seek[0].complete, "after a seek the epoch is unknown until the next epoch start");
     }
 }

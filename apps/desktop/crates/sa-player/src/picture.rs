@@ -106,6 +106,8 @@ impl SubtitlePicture {
 struct Entry {
     start: f64,
     end: Option<f64>,
+    /// The end as decoded (`end` can be capped by a carry-over, `seek`): what a copy decoded again is compared by.
+    decoded_end: Option<f64>,
     /// `None`: a clearing event (nothing on screen from its start).
     picture: Option<Arc<SubtitlePicture>>,
     /// Decoded with all the earlier state it builds on (see `push`).
@@ -116,7 +118,7 @@ struct Entry {
 impl Entry {
     /// The same event decoded again: same times and the same pictures.
     fn same_as(&self, end: Option<f64>, picture: &Option<Arc<SubtitlePicture>>) -> bool {
-        self.end == end
+        self.decoded_end == end
             && match (&self.picture, picture) {
                 (None, None) => true,
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b) || (a.canvas == b.canvas && a.rects == b.rects),
@@ -148,8 +150,14 @@ pub struct PictureTimeline {
     known_until: f64,
     /// An event ahead was dropped (queue full): `known_until` stays below it until the queue is cleared.
     capped: bool,
-    /// Events dropped because the queue was full (diagnostics).
+    /// The target of the seek that started `serial` (`NEG_INFINITY`: none): until the first ask of the serial,
+    /// eviction protects what is due there.
+    floor: f64,
+    /// Events ahead of the position lost because the queue was full (removed, or turned into a clearing event);
+    /// replaced events it lets go of to stay in its bound are not counted (diagnostics).
     pub overflowed: u64,
+    /// Pictures carried over a restart in place (diagnostics, `seek`).
+    pub carried: u64,
 }
 
 impl Default for PictureTimeline {
@@ -161,7 +169,9 @@ impl Default for PictureTimeline {
             asked: f64::NEG_INFINITY,
             known_until: f64::NEG_INFINITY,
             capped: false,
+            floor: f64::NEG_INFINITY,
             overflowed: 0,
+            carried: 0,
         }
     }
 }
@@ -213,9 +223,9 @@ impl PictureTimeline {
             return;
         }
         let follows = serial == self.serial + 1;
-        let asked = self.asked;
-        self.serial = serial;
+        let asked = self.asked;        self.serial = serial;
         self.asked = f64::NEG_INFINITY;
+        self.floor = if target.is_finite() { target } else { f64::NEG_INFINITY };
         if target.is_finite() && self.knows(target) {
             return;
         }
@@ -233,6 +243,7 @@ impl PictureTimeline {
             self.bytes = e.bytes;
             self.known_until = e.start;
             self.events.push_back(e);
+            self.carried += 1;
         }
     }
 
@@ -266,9 +277,9 @@ impl PictureTimeline {
                 return;
             }
             self.bytes = self.bytes - old.bytes + bytes;
-            *old = Entry { start, end, picture, complete, bytes };
+            *old = Entry { start, end, decoded_end: end, picture, complete, bytes };
         } else {
-            self.events.insert(at, Entry { start, end, picture, complete, bytes });
+            self.events.insert(at, Entry { start, end, decoded_end: end, picture, complete, bytes });
             self.bytes += bytes;
         }
         if start > self.known_until && !self.capped {
@@ -277,22 +288,46 @@ impl PictureTimeline {
         self.evict();
     }
 
-    /// Bounds the queue: replaced events first (oldest first), then the one farthest ahead (after that the queue
-    /// knows the screen only up to it). Never the event `active_at` would pick now (on screen, or due next).
+    /// Bounds the queue. Judged from the newest asked time, or, before the first ask after a seek, from the seek's
+    /// target: never the event due there (on screen, or due next). Replaced events go first (oldest first), then the
+    /// one farthest ahead. Over the byte bound a picture ahead is not removed but turned into a clearing event at
+    /// its start (zero bytes), so the caption before it ends there instead of standing in for it; after that the
+    /// queue claims to know the screen only up to the last event it kept whole.
     fn evict(&mut self) {
-        while self.events.len() > MAX_QUEUED_EVENTS || (self.bytes > MAX_QUEUED_BYTES && self.events.len() > 1) {
-            let current = self.events.partition_point(|e| e.start <= self.asked).saturating_sub(1);
-            let drop = if current > 0 { 0 } else { self.events.len() - 1 };
-            if drop == current {
+        let at = if self.asked.is_finite() { self.asked } else { self.floor };
+        loop {
+            let over_count = self.events.len() > MAX_QUEUED_EVENTS;
+            if !over_count && self.bytes <= MAX_QUEUED_BYTES {
                 break;
             }
-            let Some(e) = self.events.remove(drop) else { break };
-            self.bytes -= e.bytes;
-            self.overflowed += 1;
-            if drop > 0 {
-                self.capped = true;
-                self.known_until = self.known_until.min(self.events.back().map_or(f64::NEG_INFINITY, |b| b.start));
+            let current = self.events.partition_point(|e| e.start <= at).saturating_sub(1);
+            let replaced = (0..current).find(|&i| over_count || self.events[i].bytes > 0);
+            if let Some(i) = replaced {
+                let e = self.events.remove(i).expect("index in range");
+                self.bytes -= e.bytes;
+                continue;
             }
+            let ahead = if over_count {
+                (self.events.len() > current + 1).then(|| self.events.len() - 1)
+            } else {
+                (current + 1..self.events.len()).rev().find(|&i| self.events[i].bytes > 0)
+            };
+            let Some(i) = ahead else { break };
+            self.overflowed += 1;
+            self.capped = true;
+            if over_count {
+                let e = self.events.remove(i).expect("index in range");
+                self.bytes -= e.bytes;
+            } else {
+                let e = &mut self.events[i];
+                self.bytes -= e.bytes;
+                e.bytes = 0;
+                e.picture = None;
+                e.end = None;
+            }
+            // Up to the event before it: from its start on, what is due is lost.
+            let before = if i > 0 { self.events[i - 1].start } else { f64::NEG_INFINITY };
+            self.known_until = self.known_until.min(before);
         }
     }
 
@@ -300,6 +335,7 @@ impl PictureTimeline {
         if serial > self.serial {
             self.serial = serial;
             self.asked = f64::NEG_INFINITY;
+            self.floor = f64::NEG_INFINITY;
             self.clear();
         }
     }
@@ -496,6 +532,11 @@ mod tests {
         t.seek(2, 12.0, true);
         assert_eq!(t.len(), 1);
         assert_eq!(shown(&mut t, 2, 12.0), Some(1), "still on screen after the restart");
+        // The restarted demuxer delivers it again when the keyframe lies before it: the carried one, capped to its
+        // window, stays (no new identity, no change announced).
+        t.push(2, 10.0, None, again(6, 1), true);
+        assert_eq!(shown(&mut t, 2, 12.5), Some(1), "the carried picture keeps its identity");
+        assert_eq!(t.len(), 1);
         assert_eq!(shown(&mut t, 2, 10.0 + OPEN_EVENT_MAX), None, "its own end still holds");
         // Not due at the restart position: not carried.
         let mut t = PictureTimeline::new();
@@ -545,7 +586,7 @@ mod tests {
         for i in 2000..(MAX_QUEUED_EVENTS as u64 + 10) {
             t.push(1, i as f64, None, pic(i), true);
         }
-        assert_eq!((t.len(), t.overflowed), (MAX_QUEUED_EVENTS, 10));
+        assert_eq!((t.len(), t.overflowed), (MAX_QUEUED_EVENTS, 0), "replaced ones let go of: nothing ahead lost");
         assert_eq!(shown(&mut t, 1, (MAX_QUEUED_EVENTS + 9) as f64), Some(MAX_QUEUED_EVENTS as u64 + 9), "the newest stayed");
         // Pictures of 33 MB: two fit; a third never at the cost of the one on screen.
         let mut t = PictureTimeline::new();
@@ -567,7 +608,7 @@ mod tests {
         t.push(1, 1.0, None, big(1), true);
         assert_eq!(shown(&mut t, 1, 1.5), Some(1));
         t.push(1, 2.0, None, big(2), true);
-        assert_eq!(t.overflowed, 1);
+        assert_eq!((t.len(), t.overflowed), (2, 0), "the replaced one went: nothing ahead lost");
         assert_eq!(shown(&mut t, 1, 1.6), Some(1));
         assert_eq!(shown(&mut t, 1, 2.0), Some(2));
     }
@@ -580,9 +621,59 @@ mod tests {
         t.push(1, 3.0, None, big(2), true);
         // A late event that sorts before the one on screen (already replaced) is the one that goes.
         t.push(1, 0.5, None, big(0), true);
-        assert_eq!(t.overflowed, 1);
+        assert_eq!((t.len(), t.overflowed), (2, 0));
         assert_eq!(shown(&mut t, 1, 2.6), Some(1));
         assert_eq!(shown(&mut t, 1, 3.0), Some(2), "and the one ahead stayed");
+    }
+
+    #[test]
+    fn a_time_read_before_a_seek_carries_the_old_serial_and_cannot_pin_the_new_one() {
+        // Events at 22:00, 25:00 and 30:00; on screen at 30:00. A seek to 25:00 keeps the queue.
+        let mut t = PictureTimeline::new();
+        t.push(1, 1320.0, None, pic(1), true);
+        t.push(1, 1500.0, None, pic(2), true);
+        t.push(1, 1800.0, None, pic(3), true);
+        assert_eq!(shown(&mut t, 1, 1800.0), Some(3));
+        t.seek(2, 1500.0, false);
+        assert_eq!(t.len(), 3);
+        // A reader that took the clock before the seek moved it asks with the serial it read then: ignored.
+        assert_eq!(shown(&mut t, 1, 1800.0), None);
+        assert_eq!(shown(&mut t, 2, 1500.0), Some(2), "the new position's picture, not the old one");
+        assert_eq!(shown(&mut t, 2, 1500.5), Some(2));
+    }
+
+    #[test]
+    fn after_a_seek_eviction_protects_what_is_due_at_the_target_until_the_first_ask() {
+        // 33 MB pictures: two fit. Played to 1.5 (0 and 1 queued, 1 on screen), then a seek to 1.0 keeps the queue.
+        let mut t = PictureTimeline::new();
+        t.push(1, 0.0, None, big(0), true);
+        t.push(1, 1.0, None, big(1), true);
+        assert_eq!(shown(&mut t, 1, 1.5), Some(1));
+        t.seek(2, 1.0, false);
+        assert_eq!(t.len(), 2);
+        // Before the first frame of the seek, the demuxer delivers the next event: the replaced one before the
+        // target goes, not the new one.
+        t.push(2, 2.0, None, big(2), true);
+        assert_eq!((t.len(), t.overflowed), (2, 0));
+        assert_eq!(shown(&mut t, 2, 1.0), Some(1));
+        assert_eq!(shown(&mut t, 2, 2.0), Some(2), "delivered after the seek, kept");
+    }
+
+    #[test]
+    fn a_picture_turned_away_by_the_byte_bound_ends_the_one_before_it_instead_of_standing_in() {
+        let mut t = PictureTimeline::new();
+        t.push(1, 0.0, None, big(0), true);
+        assert_eq!(shown(&mut t, 1, 0.5), Some(0));
+        t.push(1, 1.0, None, big(1), true);
+        // No room for a third, ahead of the clock: it becomes a clearing event at its start.
+        t.push(1, 2.0, None, big(2), true);
+        assert_eq!(t.overflowed, 1);
+        assert!(t.bytes() <= MAX_QUEUED_BYTES);
+        assert_eq!(shown(&mut t, 1, 1.5), Some(1));
+        assert_eq!(shown(&mut t, 1, 2.5), None, "not the caption from 1.0 in its place");
+        // The queue no longer claims to know the screen from there on.
+        t.seek(2, 2.5, false);
+        assert!(t.is_empty());
     }
 
     #[test]
