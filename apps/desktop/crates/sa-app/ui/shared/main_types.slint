@@ -84,7 +84,8 @@ export struct QueueRowData {
 
 // One rectangle of the bitmap subtitle picture shown over the video (PGS, VobSub, DVB, XSUB): its straight-alpha
 // image, its place on the subtitle canvas (canvas pixels), the canvas, whether the canvas covers the video with its
-// own shape (`cover`) or stretches with it, and the bounding box of all the event's rectangles (`group-*`, canvas
+// own shape (`cover`), lies at the video's pixel scale (`pixel-width` × `pixel-height`, the video's coded size; 0
+// otherwise) or stretches with it, and the bounding box of all the event's rectangles (`group-*`, canvas
 // pixels: the event is kept on screen as a whole). Where that is on screen is Rust's rule (`MainBridge.place-picture`).
 export struct PictureSubtitleRect {
     image: image,
@@ -95,6 +96,8 @@ export struct PictureSubtitleRect {
     canvas-width: float,
     canvas-height: float,
     cover: bool,
+    pixel-width: float,
+    pixel-height: float,
     group-x: float,
     group-y: float,
     group-width: float,
