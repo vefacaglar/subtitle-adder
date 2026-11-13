@@ -230,6 +230,17 @@ fn cached_fp(norm: &str) -> Option<String> {
     if norm.is_empty() { None } else { fingerprint::cached(Path::new(norm)) }
 }
 
+/// [`cached_fp`] read once per path and remembered in `memo`: one load must key a video the same way in every step,
+/// although the process-wide cache can gain or lose the path in between.
+fn cached_fp_once(memo: &mut CiMap<Option<String>>, norm: &str) -> Option<String> {
+    if let Some(fp) = memo.get(norm) {
+        return fp.clone();
+    }
+    let fp = cached_fp(norm);
+    memo.insert(norm, fp.clone());
+    fp
+}
+
 fn compute_fp(norm: &str) -> Option<String> {
     if norm.is_empty() { None } else { fingerprint::fingerprint(Path::new(norm)) }
 }
@@ -1283,6 +1294,9 @@ impl WinProfileStore {
         let store = self.sql_store();
         let mut migrated_legacy = false;
         let owner = storage_owner_tag(key);
+        // The legacy import fills `entry.videos` and the reload below inserts the same rows again; both must pick the
+        // same logical key, or one video ends up under its path and its fingerprint and is counted twice.
+        let mut fps: CiMap<Option<String>> = CiMap::new();
 
         let has_legacy_owner_rows = store.has_rows_owned_by(&entry.username);
         if has_legacy_owner_rows {
@@ -1297,7 +1311,9 @@ impl WinProfileStore {
                 || vault.custom_lists.as_ref().is_some_and(|v| !v.is_empty())
                 || vault.thumbnails.as_ref().is_some_and(|v| !v.is_empty());
             if has_data {
-                migrated_legacy = self.import_legacy_vault(entry, key, &owner, vault);
+                migrated_legacy = self.import_legacy_vault(entry, key, &owner, vault, &mut fps);
+                #[cfg(test)]
+                tests::after_legacy_import();
             } else {
                 entry.encrypted_vault = Some(vault_marker(key));
                 migrated_legacy = true;
@@ -1331,7 +1347,7 @@ impl WinProfileStore {
             if n.is_empty() {
                 continue;
             }
-            let fp = dto.content_fingerprint.as_deref().filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_owned()).or_else(|| cached_fp(&n));
+            let fp = dto.content_fingerprint.as_deref().filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_owned()).or_else(|| cached_fp_once(&mut fps, &n));
             let canonical = fp.clone().unwrap_or_else(|| n.clone());
             logical_by_storage.insert(&skey, canonical.clone());
             let view_count = if db_vc >= 0 { db_vc } else { i64::from(dto.view_count.max(0)) };
@@ -1430,7 +1446,14 @@ impl WinProfileStore {
         migrated_legacy
     }
 
-    fn import_legacy_vault(&self, entry: &mut ProfileEntry, key: &SecretKey32, owner: &str, vault: json::LegacyVault) -> bool {
+    fn import_legacy_vault(
+        &self,
+        entry: &mut ProfileEntry,
+        key: &SecretKey32,
+        owner: &str,
+        vault: json::LegacyVault,
+        fps: &mut CiMap<Option<String>>,
+    ) -> bool {
         if Path::new(&self.file_path).exists() && !Path::new(&self.backup_path).exists() {
             if let Some(header) = netcompat::read_all_text_shared(Path::new(&self.file_path), 5) {
                 // The backup keeps the encrypted legacy vault, never a remembered (auto-unlock) key.
@@ -1449,7 +1472,7 @@ impl WinProfileStore {
             if n.is_empty() {
                 continue;
             }
-            let fp = v.content_fingerprint.as_deref().filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_owned()).or_else(|| cached_fp(&n));
+            let fp = v.content_fingerprint.as_deref().filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_owned()).or_else(|| cached_fp_once(fps, &n));
             let lk = fp.clone().unwrap_or_else(|| n.clone());
             let s = VideoUserStats {
                 content_fingerprint: fp,
@@ -2885,6 +2908,79 @@ impl Drop for WinProfileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// Runs inside `decrypt_into_entry` between the legacy import and the reload (logins run on the caller's
+        /// thread), standing in for another thread touching the process-wide fingerprint cache at that moment.
+        static AFTER_LEGACY_IMPORT: RefCell<Option<Box<dyn Fn()>>> = RefCell::new(None);
+    }
+
+    pub(super) fn after_legacy_import() {
+        AFTER_LEGACY_IMPORT.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f();
+            }
+        });
+    }
+
+    /// A version-2 vault video without a fingerprint, whose file another thread fingerprints while the vault is being
+    /// migrated, stays one video: the import and the reload agree on its key, so it is not counted twice.
+    #[test]
+    fn a_legacy_video_fingerprinted_during_the_migration_is_counted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("clip.mp4");
+        std::fs::write(&video, vec![7u8; 4096]).unwrap();
+        let video = norm(&video.to_string_lossy());
+        fingerprint::forget(Path::new(&video));
+
+        let salt = [3u8; 16];
+        let (hash, key) = crypto::derive("pw-1234", &salt, 100_000);
+        let vault = json::LegacyVault {
+            videos: Some(vec![json::LegacyVideo {
+                content_fingerprint: None,
+                video_path: Some(video.clone()),
+                file_name: None,
+                directory_path: None,
+                view_count: 2,
+                is_liked: false,
+                rating: 0,
+                last_position_seconds: 0.0,
+                duration_seconds: 0.0,
+                last_watched_at: Some(Ticks(638_766_616_871_234_567)),
+                updated_at: Ticks(638_766_616_871_234_567),
+            }]),
+            custom_lists: None,
+            thumbnails: None,
+        };
+        let header = serde_json::json!({
+            "version": 2,
+            "rememberMe": false,
+            "lastUsername": "eski",
+            "profiles": [{
+                "username": "eski",
+                "saltBase64": json::b64_encode(&salt),
+                "passwordHashBase64": json::b64_encode(&hash),
+                "iterations": 100_000,
+                "createdAtUtc": "2025-03-04T05:06:07.1234567+00:00",
+                "encryptedVaultBase64": json::b64_encode(&crypto::seal(&json::legacy_vault_json(&vault), &key)),
+            }],
+        });
+        std::fs::write(dir.path().join("profiles.json"), serde_json::to_string_pretty(&header).unwrap()).unwrap();
+
+        let fingerprinted = video.clone();
+        AFTER_LEGACY_IMPORT.with(|h| *h.borrow_mut() = Some(Box::new(move || drop(fingerprint::fingerprint(Path::new(&fingerprinted))))));
+        let store = WinProfileStore::open(dir.path().join("profiles.json"), sa_sync::InProcessBus::with_scope(&sa_core::text::guid_n()));
+        store.login_user("eski", "pw-1234", false).expect("login");
+        AFTER_LEGACY_IMPORT.with(|h| *h.borrow_mut() = None);
+        assert!(fingerprint::is_cached(Path::new(&video)), "the hook ran during the migration");
+
+        let t = store.totals();
+        assert_eq!((t.watched, t.views), (1, 2), "one video with two views");
+        assert!(store.flush_pending_writes(Duration::from_secs(10)));
+        store.dispose();
+        fingerprint::forget(Path::new(&video));
+    }
 
     /// The UI thread reads `is_logged_in` and `session_generation` while a video plays; a worker can hold the state
     /// mutex across a disk sync, so neither may wait for it, and both must still follow every session change.
