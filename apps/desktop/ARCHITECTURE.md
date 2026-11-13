@@ -429,3 +429,36 @@ Dependencies of `sa-player` (feature `ffmpeg`):
 
 `windows` and `libc` were already workspace dependencies (no new crate, no version change; the Direct3D features are
 new features of the same `windows` 0.62.2).
+
+## UI conventions: popups and menus
+
+Popups (`PopupWindow`: menus, flyouts, popovers) follow one sizing and placement rule in both UI trees
+(`ui/win`, `ui/mac`):
+
+- **A popup carries its own size.** Slint (1.18) sizes a popup from the popup's own layout constraints when it is
+  shown: an explicit `width`/`height` on a child does not count. A size-less popup with an explicitly sized child
+  is a few pixels big, and the child (no `x`/`y`) is centred on the popup's origin: the menu opens about half its
+  width to the left of where the caller placed it. So the size goes on the popup, as `min-width`/`max-width`
+  (and `min-height`/`max-height`), because Slint overwrites the popup's own `width`/`height` when it places it;
+  the surface inside fills the popup (no size of its own). A child whose size comes from a layout or `min-width`
+  works too (the constraints propagate), a bare `width:` does not.
+- **Placement is the caller's x/y; the window edge is Slint's.** The caller puts the popup's top-left where the menu
+  belongs (under a button, at the pointer). Slint clamps a popup that would leave the window: it moves left/up just
+  as far as needed, never past the left/top edge. Callers therefore do no window-width arithmetic of their own.
+  This holds because every popup is drawn inside the main window (the vendored winit backend creates no top-level
+  popup windows); a top-level popup would not be clamped.
+- **A menu never outgrows the window.** The clamp moves a popup but draws it at full size, so `MenuFlyout` and
+  `MacMenu` cap themselves to the window (`MainBridge.window-width` / `window-height`, pushed by Rust on resize):
+  at most the window width minus a margin (titles elide) and, on Windows, at most the height under the app-drawn
+  caption band (`Theme.title-bar-height`, 48 DIP, where `WM_NCHITTEST` answers `HTCAPTION` and clicks drag the
+  window; none in full screen) minus a margin: longer menus scroll. A caller that opens a menu above its anchor
+  caps `max-menu-height` to the space there (the player's track menu: above the transport pill, inside the
+  player while it has room for a few rows, else up to the caption band).
+- **Use the drawn size, not the popup's.** A caller that positions a menu from its own size (above or before the
+  anchor) reads `menu-height` / `menu-width`, which follow the entries directly; the popup's assigned
+  `width`/`height` only change during placement.
+- **Submenus** cascade from the menu's trailing edge, or from its leading edge when the window has no room on the
+  right (a submenu slid over its parent would lie under the pointer). A popup cannot see where it lies in the
+  window, so callers pass `window-x` (their `absolute-position.x` plus the popup's x).
+
+`tests/menu_placement.rs` measures these rules on rendered pixels (Windows tree).
