@@ -262,15 +262,18 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// Copies a data folder (a dump writes: it logs in, which clears a remembered session).
+/// Copies a data folder (a dump writes: it logs in, which clears a remembered session). Only the store's own files:
+/// other processes can briefly put files of their own there (a scanner's `PROFILES.DB-SHM.tmp` was seen to vanish
+/// between the listing and the copy).
 fn copy_data(data: &Path, name: &str) -> PathBuf {
+    const STORE_FILES: [&str; 5] = ["profiles.json", "profiles.json.bak", "profiles.db", "profiles.db-wal", "profiles.db-shm"];
     let dst = data.parent().expect("parent").join(name);
     let _ = std::fs::remove_dir_all(&dst);
     std::fs::create_dir_all(&dst).expect("copy dir");
     for e in std::fs::read_dir(data).expect("read data") {
         let e = e.expect("entry");
-        if e.file_type().expect("type").is_file() {
-            std::fs::copy(e.path(), dst.join(e.file_name())).expect("copy");
+        if STORE_FILES.iter().any(|f| e.file_name() == *f) && e.file_type().expect("type").is_file() {
+            std::fs::copy(e.path(), dst.join(e.file_name())).unwrap_or_else(|err| panic!("copy {:?}: {err}", e.path()));
         }
     }
     dst
