@@ -332,6 +332,7 @@ export component Sidebar inherits Rectangle {
     rowmenu := MacMenu {
         x: root.menu-x;
         y: root.menu-y;
+        window-x: root.absolute-position.x + self.x;
         min-menu-width: 200px;
     }
 }

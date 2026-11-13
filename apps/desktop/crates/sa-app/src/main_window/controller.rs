@@ -264,7 +264,7 @@ fn from_ui_workspace(w: ui::Workspace) -> Workspace {
 }
 
 /// A menu builder's entry as the bridge struct (also used by the look-check demo).
-pub(crate) fn menu_entry(e: Entry) -> MenuEntry {
+pub fn menu_entry(e: Entry) -> MenuEntry {
     to_menu_entry(e)
 }
 
@@ -2415,7 +2415,8 @@ impl MainWindowController {
         });
     }
 
-    /// Pushes the logical window size (responsive rules read `MainBridge.window-width`).
+    /// Pushes the logical window size (responsive rules read `MainBridge.window-width`; menus fit themselves into
+    /// `window-width` × `window-height`).
     pub fn window_resized(&self, width: f32, height: f32) {
         let changed = {
             let mut st = self.st.borrow_mut();
@@ -2424,7 +2425,9 @@ impl MainWindowController {
             changed
         };
         if changed && let Some(w) = self.win() {
-            w.global::<MainBridge>().set_window_width(width);
+            let main = w.global::<MainBridge>();
+            main.set_window_width(width);
+            main.set_window_height(height);
         }
     }
 

@@ -160,6 +160,7 @@ export component ExplorerPane inherits Rectangle {
                 }
                 qmenu := MenuFlyout {
                     x: 0;
+                    window-x: quick.absolute-position.x + self.x;
                     y: quick.height + 4px;
                     min-menu-width: 240px;
                 }
@@ -306,6 +307,7 @@ export component ExplorerPane inherits Rectangle {
 
     rowmenu := MenuFlyout {
         x: root.menu-x;
+        window-x: root.absolute-position.x + self.x;
         y: root.menu-y;
         min-menu-width: 220px;
     }

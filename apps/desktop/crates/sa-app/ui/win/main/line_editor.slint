@@ -123,6 +123,7 @@ component SpeakerButton inherits Rectangle {
     }
     flyout := MenuFlyout {
         x: 0;
+        window-x: root.absolute-position.x + self.x;
         y: root.height + 2px;
         min-menu-width: 200px;
     }
@@ -529,6 +530,7 @@ export component LineEditor inherits Rectangle {
 
     rowmenu := MenuFlyout {
         x: root.menu-x;
+        window-x: root.absolute-position.x + self.x;
         y: root.menu-y;
         min-menu-width: 240px;
     }

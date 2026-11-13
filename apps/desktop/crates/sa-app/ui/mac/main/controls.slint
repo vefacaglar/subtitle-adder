@@ -272,21 +272,30 @@ component MenuItemRow inherits Rectangle {
     }
 }
 
+// Placement: the popup itself carries the menu's size (min = max; see "Popups" in ARCHITECTURE.md) and the surface
+// fills it, so the menu's top-left lands at the caller's x/y and Slint's popup clamp moves it left/up only as far as
+// the window edge needs. The menu never outgrows the window (at most its size minus a margin: long titles elide,
+// longer menus scroll).
 export component MacMenu inherits PopupWindow {
     in property <length> min-menu-width: 180px;
     // A taller menu scrolls its items, as an NSMenu does at the screen edge (the track menu caps it above its button).
     in property <length> max-menu-height: 100000px;
+    // The size the menu is drawn at, from its content and caps (not from the popup's assigned size, which is only
+    // updated during placement): callers that place it above or before themselves use it.
+    out property <length> menu-height: min(list.preferred-height, max(root.max-menu-height, 60px), root.room-height);
+    out property <length> menu-width: min(max(root.min-menu-width, list.preferred-width), root.room-width);
+    // Where the caller puts the menu in window coordinates (its `absolute-position.x` plus the popup's x): a popup
+    // cannot see its own place in the window, and the submenu needs it to choose a side.
+    in property <length> window-x;
     property <[MenuEntry]> entries: MainBridge.menu-entries;
     property <length> sub-y;
-    // The popup itself has the menu's size and the surface fills it. Slint sizes a popup from its own layout
-    // constraints (an explicitly sized child does not count; the popup's `width`/`height` are overwritten when it is
-    // shown, so they are given as min/max) and keeps that rectangle inside the window: the menu's top-left lands at
-    // the caller's x/y and moves left/up only as far as the window edge needs. A surface with its own size inside a
-    // smaller popup would be centred on the popup's origin instead.
-    min-width: max(root.min-menu-width, list.preferred-width);
-    max-width: max(root.min-menu-width, list.preferred-width);
-    min-height: min(list.preferred-height, max(root.max-menu-height, 60px));
-    max-height: min(list.preferred-height, max(root.max-menu-height, 60px));
+    property <length> margin: 8px;
+    property <length> room-height: max(60px, MainBridge.window-height - root.margin);
+    property <length> room-width: max(120px, MainBridge.window-width - 2 * root.margin);
+    min-width: root.menu-width;
+    max-width: root.menu-width;
+    min-height: root.menu-height;
+    max-height: root.menu-height;
     surface := Rectangle {
         clip: true;
         background: MacTheme.menu-background;
@@ -317,12 +326,18 @@ export component MacMenu inherits PopupWindow {
             }
         }
     }
-    // Cascades from the menu's trailing edge; kept inside the window like the menu.
+    // Cascades from the menu's trailing edge, or from its leading edge when the window has no room on the right (a
+    // submenu slid over its parent would sit under the pointer, and the next click would pick its first entry).
+    // The menu's left edge in the window: the caller's position as Slint clamps it.
+    property <length> drawn-left: max(0px, min(root.window-x, MainBridge.window-width - root.menu-width));
     sub := PopupWindow {
-        x: surface.width - 4px;
+        property <length> sub-width: max(120px, sublist.preferred-width);
+        property <bool> fits-right: root.drawn-left + root.menu-width - 4px + self.sub-width <= MainBridge.window-width;
+        x: self.fits-right ? root.menu-width - 4px : 4px - self.sub-width;
         y: root.sub-y;
+        min-width: self.sub-width;
+        max-width: self.sub-width;
         Rectangle {
-            min-width: 120px;
             background: MacTheme.menu-background;
             border-radius: 6px;
             border-width: 0.5px;
@@ -330,7 +345,7 @@ export component MacMenu inherits PopupWindow {
             drop-shadow-blur: 14px;
             drop-shadow-offset-y: 5px;
             drop-shadow-color: #00000040;
-            VerticalLayout {
+            sublist := VerticalLayout {
                 padding: 5px;
                 for e in root.entries: MenuItemRow {
                     entry: e;
@@ -413,6 +428,7 @@ export component MenuButton inherits Rectangle {
     menu := MacMenu {
         x: 0;
         y: root.height + 2px;
+        window-x: root.absolute-position.x + self.x;
         min-menu-width: max(root.width, root.menu-width);
     }
 }

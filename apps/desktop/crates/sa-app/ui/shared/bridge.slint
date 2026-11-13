@@ -86,6 +86,8 @@ export global MainBridge {
     // ---- toolbar / command bar
     // Window width in logical px, pushed by Rust on every resize (responsive rules; avoids a layout binding loop).
     in property <length> window-width: 1240px;
+    // Window height, pushed with the width: menus cap themselves to the space the window has.
+    in property <length> window-height: 840px;
     in property <[PickerItem]> language-items;
     in property <int> language-index;
     in property <string> model-title: "large-v3";

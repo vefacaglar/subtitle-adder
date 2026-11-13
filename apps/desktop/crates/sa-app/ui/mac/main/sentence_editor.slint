@@ -124,6 +124,7 @@ component SpeakerMenuButton inherits Rectangle {
     menu := MacMenu {
         x: 0;
         y: root.height + 2px;
+        window-x: root.absolute-position.x + self.x;
         min-menu-width: 180px;
     }
 }
@@ -470,6 +471,7 @@ export component SentenceEditor inherits Rectangle {
     rowmenu := MacMenu {
         x: root.menu-x;
         y: root.menu-y;
+        window-x: root.absolute-position.x + self.x;
         min-menu-width: 230px;
     }
 }

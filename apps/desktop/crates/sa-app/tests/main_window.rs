@@ -608,6 +608,7 @@ fn the_window_width_reaches_the_responsive_rules() {
     let r = rig(false);
     r.controller.window_resized(900.0, 700.0);
     assert_eq!(r.main().get_window_width(), 900.0);
+    assert_eq!(r.main().get_window_height(), 700.0, "menus fit themselves into the window height");
 }
 
 // ------------------------------------------------------------------------------------------------ macOS
