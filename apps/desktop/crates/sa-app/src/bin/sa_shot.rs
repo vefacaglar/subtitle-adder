@@ -2,7 +2,8 @@
 //! look checks of both styles on any machine (ARCHITECTURE.md §10).
 //!
 //! `sa-shot --out shots/win-fluent.png [--window main|settings|symbols] [--workspace editor|platform|playlist]
-//!          [--width N --height N] [--scale F] [--dark] [--lang tr|en] [--explorer on|off] [--scene <name>] [--hub <scene>]`
+//!          [--width N --height N] [--scale F] [--dark] [--lang tr|en] [--explorer on|off] [--scene <name>] [--hub <scene>]
+//!          [--click x,y | --rclick x,y] [--hover x,y]`
 //!
 //! Build the macOS look on Windows with `SA_UI_PLATFORM=mac cargo run -p sa-app --features all-catalogs --bin sa-shot`.
 //! `--window symbols` (mac tree off macOS only: `preview.slint`'s `SymbolGallery`) draws every SF Symbol stand-in.
@@ -92,22 +93,31 @@ fn main() {
             sa_app::hub::demo::fill(&w, &scene);
         }
         main.set_window_width(width as f32);
+        main.set_window_height(height as f32);
         w.show().expect("show");
         Box::new(w)
     };
 
     window.set_size(PhysicalSize::new(pw, ph));
-    // `--click x,y` (logical px): a left click there before the shot, e.g. to open a menu or flyout.
-    if let Some((x, y)) = arg(&args, "--click").and_then(|v| {
-        let (x, y) = v.split_once(',')?;
-        Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
-    }) {
+    // `--click x,y` / `--rclick x,y` (logical px): a left / right click there before the shot, e.g. to open a menu or
+    // flyout; `--hover x,y` then moves the pointer (e.g. onto a submenu row).
+    let point = |name: &str| {
+        arg(&args, name).and_then(|v| {
+            let (x, y) = v.split_once(',')?;
+            Some(slint::LogicalPosition::new(x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
+        })
+    };
+    for (name, button) in [("--click", slint::platform::PointerEventButton::Left), ("--rclick", slint::platform::PointerEventButton::Right)] {
+        if let Some(position) = point(name) {
+            render_to(&window, pw, ph, &out);
+            window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+            window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+            window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+        }
+    }
+    if let Some(position) = point("--hover") {
         render_to(&window, pw, ph, &out);
-        let position = slint::LogicalPosition::new(x, y);
-        let button = slint::platform::PointerEventButton::Left;
         window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
-        window.dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
-        window.dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
     }
     render_to(&window, pw, ph, &out);
 

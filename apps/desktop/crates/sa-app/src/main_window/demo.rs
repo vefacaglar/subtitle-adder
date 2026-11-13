@@ -140,7 +140,8 @@ fn fill_picker(w: &MainWindow, scene: &str, mac: bool) {
 
 /// Fills the window for `scene`: `empty`, `editor`, `editor-side`, `editor-player`, `subtitles-only`, `working`,
 /// `error`, `playlist`, `playlist-empty`, `platform`, `full-screen`, `theater`, `picker-local`, `picker-provider`,
-/// `picker-empty`, `picture-subtitles` (a bitmap subtitle picture over the video), `picture-subtitles-full`.
+/// `picker-empty`, `picture-subtitles` (a bitmap subtitle picture over the video), `picture-subtitles-full`, `tracks`,
+/// `tracks-reading`, `tracks-many`, `menu`, `menu-long` (a 14-speaker row menu), `menu-speakers` (with its submenu).
 pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
     let app = w.global::<AppBridge>();
     let main = w.global::<MainBridge>();
@@ -389,6 +390,19 @@ pub fn fill(w: &MainWindow, scene: &str, mac: bool) {
             main.set_menu_entries(ModelRc::new(VecModel::from(entries)));
             main.set_tracks_available(true);
             main.set_tracks_busy(reading.is_some());
+        }
+        "menu-long" => {
+            // A line's context menu with 14 speakers (over-split diarization): taller than a small window.
+            let speakers: Vec<i64> = (0..14).collect();
+            let st = super::menus::RowMenuState { can_retranslate: true, can_split: true, can_merge: true, can_delete: true, shows_speakers: true, is_working: false };
+            let items = super::menus::speaker_items(2, &speakers, Some(1), false, mac);
+            let entries = super::menus::row_menu(2, st, items, mac);
+            main.set_menu_entries(ModelRc::new(VecModel::from(entries.into_iter().map(super::controller::menu_entry).collect::<Vec<_>>())));
+        }
+        "menu-speakers" => {
+            // The toolbar speakers menu with its speaker-count submenu.
+            let entries = super::menus::speakers_menu(true, 3);
+            main.set_menu_entries(ModelRc::new(VecModel::from(entries.into_iter().map(super::controller::menu_entry).collect::<Vec<_>>())));
         }
         "menu" => {
             main.set_menu_entries(ModelRc::new(VecModel::from(vec![
