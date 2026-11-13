@@ -192,8 +192,10 @@ export component Toolbar inherits Rectangle {
     }
     // A PopupWindow cannot be conditional: the overflow menu hangs off the trailing edge of the toolbar.
     omenu := MacMenu {
-        x: root.width - 230px;
+        // 10 px before the trailing edge at its drawn width (a long title widens it past 220).
+        x: root.width - self.menu-width - 10px;
         y: root.height - 6px;
+        window-x: root.absolute-position.x + self.x;
         min-menu-width: 220px;
     }
 }

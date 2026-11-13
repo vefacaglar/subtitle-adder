@@ -123,9 +123,11 @@ component TracksBarButton inherits Rectangle {
         show: touch.has-hover && !menu.is-open;
         offset-y: -30px;
     }
+    // Trailing-aligned at its drawn width (a long track title widens it past `menu-width`), bottom 10 px above.
     menu := MacMenu {
-        x: root.width - root.menu-width;
-        y: -self.height - 10px;
+        x: root.width - self.menu-width;
+        y: -self.menu-height - 10px;
+        window-x: root.absolute-position.x + self.x;
         min-menu-width: root.menu-width;
         // The space between the window top and the button (minus the gap): longer menus scroll.
         max-menu-height: root.absolute-position.y - 20px;

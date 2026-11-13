@@ -42,13 +42,22 @@ component TracksButton inherits Rectangle {
         text: Loc.t("Ses ve altyazı parçaları");
         show: touch.has-hover && !touch.pressed && !flyout.is-open;
     }
-    // Above the pill (the pill sits at the bottom of the video).
+    // From the button's top up to the transport pill's top, and from the pill's top up to the player's top (the
+    // TransportHud passes both): the menu opens above the whole pill, never over its scrubber and time row.
+    in property <length> pill-top;
+    in property <length> player-room;
+    property <length> gap: 8px;
+    // Rows under the app-drawn caption band (48 DIP, none in full screen) cannot be clicked.
+    property <length> band: AppBridge.is-full-screen ? 0 : Theme.title-bar-height;
+    property <length> room-in-player: root.player-room - 2 * root.gap;
+    property <length> room-in-window: root.absolute-position.y - root.pill-top - root.band - 2 * root.gap;
     flyout := MenuFlyout {
         x: 0;
-        y: -self.menu-height - 12px;
+        window-x: root.absolute-position.x + self.x;
+        y: -self.menu-height - root.pill-top - root.gap;
         min-menu-width: 380px;
-        // The space between the window top and the button (minus the gap): longer menus scroll.
-        max-menu-height: root.absolute-position.y - 24px;
+        // Inside the player while it leaves room for a few rows, else up to the caption band: longer menus scroll.
+        max-menu-height: root.room-in-player >= 160px ? root.room-in-player : root.room-in-window;
     }
     property <bool> flyout-open: flyout.is-open;
     changed flyout-open => {
@@ -143,6 +152,8 @@ component Scrubber inherits Rectangle {
 // Transport HUD (§11): 336 wide, dark gradient pill, two rows.
 component TransportHud inherits Rectangle {
     in property <bool> shown;
+    // The pill's distance from the player's top (the track menu opens in the space above it).
+    in property <length> room-above;
     width: 336px;
     height: 74px;
     border-radius: 16px;
@@ -196,6 +207,8 @@ component TransportHud inherits Rectangle {
             TracksButton {
                 x: 0;
                 y: (parent.height - self.height) / 2;
+                pill-top: self.y + parent.y;
+                player-room: root.room-above;
                 visible: MainBridge.tracks-available;
             }
             // Play / pause circle 34.
@@ -465,6 +478,7 @@ export component PlayerSurface inherits Rectangle {
             y: parent.height - self.height - 14px + (MainBridge.hud-visible ? 0 : 8px);
             animate y { duration: 240ms; }
             shown: MainBridge.hud-visible;
+            room-above: self.y;
             visible: self.opacity > 0.01;
         }
 
