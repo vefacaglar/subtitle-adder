@@ -16,7 +16,7 @@ import Testing
         let defaults = UserDefaults(suiteName: "test-\(UUID().uuidString)")!
         var fileURL: URL { folder.appending(path: TranslationProviderStore.fileName) }
 
-        func store(secrets: any SecretStore? = nil) -> TranslationProviderStore {
+        func store(secrets: (any SecretStore)? = nil) -> TranslationProviderStore {
             TranslationProviderStore(fileURL: fileURL, secrets: secrets ?? self.secrets)
         }
 

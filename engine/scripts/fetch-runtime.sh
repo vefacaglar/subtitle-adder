@@ -8,7 +8,7 @@
 #                                 linux-x64 / linux-aarch64). se-diarize's FFI structs follow this exact version.
 #   engine/.runtime/ffmpeg        Linux only: FFmpeg 8.1 shared SDK (lib, include, relocatable lib/pkgconfig) from a
 #                                 dated BtbN autobuild (month-end autobuilds stay published long term), since distro
-#                                 packages lag behind FFmpeg 8. On macOS use Homebrew's ffmpeg (8.x).
+#                                 packages lag behind FFmpeg 8. On macOS use Homebrew's ffmpeg@8 (8.x).
 #
 # Every archive is checked against a pinned SHA-256 before it is extracted. A component whose folder already holds
 # the stamp of the pinned hash is skipped (--force downloads again).
@@ -114,7 +114,7 @@ if [[ "$only" == all || "$only" == ffmpeg ]]; then
       lib/libavcodec.so lib/libavformat.so lib/pkgconfig/libavcodec.pc include/libavcodec/avcodec.h
     echo "FFMPEG_DIR=$ffmpeg_dir"
   elif [[ "$only" == ffmpeg ]]; then
-    echo "ffmpeg: no pinned build for $os (macOS: brew install ffmpeg)" >&2; exit 1
+    echo "ffmpeg: no pinned build for $os (macOS: brew install ffmpeg@8)" >&2; exit 1
   fi
 fi
 

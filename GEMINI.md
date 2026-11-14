@@ -16,6 +16,9 @@ When acting as the **Orchestrator** (`coordinator` / main model) in `c:\repos\su
    - Every task involving codebase search (`grep`/`rg`), file reading/analysis, code writing, editing, debugging, building, running tests, or technical verification **MUST** be delegated via `swarm` (or subagents) to **Gemini 4 Hydrogen** workers:
      - `gemini-4-hydrogen-high` — architecture, complex implementation, multi-file changes, engine/UI engineering, and code review.
      - `gemini-4-hydrogen-medium` — codebase exploration, `grep`/search, targeted edits, test execution, and routine tasks.
+5. **Communicate clearly with the user (no silent `swarm_wait`).**
+   - Do **not** leave the user waiting silently in `swarm_wait` after dispatching work.
+   - When initiating or driving a task or failure investigation, always inform the user directly about **(1) the root cause** (or current diagnostic findings) and **(2) what fix/plan is being applied**, ending your turn with a clear update to the user while workers execute.
 
 ## Project Context & Conventions
 

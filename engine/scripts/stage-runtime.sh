@@ -7,7 +7,7 @@
 #   CARGO_TARGET_DIR  cargo target dir (default engine/target)
 #   PROFILE           cargo profile folder (default release)
 #   DIST              output folder (default engine/dist, gitignored)
-#   FFMPEG_DIR        FFmpeg 8.x shared install (lib/*.dylib); default: `brew --prefix ffmpeg`
+#   FFMPEG_DIR        FFmpeg 8.x shared install (lib/*.dylib); default: `brew --prefix ffmpeg@8` (or `ffmpeg`)
 #   SHERPA_DIR        folder with libsherpa-onnx-c-api.dylib and libonnxruntime*.dylib
 #                     (default: $SUBTITLE_ENGINE_SHERPA_DIR, else engine/.runtime/sherpa-onnx from fetch-runtime.sh)
 #
@@ -18,12 +18,23 @@
 # NOTE: written on Windows; not yet run on a Mac.
 set -euo pipefail
 
+resolve_brew_ffmpeg() {
+  local p formula
+  for formula in ffmpeg@8 ffmpeg; do
+    p="$(brew --prefix "$formula" 2>/dev/null || true)"
+    if [[ -n "$p" && -d "$p/lib" ]]; then
+      printf '%s' "$p"
+      return 0
+    fi
+  done
+}
+
 here="$(cd "$(dirname "$0")" && pwd)"
 engine_rs="$(dirname "$here")"
 target="${CARGO_TARGET_DIR:-$engine_rs/target}"
 profile="${PROFILE:-release}"
 dist="${DIST:-$engine_rs/dist}"
-ffmpeg="${FFMPEG_DIR:-$(brew --prefix ffmpeg 2>/dev/null || true)}"
+ffmpeg="${FFMPEG_DIR:-$(resolve_brew_ffmpeg)}"
 sherpa="${SHERPA_DIR:-${SUBTITLE_ENGINE_SHERPA_DIR:-$engine_rs/.runtime/sherpa-onnx}}"
 [[ "$(uname -s)" == Darwin ]] || { echo "stage-runtime.sh supports macOS only (Windows: stage-runtime.ps1)" >&2; exit 1; }
 

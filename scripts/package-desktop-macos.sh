@@ -13,7 +13,7 @@
 #   MAKE_DMG=1      Also builds build/desktop/Subtitle Adder.dmg.
 #   SKIP_ENGINE_BUILD=1  Reuses an already staged engine/dist (skips fetch/cargo/stage).
 #   FFMPEG_DIR      FFmpeg 8.x shared install the app builds against and the engine ships (lib/*.dylib; the
-#                   engine's `preview` needs a GPL build with libx264); default: `brew --prefix ffmpeg`.
+#                   engine's `preview` needs a GPL build with libx264); default: `brew --prefix ffmpeg@8` (or `ffmpeg`).
 #   FFMPEG_LGPL_DIR FFmpeg 8.x LGPL shared install (same library versions) whose dylibs the player ships in
 #                   Contents/Frameworks instead of FFMPEG_DIR's (ARCHITECTURE.md §11). Unset: FFMPEG_DIR's are
 #                   bundled and the script warns, since Homebrew's ffmpeg is a GPL build.
@@ -66,9 +66,20 @@ if ! command -v cargo >/dev/null 2>&1; then
     echo "cargo not found; install Rust (https://rustup.rs/)." >&2
     exit 1
 fi
-FFMPEG_DIR="${FFMPEG_DIR:-$(brew --prefix ffmpeg 2>/dev/null || true)}"
-[ -d "$FFMPEG_DIR/lib" ] || { echo "FFmpeg not found: set FFMPEG_DIR (brew install ffmpeg)." >&2; exit 1; }
+resolve_brew_ffmpeg() {
+    local p formula
+    for formula in ffmpeg@8 ffmpeg; do
+        p="$(brew --prefix "$formula" 2>/dev/null || true)"
+        if [ -n "$p" ] && [ -d "$p/lib" ]; then
+            printf '%s' "$p"
+            return 0
+        fi
+    done
+}
+FFMPEG_DIR="${FFMPEG_DIR:-$(resolve_brew_ffmpeg)}"
+[ -d "$FFMPEG_DIR/lib" ] || { echo "FFmpeg not found: set FFMPEG_DIR (brew install ffmpeg@8)." >&2; exit 1; }
 export FFMPEG_DIR
+export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 # Only the app's copy step reads it: the engine (stage-runtime.sh) keeps FFMPEG_DIR's GPL build.
 PLAYER_FFMPEG_LGPL="${FFMPEG_LGPL_DIR:-}"
 if [ -n "$PLAYER_FFMPEG_LGPL" ] && [ ! -d "$PLAYER_FFMPEG_LGPL/lib" ]; then

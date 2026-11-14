@@ -43,7 +43,11 @@ jobs:
       - name: Runtimes (macOS; FFmpeg 8 from Homebrew)
         if: runner.os == 'macOS'
         run: |
-          brew install ffmpeg pkgconf
+          brew install ffmpeg@8 pkgconf
+          ffmpeg_prefix="$(brew --prefix ffmpeg@8)"
+          echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo "$ffmpeg_prefix/bin" >> "$GITHUB_PATH"
           bash scripts/fetch-runtime.sh
       - name: Runtimes (Windows; FFmpeg 8.1 SDK from BtbN)
         if: runner.os == 'Windows'
@@ -115,7 +119,12 @@ jobs:
         run: scripts/fetch-runtime.ps1 -Only ffmpeg
       - name: FFmpeg (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg pkgconf
+        run: |
+          brew install ffmpeg@8 pkgconf
+          ffmpeg_prefix="$(brew --prefix ffmpeg@8)"
+          echo "FFMPEG_DIR=$ffmpeg_prefix" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$ffmpeg_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo "$ffmpeg_prefix/bin" >> "$GITHUB_PATH"
       - uses: TheMrMilchmann/setup-msvc-dev@v4
         if: runner.os == 'Windows'
         with:

@@ -81,6 +81,16 @@ if [ "${SKIP_ENGINE_BUILD:-0}" != "1" ] || [ ! -x "$ENGINE_DIST/subtitle-engine"
         echo "cargo not found; install Rust (https://rustup.rs/)." >&2
         exit 1
     fi
+    if [ -z "${FFMPEG_DIR:-}" ] && command -v brew >/dev/null 2>&1; then
+        for formula in ffmpeg@8 ffmpeg; do
+            brew_ffmpeg="$(brew --prefix "$formula" 2>/dev/null || true)"
+            if [ -n "$brew_ffmpeg" ] && [ -d "$brew_ffmpeg/lib" ]; then
+                export FFMPEG_DIR="$brew_ffmpeg"
+                export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+                break
+            fi
+        done
+    fi
     bash "$ROOT/engine/scripts/fetch-runtime.sh"
     (cd "$ROOT/engine" && cargo build --release -p se-cli)
     bash "$ROOT/engine/scripts/stage-runtime.sh"
