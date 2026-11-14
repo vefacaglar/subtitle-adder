@@ -23,8 +23,11 @@ fn main() {
         return;
     }
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
-    // OUT_DIR = <target>/<profile>/build/se-asr-<hash>/out
-    let Some(build_dir) = out_dir.parent().and_then(Path::parent) else { return };
+    // Cargo < 1.100: OUT_DIR = <target>/<profile>/build/se-asr-<hash>/out
+    // Cargo >= 1.100: OUT_DIR = <target>/<profile>/build/se-asr/<hash>/out
+    let Some(build_dir) = out_dir.ancestors().skip(2).find(|p| p.file_name().is_some_and(|n| n == "build")) else {
+        return;
+    };
     let Some(profile_dir) = build_dir.parent() else { return };
 
     let lib = find_in_prebuild(build_dir, &["intelopenmp.devel.win", "build", "native", "win-x64", "libiomp5md.lib"]);
@@ -45,13 +48,26 @@ fn main() {
     }
 }
 
-/// `<build>/intel-onemkl-prebuild-*/out/<parts...>`, newest first.
+/// `<build>/intel-onemkl-prebuild-*/out/<parts...>` (Cargo < 1.100) or
+/// `<build>/intel-onemkl-prebuild/*/out/<parts...>` (Cargo >= 1.100), newest first.
 fn find_in_prebuild(build_dir: &Path, parts: &[&str]) -> Option<PathBuf> {
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(build_dir)
-        .ok()?
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("intel-onemkl-prebuild-"))
-        .map(|e| parts.iter().fold(e.path().join("out"), |p, part| p.join(part)))
+    let mut out_dirs = Vec::new();
+    for entry in std::fs::read_dir(build_dir).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("intel-onemkl-prebuild-") {
+            out_dirs.push(entry.path().join("out"));
+        } else if name == "intel-onemkl-prebuild" {
+            if let Ok(hashes) = std::fs::read_dir(entry.path()) {
+                for hash in hashes.flatten() {
+                    out_dirs.push(hash.path().join("out"));
+                }
+            }
+        }
+    }
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = out_dirs
+        .into_iter()
+        .map(|out| parts.iter().fold(out, |p, part| p.join(part)))
         .filter(|p| p.is_file())
         .map(|p| (std::fs::metadata(&p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), p))
         .collect();
