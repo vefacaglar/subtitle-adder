@@ -8,13 +8,23 @@ import Foundation
 /// It never receives subtitle text, prompts or API keys: callers pass diagnostics only, and every line is scrubbed of
 /// the configured API keys (and any `Bearer` token) before it is written.
 public final class DiagnosticLog: Sendable {
-    /// The app-wide log. A process hosting XCTest (the test runner) writes to the temporary folder instead, so
-    /// running the tests never fills a developer's real log.
+    /// The app-wide log. A process hosting XCTest or Swift Testing (the test runner) writes to the temporary folder
+    /// instead, so running the tests never fills a developer's real log.
     public static let shared = DiagnosticLog(
-        fileURL: NSClassFromString("XCTestCase") == nil
-            ? DiagnosticLog.defaultFileURL
-            : FileManager.default.temporaryDirectory.appending(path: "SubtitleAdder-tests-diagnostics.log")
+        fileURL: isRunningUnderTests
+            ? FileManager.default.temporaryDirectory.appending(path: "SubtitleAdder-tests-diagnostics.log")
+            : DiagnosticLog.defaultFileURL
     )
+
+    private static var isRunningUnderTests: Bool {
+        let env = ProcessInfo.processInfo.environment
+        let processName = ProcessInfo.processInfo.processName
+        return NSClassFromString("XCTestCase") != nil
+            || env["XCTestConfigurationFilePath"] != nil
+            || processName.contains("testing-helper")
+            || processName == "xctest"
+            || Bundle.allBundles.contains { $0.bundlePath.hasSuffix(".xctest") }
+    }
 
     /// Rotation threshold in bytes.
     public static let defaultMaxBytes = 2 * 1024 * 1024

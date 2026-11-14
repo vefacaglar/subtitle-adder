@@ -77,7 +77,9 @@ fn hex_color_round_trip() {
     assert_eq!(HexColor::parse("#GGGGGG"), None);
     assert_eq!(HexColor::parse("00ff00").map(|c| c.1), Some(1.0));
     assert_eq!(HexColor::parse("##00ff00"), None);
-    assert_eq!(HexColor::parse("+0ff00"), None);
+    assert_eq!(HexColor::parse_windows("+0ff00"), None);
+    assert_eq!(HexColor::parse_mac("+0ff00"), Some((0.0, 1.0, 0.0)));
+    assert_eq!(HexColor::parse("+0ff00"), if cfg!(target_os = "macos") { Some((0.0, 1.0, 0.0)) } else { None });
     assert_eq!(HexColor::format(2.0, -1.0, 0.5), "#FF0080");
     assert_eq!(HexColor::parse_rgb("#007aff"), Some(RgbColor { r: 0, g: 122, b: 255 }));
     assert_eq!(HexColor::format_rgb(RgbColor { r: 1, g: 2, b: 171 }), "#0102AB");
@@ -108,8 +110,16 @@ fn appearance_settings_read_clamped_values_and_reset() {
     appearance.reset_overlay();
     assert_eq!(appearance.style(), OverlayStyle::standard());
     assert_eq!(appearance.theme(), ThemeChoice::Dark);
-    for key in ["overlayFontFamily", "overlayFontSize", "overlayTextColor", "overlayBackgroundStyle", "overlayBackgroundOpacity"] {
-        assert!(store.raw(key).is_none(), "{key} removed");
+    if cfg!(target_os = "macos") {
+        assert_eq!(store.get_string("overlayFontFamily").as_deref(), Some(""));
+        assert_eq!(store.get_double("overlayFontSize"), Some(OverlayStyle::DEFAULT_SIZE));
+        assert_eq!(store.get_string("overlayTextColor").as_deref(), Some(OverlayStyle::DEFAULT_TEXT_HEX));
+        assert_eq!(store.get_string("overlayBackgroundStyle").as_deref(), Some(OverlayBackground::Box.raw()));
+        assert_eq!(store.get_double("overlayBackgroundOpacity"), Some(OverlayStyle::DEFAULT_OPACITY));
+    } else {
+        for key in ["overlayFontFamily", "overlayFontSize", "overlayTextColor", "overlayBackgroundStyle", "overlayBackgroundOpacity"] {
+            assert!(store.raw(key).is_none(), "{key} removed");
+        }
     }
 }
 

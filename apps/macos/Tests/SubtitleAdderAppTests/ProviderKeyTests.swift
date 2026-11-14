@@ -367,7 +367,7 @@ import Testing
         await vm.testConnection(of: provider.id)
         #expect(requests.current == 0)
         #expect(vm.providerNotices[provider.id]?.isError == true)
-        #expect(vm.providerNotices[provider.id]?.message.text.contains("Anahtar Zinciri") == true)
+        #expect(vm.providerNotices[provider.id]?.message.text.contains("API anahtarı okunamadı") == true)
         #expect(vm.testingProviders.isEmpty)
     }
 

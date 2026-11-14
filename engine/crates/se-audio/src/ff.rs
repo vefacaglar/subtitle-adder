@@ -21,7 +21,7 @@ use se_core::pyfmt::repr_str;
 use se_core::{EngineError, ErrorKind};
 
 pub const NOPTS: i64 = sys::AV_NOPTS_VALUE;
-pub const EAGAIN: c_int = -11; // AVERROR(EAGAIN) on every platform FFmpeg supports (Windows CRT, POSIX)
+pub const EAGAIN: c_int = -(sys::EAGAIN as c_int); // AVERROR(EAGAIN): -11 on Windows/Linux, -35 on macOS/BSD
 
 // ---------------------------------------------------------------------------------------------------------------
 // Errors

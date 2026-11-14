@@ -1248,7 +1248,7 @@ extension PlaylistTests {
         vm.addToPlaylist([log.deletingLastPathComponent().appending(path: "a.mp4")], sourceLanguage: "tr")
         await run(vm)
         #expect(vm.playlist[0].state == .failed)
-        #expect(vm.playlist[0].statusMessage.text.contains("Anahtar Zinciri"))
+        #expect(vm.playlist[0].statusMessage.text.contains("API anahtarı okunamadı"))
         #expect(logLines(log).isEmpty)
     }
 
