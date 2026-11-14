@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn delivery_buffers_until_the_sink_is_set_and_then_replays_once() {
-        let d = CoalescingDelivery::new(Duration::from_millis(20), Duration::from_millis(100));
+        let d = CoalescingDelivery::new(Duration::from_millis(120), Duration::from_millis(500));
         d.receive(vec![p("/a.mp4")]);
         d.receive(vec![p("/b.mp4")]);
         std::thread::sleep(Duration::from_millis(80));
