@@ -1,19 +1,124 @@
-name: Release
+name: Build and Release
 
-# Pushing a tag like v0.2.0 builds the macOS app (.dmg) and the Windows app (.zip) and attaches both to one draft
-# GitHub release. The macOS build is ad-hoc signed (no Apple Developer ID yet), so Gatekeeper warns on first open;
-# the Windows build is unsigned unless a code-signing certificate is configured, so SmartScreen may warn.
+# Builds macOS (SwiftUI app + bundled Rust engine -> .dmg & .zip) and Windows (Rust/Slint app + bundled Rust engine -> .zip).
+# Triggered on version tag pushes (v*) or manually via workflow_dispatch.
+#
+# Optional macOS signing & notarization repository secrets:
+#   MAC_CERTIFICATE_P12_BASE64   Base64-encoded Developer ID Application .p12 certificate
+#   MAC_CERTIFICATE_PASSWORD     Password for the .p12 certificate
+#   APPLE_API_KEY_ID             App Store Connect API Key ID
+#   APPLE_API_ISSUER             App Store Connect API Issuer ID
+#   APPLE_API_KEY_P8             App Store Connect API private key (.p8 content or base64)
+#
+# When signing/notarization secrets are absent (or notarization fails), the workflow still succeeds and packages
+# an ad-hoc signed / unvalidated macOS build so artifacts and releases are never blocked.
+
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version or tag (e.g. 0.2.0 or v0.2.0). Leave empty for a dev build."
+        required: false
+        type: string
+        default: ""
+      create_release:
+        description: "Publish packages to a GitHub Release"
+        required: false
+        type: boolean
+        default: true
+      draft:
+        description: "Create the GitHub Release as a draft"
+        required: false
+        type: boolean
+        default: true
+      prerelease:
+        description: "Mark the GitHub Release as a pre-release (automatic for dev builds)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      app_version: ${{ steps.meta.outputs.app_version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      draft: ${{ steps.meta.outputs.draft }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      should_release: ${{ steps.meta.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute version and release flags
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CREATE_RELEASE: ${{ inputs.create_release }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            tag="$GITHUB_REF_NAME"
+            should_release="true"
+            draft="true"
+            if [[ "$version" == *-* ]]; then
+              prerelease="true"
+            else
+              prerelease="false"
+            fi
+          else
+            raw_ver="$(printf '%s' "${INPUT_VERSION:-}" | xargs)"
+            if [ -n "$raw_ver" ]; then
+              version="${raw_ver#v}"
+              tag="v${version}"
+              if [ "${INPUT_PRERELEASE:-false}" = "true" ] || [[ "$version" == *-* ]]; then
+                prerelease="true"
+              else
+                prerelease="false"
+              fi
+            else
+              base_ver="$(sed -nE 's/^version\s*=\s*"([^"]+)".*/\1/p' apps/desktop/Cargo.toml | head -n 1)"
+              base_ver="${base_ver:-0.1.0}"
+              version="${base_ver}-dev.${GITHUB_RUN_NUMBER}"
+              tag="dev-r${GITHUB_RUN_NUMBER}"
+              prerelease="true"
+            fi
+            should_release="${INPUT_CREATE_RELEASE:-true}"
+            draft="${INPUT_DRAFT:-true}"
+          fi
+
+          # CFBundleShortVersionString in Info.plist expects numeric X.Y(.Z).
+          app_version="${version%%-*}"
+          if [[ ! "$app_version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+            app_version="0.1.0"
+          fi
+
+          {
+            echo "version=$version"
+            echo "app_version=$app_version"
+            echo "tag=$tag"
+            echo "draft=$draft"
+            echo "prerelease=$prerelease"
+            echo "should_release=$should_release"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "version=$version app_version=$app_version tag=$tag draft=$draft prerelease=$prerelease should_release=$should_release"
+
   macos:
+    name: macOS (arm64)
+    needs: prepare
     runs-on: macos-26
+    outputs:
+      macos_signing_status: ${{ steps.assets.outputs.signing_status }}
     steps:
       - uses: actions/checkout@v4
       # The Rust engine: package-macos.sh runs fetch-runtime.sh (sherpa-onnx 2.0.1), cargo build --release -p se-cli
@@ -24,21 +129,138 @@ jobs:
           workspaces: engine
       - name: FFmpeg 8 (Homebrew)
         run: brew install ffmpeg pkgconf
-      - name: Version from tag
+
+      - name: Setup signing and notarization
+        env:
+          MAC_CERTIFICATE_P12_BASE64: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0-dev"; fi
-          echo "VERSION=$v" >> "$GITHUB_ENV"
-          echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          set -euo pipefail
+          trim() { printf '%s' "$1" | tr -d '[:space:]'; }
+
+          has_cert=false
+          if [ -n "$(trim "${MAC_CERTIFICATE_P12_BASE64:-}")" ] && [ -n "${MAC_CERTIFICATE_PASSWORD:-}" ]; then
+            has_cert=true
+          fi
+
+          has_notary=false
+          if [ -n "$(trim "${APPLE_API_KEY_ID:-}")" ] && [ -n "$(trim "${APPLE_API_ISSUER:-}")" ] && [ -n "$(trim "${APPLE_API_KEY_P8:-}")" ]; then
+            has_notary=true
+          fi
+
+          SIGN_IDENTITY="-"
+          KEYCHAIN_PATH=""
+
+          if [ "$has_cert" = true ]; then
+            CERT_PATH="$RUNNER_TEMP/certificate.p12"
+            KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+            KEYCHAIN_PASS="$(openssl rand -hex 24)"
+
+            printf '%s' "$MAC_CERTIFICATE_P12_BASE64" | tr -d '[:space:]' | base64 -D > "$CERT_PATH"
+            chmod 600 "$CERT_PATH"
+
+            security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+            security import "$CERT_PATH" -P "$MAC_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+            existing_keychains=()
+            while IFS= read -r line; do
+              kc="$(echo "$line" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
+              [ -n "$kc" ] && existing_keychains+=("$kc")
+            done < <(security list-keychains -d user)
+            security list-keychains -d user -s "$KEYCHAIN_PATH" "${existing_keychains[@]}"
+
+            SIGN_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F'"' '/Developer ID Application:/ {print $2; exit}')"
+            if [ -z "$SIGN_IDENTITY" ]; then
+              SIGN_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F'"' '/Apple Development:|Mac Developer:|Developer ID/ {print $2; exit}')"
+            fi
+            if [ -z "$SIGN_IDENTITY" ]; then
+              echo "::warning::No code-signing identity found in imported .p12 certificate; falling back to ad-hoc signing."
+              SIGN_IDENTITY="-"
+            else
+              echo "Using signing identity: $SIGN_IDENTITY"
+            fi
+            rm -f "$CERT_PATH"
+          else
+            echo "::notice::MAC_CERTIFICATE_P12_BASE64 / MAC_CERTIFICATE_PASSWORD not set; building with ad-hoc signature (unvalidated)."
+          fi
+
+          if [ "$has_notary" = true ] && [ "$SIGN_IDENTITY" != "-" ]; then
+            KEY_ID_CLEAN="$(trim "$APPLE_API_KEY_ID")"
+            ISSUER_CLEAN="$(trim "$APPLE_API_ISSUER")"
+            NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey_${KEY_ID_CLEAN}.p8"
+
+            if [[ "$APPLE_API_KEY_P8" == *"BEGIN PRIVATE KEY"* ]]; then
+              if [[ "$APPLE_API_KEY_P8" != *$'\n'* && "$APPLE_API_KEY_P8" == *'\n'* ]]; then
+                printf '%b\n' "$APPLE_API_KEY_P8" > "$NOTARY_KEY_PATH"
+              else
+                printf '%s\n' "$APPLE_API_KEY_P8" > "$NOTARY_KEY_PATH"
+              fi
+            else
+              printf '%s' "$APPLE_API_KEY_P8" | tr -d '[:space:]' | base64 -D > "$NOTARY_KEY_PATH"
+            fi
+            chmod 600 "$NOTARY_KEY_PATH"
+            echo "NOTARY_KEY_PATH=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
+            echo "NOTARY_KEY_ID=$KEY_ID_CLEAN" >> "$GITHUB_ENV"
+            echo "NOTARY_ISSUER=$ISSUER_CLEAN" >> "$GITHUB_ENV"
+          elif [ "$has_notary" = true ]; then
+            echo "::warning::Apple API key secrets are set, but no Developer ID certificate was imported; skipping notarization."
+          else
+            echo "::notice::APPLE_API_KEY_ID / APPLE_API_ISSUER / APPLE_API_KEY_P8 not set; skipping notarization."
+          fi
+
+          echo "SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
       - name: Package
-        run: MAKE_DMG=1 scripts/package-macos.sh
-      - name: Rename dmg
-        run: mv "build/Subtitle Adder.dmg" "build/Subtitle-Adder-$VERSION-macos-arm64.dmg"
+        env:
+          MAKE_DMG: "1"
+          NOTARY_ALLOW_FAILURE: "1"
+          NOTARY_STATUS_FILE: ${{ runner.temp }}/macos-signing-status.txt
+          VERSION: ${{ needs.prepare.outputs.app_version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: scripts/package-macos.sh
+
+      - name: Prepare macOS release assets
+        id: assets
+        run: |
+          set -euo pipefail
+          PKG_VERSION="${{ needs.prepare.outputs.version }}"
+          DMG_OUT="build/Subtitle-Adder-${PKG_VERSION}-macos-arm64.dmg"
+          ZIP_OUT="build/Subtitle-Adder-${PKG_VERSION}-macos-arm64.zip"
+          mv "build/Subtitle Adder.dmg" "$DMG_OUT"
+          ditto -c -k --keepParent "build/Subtitle Adder.app" "$ZIP_OUT"
+          status="$(cat "${{ runner.temp }}/macos-signing-status.txt" 2>/dev/null || echo "adhoc")"
+          echo "signing_status=$status" >> "$GITHUB_OUTPUT"
+          echo "macOS signing status: $status"
+          ls -lh "$DMG_OUT" "$ZIP_OUT"
+
+      - name: Cleanup signing credentials
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          if [ -n "${NOTARY_KEY_PATH:-}" ]; then
+            rm -f "$NOTARY_KEY_PATH"
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
-          name: Subtitle-Adder-${{ env.VERSION }}-macos-arm64
-          path: build/Subtitle-Adder-*.dmg
+          name: Subtitle-Adder-${{ needs.prepare.outputs.version }}-macos-arm64
+          path: |
+            build/Subtitle-Adder-*.dmg
+            build/Subtitle-Adder-*.zip
 
   windows:
+    name: Windows (x64)
+    needs: prepare
     runs-on: windows-latest
     defaults:
       run:
@@ -71,22 +293,20 @@ jobs:
       - name: Runtimes
         working-directory: engine
         run: scripts/fetch-runtime.ps1
-      - name: Version from tag
-        run: |
-          $v = if ($env:GITHUB_REF -like 'refs/tags/v*') { $env:GITHUB_REF_NAME.Substring(1) } else { '0.0.0-dev' }
-          "VERSION=$v" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Package
-        run: scripts/package-desktop-windows.ps1 -Zip
+        run: scripts/package-desktop-windows.ps1 -Zip -Version "${{ needs.prepare.outputs.version }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: SubtitleAdder-${{ env.VERSION }}-win-x64
+          name: SubtitleAdder-${{ needs.prepare.outputs.version }}-win-x64
           path: build/desktop/SubtitleAdder-*-win-x64.zip
 
-  # One job creates the draft so the two builds cannot race into two releases. Whichever build succeeded is attached.
+  # One job publishes the release so the two platform builds cannot race into two releases.
   release:
-    needs: [macos, windows]
+    name: GitHub Release
+    needs: [prepare, macos, windows]
     if: >-
-      startsWith(github.ref, 'refs/tags/v') && !cancelled() &&
+      !cancelled() &&
+      needs.prepare.outputs.should_release == 'true' &&
       (needs.macos.result == 'success' || needs.windows.result == 'success')
     runs-on: ubuntu-latest
     steps:
@@ -94,19 +314,60 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Draft release
+
+      - name: Generate release notes
+        env:
+          MACOS_STATUS: ${{ needs.macos.outputs.macos_signing_status }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Subtitle Adder ${VERSION}"
+            echo ""
+            if [ "$MACOS_RESULT" = "success" ]; then
+              echo "### macOS (Apple Silicon)"
+              case "$MACOS_STATUS" in
+                signed-notarized)
+                  echo "- **Status:** Signed with Apple Developer ID and notarized."
+                  echo "- **Install:** Open \`Subtitle-Adder-${VERSION}-macos-arm64.dmg\` and drag **Subtitle Adder** to Applications, or extract \`Subtitle-Adder-${VERSION}-macos-arm64.zip\`."
+                  ;;
+                signed-unnotarized)
+                  echo "- **Status:** Signed with Apple Developer ID, **not notarized (unvalidated by Gatekeeper)**."
+                  echo "- **Install:** On first launch, right-click **Subtitle Adder.app** and choose **Open**, or run:"
+                  echo "  \`xattr -dr com.apple.quarantine \"/Applications/Subtitle Adder.app\"\`"
+                  ;;
+                *)
+                  echo "- **Status:** **Unsigned / ad-hoc signed (unvalidated)** — Apple Developer ID / notarization secrets were not configured."
+                  echo "- **Install:** Gatekeeper will warn on first launch. Right-click **Subtitle Adder.app** and choose **Open**, or run:"
+                  echo "  \`xattr -dr com.apple.quarantine \"/Applications/Subtitle Adder.app\"\`"
+                  ;;
+              esac
+              echo ""
+            fi
+            if [ "$WINDOWS_RESULT" = "success" ]; then
+              echo "### Windows (x64)"
+              echo "- **Status:** Unsigned build (SmartScreen may warn on first run; choose **More info** -> **Run anyway**)."
+              echo "- **Install:** Extract \`SubtitleAdder-${VERSION}-win-x64.zip\` anywhere and run \`Subtitle Adder\\SubtitleAdder.exe\`."
+              echo ""
+            fi
+            echo "---"
+            echo "Models are downloaded locally on first use."
+          } > "${RUNNER_TEMP}/release-notes.md"
+          cat "${RUNNER_TEMP}/release-notes.md"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Subtitle Adder ${{ needs.prepare.outputs.version }}
+          draft: ${{ needs.prepare.outputs.draft == 'true' }}
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          body_path: ${{ runner.temp }}/release-notes.md
           fail_on_unmatched_files: false
           files: |
             dist/Subtitle-Adder-*.dmg
+            dist/Subtitle-Adder-*.zip
             dist/SubtitleAdder-*-win-x64.zip
-          body: |
-            macOS (Apple Silicon) build. It is ad-hoc signed, so on first launch right-click the app and choose Open,
-            or run `xattr -dr com.apple.quarantine "/Applications/Subtitle Adder.app"`.
-
-            Windows (x64) build: unzip anywhere and run `Subtitle Adder\SubtitleAdder.exe`. If SmartScreen warns,
-            choose More info, then Run anyway.
-
-            Models are downloaded on first use.

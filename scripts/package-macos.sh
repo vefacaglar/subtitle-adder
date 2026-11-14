@@ -8,6 +8,12 @@
 #                   If unset, ad-hoc signing (`-`); only runs on this machine.
 #   NOTARY_PROFILE  Profile name saved with `xcrun notarytool store-credentials`;
 #                   if set (and SIGN_IDENTITY is set), notarizes and staples.
+#   NOTARY_KEY_PATH / NOTARY_KEY_ID / NOTARY_ISSUER
+#                   App Store Connect API Key credentials for `xcrun notarytool` (CI alternative to NOTARY_PROFILE).
+#   NOTARY_ALLOW_FAILURE=1
+#                   Warn and continue with an unnotarized package if notarization/stapling fails.
+#   NOTARY_STATUS_FILE
+#                   Optional file path to record signing/notarization state (adhoc | signed-unnotarized | signed-notarized).
 #   VERSION         Short version (default: 0.1.0)   BUILD_NUMBER (default: 1)
 #   BUNDLE_ID       default: app.subtitleadder.mac
 #   MAKE_DMG=1      Also builds build/Subtitle Adder.dmg.
@@ -31,15 +37,27 @@ log() { printf '\n==> %s\n' "$*"; }
 
 # notarytool can return 0 even on an "Invalid" result; this reads the status and prints Apple's log on failure.
 notarize() {
-    local out id status
-    out="$(xcrun notarytool submit "$1" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json)"
-    id="$(plutil -extract id raw -o - - <<<"$out")"
-    status="$(plutil -extract status raw -o - - <<<"$out")"
-    if [ "$status" != "Accepted" ]; then
-        echo "Notarization failed ($status)." >&2
-        xcrun notarytool log "$id" --keychain-profile "$NOTARY_PROFILE" >&2 || true
-        exit 1
+    local target="$1"
+    local err_file out id status
+    err_file="$(mktemp)"
+    if ! out="$(xcrun notarytool submit "$target" "${NOTARY_AUTH_ARGS[@]}" --wait --output-format json 2>"$err_file")"; then
+        echo "Notarization submit failed for $target:" >&2
+        cat "$err_file" >&2 || true
+        echo "$out" >&2
+        rm -f "$err_file"
+        return 1
     fi
+    rm -f "$err_file"
+    id="$(plutil -extract id raw -o - - <<<"$out" 2>/dev/null || true)"
+    status="$(plutil -extract status raw -o - - <<<"$out" 2>/dev/null || true)"
+    if [ "$status" != "Accepted" ]; then
+        echo "Notarization failed (${status:-unknown}) for $target." >&2
+        if [ -n "$id" ]; then
+            xcrun notarytool log "$id" "${NOTARY_AUTH_ARGS[@]}" >&2 || true
+        fi
+        return 1
+    fi
+    return 0
 }
 
 if ! command -v cargo >/dev/null 2>&1 && [ -x "$HOME/.cargo/bin/cargo" ]; then
@@ -125,17 +143,52 @@ while IFS= read -r -d '' f; do
     esac
 done < <(find "$ENGINE_DIR" -type f -print0)
 
-if [ -n "${NOTARY_PROFILE:-}" ]; then
-    if [ "$SIGN_IDENTITY" = "-" ]; then
-        echo "NOTARY_PROFILE requires SIGN_IDENTITY (Developer ID)." >&2
+NOTARY_AUTH_ARGS=()
+if [ -n "${NOTARY_KEY_PATH:-}" ] || [ -n "${NOTARY_KEY_ID:-}" ] || [ -n "${NOTARY_ISSUER:-}" ]; then
+    if [ -z "${NOTARY_KEY_PATH:-}" ] || [ -z "${NOTARY_KEY_ID:-}" ] || [ -z "${NOTARY_ISSUER:-}" ]; then
+        echo "Notarization with API key requires NOTARY_KEY_PATH, NOTARY_KEY_ID, and NOTARY_ISSUER." >&2
         exit 1
     fi
-    log "Notarization"
-    ZIP="$BUILD/notarize.zip"
-    ditto -c -k --keepParent "$APP" "$ZIP"
-    notarize "$ZIP"
-    xcrun stapler staple "$APP"
-    rm -f "$ZIP"
+    if [ ! -f "$NOTARY_KEY_PATH" ]; then
+        echo "NOTARY_KEY_PATH not found: $NOTARY_KEY_PATH" >&2
+        exit 1
+    fi
+    NOTARY_AUTH_ARGS=(--key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER")
+elif [ -n "${NOTARY_PROFILE:-}" ]; then
+    NOTARY_AUTH_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+fi
+
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    SIGN_STATUS="adhoc"
+else
+    SIGN_STATUS="signed-unnotarized"
+fi
+
+if [ "${#NOTARY_AUTH_ARGS[@]}" -gt 0 ]; then
+    if [ "$SIGN_IDENTITY" = "-" ]; then
+        if [ "${NOTARY_ALLOW_FAILURE:-0}" = "1" ]; then
+            echo "Warning: notarization skipped because SIGN_IDENTITY is ad-hoc (-)." >&2
+        else
+            echo "Notarization requires SIGN_IDENTITY (Developer ID)." >&2
+            exit 1
+        fi
+    else
+        log "Notarization"
+        ZIP="$BUILD/notarize.zip"
+        ditto -c -k --keepParent "$APP" "$ZIP"
+        if notarize "$ZIP" && xcrun stapler staple "$APP"; then
+            SIGN_STATUS="signed-notarized"
+        else
+            if [ "${NOTARY_ALLOW_FAILURE:-0}" = "1" ]; then
+                echo "Warning: app notarization/stapling failed; continuing with signed unnotarized build." >&2
+                SIGN_STATUS="signed-unnotarized"
+            else
+                rm -f "$ZIP"
+                exit 1
+            fi
+        fi
+        rm -f "$ZIP"
+    fi
 fi
 
 if [ "${MAKE_DMG:-0}" = "1" ]; then
@@ -152,12 +205,23 @@ if [ "${MAKE_DMG:-0}" = "1" ]; then
         echo "Warning: an ad-hoc signed dmg is blocked by Gatekeeper on another Mac." >&2
     else
         codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
-        if [ -n "${NOTARY_PROFILE:-}" ]; then
-            notarize "$DMG"
-            xcrun stapler staple "$DMG"
+        if [ "${#NOTARY_AUTH_ARGS[@]}" -gt 0 ] && [ "$SIGN_STATUS" = "signed-notarized" ]; then
+            if ! (notarize "$DMG" && xcrun stapler staple "$DMG"); then
+                if [ "${NOTARY_ALLOW_FAILURE:-0}" = "1" ]; then
+                    echo "Warning: DMG notarization/stapling failed; continuing with unnotarized DMG." >&2
+                    SIGN_STATUS="signed-unnotarized"
+                else
+                    exit 1
+                fi
+            fi
         fi
     fi
 fi
 
-log "Done: $APP"
+if [ -n "${NOTARY_STATUS_FILE:-}" ]; then
+    mkdir -p "$(dirname "$NOTARY_STATUS_FILE")"
+    printf '%s\n' "$SIGN_STATUS" > "$NOTARY_STATUS_FILE"
+fi
+
+log "Done: $APP ($SIGN_STATUS)"
 du -sh "$APP" "$ENGINE_DIR"
