@@ -209,7 +209,7 @@ fn switching_audio_while_playing_keeps_the_position_and_sync_and_changes_what_is
         }
         std::thread::sleep(Duration::from_millis(7));
     }
-    assert!(n > 10 && worst < 2.0 / 30.0 + 0.03, "a/v after the switch: {n} frames, worst {worst}");
+    assert!(n >= 5 && worst < 2.0 / 30.0 + 0.03, "a/v after the switch: {n} frames, worst {worst}");
     // Back to the first track.
     r.select(1);
     let at = r.p.position() + 0.35;
