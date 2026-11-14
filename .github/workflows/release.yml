@@ -1,7 +1,7 @@
 name: Build and Release
 
 # Builds macOS (SwiftUI app + bundled Rust engine -> .dmg & .zip) and Windows (Rust/Slint app + bundled Rust engine -> .zip).
-# Triggered on version tag pushes (v*) or manually via workflow_dispatch.
+# Triggered on pushes to main, version tag pushes (v*), or manually via workflow_dispatch.
 #
 # Optional macOS signing & notarization repository secrets:
 #   MAC_CERTIFICATE_P12_BASE64   Base64-encoded Developer ID Application .p12 certificate
@@ -15,11 +15,12 @@ name: Build and Release
 
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version or tag (e.g. 0.2.0 or v0.2.0). Leave empty for a dev build."
+        description: "Optional release version or tag (e.g. 1.0.1 or v1.0.1). Leave empty to use the repo VERSION file."
         required: false
         type: string
         default: ""
@@ -34,10 +35,14 @@ on:
         type: boolean
         default: true
       prerelease:
-        description: "Mark the GitHub Release as a pre-release (automatic for dev builds)"
+        description: "Mark the GitHub Release as a pre-release"
         required: false
         type: boolean
         default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -45,7 +50,7 @@ permissions:
 jobs:
   prepare:
     name: Prepare metadata
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.meta.outputs.version }}
       app_version: ${{ steps.meta.outputs.app_version }}
@@ -54,7 +59,7 @@ jobs:
       prerelease: ${{ steps.meta.outputs.prerelease }}
       should_release: ${{ steps.meta.outputs.should_release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Compute version and release flags
         id: meta
         env:
@@ -64,6 +69,61 @@ jobs:
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
           set -euo pipefail
+
+          read_repo_version() {
+            local v=""
+            if [ -f VERSION ]; then
+              v="$(tr -d '[:space:]' < VERSION)"
+            fi
+            if [ -z "$v" ] && [ -f apps/desktop/Cargo.toml ]; then
+              v="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' apps/desktop/Cargo.toml | head -n 1)"
+            fi
+            if [[ ! "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-].*)?$ ]]; then
+              v="1.0.0"
+            fi
+            printf '%s' "$v"
+          }
+
+          resolve_free_version() {
+            local base="$1"
+            local existing_tags=""
+            existing_tags="$(git ls-remote --tags origin 'refs/tags/v*' 2>/dev/null || true)"
+
+            tag_conflicts() {
+              local candidate="v$1"
+              local direct_sha peeled_sha target_sha
+              direct_sha="$(printf '%s\n' "$existing_tags" | awk -v ref="refs/tags/${candidate}" '$2 == ref {print $1; exit}')"
+              if [ -z "$direct_sha" ]; then
+                return 1
+              fi
+              peeled_sha="$(printf '%s\n' "$existing_tags" | awk -v ref="refs/tags/${candidate}^{}" '$2 == ref {print $1; exit}')"
+              target_sha="${peeled_sha:-$direct_sha}"
+              if [ "$target_sha" = "$GITHUB_SHA" ]; then
+                return 1
+              fi
+              return 0
+            }
+
+            local core="${base%%-*}"
+            core="${core%%+*}"
+            local major minor patch
+            IFS='.' read -r major minor patch <<< "$core"
+            major="${major:-1}"
+            minor="${minor:-0}"
+            patch="${patch:-0}"
+
+            local candidate="$base"
+            if tag_conflicts "$candidate"; then
+              while true; do
+                patch=$((patch + 1))
+                candidate="${major}.${minor}.${patch}"
+                if ! tag_conflicts "$candidate"; then
+                  break
+                fi
+              done
+            fi
+            printf '%s' "$candidate"
+          }
 
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
@@ -75,31 +135,40 @@ jobs:
             else
               prerelease="false"
             fi
-          else
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             raw_ver="$(printf '%s' "${INPUT_VERSION:-}" | xargs)"
             if [ -n "$raw_ver" ]; then
               version="${raw_ver#v}"
               tag="v${version}"
-              if [ "${INPUT_PRERELEASE:-false}" = "true" ] || [[ "$version" == *-* ]]; then
-                prerelease="true"
-              else
-                prerelease="false"
-              fi
             else
-              base_ver="$(sed -nE 's/^version\s*=\s*"([^"]+)".*/\1/p' apps/desktop/Cargo.toml | head -n 1)"
-              base_ver="${base_ver:-0.1.0}"
-              version="${base_ver}-dev.${GITHUB_RUN_NUMBER}"
-              tag="dev-r${GITHUB_RUN_NUMBER}"
+              base_ver="$(read_repo_version)"
+              version="$(resolve_free_version "$base_ver")"
+              tag="v${version}"
+            fi
+            if [ "${INPUT_PRERELEASE:-false}" = "true" ] || [[ "$version" == *-* ]]; then
               prerelease="true"
+            else
+              prerelease="false"
             fi
             should_release="${INPUT_CREATE_RELEASE:-true}"
             draft="${INPUT_DRAFT:-true}"
+          else
+            base_ver="$(read_repo_version)"
+            version="$(resolve_free_version "$base_ver")"
+            tag="v${version}"
+            should_release="true"
+            draft="true"
+            if [[ "$version" == *-* ]]; then
+              prerelease="true"
+            else
+              prerelease="false"
+            fi
           fi
 
           # CFBundleShortVersionString in Info.plist expects numeric X.Y(.Z).
           app_version="${version%%-*}"
           if [[ ! "$app_version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
-            app_version="0.1.0"
+            app_version="1.0.0"
           fi
 
           {
@@ -120,7 +189,7 @@ jobs:
     outputs:
       macos_signing_status: ${{ steps.assets.outputs.signing_status }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # The Rust engine: package-macos.sh runs fetch-runtime.sh (sherpa-onnx 2.0.1), cargo build --release -p se-cli
       # and stage-runtime.sh (copies Homebrew's FFmpeg dylibs into engine/dist and rewrites their install names).
       - uses: dtolnay/rust-toolchain@stable
@@ -251,7 +320,7 @@ jobs:
             rm -f "$NOTARY_KEY_PATH"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Subtitle-Adder-${{ needs.prepare.outputs.version }}-macos-arm64
           path: |
@@ -266,7 +335,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # scripts/package-desktop-windows.ps1 builds the Rust desktop app (apps/desktop, against the FFmpeg 8.1 SDK) and
       # the Rust engine (fetch-runtime.ps1: sherpa-onnx 2.0.1, FFmpeg 8.1 SDK; cargo build --release -p se-cli;
       # stage-runtime.ps1), ships the LGPL FFmpeg DLLs next to SubtitleAdder.exe (fetched when missing) and zips the
@@ -278,8 +347,10 @@ jobs:
           workspaces: |
             engine -> ../../t
             apps/desktop -> ../../../t
-      - uses: ilammy/msvc-dev-cmd@v1
-      - uses: nuget/setup-nuget@v2
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+      - uses: nuget/setup-nuget@v3
       - name: Build environment
         run: |
           # Short target dir outside the checkout (MAX_PATH in the CMake-built oneDNN/CTranslate2 and in cl.exe builds of
@@ -295,7 +366,7 @@ jobs:
         run: scripts/fetch-runtime.ps1
       - name: Package
         run: scripts/package-desktop-windows.ps1 -Zip -Version "${{ needs.prepare.outputs.version }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: SubtitleAdder-${{ needs.prepare.outputs.version }}-win-x64
           path: build/desktop/SubtitleAdder-*-win-x64.zip
@@ -308,9 +379,9 @@ jobs:
       !cancelled() &&
       needs.prepare.outputs.should_release == 'true' &&
       (needs.macos.result == 'success' || needs.windows.result == 'success')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -358,7 +429,7 @@ jobs:
           cat "${RUNNER_TEMP}/release-notes.md"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           target_commitish: ${{ github.sha }}

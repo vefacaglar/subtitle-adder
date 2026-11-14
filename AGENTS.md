@@ -33,4 +33,8 @@ When writing swarm briefs for Hydrogen workers, assign clear file ownership so p
 
 1. Before starting any technical investigation or edit, spawn a `gemini-4-hydrogen-medium` (search/explore) or `gemini-4-hydrogen-high` (implementation/review) worker via `swarm`.
 2. Specify exact file/crate ownership and verification commands in the brief (`cargo test --workspace -j 2` for `engine/`, `cargo test --workspace -j 4` for `apps/desktop/`, `swift test` for `apps/macos/`).
-3. Wait for worker results via `swarm_wait`; never fall back to doing `grep` or `edit_file` directly.
+3. Assign and verify the mandatory semantic version bump (`VERSION`, `engine/Cargo.toml`, `apps/desktop/Cargo.toml`, and both `Cargo.lock` files via `scripts/bump-version.ps1` or `scripts/bump-version.sh`) at the end of every development task:
+   - **Patch (`+0.0.1`, e.g. `1.0.0` -> `1.0.1`):** Bug fixes, small improvements, UI polish, refactoring, CI/script/doc updates.
+   - **Minor (`+0.1.0`, e.g. `1.0.1` -> `1.1.0`):** New features, new languages/models/subtitle capabilities, medium-to-large enhancements.
+   - **Major (`+1.0.0`):** Breaking architectural or protocol-overhaul releases only.
+4. Wait for worker results via `swarm_wait`; never fall back to doing `grep` or `edit_file` directly.

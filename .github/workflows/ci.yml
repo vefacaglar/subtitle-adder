@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-26, windows-latest]
+        os: [ubuntu-24.04, macos-26, windows-latest]
     defaults:
       run:
         shell: bash
@@ -29,7 +29,7 @@ jobs:
       # deep target dir. rust-cache below points at the same folder.
       CARGO_TARGET_DIR: ${{ github.workspace }}/../t
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -52,9 +52,11 @@ jobs:
       # Windows: CMake + Ninja + cl from the preinstalled Visual Studio (the static-CRT toolchain file in
       # .cargo/config.toml is tested with Ninja), libclang from the preinstalled LLVM (ffmpeg-sys-next bindgen),
       # nuget.exe for the MKL / Intel OpenMP packages of intel-onemkl-prebuild.
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
         if: runner.os == 'Windows'
-      - uses: nuget/setup-nuget@v2
+        with:
+          arch: x64
+      - uses: nuget/setup-nuget@v3
         if: runner.os == 'Windows'
       - name: Windows build environment
         if: runner.os == 'Windows'
@@ -99,7 +101,7 @@ jobs:
       # Short and outside the checkout: long paths break cl.exe (ring, rusqlite's bundled SQLite) on Windows.
       CARGO_TARGET_DIR: ${{ github.workspace }}/../td
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -114,8 +116,10 @@ jobs:
       - name: FFmpeg (macOS)
         if: runner.os == 'macOS'
         run: brew install ffmpeg pkgconf
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
         if: runner.os == 'Windows'
+        with:
+          arch: x64
       - name: Windows build environment
         if: runner.os == 'Windows'
         shell: pwsh
@@ -151,10 +155,10 @@ jobs:
       run:
         working-directory: apps/macos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # The dev-engine lookup tests only launch engine/dist when it is staged, so no engine build is needed here.
       - run: swift --version
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: apps/macos/.build
           key: swiftpm-${{ runner.os }}-${{ hashFiles('apps/macos/Package.swift', 'apps/macos/Package.resolved') }}

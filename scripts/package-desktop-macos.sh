@@ -8,7 +8,7 @@
 #                   If unset, ad-hoc signing (`-`); only runs on this machine.
 #   NOTARY_PROFILE  Profile name saved with `xcrun notarytool store-credentials`;
 #                   if set (and SIGN_IDENTITY is set), notarizes and staples.
-#   VERSION         Short version (default: 0.1.0)   BUILD_NUMBER (default: 1)
+#   VERSION         Short version (default: contents of VERSION, e.g. 1.0.0)   BUILD_NUMBER (default: 1)
 #   BUNDLE_ID       default: app.subtitleadder.mac (the UserDefaults domain and Application Support identity: keep it)
 #   MAKE_DMG=1      Also builds build/desktop/Subtitle Adder.dmg.
 #   SKIP_ENGINE_BUILD=1  Reuses an already staged engine/dist (skips fetch/cargo/stage).
@@ -32,7 +32,13 @@ APP="$BUILD/Subtitle Adder.app"
 CONTENTS="$APP/Contents"
 ENGINE_DIST="$ROOT/engine/dist"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
-VERSION="${VERSION:-0.1.0}"
+if [ -z "${VERSION:-}" ]; then
+    if [ -f "$ROOT/VERSION" ]; then
+        VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+    else
+        VERSION="1.0.0"
+    fi
+fi
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 BUNDLE_ID="${BUNDLE_ID:-app.subtitleadder.mac}"
 ENTITLEMENTS="$ROOT/scripts/macos/engine.entitlements"

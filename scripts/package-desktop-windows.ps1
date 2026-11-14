@@ -1,10 +1,10 @@
-#Requires -Version 7
+﻿#Requires -Version 7
 <#
 .SYNOPSIS
 Packages the Rust desktop app (apps/desktop, Slint) for Windows: SubtitleAdder.exe + FFmpeg DLLs + the Rust engine folder.
 
 .DESCRIPTION
-    pwsh scripts/package-desktop-windows.ps1 [-SkipEngineBuild] [-SmokeTest] [-Zip] [-Version 0.2.0]
+    pwsh scripts/package-desktop-windows.ps1 [-SkipEngineBuild] [-SmokeTest] [-Zip] [-Version 1.0.0]
 
 Output: build\desktop\Subtitle Adder\SubtitleAdder.exe with the FFmpeg runtime DLLs next to it (the player links
 FFmpeg 8 dynamically; the LGPL shared build, see FFMPEG_LGPL_DIR), Assets\AppIcon.ico / AppIcon.png (window icon and file-association icon, win-ui-main §3/§4),
@@ -19,7 +19,7 @@ from crates\sa-platform\build.rs. Builds for win-x64 only.
 
 Environment variables:
   SKIP_ENGINE_BUILD     1 = same as -SkipEngineBuild.
-  VERSION               Version (default: the workspace version in apps\desktop\Cargo.toml); -Version wins.
+  VERSION               Version (default: root VERSION file, else apps\desktop\Cargo.toml workspace version); -Version wins.
   FFMPEG_DIR            FFmpeg 8 SDK (headers, import libs, bin\*.dll); default engine\.runtime\ffmpeg. The GPL
                         build: the app compiles against it (same API and DLL names) and the engine ships its DLLs.
   FFMPEG_LGPL_DIR       FFmpeg 8 LGPL shared build whose bin\*.dll ship next to SubtitleAdder.exe; default
@@ -89,11 +89,16 @@ function Use-Toolchain {
 }
 
 if (-not $Version) { $Version = $env:VERSION }
+if ($Version) { $Version = $Version.Trim() }
+if (-not $Version) {
+    $versionFile = Join-Path $Root 'VERSION'
+    if (Test-Path $versionFile) { $Version = (Get-Content $versionFile -Raw).Trim() }
+}
 if (-not $Version) {
     $workspace = Get-Content (Join-Path $Desktop 'Cargo.toml') -Raw
     if ($workspace -match '(?ms)^\[workspace\.package\].*?^version\s*=\s*"([^"]+)"') { $Version = $Matches[1] }
 }
-if (-not $Version) { $Version = '0.1.0' }
+if (-not $Version) { $Version = '1.0.0' }
 
 $cargo = Find-Cargo
 if (-not $cargo) { throw 'cargo not found; install Rust (https://rustup.rs/) or add cargo to PATH.' }
