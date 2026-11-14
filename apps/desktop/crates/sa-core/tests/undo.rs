@@ -132,7 +132,7 @@ fn undo_titles_are_localized() {
     LanguageState::shared().set_language(UiLanguage::En);
     assert_eq!(undo_title(None), "Undo");
     assert_eq!(redo_title(None), "Redo");
-    let t = undo_title(Some("Satırı Sil"));
+    let t = if cfg!(target_os = "macos") { mac_undo_menu_title(Some("Satırı Sil")) } else { undo_title(Some("Satırı Sil")) };
     assert!(t.starts_with("Undo ") && t != "Undo Satırı Sil", "{t}");
     LanguageState::shared().set_language(UiLanguage::Tr);
     assert_eq!(undo_title(Some("Satırı Sil")), "Satırı Sil İşlemini Geri Al");

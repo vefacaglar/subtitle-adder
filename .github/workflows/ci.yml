@@ -75,12 +75,12 @@ jobs:
       # Tests needing real models skip themselves (or are #[ignore]d); no model is downloaded.
       - name: cargo test
         if: runner.os != 'Windows'
-        run: cargo test --workspace -j 2
+        run: cargo test --workspace --no-fail-fast -j 2
       # pwsh on Windows: in bash, Git's /usr/bin/link would shadow MSVC's link.exe from msvc-dev-cmd.
       - name: cargo test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: cargo test --workspace -j 2
+        run: cargo test --workspace --no-fail-fast -j 2
 
   desktop:
     # The pure-Rust desktop app (apps/desktop): Slint UI (fluent tree on Windows, cupertino tree on macOS), the stores
@@ -142,13 +142,13 @@ jobs:
       - name: cargo test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: cargo test --workspace -j 3
+        run: cargo test --workspace --no-fail-fast -j 3
       - name: cargo build (macOS)
         if: runner.os == 'macOS'
         run: cargo build --workspace --all-targets -j 3
       - name: cargo test (macOS)
         if: runner.os == 'macOS'
-        run: cargo test --workspace -j 3
+        run: cargo test --workspace --no-fail-fast -j 3
       # The other tree as a look check: the cupertino tree also compiles on Windows and the fluent one on macOS.
       - name: Other UI tree builds
         shell: pwsh

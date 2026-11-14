@@ -4746,7 +4746,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "sa-app"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "crossbeam-channel",
  "glow",
@@ -4773,7 +4773,7 @@ dependencies = [
 
 [[package]]
 name = "sa-core"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -4791,7 +4791,7 @@ dependencies = [
 
 [[package]]
 name = "sa-enginekit"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "crossbeam-channel",
  "flate2",
@@ -4811,7 +4811,7 @@ dependencies = [
 
 [[package]]
 name = "sa-media"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "aes-gcm",
  "chrono",
@@ -4837,7 +4837,7 @@ dependencies = [
 
 [[package]]
 name = "sa-platform"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "block2 0.6.2",
  "chrono",
@@ -4858,7 +4858,7 @@ dependencies = [
 
 [[package]]
 name = "sa-player"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "cpal",
  "crossbeam-channel",
@@ -4873,7 +4873,7 @@ dependencies = [
 
 [[package]]
 name = "sa-profiles"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -4902,7 +4902,7 @@ dependencies = [
 
 [[package]]
 name = "sa-providers"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -4926,7 +4926,7 @@ dependencies = [
 
 [[package]]
 name = "sa-sync"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4944,7 +4944,7 @@ dependencies = [
 
 [[package]]
 name = "sa-viewmodels"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "chrono",
  "crossbeam-channel",
