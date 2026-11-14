@@ -1,9 +1,7 @@
 name: CI
 
+# Manual only: run from the Actions tab (Run workflow) to save Actions minutes.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
