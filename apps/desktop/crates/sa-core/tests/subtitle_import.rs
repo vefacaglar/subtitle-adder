@@ -370,9 +370,11 @@ fn windows_paths_follow_dotnet_file_name_rules() {
     touch(dir.path(), &["Film.srt", ".srt.srt"]);
     std::fs::create_dir(dir.path().join("Clip.vtt")).unwrap();
     // A trailing separator means "no file name" in .NET.
-    let trailing = format!("{}\\Film.srt\\", dir.path().display());
-    assert!(!is_subtitle_file_with(Path::new(&trailing), W));
-    assert!(is_subtitle_file_with(Path::new(&trailing), M), "URL.lastPathComponent ignores the trailing slash");
+    let trailing_backslash = format!("{}\\Film.srt\\", dir.path().display());
+    let trailing_slash = format!("{}/Film.srt/", dir.path().display());
+    assert!(!is_subtitle_file_with(Path::new(&trailing_backslash), W));
+    assert!(!is_subtitle_file_with(Path::new(&trailing_slash), W));
+    assert!(is_subtitle_file_with(Path::new(&trailing_slash), M), "URL.lastPathComponent ignores the trailing slash");
     assert!(is_subtitle_file_with(Path::new("C:x.SRT"), W), "past the drive prefix");
     assert!(is_subtitle_file_with(Path::new(".srt"), W));
     assert!(!is_subtitle_file_with(Path::new(".srt"), M), "a leading dot is no extension on macOS");
