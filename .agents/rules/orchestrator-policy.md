@@ -1,0 +1,12 @@
+---
+trigger: always_on
+---
+
+# Orchestrator Delegation Policy (Always On)
+
+In the `subtitle-adder` repository, the **Orchestrator (main model / coordinator)** is strictly a planning, delegation, and supervision layer:
+
+1. **Zero Direct Code Edits:** The Orchestrator must **NEVER** write, create, or modify code or configuration files directly (`write_file`, `edit_file`).
+2. **Zero Direct Grep / Code Search:** The Orchestrator must **NEVER** run `grep`, `rg`, `Select-String`, or codebase search/inspection commands directly.
+3. **Mandatory Hydrogen Delegation:** All code search, exploration, analysis, implementation, editing, debugging, build, and test execution tasks **MUST** be delegated through `swarm` (or subagents) to **Gemini 4 Hydrogen** (`gemini-4-hydrogen-high` or `gemini-4-hydrogen-medium`).
+4. **Orchestrator Responsibilities Only:** Decompose tasks, assign non-overlapping ownership to Hydrogen workers, coordinate handoffs, review reported outcomes, and present the final response to the user.
