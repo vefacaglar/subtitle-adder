@@ -199,9 +199,23 @@ fn mask_sddl(sddl: &str) -> String {
     let owner_alias = win_testing::current_owner_sddl_alias().unwrap();
     let user = win_testing::current_user_sid().unwrap();
     let user_alias = win_testing::current_user_sddl_alias().unwrap();
-    // Replace token by token (`:`, `;`, `(`, `)`) so short aliases like `BA`/`LA` never match inside other tokens.
     let mut out = String::with_capacity(sddl.len());
     let mut rest = sddl;
+    // Separate `O:<owner>` from the immediately following section prefix (`D:` / `S:`) before tokenizing.
+    if let Some(after_o) = rest.strip_prefix("O:") {
+        let owner_len = after_o.find(':').map_or(after_o.len(), |i| i.saturating_sub(1));
+        let (pipe_owner, tail) = after_o.split_at(owner_len);
+        out.push_str("O:");
+        out.push_str(if pipe_owner == owner || pipe_owner == owner_alias {
+            "{owner}"
+        } else if pipe_owner == user || pipe_owner == user_alias {
+            "{user}"
+        } else {
+            pipe_owner
+        });
+        rest = tail;
+    }
+    // Replace token by token (`:`, `;`, `(`, `)`) so short aliases like `BA`/`LA` never match inside other tokens.
     while !rest.is_empty() {
         let end = rest.find([':', ';', ')', '(']).map_or(rest.len(), |i| i.max(1));
         let (tok, next) = rest.split_at(end);
