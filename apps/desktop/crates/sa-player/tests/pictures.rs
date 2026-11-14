@@ -1119,10 +1119,23 @@ fn an_open_picture_is_taken_off_when_playback_ends() {
 fn another_speed_restarts_decoding_in_place_and_keeps_the_very_picture_on_screen() {
     let mut r = or_skip!(open());
     r.select(Some(PGS));
-    // At 2.2 the picture from 1.5 is on screen, and the restart reads again from the keyframe at 2.0: after the
-    // event's packet, which the demuxer does not deliver again.
-    let p = r.seek_to_picture(2.2, 1.5);
+    // Establish picture 1.5 before keyframe 2.0, then play past 2.10 so the restart seeks again from
+    // keyframe 2.0 (after packet 1.5, which the demuxer does not deliver again).
+    let _ = r.seek_to_picture(1.7, 1.5);
+    r.p.play();
+    assert!(
+        wait_until(T, || {
+            let _ = r.p.latest_frame();
+            r.p.position() >= 2.10
+        }),
+        "playback never reached 2.10 ({})",
+        r.p.position()
+    );
+    r.p.pause();
     r.settle();
+    let pos = r.p.position();
+    assert!((2.05..2.45).contains(&pos), "paused position out of [2.05, 2.45): {pos}");
+    let p = r.wait_picture(|q| (q.start - 1.5).abs() < 1e-3).expect("picture 1.5 still on screen past 2.05");
     let restarts = r.p.stats().decoded;
     let from = r.rec.len();
     // Another speed restarts decoding at the position (the queued audio was resampled for the old one): the
@@ -1136,7 +1149,7 @@ fn another_speed_restarts_decoding_in_place_and_keeps_the_very_picture_on_screen
     }
     r.settle();
     assert!(r.p.stats().decoded > restarts, "decoding did restart");
-    assert!((r.p.position() - 2.2).abs() < 0.05, "in place: {}", r.p.position());
+    assert!((r.p.position() - pos).abs() < 0.05, "in place: {} (started at {pos})", r.p.position());
     assert_eq!(r.picture_changes(from), 0, "no change was announced");
     // The same where the restart reads the event again (0.7: after the keyframe at 0.0, the event from 0.5).
     let q = r.seek_to_picture(0.7, 0.5);

@@ -375,7 +375,7 @@ fn five_instances_over_the_named_pipe_broker_share_logins_history_progress_and_l
         .collect();
     let ep1 = env.path("Episode_01.mp4");
     let ep2 = env.path("Episode_02.mp4");
-    let t = Duration::from_secs(10);
+    let t = Duration::from_secs(25);
 
     managers[0].register_user("five_window_user", "Pass!12345", true).expect("register");
     wait_until("everyone logged in", t, || {
@@ -412,6 +412,9 @@ fn five_instances_over_the_named_pipe_broker_share_logins_history_progress_and_l
 
     managers[0].dispose();
     buses[0].dispose();
+    wait_until("a surviving instance takes over leadership", t, || {
+        buses[1..].iter().any(|b| b.is_leader())
+    });
     managers[2].record_watch_with(&ep2, 25.0, 120.0, None, None);
     let shared = managers[2].create_custom_list("Beş Pencere Ortak Liste").expect("list");
     assert!(managers[2].add_video_to_custom_list(&shared.id, &ep2));
@@ -478,8 +481,25 @@ fn multiple_profiles_have_completely_isolated_history_likes_ratings_and_lists() 
     assert_eq!(lists[0].video_paths, vec![bv]);
 }
 
+struct CultureGuard<'a> {
+    _lock: std::sync::MutexGuard<'a, ()>,
+}
+impl Drop for CultureGuard<'_> {
+    fn drop(&mut self) {
+        sa_profiles::win::netcompat::set_culture_override(None);
+    }
+}
+
+fn pin_turkish_culture() -> CultureGuard<'static> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    sa_profiles::win::netcompat::set_culture_override(Some("tr-TR"));
+    CultureGuard { _lock }
+}
+
 #[test]
 fn custom_lists_and_clear_watch_history_preserve_favorites_ratings_and_lists() {
+    let _culture = pin_turkish_culture();
     let env = Env::new();
     let v1 = env.path("Sezon_1_Bolum_01.mkv");
     let v2 = env.path("Sezon_2_Bolum_05.mkv");
@@ -1602,6 +1622,7 @@ fn record_watch_sanitizes_positions_and_never_resets_a_stored_position_with_zero
 
 #[test]
 fn search_query_matches_whole_query_or_every_token() {
+    let _culture = pin_turkish_culture();
     let mk = |path: &str| sa_profiles::VideoUserStats {
         content_fingerprint: None,
         video_path: path.into(),

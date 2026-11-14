@@ -212,8 +212,13 @@ fn pipe_dacl_allows_only_the_current_user_and_system() {
     let sddl = win_testing::server_instance_sddl(&scope).unwrap();
     let expected = win_testing::expected_server_sddl().unwrap();
     let user = win_testing::current_user_sid().unwrap();
+    let user_alias = win_testing::current_user_sddl_alias().unwrap();
     let owner = expected.strip_prefix("O:").unwrap().split("D:").next().unwrap().to_owned();
-    assert!(sddl.starts_with(&format!("O:{owner}")), "{sddl}");
+    let owner_alias = win_testing::current_owner_sddl_alias().unwrap();
+    assert!(
+        sddl.starts_with(&format!("O:{owner}D:")) || sddl.starts_with(&format!("O:{owner_alias}D:")),
+        "{sddl}"
+    );
     let dacl = sddl.split("D:").nth(1).unwrap();
     assert!(dacl.starts_with('P'), "protected DACL: {sddl}");
     let aces: Vec<&str> = dacl.trim_start_matches(|c: char| c.is_ascii_uppercase()).split(')').filter(|s| !s.is_empty()).collect();
@@ -223,7 +228,10 @@ fn pipe_dacl_allows_only_the_current_user_and_system() {
         let parts: Vec<&str> = ace.split(';').collect();
         assert_eq!(parts[0], "A", "{ace}");
         let trustee = parts[5];
-        assert!(trustee == owner || trustee == user || trustee == "SY", "unexpected trustee {trustee} in {sddl}");
+        assert!(
+            trustee == owner || trustee == owner_alias || trustee == user || trustee == user_alias || trustee == "SY",
+            "unexpected trustee {trustee} in {sddl}"
+        );
     }
     for forbidden in [";WD)", ";AN)", ";BU)", ";AU)", ";IU)", ";NU)"] {
         assert!(!sddl.contains(forbidden), "{sddl}");

@@ -195,8 +195,26 @@ fn unmask_sddl(template: &str) -> String {
 }
 
 fn mask_sddl(sddl: &str) -> String {
-    sddl.replace(&win_testing::current_owner_sid().unwrap(), "{owner}")
-        .replace(&win_testing::current_user_sid().unwrap(), "{user}")
+    let owner = win_testing::current_owner_sid().unwrap();
+    let owner_alias = win_testing::current_owner_sddl_alias().unwrap();
+    let user = win_testing::current_user_sid().unwrap();
+    let user_alias = win_testing::current_user_sddl_alias().unwrap();
+    // Replace token by token (`:`, `;`, `(`, `)`) so short aliases like `BA`/`LA` never match inside other tokens.
+    let mut out = String::with_capacity(sddl.len());
+    let mut rest = sddl;
+    while !rest.is_empty() {
+        let end = rest.find([':', ';', ')', '(']).map_or(rest.len(), |i| i.max(1));
+        let (tok, next) = rest.split_at(end);
+        out.push_str(if tok == owner || tok == owner_alias {
+            "{owner}"
+        } else if tok == user || tok == user_alias {
+            "{user}"
+        } else {
+            tok
+        });
+        rest = next;
+    }
+    out
 }
 
 /// Holds a file the way the C# broker does: `FileStream(mode, ReadWrite, FileShare.None[, DeleteOnClose])`.
@@ -624,7 +642,14 @@ fn a_replayed_csharp_client_talks_to_the_rust_host() {
     // F6: C# accepted a pipe with exactly this descriptor.
     let rust_host = &spy["rust_host"];
     assert_eq!(s(&rust_host["ready"]), "true leader=false", "C# CurrentUserOnly client accepted the Rust pipe");
-    assert_eq!(mask_sddl(&win_testing::server_instance_sddl(&scope).unwrap()), s(&rust_host["pipe_sddl"]));
+    let actual = mask_sddl(&win_testing::server_instance_sddl(&scope).unwrap());
+    let expected = s(&rust_host["pipe_sddl"]);
+    if win_testing::current_owner_sid() == win_testing::current_user_sid() {
+        assert_eq!(actual, expected);
+    } else {
+        // Elevated tokens add an explicit ACE for TokenUser alongside TokenOwner.
+        assert_eq!(actual, expected.replace("(A;;FA;;;SY)", "(A;;FA;;;{user})(A;;FA;;;SY)"));
+    }
 
     // The C# instance: its slot file and its pipe session.
     let slot = s(&spy["csharp_slot"]);

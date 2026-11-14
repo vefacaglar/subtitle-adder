@@ -197,7 +197,10 @@ mod tests {
             let item = videos_start_item().expect("Videos folder or library");
             assert_eq!(item_path(&item), super::super::folders::videos_folder());
             let dir = tempfile::tempdir().unwrap();
-            assert_eq!(start_item(Some(dir.path())).and_then(|i| item_path(&i)), Some(dir.path().to_path_buf()));
+            assert_eq!(
+                start_item(Some(dir.path())).and_then(|i| item_path(&i)).and_then(|p| std::fs::canonicalize(p).ok()),
+                std::fs::canonicalize(dir.path()).ok()
+            );
             let missing = dir.path().join("missing");
             assert_eq!(start_item(Some(&missing)).and_then(|i| item_path(&i)), super::super::folders::videos_folder());
             drop(item);

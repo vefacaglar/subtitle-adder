@@ -909,6 +909,16 @@ pub mod testing {
         security::token_sids().map(|s| s.owner_sddl.clone())
     }
 
+    /// Canonical SDDL alias (`LA`, ...) for the token user SID, or the numeric SID.
+    pub fn current_user_sddl_alias() -> Option<String> {
+        security::token_sids().map(|s| security::sid_sddl_alias(&s.user_sddl))
+    }
+
+    /// Canonical SDDL alias (`BA`, ...) for the token owner SID, or the numeric SID.
+    pub fn current_owner_sddl_alias() -> Option<String> {
+        security::token_sids().map(|s| security::sid_sddl_alias(&s.owner_sddl))
+    }
+
     /// A raw client connection to the channel's pipe (verifies the server owner like the broker does). A background
     /// thread keeps reading (a peer that stops reading would stall a C# host, whose writes are synchronous).
     pub struct RawClient {

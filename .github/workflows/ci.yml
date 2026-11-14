@@ -140,6 +140,8 @@ jobs:
         shell: pwsh
         run: |
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
       # pwsh on Windows: in bash, Git's /usr/bin/link would shadow MSVC's link.exe from msvc-dev-cmd.
       - name: cargo build (Windows)
         if: runner.os == 'Windows'
@@ -150,7 +152,9 @@ jobs:
         shell: pwsh
         run: |
           cargo test --workspace --exclude sa-player --no-fail-fast -j 3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p sa-player --no-fail-fast -j 1 -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: cargo build (macOS)
         if: runner.os == 'macOS'
         run: cargo build --workspace --all-targets -j 3

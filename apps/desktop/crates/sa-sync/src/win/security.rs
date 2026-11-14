@@ -165,6 +165,28 @@ pub(crate) fn server_owned_by_current_user(pipe: HANDLE) -> bool {
     ok
 }
 
+/// Canonical SDDL alias (`BA`, `LA`, ...) that `ConvertSecurityDescriptorToStringSecurityDescriptorW` produces for
+/// `sid`, or `sid` unchanged.
+pub(crate) fn sid_sddl_alias(sid: &str) -> String {
+    let w: Vec<u16> = format!("O:{sid}").encode_utf16().chain(Some(0)).collect();
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(w.as_ptr()), SDDL_REVISION_1, &mut sd, None) }.is_err() {
+        return sid.to_owned();
+    }
+    let mut out = PWSTR::null();
+    let r = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, OWNER_SECURITY_INFORMATION, &mut out, None) };
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+    }
+    if r.is_ok() {
+        let full = unsafe { pwstr_to_string_and_free(out) };
+        if let Some(rest) = full.strip_prefix("O:") {
+            return rest.to_owned();
+        }
+    }
+    sid.to_owned()
+}
+
 /// SDDL (owner + DACL) of a kernel object handle (tests of F6).
 pub(crate) fn handle_sddl(handle: HANDLE) -> io::Result<String> {
     let mut sd = PSECURITY_DESCRIPTOR::default();

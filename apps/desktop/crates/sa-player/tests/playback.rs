@@ -1408,9 +1408,15 @@ fn second_fields_stay_half_a_frame_after_the_first_across_seeks() {
     let mut seen = Vec::new();
     for target in [0.4, 0.52, 0.6, 0.72, 0.84, 1.0, 1.08, 1.2] {
         p.seek(target);
-        let until = Instant::now() + Duration::from_millis(150);
-        while Instant::now() < until {
+        let started = Instant::now();
+        let min_until = started + Duration::from_millis(200);
+        let max_until = started + Duration::from_millis(700);
+        let mut saw_second_after_seek = false;
+        while Instant::now() < max_until && (!saw_second_after_seek || Instant::now() < min_until) {
             if let Some(f) = p.latest_frame() {
+                if f.second_field && started.elapsed() >= Duration::from_millis(40) {
+                    saw_second_after_seek = true;
+                }
                 seen.push((f.pts, f.second_field));
             }
             std::thread::sleep(Duration::from_millis(2));

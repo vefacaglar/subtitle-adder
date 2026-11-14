@@ -816,13 +816,16 @@ fn only_the_long_compute_commands_run_in_the_background() {
 fn background_engines_start_below_normal_priority_and_short_commands_at_normal() {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, GetPriorityClass, NORMAL_PRIORITY_CLASS};
+    use windows::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetPriorityClass};
 
     use sa_enginekit::process::{CREATE_NO_WINDOW, creation_flags};
     assert_eq!(creation_flags(EnginePriority::Background), CREATE_NO_WINDOW | 0x0000_4000);
     assert_eq!(creation_flags(EnginePriority::Normal), CREATE_NO_WINDOW);
+    // SAFETY: GetCurrentProcess returns the current process pseudo-handle.
+    let own = unsafe { GetPriorityClass(GetCurrentProcess()) };
+    assert_ne!(own, 0, "GetPriorityClass(GetCurrentProcess())");
     let control = sa_enginekit::process::platform_process_control();
-    for (priority, expected) in [(EnginePriority::Background, BELOW_NORMAL_PRIORITY_CLASS.0), (EnginePriority::Normal, NORMAL_PRIORITY_CLASS.0)] {
+    for (priority, expected) in [(EnginePriority::Background, BELOW_NORMAL_PRIORITY_CLASS.0), (EnginePriority::Normal, own)] {
         // `cmd.exe` with a piped stdin waits for input until killed.
         let mut cmd = std::process::Command::new("cmd.exe");
         cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());

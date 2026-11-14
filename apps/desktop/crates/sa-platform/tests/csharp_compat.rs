@@ -107,20 +107,50 @@ mod raw {
         token_sid(TokenUser)
     }
 
+    /// Canonical SDDL alias (`BA`, `LA`, ...) that `ConvertSecurityDescriptorToStringSecurityDescriptorW` emits for
+    /// `sid`, or `sid` unchanged when no alias exists.
+    fn sddl_alias(sid: &str) -> String {
+        let w = wide(&format!("O:{sid}"));
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(w.as_ptr()), SDDL_REVISION_1, &mut sd, None) }.is_err() {
+            return sid.to_owned();
+        }
+        let mut p = PWSTR::null();
+        let ok = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, OWNER_SECURITY_INFORMATION, &mut p, None) };
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+        }
+        if ok.is_ok() {
+            let full = take_pwstr(p);
+            if let Some(rest) = full.strip_prefix("O:") {
+                return rest.to_owned();
+            }
+        }
+        sid.to_owned()
+    }
+
     /// Replaces the token SIDs with placeholders: the owner field (`O:`) becomes `{owner}`, an ACE trustee `{user}`
     /// (or `{owner}` when it is the token owner but not the user), so the template also fits an account whose token
     /// owner differs from its user (an elevated administrator).
     pub fn mask_sddl(sddl: &str) -> String {
         let owner = owner_sid();
+        let owner_alias = sddl_alias(&owner);
         let user = user_sid();
+        let user_alias = sddl_alias(&user);
         let pipe_owner = sddl_owner(sddl);
-        let mut out = format!("O:{}", if pipe_owner == owner { "{owner}" } else { pipe_owner });
+        let mut out = format!("O:{}", if pipe_owner == owner || pipe_owner == owner_alias { "{owner}" } else { pipe_owner });
         let mut rest = &sddl[2 + pipe_owner.len()..];
         // Token by token, so a SID that is a prefix of another (`...-1001` / `...-10011`) is never half-replaced.
         while !rest.is_empty() {
             let end = rest.find([':', ';', ')', '(']).map_or(rest.len(), |i| i.max(1));
             let (tok, next) = rest.split_at(end);
-            out.push_str(if tok == user { "{user}" } else if tok == owner { "{owner}" } else { tok });
+            out.push_str(if tok == user || tok == user_alias {
+                "{user}"
+            } else if tok == owner || tok == owner_alias {
+                "{owner}"
+            } else {
+                tok
+            });
             rest = next;
         }
         out
@@ -170,7 +200,13 @@ mod raw {
             }
         };
         let sddl = handle_sddl(h);
-        assert_eq!(sddl_owner(&sddl), owner_sid(), "a CurrentUserOnly client rejects this pipe owner: {sddl}");
+        let actual_owner = sddl_owner(&sddl);
+        let expected_owner = owner_sid();
+        let expected_owner_alias = sddl_alias(&expected_owner);
+        assert!(
+            actual_owner == expected_owner || actual_owner == expected_owner_alias,
+            "a CurrentUserOnly client rejects this pipe owner: {sddl}"
+        );
         let mut written = 0u32;
         let ok = bytes.is_empty() || unsafe { WriteFile(h, Some(bytes), Some(&mut written), None) }.is_ok();
         unsafe {
