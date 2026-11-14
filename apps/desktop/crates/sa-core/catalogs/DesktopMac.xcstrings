@@ -613,23 +613,6 @@
         }
       }
     },
-    "Video önizlemesi hazırlanıyor…": {
-      "comment": "Added by the Rust desktop app (mac-ui section 7.4, player control bar).",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Preparing video preview…"
-          }
-        },
-        "tr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Video önizlemesi hazırlanıyor…"
-          }
-        }
-      }
-    },
     "Yapıştır": {
       "comment": "Added by the Rust desktop app (UNIFIED.md section 8, macOS).",
       "localizations": {
