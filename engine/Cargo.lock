@@ -2089,7 +2089,7 @@ checksum = "d68f2ec51b097e4c1a75b681a8bec621909b5e91f15bb7b840c4f2f7b01148b2"
 
 [[package]]
 name = "se-asr"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "ct2rs",
  "flate2",
@@ -2113,7 +2113,7 @@ dependencies = [
 
 [[package]]
 name = "se-audio"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "ffmpeg-next",
  "filetime",
@@ -2126,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "se-cli"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "filetime",
  "se-asr",
@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "se-core"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "dunce",
  "filetime",
@@ -2155,7 +2155,7 @@ dependencies = [
 
 [[package]]
 name = "se-diarize"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "hound",
  "libloading 0.8.9",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "se-models"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "dunce",
  "filetime",
@@ -2193,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "se-text"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "se-core",
  "serial_test",
@@ -2202,7 +2202,7 @@ dependencies = [
 
 [[package]]
 name = "se-translate"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "anyhow",
  "ct2rs",
