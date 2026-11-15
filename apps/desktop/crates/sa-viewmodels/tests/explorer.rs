@@ -61,7 +61,72 @@ fn navigation_back_up_and_search() {
 }
 
 #[test]
-fn logged_out_search_filters_the_current_folder_only() {
+fn search_also_finds_files_in_the_folders_below_without_indexing_them() {
+    for policy in [sa_viewmodels::PlatformPolicy::windows(), sa_viewmodels::PlatformPolicy::mac()] {
+        use sa_media::MediaIndex;
+        use std::sync::atomic::Ordering::SeqCst;
+        let _l = LanguageScope::new(policy.catalog_chain, UiLanguage::Tr);
+        let env = Env::new(policy);
+        tree(&env);
+        env.touch("lib/Movies/Series/Season 2/Ep7.mkv", "s");
+        let m = FileExplorerModel::new(env.services());
+        m.navigate(&env.path("lib/Movies"));
+        idle(&env, &m);
+        let scans = env.index.scans.load(SeqCst);
+        // Logged out: the folders below are listed live, nearest first.
+        m.set_search("ep", false);
+        env.eventually("files below the folder", || names(&m) == vec!["Ep1.mp4", "Ep7.mkv"]);
+        idle(&env, &m);
+        let rows = m.rows();
+        assert!(rows.iter().all(|r| r.is_index_result), "marked as outside the current folder");
+        assert_eq!(rows[1].path, env.path("lib/Movies/Series/Season 2/Ep7.mkv"));
+        assert_eq!(env.index.search_calls.load(SeqCst), 0, "the index is not searched logged out");
+        assert_eq!(env.index.scans.load(SeqCst), scans, "nothing is written to the index");
+        assert!(env.index.cached_snapshot(&env.path("lib/Movies/Series")).is_none());
+        let listed = env.index.transient_scans.lock().len();
+        assert_eq!(listed, 3, "the folder, Series and Season 2");
+        // A folder's name finds the files in it; typing on filters what was listed.
+        m.set_search("season", false);
+        env.pump();
+        assert_eq!(names(&m), vec!["Ep7.mkv"]);
+        // A sibling folder is not below the current one.
+        m.set_search("gamma", false);
+        env.pump();
+        assert!(names(&m).is_empty());
+        assert_eq!(env.index.transient_scans.lock().len(), listed, "listed once per search");
+        // A subtitle saved next to a result shows its badge (that folder alone is listed again).
+        m.set_search("ep7", false);
+        env.pump();
+        assert_eq!(m.rows()[0].sidecar_badge, None);
+        m.subtitle_saved(&env.touch("lib/Movies/Series/Season 2/Ep7.srt", "1\n"));
+        env.eventually("badge of a result below", || m.rows().first().is_some_and(|r| r.sidecar_badge.as_deref() == Some("SRT")));
+        assert_eq!(env.index.transient_scans.lock().len(), listed + 1);
+        assert!(env.index.cached_snapshot(&env.path("lib/Movies/Series/Season 2")).is_none());
+        // The files of the current folder come first.
+        env.touch("lib/Movies/Epilogue.mp4", "x");
+        m.refresh();
+        idle(&env, &m);
+        m.set_search("ep", false);
+        env.eventually("current folder first", || names(&m) == vec!["Epilogue.mp4", "Ep1.mp4", "Ep7.mkv"]);
+        idle(&env, &m);
+        // Ending the search shows the folder again; one level up, the search reaches every folder below.
+        m.set_search("", false);
+        env.pump();
+        assert_eq!(names(&m), vec!["Series", "Alpha.mp4", "Beta.mkv", "Epilogue.mp4"]);
+        m.go_up();
+        idle(&env, &m);
+        m.set_search("gamma", false);
+        env.eventually("from the parent", || names(&m) == vec!["Gamma.mp4"]);
+        idle(&env, &m);
+        m.navigate(&env.path("lib/Other"));
+        idle(&env, &m);
+        assert!(m.search_query().is_empty());
+        assert_eq!(names(&m), vec!["Gamma.mp4"], "the listing of the folder left behind is dropped");
+    }
+}
+
+#[test]
+fn logged_out_search_never_reaches_the_index() {
     for policy in [sa_viewmodels::PlatformPolicy::windows(), sa_viewmodels::PlatformPolicy::mac()] {
         let _l = LanguageScope::new(policy.catalog_chain, UiLanguage::Tr);
         let env = Env::new(policy);

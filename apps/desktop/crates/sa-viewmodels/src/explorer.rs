@@ -1,13 +1,13 @@
 //! File explorer sidebar (win-viewmodels §21, mac-viewmodels §11; UNIFIED.md §3.10).
-//! Rule 6: `explorerLastFolder` removed at startup and never written; logged out the search filters the current
-//! folder only (no index-wide results). The constructor touches no file system; listing and scanning run on workers
-//! through the media index.
+//! Rule 6: `explorerLastFolder` removed at startup and never written; logged out the search covers the current
+//! folder and the folders below it (listed live, never written to the index), with no index-wide results. The
+//! constructor touches no file system; listing and scanning run on workers through the media index.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sa_core::cancel::CancellationToken;
 use sa_core::l;
@@ -29,6 +29,16 @@ pub const CRAWL_FOLDERS: usize = 64;
 pub const SEARCH_LIMIT: usize = 100;
 /// Search typing debounce (macOS).
 pub const SEARCH_DELAY: Duration = Duration::from_millis(200);
+/// Search below the current folder: how deep the folders are listed.
+pub const SUBTREE_DEPTH: u8 = 16;
+/// Search below the current folder: folders listed at most (breadth-first, so the nearest ones come first).
+pub const SUBTREE_FOLDERS: usize = 5000;
+/// Search below the current folder: media files kept at most.
+pub const SUBTREE_FILES: usize = 20_000;
+/// Search below the current folder: matching rows shown at most.
+pub const SUBTREE_ROWS: usize = 500;
+/// Search below the current folder: how often the files found so far reach the list.
+const SUBTREE_BATCH: Duration = Duration::from_millis(150);
 
 /// One row.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,7 +48,7 @@ pub struct ExplorerRow {
     pub is_folder: bool,
     pub size_text: String,
     pub sidecar_badge: Option<String>,
-    /// From the index (search results outside the current folder).
+    /// A search result outside the current folder (below it, or from the index).
     pub is_index_result: bool,
     /// The video open in the editor.
     pub is_active: bool,
@@ -75,6 +85,14 @@ fn is_combining_mark(c: char) -> bool {
 /// Windows OrdinalIgnoreCase `contains` (.NET simple invariant uppercase per code point).
 fn contains_ignore_case(hay: &str, needle: &str) -> bool {
     sa_core::text::upper_invariant(hay).contains(&sa_core::text::upper_invariant(needle))
+}
+
+/// The text a search compares under `compare`: two texts match when one's key contains the other's.
+fn search_key(compare: ExplorerCompare, text: &str) -> String {
+    match compare {
+        ExplorerCompare::OrdinalIgnoreCase => sa_core::text::upper_invariant(text),
+        ExplorerCompare::Fold => fold(text),
+    }
 }
 
 /// Row size texts: Windows rows show the index's `FormattedSize` (`MediaLibraryIndex.FormatFileSize`: B/KB/MB/GB,
@@ -143,6 +161,15 @@ struct State {
     query: String,
     logged_in: bool,
     index_hits: Vec<IndexedMediaFile>,
+    /// Media files below the current folder, each with the [`search_key`] of its path from that folder
+    /// (`Series\Season 1\Ep1.mp4`), listed while a search is active: memory only, never written to the index, dropped
+    /// when the search or the folder ends.
+    subtree: Vec<(IndexedMediaFile, String)>,
+    /// The folder `subtree` was listed for.
+    subtree_root: Option<PathBuf>,
+    subtree_walking: bool,
+    subtree_gen: u64,
+    subtree_cancel: Option<CancellationToken>,
     quick: Vec<QuickLocation>,
     visible: bool,
     scanning: bool,
@@ -226,6 +253,21 @@ impl Inner {
                     || (self.svc.policy.explorer_compare == ExplorerCompare::OrdinalIgnoreCase && self.matches(&f.directory_path, &q));
                 if hit {
                     push_file(&mut rows, &mut seen, f, false);
+                }
+            }
+            if !q.is_empty() {
+                // Below the current folder: by the path from it (the file's name, or a folder's name finds its files).
+                let needle = search_key(self.svc.policy.explorer_compare, &q);
+                let mut shown = 0;
+                for (f, key) in &st.subtree {
+                    if shown == SUBTREE_ROWS {
+                        break;
+                    }
+                    if key.contains(&needle) {
+                        let before = rows.len();
+                        push_file(&mut rows, &mut seen, f, true);
+                        shown += rows.len() - before;
+                    }
                 }
             }
             if !q.is_empty() && st.logged_in {
@@ -384,6 +426,7 @@ impl Inner {
             st.current = Some(folder.clone());
             st.transient = mode == ScanMode::Transient;
         }
+        self.drop_subtree();
         // Rule 6: never persisted (explorerLastFolder).
         self.notify(&[ExplorerChange::Folder]);
         self.run_scan(folder, true, crawl, mode);
@@ -441,13 +484,164 @@ impl Inner {
         });
     }
 
-    /// Re-applies the search (index-wide only when logged in).
+    /// Forgets the files listed below the current folder and stops their listing.
+    fn drop_subtree(&self) {
+        let was_walking = {
+            let mut st = self.st.borrow_mut();
+            if let Some(t) = st.subtree_cancel.take() {
+                t.cancel();
+            }
+            st.subtree_gen += 1;
+            st.subtree = Vec::new();
+            st.subtree_root = None;
+            std::mem::replace(&mut st.subtree_walking, false)
+        };
+        if was_walking {
+            self.notify(&[ExplorerChange::Status]);
+        }
+    }
+
+    /// While a search is active, lists the folders below the current one once (breadth-first, on a worker, bounded by
+    /// [`SUBTREE_DEPTH`], [`SUBTREE_FOLDERS`] and [`SUBTREE_FILES`]) so the search also finds files in subfolders.
+    /// The folders are listed without touching the index ([`sa_media::MediaIndex::scan_transient`]): the listing
+    /// lives in this model only, logged in or not, and typing further filters it without listing again.
+    fn ensure_subtree(self: &Rc<Self>) {
+        let (root, generation_id, token) = {
+            let mut st = self.st.borrow_mut();
+            if st.query.trim().is_empty() {
+                return;
+            }
+            let Some(root) = st.current.clone() else { return };
+            if st.subtree_root.as_ref().is_some_and(|r| self.same(r, &root)) {
+                return;
+            }
+            if let Some(t) = st.subtree_cancel.take() {
+                t.cancel();
+            }
+            st.subtree_gen += 1;
+            st.subtree = Vec::new();
+            st.subtree_root = Some(root.clone());
+            st.subtree_walking = true;
+            let t = CancellationToken::new();
+            st.subtree_cancel = Some(t.clone());
+            (root, st.subtree_gen, t)
+        };
+        self.notify(&[ExplorerChange::Status]);
+        let index = self.svc.media_index.clone();
+        let key = self.key();
+        let ui = self.svc.ui.clone();
+        let compare = self.svc.policy.explorer_compare;
+        let _ = std::thread::Builder::new().name("sa-explorer-subtree".into()).spawn(move || {
+            let deliver = |batch: Vec<(IndexedMediaFile, String)>, done: bool| {
+                key.post(&ui, move |inner| {
+                    {
+                        let mut st = inner.st.borrow_mut();
+                        if st.subtree_gen != generation_id {
+                            return;
+                        }
+                        st.subtree.extend(batch);
+                        if done {
+                            st.subtree_walking = false;
+                            st.subtree_cancel = None;
+                        }
+                    }
+                    inner.rebuild_rows();
+                    if done {
+                        inner.notify(&[ExplorerChange::Status]);
+                    }
+                });
+            };
+            // (folder, the folders from the root down to it, depth)
+            let mut queue: VecDeque<(PathBuf, String, u8)> = VecDeque::from([(root, String::new(), 0)]);
+            // Folders by their real location: a link or junction back into the tree is listed once.
+            let mut visited: HashSet<PathBuf> = HashSet::new();
+            let (mut folders, mut found) = (0usize, 0usize);
+            let mut batch: Vec<(IndexedMediaFile, String)> = Vec::new();
+            let mut delivered = Instant::now();
+            while let Some((dir, below, depth)) = queue.pop_front() {
+                if token.is_cancelled() {
+                    return;
+                }
+                if folders == SUBTREE_FOLDERS || found == SUBTREE_FILES {
+                    break;
+                }
+                if !visited.insert(std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone())) {
+                    continue;
+                }
+                folders += 1;
+                let ScanResult::Listed(snapshot) = index.scan_transient(&dir, &token) else { continue };
+                // The root's own files are the current listing.
+                if depth > 0 {
+                    for f in snapshot.media_files.into_iter().take(SUBTREE_FILES - found) {
+                        found += 1;
+                        let key = search_key(compare, &format!("{below}{}{}", std::path::MAIN_SEPARATOR, f.file_name));
+                        batch.push((f, key));
+                    }
+                }
+                if depth < SUBTREE_DEPTH {
+                    for sub in snapshot.subdirectories {
+                        let sub = PathBuf::from(sub);
+                        let name = name_of(&sub);
+                        let below = if below.is_empty() { name } else { format!("{below}{}{name}", std::path::MAIN_SEPARATOR) };
+                        queue.push_back((sub, below, depth + 1));
+                    }
+                }
+                if !batch.is_empty() && delivered.elapsed() >= SUBTREE_BATCH {
+                    deliver(std::mem::take(&mut batch), false);
+                    delivered = Instant::now();
+                }
+            }
+            if !token.is_cancelled() {
+                deliver(batch, true);
+            }
+        });
+    }
+
+    /// A subtitle was saved in `folder`, which is not the current one: while a search lists the folders below, the
+    /// files it holds from that folder get their sidecar state again (one transient listing of that folder).
+    fn relist_subtree_folder(self: &Rc<Self>, folder: PathBuf) {
+        let generation_id = {
+            let st = self.st.borrow();
+            if st.subtree_root.is_none() {
+                return;
+            }
+            st.subtree_gen
+        };
+        let index = self.svc.media_index.clone();
+        let key = self.key();
+        let ui = self.svc.ui.clone();
+        let _ = std::thread::Builder::new().name("sa-explorer-subtree-folder".into()).spawn(move || {
+            let ScanResult::Listed(snapshot) = index.scan_transient(&folder, &CancellationToken::new()) else { return };
+            key.post(&ui, move |inner| {
+                {
+                    let mut st = inner.st.borrow_mut();
+                    if st.subtree_gen != generation_id {
+                        return;
+                    }
+                    for fresh in snapshot.media_files {
+                        let at = st.subtree.iter().position(|(f, _)| inner.same(Path::new(&f.full_path), Path::new(&fresh.full_path)));
+                        if let Some(at) = at {
+                            st.subtree[at].0 = fresh;
+                        }
+                    }
+                }
+                inner.rebuild_rows();
+            });
+        });
+    }
+
+    /// Re-applies the search (below the current folder always, index-wide only when logged in).
     fn refilter(self: &Rc<Self>, debounce: bool) {
         let (q, logged_in, generation_id) = {
             let mut st = self.st.borrow_mut();
             st.filter_gen += 1;
             (st.query.trim().to_owned(), st.logged_in, st.filter_gen)
         };
+        if q.is_empty() {
+            self.drop_subtree();
+        } else {
+            self.ensure_subtree();
+        }
         if q.is_empty() || !logged_in {
             self.st.borrow_mut().index_hits.clear();
             self.rebuild_rows();
@@ -491,6 +685,10 @@ impl Drop for FileExplorerModel {
         if let Some(k) = self.inner.key.get() {
             k.unregister();
         }
+        // A search still listing the folders below stops at the next folder.
+        if let Some(t) = self.inner.st.borrow_mut().subtree_cancel.take() {
+            t.cancel();
+        }
     }
 }
 
@@ -512,6 +710,11 @@ impl FileExplorerModel {
                 query: String::new(),
                 logged_in: false,
                 index_hits: Vec::new(),
+                subtree: Vec::new(),
+                subtree_root: None,
+                subtree_walking: false,
+                subtree_gen: 0,
+                subtree_cancel: None,
                 quick: Vec::new(),
                 visible,
                 scanning: true,
@@ -579,6 +782,8 @@ impl FileExplorerModel {
                     inner.st.borrow_mut().current = Some(f.clone());
                     inner.notify(&[ExplorerChange::Folder]);
                     inner.run_scan(f, true, false, ScanMode::Persist);
+                    // A search typed before the launch folder was known.
+                    inner.ensure_subtree();
                 } else if let Some(c) = current {
                     let (scanned, transient) = {
                         let st = inner.st.borrow();
@@ -641,8 +846,10 @@ impl FileExplorerModel {
     pub fn can_go_back(&self) -> bool {
         !self.inner.st.borrow().back.is_empty()
     }
+    /// The current folder is being listed or crawled, or a search is still listing the folders below it.
     pub fn is_scanning(&self) -> bool {
-        self.inner.st.borrow().scanning
+        let st = self.inner.st.borrow();
+        st.scanning || st.subtree_walking
     }
     pub fn availability(&self) -> FolderAvailability {
         self.inner.st.borrow().availability
@@ -677,6 +884,9 @@ impl FileExplorerModel {
         if let Some(c) = cur {
             self.inner.run_scan(c, false, false, if transient { ScanMode::Transient } else { ScanMode::Persist });
         }
+        // An active search lists the folders below again.
+        self.inner.drop_subtree();
+        self.inner.ensure_subtree();
     }
     pub fn rows(&self) -> Vec<ExplorerRow> {
         self.inner.st.borrow().rows.clone()
@@ -684,7 +894,8 @@ impl FileExplorerModel {
     pub fn search_query(&self) -> String {
         self.inner.st.borrow().query.clone()
     }
-    /// Logged out: only the current folder is filtered (rule 6).
+    /// Filters the current folder and the folders below it; logged in, the index is searched too (rule 6: never
+    /// logged out).
     pub fn set_search(&self, query: &str, logged_in: bool) {
         let changed = {
             let mut st = self.inner.st.borrow_mut();
@@ -735,6 +946,7 @@ impl FileExplorerModel {
             st.index_hits.clear();
             st.transient = false;
         }
+        self.inner.drop_subtree();
         self.inner.rebuild_rows();
         self.inner.notify(&[ExplorerChange::Folder]);
         let key = self.inner.key();
@@ -832,6 +1044,10 @@ impl FileExplorerModel {
             (st.current.clone(), st.transient, st.logged_in)
         };
         let same = current.as_ref().is_some_and(|c| self.inner.same(c, &folder));
+        if !same {
+            // A search result from a folder below shows its new badge too.
+            self.inner.relist_subtree_folder(folder.clone());
+        }
         if self.inner.svc.policy.explorer_compare == ExplorerCompare::OrdinalIgnoreCase {
             if same {
                 self.inner.run_scan(folder, false, false, if transient { ScanMode::Transient } else { ScanMode::InMemory });

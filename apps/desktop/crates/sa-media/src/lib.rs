@@ -3,7 +3,8 @@
 //! the macOS folder lister rules.
 //!
 //! Privacy contract (rule 6): `search` and `all_files` are **never called while logged out** by the hub; the explorer
-//! may list the current folder logged out but never runs index-wide search then. The index itself stays plaintext
+//! may list the current folder logged out (and, while it searches, the folders below it, transiently) but never runs
+//! index-wide search then. The index itself stays plaintext
 //! (listings, not history). On Windows it records no scan or update time, and a folder that was only the folder of an
 //! opened video is listed transiently ([`win::WinMediaIndex::scan_transient`]) so it never becomes a record.
 
@@ -64,7 +65,8 @@ pub trait MediaIndex: Send + Sync {
     /// Windows refresh stays in memory, so opening a video never rewrites the index file).
     fn invalidate_sidecar(&self, video_path: &Path);
     /// Lists a folder without touching the index, in memory or on disk (Windows `ScanDirectoryTransientAsync`: the
-    /// folder of a video that was merely opened). Default: [`MediaIndex::scan`] (macOS has no such mode).
+    /// folder of a video that was merely opened; both platforms: the folders below the current one while the
+    /// explorer searches). Default: [`MediaIndex::scan`].
     fn scan_transient(&self, dir: &Path, cancel: &CancellationToken) -> ScanResult {
         self.scan(dir, cancel)
     }

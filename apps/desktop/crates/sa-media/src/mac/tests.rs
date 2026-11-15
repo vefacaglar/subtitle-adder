@@ -213,6 +213,31 @@ fn scan_populates_media_files_and_detects_sidecar_subtitles() {
 }
 
 #[test]
+fn a_transient_scan_lists_the_folder_without_touching_the_index() {
+    let b = Sandbox::new();
+    let videos = b.folder("Videos");
+    b.folder("Videos/Season 1");
+    b.file("Videos/movie.mkv");
+    let index = b.index();
+    let changes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = changes.clone();
+    let _sub = index.subscribe_changes(Box::new(move || {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+    let ScanResult::Listed(listing) = index.scan_transient(&videos, &CancellationToken::new()) else { panic!("listed") };
+    assert_eq!(names(&listing.media_files), ["movie.mkv"]);
+    assert_eq!(listing.subdirectories, [b.path("Videos/Season 1")]);
+    assert_eq!(index.total_indexed_files(), 0);
+    assert!(index.cached_snapshot(&videos).is_none());
+    assert!(!b.index_file().exists(), "nothing is written");
+    assert_eq!(changes.load(std::sync::atomic::Ordering::SeqCst), 0, "no change is announced");
+    assert_eq!(index.scan_transient(&pb(&b.p("Nope")), &CancellationToken::new()), ScanResult::Missing);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert_eq!(index.scan_transient(&videos, &cancelled), ScanResult::Cancelled);
+}
+
+#[test]
 fn persistence_reloads_cached_entries_in_a_new_instance() {
     let b = Sandbox::new();
     let library = b.folder("Library");

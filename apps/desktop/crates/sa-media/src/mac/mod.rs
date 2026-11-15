@@ -490,4 +490,17 @@ impl MediaIndex for MacMediaIndex {
             let _ = self.scan_folder_outcome(Path::new(&parent));
         }
     }
+
+    /// The folder as it is on disk, without touching the index in memory or on disk and without a change
+    /// notification (the explorer's search below the current folder).
+    fn scan_transient(&self, dir: &Path, cancel: &CancellationToken) -> ScanResult {
+        if cancel.is_cancelled() {
+            return ScanResult::Cancelled;
+        }
+        let folder = path::normalized(&path::from_path(dir));
+        if folder.is_empty() {
+            return ScanResult::Missing;
+        }
+        self.lister.list(Path::new(&folder))
+    }
 }
