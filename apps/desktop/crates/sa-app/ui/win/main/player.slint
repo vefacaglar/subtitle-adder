@@ -237,50 +237,49 @@ component TransportHud inherits Rectangle {
                     clicked => { MainBridge.play-pause(); }
                 }
             }
-            // Mute + volume (receives the wheel).
-            HorizontalLayout {
+            // Mute + volume. The wheel catcher is the parent of the two controls, not a sibling drawn after them: a
+            // sibling on top takes every press, so the button and the slider under it never see one. As children
+            // they get presses first and the wheel (which they do not handle) reaches the catcher.
+            TouchArea {
                 x: parent.width - self.width;
                 width: 26px + 6px + 56px;
-                spacing: 6px;
-                alignment: end;
-                mute := Rectangle {
-                    width: 26px;
-                    height: 26px;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: 13px;
-                    background: mtouch.has-hover ? #ffffff24 : #ffffff00;
-                    property <float> eff: MainBridge.is-muted ? 0 : MainBridge.volume;
-                    Glyph {
-                        glyph: mute.eff <= 0.001 ? "\u{E74F}" : mute.eff < 0.33 ? "\u{E992}" : mute.eff < 0.66 ? "\u{E993}" : "\u{E767}";
-                        size: 13px;
-                        color: mtouch.has-hover ? #ffffffff : #ffffffd8;
-                    }
-                    // Fires on press (not release).
-                    mtouch := TouchArea {
-                        pointer-event(e) => {
-                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
-                                MainBridge.toggle-mute();
-                            }
-                        }
-                    }
-                }
-                Scrubber {
-                    width: 56px;
-                    y: (parent.height - self.height) / 2;
-                    rest-height: 3.5px;
-                    hover-height: 5px;
-                    thumb: 9px;
-                    ratio: MainBridge.is-muted ? 0 : MainBridge.volume;
-                    scrub(s, r) => { MainBridge.volume-scrub(s, r); }
-                }
-            }
-            TouchArea {
-                x: parent.width - 88px;
-                width: 88px;
-                // Transparent wheel catcher behind the volume controls.
                 scroll-event(e) => {
                     MainBridge.volume-wheel(e.delta-y / 1px);
                     accept
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: end;
+                    mute := Rectangle {
+                        width: 26px;
+                        height: 26px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 13px;
+                        background: mtouch.has-hover ? #ffffff24 : #ffffff00;
+                        property <float> eff: MainBridge.is-muted ? 0 : MainBridge.volume;
+                        Glyph {
+                            glyph: mute.eff <= 0.001 ? "\u{E74F}" : mute.eff < 0.33 ? "\u{E992}" : mute.eff < 0.66 ? "\u{E993}" : "\u{E767}";
+                            size: 13px;
+                            color: mtouch.has-hover ? #ffffffff : #ffffffd8;
+                        }
+                        // Fires on press (not release).
+                        mtouch := TouchArea {
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                                    MainBridge.toggle-mute();
+                                }
+                            }
+                        }
+                    }
+                    Scrubber {
+                        width: 56px;
+                        y: (parent.height - self.height) / 2;
+                        rest-height: 3.5px;
+                        hover-height: 5px;
+                        thumb: 9px;
+                        ratio: MainBridge.is-muted ? 0 : MainBridge.volume;
+                        scrub(s, r) => { MainBridge.volume-scrub(s, r); }
+                    }
                 }
             }
         }
