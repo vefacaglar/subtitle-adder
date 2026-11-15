@@ -26,11 +26,12 @@ on:
         required: false
         type: boolean
         default: true
+      # A draft is not listed on the repository page and creates no tag until it is published by hand.
       draft:
-        description: "Create the GitHub Release as a draft"
+        description: "Create the GitHub Release as a draft (not shown on the repository page until published)"
         required: false
         type: boolean
-        default: true
+        default: false
       prerelease:
         description: "Mark the GitHub Release as a pre-release"
         required: false
@@ -126,7 +127,7 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
             tag="$GITHUB_REF_NAME"
             should_release="true"
-            draft="true"
+            draft="false"
             if [[ "$version" == *-* ]]; then
               prerelease="true"
             else
@@ -148,13 +149,13 @@ jobs:
               prerelease="false"
             fi
             should_release="${INPUT_CREATE_RELEASE:-true}"
-            draft="${INPUT_DRAFT:-true}"
+            draft="${INPUT_DRAFT:-false}"
           else
             base_ver="$(read_repo_version)"
             version="$(resolve_free_version "$base_ver")"
             tag="v${version}"
             should_release="true"
-            draft="true"
+            draft="false"
             if [[ "$version" == *-* ]]; then
               prerelease="true"
             else
